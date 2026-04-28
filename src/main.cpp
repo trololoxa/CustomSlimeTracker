@@ -817,6 +817,7 @@ static void maybePrintBootHeartbeat() {
 
 void setup() {
     Serial.begin(SERIAL_BAUD_DEFAULT);
+    sleep(5);
     delay(300);
 
     Serial.println();

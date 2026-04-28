@@ -5,27 +5,27 @@ Delayed:
 4. Accel/gyro/mag Mhz speed
 5. Accel trust чуть построже
 
-Phase 1 — IMU bring-up:
+Phase 1 — IMU bring-up: Closed
   math
   LSM6DSV driver
   raw/scaled logs
   timestamped samples
   gyro startup calibration
 
-Phase 2 — 6DoF:
+Phase 2 — 6DoF: Closed
   gyro-only quaternion
   accel gravity correction
   accel gating
   stable 6DoF validation
 
-Phase 3 — Robust IMU pipeline:
+Phase 3 — Robust IMU pipeline: Closed
   FIFO
   dropped sample detection
   saturation flags
   config save/load
   command protocol
 
-Phase 4 — Calibration:
+Phase 4 — Calibration: Active
   accel 6-position calibration
   gyro bias persistence
   gyro temp compensation
@@ -53,6 +53,6 @@ Phase 7 — Advanced:
   optional earth rotation compensation
   SlimeVR-compatible output
 
-g_imuCal.accelBiasG = Vec3(0.00214949f, 0.00605807f, 0.00125885f);
-g_imuCal.accelScale = Mat3::diagonal(1.00130630f, 1.00026011f, 1.00308013f);
-g_imuCal.accelCalValid = true;
+For earth compensation check:
+    Add gyro_after_mean_dps: x=... y=... z=... to static report
+    Don't do temp calibration
