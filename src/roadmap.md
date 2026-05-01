@@ -36,7 +36,7 @@ Phase 5 — Magnetometer: Currently active
   QMC6309 driver +
   raw mag logs +
   hard/soft iron calibration +
-  mag -> imu axis alignment +-
+  mag -> imu axis alignment +
   magTrust/gating
   slow yaw correction
 

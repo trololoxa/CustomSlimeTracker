@@ -10,6 +10,7 @@
 #include "sensor/mag_calibration.hpp"
 #include "sensor/mag_runtime.hpp"
 #include "sensor/mag_heading.hpp"
+#include "sensor/mag_yaw_correction.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
@@ -125,6 +126,9 @@ static MagProcessedSample g_lastMagProcessed;
 
 static MagHeadingEstimator g_magHeading;
 static MagHeadingSample g_lastMagHeading;
+
+static MagYawCorrectionController g_magYawCorrection;
+static MagYawCorrectionOutput g_lastMagYawCorrection;
 
 struct MagHeadingReferenceState {
     bool valid = false;
@@ -498,6 +502,9 @@ static void resetMagRuntimeCounters() {
     g_magHeading.reset();
     g_lastMagHeading = MagHeadingSample{};
 
+    g_magYawCorrection.reset();
+    g_lastMagYawCorrection = MagYawCorrectionOutput{};
+
     g_magHeadingRef.clear();
 }
 
@@ -607,6 +614,23 @@ static float magHeadingErrorToReferenceDeg(const MagHeadingSample& heading) {
     return magHeadingErrorToReferenceRad(heading) * MATH_RAD_TO_DEG;
 }
 
+static MagYawCorrectionConfig makeMagYawCorrectionConfig() {
+    MagYawCorrectionConfig c;
+    c.enabled = true;
+    c.dryRun = true;
+
+    c.maxInnovationDeg = 25.0f;
+    c.minHorizontalNorm = 220.0f;
+    c.maxMagAgeMs = 250;
+
+    c.timeConstantS = 30.0f;
+    c.maxCorrectionRateDegS = 2.0f;
+    c.maxCorrectionStepDeg = 0.25f;
+    c.fallbackDtS = 1.0f / 60.0f;
+
+    return c;
+}
+
 static MagHeadingConfig makeMagHeadingConfig() {
     MagHeadingConfig c;
     c.requireTrustedMag = true;
@@ -661,6 +685,22 @@ static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
         heading
     );
     g_lastMagHeading = heading;
+
+    const uint32_t nowMs = millis();
+    const MagRuntimeConfig magCfg = makeMagRuntimeConfig();
+
+    MagYawCorrectionInput yawIn;
+    yawIn.mag = g_lastMagProcessed;
+    yawIn.heading = g_lastMagHeading;
+    yawIn.referenceValid = g_magHeadingRef.valid;
+    yawIn.referenceWorldYawRad = g_magHeadingRef.worldYawRad;
+    yawIn.magTrustedForUse = MagRuntimeProcessor::trustedForUse(g_lastMagProcessed, magCfg, nowMs);
+    yawIn.magRejectFlagsForUse = MagRuntimeProcessor::rejectFlagsForUse(g_lastMagProcessed, magCfg, nowMs);
+    yawIn.nowMs = nowMs;
+
+    MagYawCorrectionOutput yawOut;
+    g_magYawCorrection.update(yawIn, makeMagYawCorrectionConfig(), yawOut);
+    g_lastMagYawCorrection = yawOut;
 
     const uint32_t nacks = lsmFifo.stats().sensorHubNackWords;
     if (nacks != g_magState.nacksSeen) {
@@ -879,6 +919,140 @@ static void printMagHeadingStatus(Stream& out, void* user) {
     out.println(s.lastValidMs == 0 ? 0UL : millis() - s.lastValidMs);
 }
 
+static void printMagYawCorrectionStatus(Stream& out, void* user) {
+    (void)user;
+
+    const MagYawCorrectionConfig cfg = makeMagYawCorrectionConfig();
+    const MagYawCorrectionOutput& y = g_lastMagYawCorrection;
+    const MagYawCorrectionStats& s = g_magYawCorrection.stats();
+
+    out.println("# MAG YAW CORRECTION DRY-RUN");
+
+    out.print("enabled=");
+    out.println(cfg.enabled ? "yes" : "no");
+
+    out.print("dry_run=");
+    out.println(cfg.dryRun ? "yes" : "no");
+
+    out.print("gate_open=");
+    out.println(y.gateOpen ? "yes" : "no");
+
+    out.print("would_apply=");
+    out.println(y.wouldApply ? "yes" : "no");
+
+    out.print("reject_flags=0x");
+    out.println(y.rejectFlags, HEX);
+
+    out.print("mag_seq=");
+    out.println(y.magSeq);
+
+    out.print("mag_t_us=");
+    out.println(static_cast<unsigned long>(y.magTimestampUs));
+
+    out.print("mag_age_ms=");
+    out.println(y.magAgeMs);
+
+    out.print("dt_ms=");
+    out.println(y.dtMs);
+
+    out.print("horizontal_norm=");
+    out.println(y.horizontalNorm, 6);
+
+    out.print("error_to_ref_deg=");
+    out.println(y.errorDeg, 6);
+
+    out.print("error_to_ref_rad=");
+    out.println(y.errorRad, 9);
+
+    out.print("correction_rate_deg_s=");
+    out.println(y.correctionRateDegS, 6);
+
+    out.print("correction_rate_rad_s=");
+    out.println(y.correctionRateRadS, 9);
+
+    out.print("correction_step_deg=");
+    out.println(y.correctionStepDeg, 6);
+
+    out.print("correction_step_rad=");
+    out.println(y.correctionStepRad, 9);
+
+    out.println("# CONFIG");
+
+    out.print("max_innovation_deg=");
+    out.println(cfg.maxInnovationDeg, 3);
+
+    out.print("min_horizontal_norm=");
+    out.println(cfg.minHorizontalNorm, 3);
+
+    out.print("max_mag_age_ms=");
+    out.println(cfg.maxMagAgeMs);
+
+    out.print("time_constant_s=");
+    out.println(cfg.timeConstantS, 3);
+
+    out.print("max_rate_deg_s=");
+    out.println(cfg.maxCorrectionRateDegS, 3);
+
+    out.print("max_step_deg=");
+    out.println(cfg.maxCorrectionStepDeg, 3);
+
+    out.println("# STATS");
+
+    out.print("updates=");
+    out.println(s.updates);
+
+    out.print("gate_open_count=");
+    out.println(s.gateOpenCount);
+
+    out.print("gate_closed_count=");
+    out.println(s.gateClosedCount);
+
+    out.print("would_apply_count=");
+    out.println(s.wouldApplyCount);
+
+    out.print("last_abs_error_deg=");
+    out.println(s.lastAbsErrorDeg, 6);
+
+    out.print("mean_abs_error_deg=");
+    out.println(s.meanAbsErrorDeg(), 6);
+
+    out.print("max_abs_error_deg=");
+    out.println(s.maxAbsErrorDeg, 6);
+
+    out.print("reject_disabled=");
+    out.println(s.rejectDisabled);
+
+    out.print("reject_no_reference=");
+    out.println(s.rejectNoReference);
+
+    out.print("reject_heading_invalid=");
+    out.println(s.rejectHeadingInvalid);
+
+    out.print("reject_mag_not_trusted=");
+    out.println(s.rejectMagNotTrusted);
+
+    out.print("reject_mag_stale=");
+    out.println(s.rejectMagStale);
+
+    out.print("reject_horizontal_small=");
+    out.println(s.rejectHorizontalSmall);
+
+    out.print("reject_innovation_too_large=");
+    out.println(s.rejectInnovationTooLarge);
+
+    out.print("reject_dt_invalid=");
+    out.println(s.rejectDtInvalid);
+
+    out.print("reject_nonfinite=");
+    out.println(s.rejectNonfinite);
+}
+
+static void resetMagYawCorrectionHook(void* user) {
+    (void)user;
+    g_magYawCorrection.reset();
+    g_lastMagYawCorrection = MagYawCorrectionOutput{};
+}
+
 static bool setMagHeadingReferenceHook(void* user) {
     (void)user;
 
@@ -1088,7 +1262,8 @@ static void printRuntimeStatus(Stream& out, void* user) {
     out.print("stream_mode="); out.println(g_streamState.mode == TrackerStreamMode::Off ? "off" :
                                         g_streamState.mode == TrackerStreamMode::Raw ? "raw" :
                                         g_streamState.mode == TrackerStreamMode::Scaled ? "scaled" :
-                                        g_streamState.mode == TrackerStreamMode::Quat ? "quat" : "debug");
+                                        g_streamState.mode == TrackerStreamMode::Quat ? "quat" :
+                                        g_streamState.mode == TrackerStreamMode::Heartbeat ? "heartbeat" : "debug");
     out.print("stream_rate_hz="); out.println(g_streamState.rateHz);
 
     const Vec3 e = g_ahrs6dof.eulerDeg();
@@ -1136,6 +1311,16 @@ static void printRuntimeHealth(Stream& out, void* user) {
     out.print("mag_heading_ref_valid="); out.println(g_magHeadingRef.valid ? "yes" : "no");
     out.print("mag_heading_error_to_ref_deg=");
     out.println(g_magHeadingRef.valid && g_lastMagHeading.valid ? magHeadingErrorToReferenceDeg(g_lastMagHeading) : 0.0f, 6);
+    out.print("mag_yaw_gate_open=");
+    out.println(g_lastMagYawCorrection.gateOpen ? "yes" : "no");
+    out.print("mag_yaw_reject_flags=0x");
+    out.println(g_lastMagYawCorrection.rejectFlags, HEX);
+    out.print("mag_yaw_error_deg=");
+    out.println(g_lastMagYawCorrection.errorDeg, 6);
+    out.print("mag_yaw_correction_rate_deg_s=");
+    out.println(g_lastMagYawCorrection.correctionRateDegS, 6);
+    out.print("mag_yaw_correction_step_deg=");
+    out.println(g_lastMagYawCorrection.correctionStepDeg, 6);
 
     out.print("unknown_words="); out.println(fs.unknownWords);
     out.print("overrun_events="); out.println(fs.overrunEvents);
@@ -1243,6 +1428,10 @@ static void setupCommandInterface() {
     g_cmdCtx.setMagHeadingReferenceUser = nullptr;
     g_cmdCtx.clearMagHeadingReference = clearMagHeadingReferenceHook;
     g_cmdCtx.clearMagHeadingReferenceUser = nullptr;
+    g_cmdCtx.printMagYawCorrectionStatus = printMagYawCorrectionStatus;
+    g_cmdCtx.printMagYawCorrectionStatusUser = nullptr;
+    g_cmdCtx.resetMagYawCorrection = resetMagYawCorrectionHook;
+    g_cmdCtx.resetMagYawCorrectionUser = nullptr;
     g_cmdCtx.startMagCalibration = startMagCalibrationHook;
     g_cmdCtx.startMagCalibrationUser = nullptr;
     g_cmdCtx.stopMagCalibration = stopMagCalibrationHook;
@@ -1412,6 +1601,8 @@ static void emitStreamIfNeeded(const Lsm6dsv::RawSample& raw,
         case TrackerStreamMode::Quat:
             trackerSerialEmitQuat(Serial, raw.t_us, g_ahrs6dof.quaternionPositiveW(), quality.flags, quality.overallConfidence);
             break;
+        case TrackerStreamMode::Heartbeat:
+            break;
         case TrackerStreamMode::Debug:
             Serial.print("DBG,t="); Serial.print(static_cast<unsigned long>(raw.t_us));
             Serial.print(",euler=");
@@ -1492,7 +1683,7 @@ static void processFifoRuntime() {
 }
 
 static void maybePrintBootHeartbeat() {
-    if (g_streamState.mode != TrackerStreamMode::Off) return;
+    if (g_streamState.mode != TrackerStreamMode::Heartbeat) return;
     if (g_staticTest.active) return;
 
     const uint32_t nowMs = millis();
@@ -1504,7 +1695,7 @@ static void maybePrintBootHeartbeat() {
     Serial.print(" fifo_int="); Serial.print(g_fifoIntCount);
     Serial.print(" temp_c="); Serial.print(g_latestTempC, 2);
     Serial.print(" mag="); Serial.print(g_magState.samples);
-    Serial.print(" stream="); Serial.println("off");
+    Serial.print(" stream="); Serial.println("heartbeat");
 }
 
 // ============================================================

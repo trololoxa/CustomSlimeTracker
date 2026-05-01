@@ -148,6 +148,7 @@ enum class TrackerStreamMode : uint8_t {
     Scaled,
     Quat,
     Debug,
+    Heartbeat
 };
 
 struct TrackerSerialStreamState {
@@ -220,6 +221,12 @@ struct TrackerSerialCommandContext {
 
     void (*clearMagHeadingReference)(void* user) = nullptr;
     void* clearMagHeadingReferenceUser = nullptr;
+
+    void (*printMagYawCorrectionStatus)(Stream& out, void* user) = nullptr;
+    void* printMagYawCorrectionStatusUser = nullptr;
+
+    void (*resetMagYawCorrection)(void* user) = nullptr;
+    void* resetMagYawCorrectionUser = nullptr;
 
     bool (*startMagCalibration)(void* user) = nullptr;
     void* startMagCalibrationUser = nullptr;
@@ -357,6 +364,7 @@ private:
         out.println("mag id | qmcstatus | regs | hub | fifo");
         out.println("mag processed | trust");
         out.println("mag heading | heading ref | heading status | heading clear");
+        out.println("mag yaw status | yaw reset");
         out.println("mag axis print | set <bodyX> <bodyY> <bodyZ> [save]");
         out.println("mag axis identity [save] | clear [save]");
         out.println("mag axis examples: set +x +y +z | set +y -x +z");
@@ -372,7 +380,7 @@ private:
         out.println();
         out.println("ahrs status | reset");
         out.println();
-        out.println("stream off | raw | scaled | quat | debug");
+        out.println("stream off | heartbeat | raw | scaled | quat | debug");
         out.println("stream rate <hz>");
         out.println();
         out.println("test static <seconds>");
@@ -897,6 +905,30 @@ private:
             }
 
             tracker_serial_detail::printErr(out, "unknown mag heading command");
+            return;
+        }
+
+        if (is(argv[1], "yaw")) {
+            if (argc < 3 || is(argv[2], "status")) {
+                if (ctx.printMagYawCorrectionStatus) {
+                    ctx.printMagYawCorrectionStatus(out, ctx.printMagYawCorrectionStatusUser);
+                } else {
+                    tracker_serial_detail::printErr(out, "mag yaw status hook not available");
+                }
+                return;
+            }
+
+            if (is(argv[2], "reset")) {
+                if (ctx.resetMagYawCorrection) {
+                    ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
+                    tracker_serial_detail::printOk(out, "mag yaw correction dry-run stats reset");
+                } else {
+                    tracker_serial_detail::printErr(out, "mag yaw reset hook not available");
+                }
+                return;
+            }
+
+            tracker_serial_detail::printErr(out, "unknown mag yaw command");
             return;
         }
 
@@ -1463,7 +1495,7 @@ private:
 
         TrackerStreamMode mode;
         if (!parseStreamMode(argv[1], mode)) {
-            tracker_serial_detail::printErr(out, "unknown stream mode; use off|raw|scaled|quat|debug");
+            tracker_serial_detail::printErr(out, "unknown stream mode; use off|heartbeat|raw|scaled|quat|debug");
             return;
         }
         ctx.streamState->mode = mode;
@@ -1792,21 +1824,23 @@ private:
     }
 
     static bool parseStreamMode(const char* s, TrackerStreamMode& mode) {
-        if (is(s, "off"))    { mode = TrackerStreamMode::Off; return true; }
-        if (is(s, "raw"))    { mode = TrackerStreamMode::Raw; return true; }
-        if (is(s, "scaled")) { mode = TrackerStreamMode::Scaled; return true; }
-        if (is(s, "quat"))   { mode = TrackerStreamMode::Quat; return true; }
-        if (is(s, "debug"))  { mode = TrackerStreamMode::Debug; return true; }
+        if (is(s, "off"))       { mode = TrackerStreamMode::Off; return true; }
+        if (is(s, "heartbeat")) { mode = TrackerStreamMode::Heartbeat; return true; }
+        if (is(s, "raw"))       { mode = TrackerStreamMode::Raw; return true; }
+        if (is(s, "scaled"))    { mode = TrackerStreamMode::Scaled; return true; }
+        if (is(s, "quat"))      { mode = TrackerStreamMode::Quat; return true; }
+        if (is(s, "debug"))     { mode = TrackerStreamMode::Debug; return true; }
         return false;
     }
 
     static const char* streamModeName(TrackerStreamMode mode) {
         switch (mode) {
-            case TrackerStreamMode::Off:    return "off";
-            case TrackerStreamMode::Raw:    return "raw";
-            case TrackerStreamMode::Scaled: return "scaled";
-            case TrackerStreamMode::Quat:   return "quat";
-            case TrackerStreamMode::Debug:  return "debug";
+            case TrackerStreamMode::Off:        return "off";
+            case TrackerStreamMode::Heartbeat:  return "heartbeat";
+            case TrackerStreamMode::Raw:        return "raw";
+            case TrackerStreamMode::Scaled:     return "scaled";
+            case TrackerStreamMode::Quat:       return "quat";
+            case TrackerStreamMode::Debug:      return "debug";
         }
         return "unknown";
     }
@@ -1903,7 +1937,7 @@ private:
 // ============================================================
 
 inline bool trackerSerialStreamDue(TrackerSerialStreamState& st, uint32_t nowUs) {
-    if (st.mode == TrackerStreamMode::Off) return false;
+    if (st.mode == TrackerStreamMode::Off || st.mode == TrackerStreamMode::Heartbeat) return false;
     const uint32_t period = st.periodUs();
     if (st.lastEmitUs == 0 || nowUs - st.lastEmitUs >= period) {
         st.lastEmitUs = nowUs;
