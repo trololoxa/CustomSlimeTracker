@@ -130,6 +130,8 @@ static MagHeadingSample g_lastMagHeading;
 static MagYawCorrectionController g_magYawCorrection;
 static MagYawCorrectionOutput g_lastMagYawCorrection;
 
+static bool g_magYawCorrectionApplyEnabled = false;
+
 struct MagHeadingReferenceState {
     bool valid = false;
     float worldYawRad = 0.0f;
@@ -617,11 +619,20 @@ static float magHeadingErrorToReferenceDeg(const MagHeadingSample& heading) {
 static MagYawCorrectionConfig makeMagYawCorrectionConfig() {
     MagYawCorrectionConfig c;
     c.enabled = true;
-    c.dryRun = true;
+    c.applyEnabled = g_magYawCorrectionApplyEnabled;
 
     c.maxInnovationDeg = 25.0f;
-    c.minHorizontalNorm = 220.0f;
     c.maxMagAgeMs = 250;
+
+    c.horizontalNormGood = 260.0f;
+    c.horizontalNormBad = 200.0f;
+
+    c.gyroNormGoodDps = 8.0f;
+    c.gyroNormBadDps = 35.0f;
+
+    c.accelTrustGood = 0.70f;
+    c.accelTrustBad = 0.20f;
+    c.requireAccelTrusted = true;
 
     c.timeConstantS = 30.0f;
     c.maxCorrectionRateDegS = 2.0f;
@@ -663,6 +674,31 @@ static float magRawNorm(const Lsm6dsvFifoReader::MagRawSample& m) {
                      static_cast<float>(m.z) * static_cast<float>(m.z));
 }
 
+static bool applyMagYawCorrectionToAhrs(const MagYawCorrectionOutput& yaw) {
+    if (!yaw.applyAllowed || yaw.correctionStepRad == 0.0f) {
+        return false;
+    }
+
+    if (!tracker::isFinite(yaw.correctionStepRad)) {
+        return false;
+    }
+
+    const Vec3 worldAxis = g_ahrs6dof.config().worldUp.normalized();
+    if (!worldAxis.isFinite() || worldAxis.normSq() < MATH_EPSILON) {
+        return false;
+    }
+
+    const Vec3 correctionWorldRad = worldAxis * yaw.correctionStepRad;
+    const Quat corrected = applyWorldCorrection(g_ahrs6dof.quaternion(), correctionWorldRad).withPositiveW();
+
+    if (!corrected.isFinite()) {
+        return false;
+    }
+
+    g_ahrs6dof.setQuaternion(corrected);
+    return true;
+}
+
 static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
     g_magState.samples++;
     g_magState.queuePops++;
@@ -698,8 +734,18 @@ static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
     yawIn.magRejectFlagsForUse = MagRuntimeProcessor::rejectFlagsForUse(g_lastMagProcessed, magCfg, nowMs);
     yawIn.nowMs = nowMs;
 
+    const Ahrs6DofStats& ahrsStats = g_ahrs6dof.stats();
+
+    yawIn.gyroNormDps = ahrsStats.lastGyroRadS.norm() * MATH_RAD_TO_DEG;
+    yawIn.accelTrust = ahrsStats.lastAccelGate.trust;
+
     MagYawCorrectionOutput yawOut;
     g_magYawCorrection.update(yawIn, makeMagYawCorrectionConfig(), yawOut);
+
+    if (applyMagYawCorrectionToAhrs(yawOut)) {
+        yawOut.applied = true;
+    }
+
     g_lastMagYawCorrection = yawOut;
 
     const uint32_t nacks = lsmFifo.stats().sensorHubNackWords;
@@ -926,19 +972,22 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
     const MagYawCorrectionOutput& y = g_lastMagYawCorrection;
     const MagYawCorrectionStats& s = g_magYawCorrection.stats();
 
-    out.println("# MAG YAW CORRECTION DRY-RUN");
+    out.println("# MAG YAW CORRECTION");
 
     out.print("enabled=");
     out.println(cfg.enabled ? "yes" : "no");
 
-    out.print("dry_run=");
-    out.println(cfg.dryRun ? "yes" : "no");
+    out.print("apply_enabled=");
+    out.println(cfg.applyEnabled ? "yes" : "no");
 
     out.print("gate_open=");
     out.println(y.gateOpen ? "yes" : "no");
 
-    out.print("would_apply=");
-    out.println(y.wouldApply ? "yes" : "no");
+    out.print("apply_allowed=");
+    out.println(y.applyAllowed ? "yes" : "no");
+
+    out.print("applied_last=");
+    out.println(y.applied ? "yes" : "no");
 
     out.print("reject_flags=0x");
     out.println(y.rejectFlags, HEX);
@@ -957,6 +1006,24 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
 
     out.print("horizontal_norm=");
     out.println(y.horizontalNorm, 6);
+
+    out.print("horizontal_trust=");
+    out.println(y.horizontalTrust, 6);
+
+    out.print("gyro_norm_dps=");
+    out.println(y.gyroNormDps, 6);
+
+    out.print("gyro_trust=");
+    out.println(y.gyroTrust, 6);
+
+    out.print("accel_trust=");
+    out.println(y.accelTrust, 6);
+
+    out.print("accel_gate_trust=");
+    out.println(y.accelGateTrust, 6);
+
+    out.print("combined_trust=");
+    out.println(y.combinedTrust, 6);
 
     out.print("error_to_ref_deg=");
     out.println(y.errorDeg, 6);
@@ -981,8 +1048,20 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
     out.print("max_innovation_deg=");
     out.println(cfg.maxInnovationDeg, 3);
 
-    out.print("min_horizontal_norm=");
-    out.println(cfg.minHorizontalNorm, 3);
+    out.print("horizontal_norm_bad_good=");
+    out.print(cfg.horizontalNormBad, 3);
+    out.print(',');
+    out.println(cfg.horizontalNormGood, 3);
+
+    out.print("gyro_norm_good_bad_dps=");
+    out.print(cfg.gyroNormGoodDps, 3);
+    out.print(',');
+    out.println(cfg.gyroNormBadDps, 3);
+
+    out.print("accel_trust_bad_good=");
+    out.print(cfg.accelTrustBad, 3);
+    out.print(',');
+    out.println(cfg.accelTrustGood, 3);
 
     out.print("max_mag_age_ms=");
     out.println(cfg.maxMagAgeMs);
@@ -1007,8 +1086,11 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
     out.print("gate_closed_count=");
     out.println(s.gateClosedCount);
 
-    out.print("would_apply_count=");
-    out.println(s.wouldApplyCount);
+    out.print("apply_allowed_count=");
+    out.println(s.applyAllowedCount);
+
+    out.print("applied_count=");
+    out.println(s.appliedCount);
 
     out.print("last_abs_error_deg=");
     out.println(s.lastAbsErrorDeg, 6);
@@ -1019,8 +1101,17 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
     out.print("max_abs_error_deg=");
     out.println(s.maxAbsErrorDeg, 6);
 
+    out.print("last_correction_step_deg=");
+    out.println(s.lastCorrectionStepDeg, 6);
+
+    out.print("max_abs_correction_step_deg=");
+    out.println(s.maxAbsCorrectionStepDeg, 6);
+
     out.print("reject_disabled=");
     out.println(s.rejectDisabled);
+
+    out.print("reject_apply_disabled=");
+    out.println(s.rejectApplyDisabled);
 
     out.print("reject_no_reference=");
     out.println(s.rejectNoReference);
@@ -1034,11 +1125,17 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
     out.print("reject_mag_stale=");
     out.println(s.rejectMagStale);
 
-    out.print("reject_horizontal_small=");
-    out.println(s.rejectHorizontalSmall);
+    out.print("reject_horizontal_bad=");
+    out.println(s.rejectHorizontalBad);
 
     out.print("reject_innovation_too_large=");
     out.println(s.rejectInnovationTooLarge);
+
+    out.print("reject_gyro_moving=");
+    out.println(s.rejectGyroMoving);
+
+    out.print("reject_accel_not_trusted=");
+    out.println(s.rejectAccelNotTrusted);
 
     out.print("reject_dt_invalid=");
     out.println(s.rejectDtInvalid);
@@ -1051,6 +1148,19 @@ static void resetMagYawCorrectionHook(void* user) {
     (void)user;
     g_magYawCorrection.reset();
     g_lastMagYawCorrection = MagYawCorrectionOutput{};
+}
+
+static bool setMagYawCorrectionApplyEnabledHook(bool enabled, void* user) {
+    (void)user;
+    g_magYawCorrectionApplyEnabled = enabled;
+
+    // Reset controller timing/stats when changing mode.
+    g_magYawCorrection.reset();
+    g_lastMagYawCorrection = MagYawCorrectionOutput{};
+
+    Serial.print("# OK mag yaw correction apply=");
+    Serial.println(enabled ? "enabled" : "disabled");
+    return true;
 }
 
 static bool setMagHeadingReferenceHook(void* user) {
@@ -1322,6 +1432,11 @@ static void printRuntimeHealth(Stream& out, void* user) {
     out.print("mag_yaw_correction_step_deg=");
     out.println(g_lastMagYawCorrection.correctionStepDeg, 6);
 
+    out.print("mag_yaw_apply_enabled=");
+    out.println(g_magYawCorrectionApplyEnabled ? "yes" : "no");
+    out.print("mag_yaw_applied_last=");
+    out.println(g_lastMagYawCorrection.applied ? "yes" : "no");
+
     out.print("unknown_words="); out.println(fs.unknownWords);
     out.print("overrun_events="); out.println(fs.overrunEvents);
     out.print("full_events="); out.println(fs.fullEvents);
@@ -1432,6 +1547,8 @@ static void setupCommandInterface() {
     g_cmdCtx.printMagYawCorrectionStatusUser = nullptr;
     g_cmdCtx.resetMagYawCorrection = resetMagYawCorrectionHook;
     g_cmdCtx.resetMagYawCorrectionUser = nullptr;
+    g_cmdCtx.setMagYawCorrectionApplyEnabled = setMagYawCorrectionApplyEnabledHook;
+    g_cmdCtx.setMagYawCorrectionApplyEnabledUser = nullptr;
     g_cmdCtx.startMagCalibration = startMagCalibrationHook;
     g_cmdCtx.startMagCalibrationUser = nullptr;
     g_cmdCtx.stopMagCalibration = stopMagCalibrationHook;

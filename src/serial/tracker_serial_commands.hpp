@@ -228,6 +228,9 @@ struct TrackerSerialCommandContext {
     void (*resetMagYawCorrection)(void* user) = nullptr;
     void* resetMagYawCorrectionUser = nullptr;
 
+    bool (*setMagYawCorrectionApplyEnabled)(bool enabled, void* user) = nullptr;
+    void* setMagYawCorrectionApplyEnabledUser = nullptr;
+
     bool (*startMagCalibration)(void* user) = nullptr;
     void* startMagCalibrationUser = nullptr;
 
@@ -364,7 +367,7 @@ private:
         out.println("mag id | qmcstatus | regs | hub | fifo");
         out.println("mag processed | trust");
         out.println("mag heading | heading ref | heading status | heading clear");
-        out.println("mag yaw status | yaw reset");
+        out.println("mag yaw status | yaw reset | yaw enable | yaw disable");
         out.println("mag axis print | set <bodyX> <bodyY> <bodyZ> [save]");
         out.println("mag axis identity [save] | clear [save]");
         out.println("mag axis examples: set +x +y +z | set +y -x +z");
@@ -921,9 +924,31 @@ private:
             if (is(argv[2], "reset")) {
                 if (ctx.resetMagYawCorrection) {
                     ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
-                    tracker_serial_detail::printOk(out, "mag yaw correction dry-run stats reset");
+                    tracker_serial_detail::printOk(out, "mag yaw correction stats reset");
                 } else {
                     tracker_serial_detail::printErr(out, "mag yaw reset hook not available");
+                }
+                return;
+            }
+
+            if (is(argv[2], "enable")) {
+                if (ctx.setMagYawCorrectionApplyEnabled) {
+                    const bool ok = ctx.setMagYawCorrectionApplyEnabled(true, ctx.setMagYawCorrectionApplyEnabledUser);
+                    if (ok) tracker_serial_detail::printOk(out, "mag yaw correction enabled");
+                    else tracker_serial_detail::printErr(out, "mag yaw correction enable failed");
+                } else {
+                    tracker_serial_detail::printErr(out, "mag yaw enable hook not available");
+                }
+                return;
+            }
+
+            if (is(argv[2], "disable")) {
+                if (ctx.setMagYawCorrectionApplyEnabled) {
+                    const bool ok = ctx.setMagYawCorrectionApplyEnabled(false, ctx.setMagYawCorrectionApplyEnabledUser);
+                    if (ok) tracker_serial_detail::printOk(out, "mag yaw correction disabled");
+                    else tracker_serial_detail::printErr(out, "mag yaw correction disable failed");
+                } else {
+                    tracker_serial_detail::printErr(out, "mag yaw disable hook not available");
                 }
                 return;
             }
