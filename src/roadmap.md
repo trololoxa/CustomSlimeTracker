@@ -33,10 +33,10 @@ Phase 4 — Calibration: Active?
   body/recenter offset
 
 Phase 5 — Magnetometer: Currently active
-  QMC6309 driver
-  raw mag logs
-  hard/soft iron calibration
-  mag -> imu axis alignment
+  QMC6309 driver +
+  raw mag logs +
+  hard/soft iron calibration +
+  mag -> imu axis alignment +-
   magTrust/gating
   slow yaw correction
 

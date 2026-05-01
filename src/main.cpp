@@ -9,6 +9,7 @@
 #include "sensor/qmc6309.hpp"
 #include "sensor/mag_calibration.hpp"
 #include "sensor/mag_runtime.hpp"
+#include "sensor/mag_heading.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
@@ -121,6 +122,31 @@ static MagRuntimeState g_magState;
 static MagCalibrationCollector g_magCalCollector;
 static MagRuntimeProcessor g_magProcessor;
 static MagProcessedSample g_lastMagProcessed;
+
+static MagHeadingEstimator g_magHeading;
+static MagHeadingSample g_lastMagHeading;
+
+struct MagHeadingReferenceState {
+    bool valid = false;
+    float worldYawRad = 0.0f;
+    uint32_t setMs = 0;
+    uint32_t magSeq = 0;
+    uint64_t magTimestampUs = 0;
+
+    void clear() {
+        valid = false;
+        worldYawRad = 0.0f;
+        setMs = 0;
+        magSeq = 0;
+        magTimestampUs = 0;
+    }
+
+    float worldYawDeg() const {
+        return worldYawRad * MATH_RAD_TO_DEG;
+    }
+};
+
+static MagHeadingReferenceState g_magHeadingRef;
 
 // ============================================================
 // Small stats for command-driven static test
@@ -468,6 +494,11 @@ static void resetMagRuntimeCounters() {
 
     g_magProcessor.reset();
     g_lastMagProcessed = MagProcessedSample{};
+
+    g_magHeading.reset();
+    g_lastMagHeading = MagHeadingSample{};
+
+    g_magHeadingRef.clear();
 }
 
 static bool reconfigureFifoForCurrentMagConfig(uint64_t keepTimestampUs) {
@@ -565,6 +596,24 @@ static bool setMagRuntimeEnabledHook(bool enabled, bool persist, void* user) {
     return true;
 }
 
+static float magHeadingErrorToReferenceRad(const MagHeadingSample& heading) {
+    if (!g_magHeadingRef.valid || !heading.valid) {
+        return 0.0f;
+    }
+    return wrapPi(heading.magneticNorthWorldYawRad - g_magHeadingRef.worldYawRad);
+}
+
+static float magHeadingErrorToReferenceDeg(const MagHeadingSample& heading) {
+    return magHeadingErrorToReferenceRad(heading) * MATH_RAD_TO_DEG;
+}
+
+static MagHeadingConfig makeMagHeadingConfig() {
+    MagHeadingConfig c;
+    c.requireTrustedMag = true;
+    c.minHorizontalNorm = 1.0e-6f;
+    return c;
+}
+
 static MagRuntimeConfig makeMagRuntimeConfig() {
     MagRuntimeConfig c;
     c.enabled = g_config.data.magCal.driverEnabled;
@@ -602,6 +651,16 @@ static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
     MagProcessedSample processed;
     g_magProcessor.process(mag, makeMagRuntimeConfig(), millis(), processed);
     g_lastMagProcessed = processed;
+
+    MagHeadingSample heading;
+    g_magHeading.update(
+        g_lastMagProcessed,
+        g_ahrs6dof.quaternionPositiveW(),
+        makeMagHeadingConfig(),
+        millis(),
+        heading
+    );
+    g_lastMagHeading = heading;
 
     const uint32_t nacks = lsmFifo.stats().sensorHubNackWords;
     if (nacks != g_magState.nacksSeen) {
@@ -709,6 +768,145 @@ static void printMagProcessedStatus(Stream& out, void* user) {
     out.print("reject_norm_too_high="); out.println(s.rejectedNormTooHigh);
     out.print("reject_stale_process_time="); out.println(s.rejectedStale);
     out.print("reject_zero_norm="); out.println(s.rejectedZeroNorm);
+}
+
+static void printMagHeadingStatus(Stream& out, void* user) {
+    (void)user;
+
+    const MagHeadingSample& h = g_lastMagHeading;
+    const MagHeadingStats& s = g_magHeading.stats();
+
+    const float errorToRefRad = magHeadingErrorToReferenceRad(h);
+    const float errorToRefDeg = errorToRefRad * MATH_RAD_TO_DEG;
+
+    out.println("# MAG HEADING");
+
+    out.print("heading_valid=");
+    out.println(h.valid ? "yes" : "no");
+
+    out.print("heading_reject_flags=0x");
+    out.println(h.rejectFlags, HEX);
+
+    out.print("mag_seq=");
+    out.println(h.magSeq);
+
+    out.print("mag_t_us=");
+    out.println(static_cast<unsigned long>(h.magTimestampUs));
+
+    out.print("mag_received_ms=");
+    out.println(h.magReceivedMs);
+
+    out.print("mag_body=");
+    out.print(h.magBody.x, 6); out.print(',');
+    out.print(h.magBody.y, 6); out.print(',');
+    out.println(h.magBody.z, 6);
+
+    out.print("mag_world=");
+    out.print(h.magWorld.x, 6); out.print(',');
+    out.print(h.magWorld.y, 6); out.print(',');
+    out.println(h.magWorld.z, 6);
+
+    out.print("mag_world_horizontal=");
+    out.print(h.magWorldHorizontal.x, 6); out.print(',');
+    out.print(h.magWorldHorizontal.y, 6); out.print(',');
+    out.println(h.magWorldHorizontal.z, 6);
+
+    out.print("norms_body_world_horizontal=");
+    out.print(h.magBodyNorm, 6); out.print(',');
+    out.print(h.magWorldNorm, 6); out.print(',');
+    out.println(h.horizontalNorm, 6);
+
+    out.print("magnetic_field_world_yaw_deg=");
+    out.println(h.magneticFieldWorldYawDeg, 6);
+
+    out.print("magnetic_north_world_yaw_deg=");
+    out.println(h.magneticNorthWorldYawDeg, 6);
+
+    out.print("ahrs_yaw_deg=");
+    out.println(h.currentAhrsYawDeg, 6);
+
+    // Old diagnostic, kept for visibility but do not use it for yaw correction.
+    out.print("north_minus_ahrs_yaw_deg=");
+    out.println(h.yawInnovationDeg, 6);
+
+    out.println("# MAG HEADING REFERENCE");
+
+    out.print("mag_ref_valid=");
+    out.println(g_magHeadingRef.valid ? "yes" : "no");
+
+    out.print("mag_ref_world_yaw_deg=");
+    out.println(g_magHeadingRef.valid ? g_magHeadingRef.worldYawDeg() : 0.0f, 6);
+
+    out.print("mag_ref_age_ms=");
+    out.println(g_magHeadingRef.valid ? millis() - g_magHeadingRef.setMs : 0UL);
+
+    out.print("mag_ref_seq=");
+    out.println(g_magHeadingRef.magSeq);
+
+    out.print("mag_error_to_ref_deg=");
+    out.println(g_magHeadingRef.valid && h.valid ? errorToRefDeg : 0.0f, 6);
+
+    out.print("mag_error_to_ref_rad=");
+    out.println(g_magHeadingRef.valid && h.valid ? errorToRefRad : 0.0f, 9);
+
+    out.println("# MAG HEADING STATS");
+
+    out.print("heading_attempts=");
+    out.println(s.attempts);
+
+    out.print("heading_valid_count=");
+    out.println(s.valid);
+
+    out.print("heading_rejected_count=");
+    out.println(s.rejected);
+
+    out.print("reject_mag_invalid=");
+    out.println(s.rejectMagInvalid);
+
+    out.print("reject_mag_not_trusted=");
+    out.println(s.rejectMagNotTrusted);
+
+    out.print("reject_quat_invalid=");
+    out.println(s.rejectQuatInvalid);
+
+    out.print("reject_world_nonfinite=");
+    out.println(s.rejectWorldNonfinite);
+
+    out.print("reject_horizontal_small=");
+    out.println(s.rejectHorizontalSmall);
+
+    out.print("last_valid_age_ms=");
+    out.println(s.lastValidMs == 0 ? 0UL : millis() - s.lastValidMs);
+}
+
+static bool setMagHeadingReferenceHook(void* user) {
+    (void)user;
+
+    if (!g_lastMagHeading.valid) {
+        Serial.println("# ERR cannot set mag heading reference: last heading is invalid");
+        return false;
+    }
+
+    if (!MagRuntimeProcessor::trustedForUse(g_lastMagProcessed, makeMagRuntimeConfig(), millis())) {
+        Serial.println("# ERR cannot set mag heading reference: last mag is not trusted");
+        return false;
+    }
+
+    g_magHeadingRef.valid = true;
+    g_magHeadingRef.worldYawRad = g_lastMagHeading.magneticNorthWorldYawRad;
+    g_magHeadingRef.setMs = millis();
+    g_magHeadingRef.magSeq = g_lastMagHeading.magSeq;
+    g_magHeadingRef.magTimestampUs = g_lastMagHeading.magTimestampUs;
+
+    Serial.print("# OK mag heading ref world_yaw_deg=");
+    Serial.println(g_magHeadingRef.worldYawDeg(), 6);
+
+    return true;
+}
+
+static void clearMagHeadingReferenceHook(void* user) {
+    (void)user;
+    g_magHeadingRef.clear();
 }
 
 static void printMagCalibrationStatus(Stream& out, void* user) {
@@ -930,6 +1128,15 @@ static void printRuntimeHealth(Stream& out, void* user) {
     out.print("mag_last_body_norm="); out.println(g_lastMagProcessed.bodyNorm, 6);
     out.print("mag_last_trusted="); out.println(g_lastMagProcessed.trusted ? "yes" : "no");
 
+    const auto& hs = g_magHeading.stats();
+    out.print("mag_heading_valid="); out.println(g_lastMagHeading.valid ? "yes" : "no");
+    out.print("mag_heading_reject_flags=0x"); out.println(g_lastMagHeading.rejectFlags, HEX);
+    out.print("mag_heading_valid_count="); out.println(hs.valid);
+    out.print("mag_heading_north_minus_ahrs_yaw_deg="); out.println(g_lastMagHeading.yawInnovationDeg, 6);
+    out.print("mag_heading_ref_valid="); out.println(g_magHeadingRef.valid ? "yes" : "no");
+    out.print("mag_heading_error_to_ref_deg=");
+    out.println(g_magHeadingRef.valid && g_lastMagHeading.valid ? magHeadingErrorToReferenceDeg(g_lastMagHeading) : 0.0f, 6);
+
     out.print("unknown_words="); out.println(fs.unknownWords);
     out.print("overrun_events="); out.println(fs.overrunEvents);
     out.print("full_events="); out.println(fs.fullEvents);
@@ -1030,6 +1237,12 @@ static void setupCommandInterface() {
     g_cmdCtx.printMagRuntimeStatusUser = nullptr;
     g_cmdCtx.printMagProcessedStatus = printMagProcessedStatus;
     g_cmdCtx.printMagProcessedStatusUser = nullptr;
+    g_cmdCtx.printMagHeadingStatus = printMagHeadingStatus;
+    g_cmdCtx.printMagHeadingStatusUser = nullptr;
+    g_cmdCtx.setMagHeadingReference = setMagHeadingReferenceHook;
+    g_cmdCtx.setMagHeadingReferenceUser = nullptr;
+    g_cmdCtx.clearMagHeadingReference = clearMagHeadingReferenceHook;
+    g_cmdCtx.clearMagHeadingReferenceUser = nullptr;
     g_cmdCtx.startMagCalibration = startMagCalibrationHook;
     g_cmdCtx.startMagCalibrationUser = nullptr;
     g_cmdCtx.stopMagCalibration = stopMagCalibrationHook;

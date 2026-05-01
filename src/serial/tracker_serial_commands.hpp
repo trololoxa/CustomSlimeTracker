@@ -212,6 +212,15 @@ struct TrackerSerialCommandContext {
     void (*printMagProcessedStatus)(Stream& out, void* user) = nullptr;
     void* printMagProcessedStatusUser = nullptr;
 
+    void (*printMagHeadingStatus)(Stream& out, void* user) = nullptr;
+    void* printMagHeadingStatusUser = nullptr;
+
+    bool (*setMagHeadingReference)(void* user) = nullptr;
+    void* setMagHeadingReferenceUser = nullptr;
+
+    void (*clearMagHeadingReference)(void* user) = nullptr;
+    void* clearMagHeadingReferenceUser = nullptr;
+
     bool (*startMagCalibration)(void* user) = nullptr;
     void* startMagCalibrationUser = nullptr;
 
@@ -347,7 +356,10 @@ private:
         out.println("mag status | enable [save] | disable [save]");
         out.println("mag id | qmcstatus | regs | hub | fifo");
         out.println("mag processed | trust");
-        out.println("mag axis print | identity [save] | clear [save]");
+        out.println("mag heading | heading ref | heading status | heading clear");
+        out.println("mag axis print | set <bodyX> <bodyY> <bodyZ> [save]");
+        out.println("mag axis identity [save] | clear [save]");
+        out.println("mag axis examples: set +x +y +z | set +y -x +z");
         out.println("mag cal start | stop | reset | status | print | apply [save]");
         out.println("quality stats | reset");
         out.println();
@@ -566,6 +578,151 @@ private:
         ctx.setMagRuntimeEnabled(true, false, ctx.setMagRuntimeEnabledUser);
     }
 
+    static char magAxisLower(char c) {
+        if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
+        return c;
+    }
+
+    static bool parseMagAxisToken(const char* token, uint8_t& axis, float& sign) {
+        if (token == nullptr || token[0] == '\0') return false;
+
+        sign = 1.0f;
+        uint8_t pos = 0;
+
+        if (token[pos] == '+') {
+            sign = 1.0f;
+            pos++;
+        } else if (token[pos] == '-') {
+            sign = -1.0f;
+            pos++;
+        }
+
+        const char a = magAxisLower(token[pos]);
+        if (a == '\0' || token[pos + 1] != '\0') return false;
+
+        if (a == 'x') {
+            axis = 0;
+            return true;
+        }
+        if (a == 'y') {
+            axis = 1;
+            return true;
+        }
+        if (a == 'z') {
+            axis = 2;
+            return true;
+        }
+
+        return false;
+    }
+
+    static const char* magAxisNameFromIndex(uint8_t axis) {
+        switch (axis) {
+            case 0: return "x";
+            case 1: return "y";
+            case 2: return "z";
+        }
+        return "?";
+    }
+
+    static void printMagAxisToken(Stream& out, const Mat3& m, uint8_t row) {
+        uint8_t nonZeroCount = 0;
+        uint8_t axis = 0;
+        float sign = 1.0f;
+
+        for (uint8_t col = 0; col < 3; ++col) {
+            const float v = m.m[row][col];
+            if (std::fabs(v) > 0.5f) {
+                nonZeroCount++;
+                axis = col;
+                sign = v >= 0.0f ? 1.0f : -1.0f;
+            }
+        }
+
+        if (nonZeroCount != 1) {
+            out.print("?");
+            return;
+        }
+
+        out.print(sign >= 0.0f ? "+" : "-");
+        out.print(magAxisNameFromIndex(axis));
+    }
+
+    static bool makeMagAxisMatrixFromTokens(const char* bodyXToken,
+                                            const char* bodyYToken,
+                                            const char* bodyZToken,
+                                            Mat3& out) {
+        uint8_t axis[3] = {};
+        float sign[3] = {};
+
+        if (!parseMagAxisToken(bodyXToken, axis[0], sign[0])) return false;
+        if (!parseMagAxisToken(bodyYToken, axis[1], sign[1])) return false;
+        if (!parseMagAxisToken(bodyZToken, axis[2], sign[2])) return false;
+
+        // Must be a pure permutation/sign matrix:
+        // body.x, body.y, body.z must use each mag axis exactly once.
+        bool used[3] = {false, false, false};
+        for (uint8_t i = 0; i < 3; ++i) {
+            if (axis[i] > 2) return false;
+            if (used[axis[i]]) return false;
+            used[axis[i]] = true;
+        }
+
+        out = Mat3::zero();
+        for (uint8_t row = 0; row < 3; ++row) {
+            out.m[row][axis[row]] = sign[row];
+        }
+
+        return true;
+    }
+
+    static bool saveConfigIfRequested(TrackerSerialCommandContext& ctx, bool saveRequested) {
+        if (!saveRequested) return true;
+        if (!ctx.config || !ctx.configStore) return false;
+        ctx.config->updateCrc();
+        return ctx.configStore->save(*ctx.config);
+    }
+
+    static void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
+        const Mat3& m = config.data.magCal.magToImu;
+
+        out.println("# MAG AXIS");
+        out.print("axisAlignmentValid=");
+        out.println(config.data.magCal.axisAlignmentValid ? "yes" : "no");
+
+        out.print("mapping=");
+        printMagAxisToken(out, m, 0);
+        out.print(' ');
+        printMagAxisToken(out, m, 1);
+        out.print(' ');
+        printMagAxisToken(out, m, 2);
+        out.println();
+
+        out.print("meaning=");
+        out.print("body.x=");
+        printMagAxisToken(out, m, 0);
+        out.print(" body.y=");
+        printMagAxisToken(out, m, 1);
+        out.print(" body.z=");
+        printMagAxisToken(out, m, 2);
+        out.println();
+
+        out.print("magToImu_row0=");
+        out.print(m.m[0][0], 6); out.print(',');
+        out.print(m.m[0][1], 6); out.print(',');
+        out.println(m.m[0][2], 6);
+
+        out.print("magToImu_row1=");
+        out.print(m.m[1][0], 6); out.print(',');
+        out.print(m.m[1][1], 6); out.print(',');
+        out.println(m.m[1][2], 6);
+
+        out.print("magToImu_row2=");
+        out.print(m.m[2][0], 6); out.print(',');
+        out.print(m.m[2][1], 6); out.print(',');
+        out.println(m.m[2][2], 6);
+    }
+
     static void cmdMag(TrackerSerialCommandContext& ctx, int argc, char** argv) {
         Stream& out = stream(ctx);
 
@@ -696,6 +853,53 @@ private:
             return;
         }
 
+        if (is(argv[1], "heading")) {
+            if (argc < 3 || is(argv[2], "status") || is(argv[2], "print")) {
+                if (ctx.printMagHeadingStatus) {
+                    ctx.printMagHeadingStatus(out, ctx.printMagHeadingStatusUser);
+                } else {
+                    tracker_serial_detail::printErr(out, "mag heading hook not available");
+                }
+                return;
+            }
+
+            if (is(argv[2], "ref")) {
+                if (!ctx.setMagHeadingReference) {
+                    tracker_serial_detail::printErr(out, "mag heading ref hook not available");
+                    return;
+                }
+
+                const bool ok = ctx.setMagHeadingReference(ctx.setMagHeadingReferenceUser);
+                if (ok) {
+                    tracker_serial_detail::printOk(out, "mag heading reference set");
+                    if (ctx.printMagHeadingStatus) {
+                        ctx.printMagHeadingStatus(out, ctx.printMagHeadingStatusUser);
+                    }
+                } else {
+                    tracker_serial_detail::printErr(out, "mag heading reference set failed");
+                }
+                return;
+            }
+
+            if (is(argv[2], "clear")) {
+                if (!ctx.clearMagHeadingReference) {
+                    tracker_serial_detail::printErr(out, "mag heading clear hook not available");
+                    return;
+                }
+
+                ctx.clearMagHeadingReference(ctx.clearMagHeadingReferenceUser);
+                tracker_serial_detail::printOk(out, "mag heading reference cleared");
+
+                if (ctx.printMagHeadingStatus) {
+                    ctx.printMagHeadingStatus(out, ctx.printMagHeadingStatusUser);
+                }
+                return;
+            }
+
+            tracker_serial_detail::printErr(out, "unknown mag heading command");
+            return;
+        }
+
         if (is(argv[1], "axis")) {
             if (!ctx.config) {
                 tracker_serial_detail::printErr(out, "config not available");
@@ -703,63 +907,77 @@ private:
             }
 
             if (argc < 3 || is(argv[2], "print")) {
-                out.println("# MAG AXIS");
-                out.print("axisAlignmentValid=");
-                out.println(ctx.config->data.magCal.axisAlignmentValid ? "yes" : "no");
+                printMagAxisMatrix(out, *ctx.config);
+                return;
+            }
 
-                const Mat3& m = ctx.config->data.magCal.magToImu;
-                out.print("magToImu_row0=");
-                out.print(m.m[0][0], 6); out.print(',');
-                out.print(m.m[0][1], 6); out.print(',');
-                out.println(m.m[0][2], 6);
+            if (is(argv[2], "set")) {
+                if (argc < 6) {
+                    tracker_serial_detail::printErr(out, "usage: mag axis set <bodyX> <bodyY> <bodyZ> [save]");
+                    out.println("# examples:");
+                    out.println("#   mag axis set +x +y +z");
+                    out.println("#   mag axis set +y -x +z");
+                    out.println("#   mag axis set -y +x +z save");
+                    return;
+                }
 
-                out.print("magToImu_row1=");
-                out.print(m.m[1][0], 6); out.print(',');
-                out.print(m.m[1][1], 6); out.print(',');
-                out.println(m.m[1][2], 6);
+                Mat3 m = Mat3::identity();
+                if (!makeMagAxisMatrixFromTokens(argv[3], argv[4], argv[5], m)) {
+                    tracker_serial_detail::printErr(out, "invalid axis mapping; use each of x/y/z exactly once, with optional +/-");
+                    out.println("# valid examples:");
+                    out.println("#   mag axis set +x +y +z");
+                    out.println("#   mag axis set +y -x +z");
+                    out.println("#   mag axis set -x +z +y");
+                    return;
+                }
 
-                out.print("magToImu_row2=");
-                out.print(m.m[2][0], 6); out.print(',');
-                out.print(m.m[2][1], 6); out.print(',');
-                out.println(m.m[2][2], 6);
+                const bool saveRequested = argc >= 7 && is(argv[6], "save");
+
+                ctx.config->data.magCal.magToImu = m;
+                ctx.config->data.magCal.axisAlignmentValid = true;
+                ctx.config->updateCrc();
+
+                if (!saveConfigIfRequested(ctx, saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag axis save failed");
+                    return;
+                }
+
+                tracker_serial_detail::printOk(out, saveRequested ? "mag axis mapping saved" : "mag axis mapping set in RAM");
+                printMagAxisMatrix(out, *ctx.config);
                 return;
             }
 
             if (is(argv[2], "identity")) {
                 const bool saveRequested = argc >= 4 && is(argv[3], "save");
+
                 ctx.config->data.magCal.magToImu = Mat3::identity();
                 ctx.config->data.magCal.axisAlignmentValid = true;
                 ctx.config->updateCrc();
 
-                bool ok = true;
-                if (saveRequested) {
-                    ok = ctx.configStore && ctx.configStore->save(*ctx.config);
+                if (!saveConfigIfRequested(ctx, saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag axis identity save failed");
+                    return;
                 }
 
-                if (ok) {
-                    tracker_serial_detail::printOk(out, saveRequested ? "mag axis identity saved" : "mag axis identity set in RAM");
-                } else {
-                    tracker_serial_detail::printErr(out, "mag axis identity save failed");
-                }
+                tracker_serial_detail::printOk(out, saveRequested ? "mag axis identity saved" : "mag axis identity set in RAM");
+                printMagAxisMatrix(out, *ctx.config);
                 return;
             }
 
             if (is(argv[2], "clear")) {
                 const bool saveRequested = argc >= 4 && is(argv[3], "save");
+
                 ctx.config->data.magCal.magToImu = Mat3::identity();
                 ctx.config->data.magCal.axisAlignmentValid = false;
                 ctx.config->updateCrc();
 
-                bool ok = true;
-                if (saveRequested) {
-                    ok = ctx.configStore && ctx.configStore->save(*ctx.config);
+                if (!saveConfigIfRequested(ctx, saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag axis clear save failed");
+                    return;
                 }
 
-                if (ok) {
-                    tracker_serial_detail::printOk(out, saveRequested ? "mag axis cleared and saved" : "mag axis cleared in RAM");
-                } else {
-                    tracker_serial_detail::printErr(out, "mag axis clear save failed");
-                }
+                tracker_serial_detail::printOk(out, saveRequested ? "mag axis cleared and saved" : "mag axis cleared in RAM");
+                printMagAxisMatrix(out, *ctx.config);
                 return;
             }
 
