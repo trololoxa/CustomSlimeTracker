@@ -245,6 +245,38 @@ struct StaticRuntimeTest {
     uint32_t fifoHwTsAtStart = 0;
     uint32_t fifoFbTsAtStart = 0;
 
+    // Magnetometer / yaw correction snapshots.
+    bool magEnabledAtStart = false;
+    bool magYawApplyEnabledAtStart = false;
+    bool magRefValidAtStart = false;
+
+    float magErrorStartDeg = 0.0f;
+    float magErrorEndDeg = 0.0f;
+    float magErrorAbsMaxDeg = 0.0f;
+    double magErrorAbsSumDeg = 0.0;
+    uint32_t magErrorSamples = 0;
+
+    uint32_t magTrustedAtStart = 0;
+    uint32_t magRejectedAtStart = 0;
+
+    uint32_t magHeadingValidAtStart = 0;
+    uint32_t magHeadingRejectedAtStart = 0;
+
+    uint32_t magYawUpdatesAtStart = 0;
+    uint32_t magYawGateOpenAtStart = 0;
+    uint32_t magYawGateClosedAtStart = 0;
+    uint32_t magYawApplyAllowedAtStart = 0;
+    uint32_t magYawAppliedAtStart = 0;
+
+    uint32_t magYawRejectNoReferenceAtStart = 0;
+    uint32_t magYawRejectHeadingInvalidAtStart = 0;
+    uint32_t magYawRejectMagNotTrustedAtStart = 0;
+    uint32_t magYawRejectMagStaleAtStart = 0;
+    uint32_t magYawRejectHorizontalBadAtStart = 0;
+    uint32_t magYawRejectInnovationTooLargeAtStart = 0;
+    uint32_t magYawRejectGyroMovingAtStart = 0;
+    uint32_t magYawRejectAccelNotTrustedAtStart = 0;
+
     ScalarStats dtUs;
     ScalarStats accelNormG;
     ScalarStats accelTrust;
@@ -276,6 +308,38 @@ struct StaticRuntimeTest {
         fifoUnknownAtStart = 0;
         fifoHwTsAtStart = 0;
         fifoFbTsAtStart = 0;
+
+        magEnabledAtStart = false;
+        magYawApplyEnabledAtStart = false;
+        magRefValidAtStart = false;
+
+        magErrorStartDeg = 0.0f;
+        magErrorEndDeg = 0.0f;
+        magErrorAbsMaxDeg = 0.0f;
+        magErrorAbsSumDeg = 0.0;
+        magErrorSamples = 0;
+
+        magTrustedAtStart = 0;
+        magRejectedAtStart = 0;
+
+        magHeadingValidAtStart = 0;
+        magHeadingRejectedAtStart = 0;
+
+        magYawUpdatesAtStart = 0;
+        magYawGateOpenAtStart = 0;
+        magYawGateClosedAtStart = 0;
+        magYawApplyAllowedAtStart = 0;
+        magYawAppliedAtStart = 0;
+
+        magYawRejectNoReferenceAtStart = 0;
+        magYawRejectHeadingInvalidAtStart = 0;
+        magYawRejectMagNotTrustedAtStart = 0;
+        magYawRejectMagStaleAtStart = 0;
+        magYawRejectHorizontalBadAtStart = 0;
+        magYawRejectInnovationTooLargeAtStart = 0;
+        magYawRejectGyroMovingAtStart = 0;
+        magYawRejectAccelNotTrustedAtStart = 0;
+
         dtUs.reset();
         accelNormG.reset();
         accelTrust.reset();
@@ -744,9 +808,25 @@ static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
 
     if (applyMagYawCorrectionToAhrs(yawOut)) {
         yawOut.applied = true;
+        g_magYawCorrection.markApplied(yawOut.correctionStepDeg);
     }
 
     g_lastMagYawCorrection = yawOut;
+
+    if (g_staticTest.active && g_magHeadingRef.valid && g_lastMagHeading.valid) {
+        const float e = magHeadingErrorToReferenceDeg(g_lastMagHeading);
+        if (std::isfinite(e)) {
+            g_staticTest.magErrorEndDeg = e;
+
+            const float ae = std::fabs(e);
+            g_staticTest.magErrorAbsSumDeg += static_cast<double>(ae);
+            g_staticTest.magErrorSamples++;
+
+            if (g_staticTest.magErrorSamples == 1 || ae > g_staticTest.magErrorAbsMaxDeg) {
+                g_staticTest.magErrorAbsMaxDeg = ae;
+            }
+        }
+    }
 
     const uint32_t nacks = lsmFifo.stats().sensorHubNackWords;
     if (nacks != g_magState.nacksSeen) {
@@ -1472,6 +1552,41 @@ static bool startStaticTestHook(uint32_t durationMs, void* user) {
     g_staticTest.fifoHwTsAtStart = fs.hwTimestampAssigned;
     g_staticTest.fifoFbTsAtStart = fs.fallbackTimestampAssigned;
 
+    const auto& ms = g_magProcessor.stats();
+    const auto& hs = g_magHeading.stats();
+    const auto& ys = g_magYawCorrection.stats();
+
+    g_staticTest.magEnabledAtStart = g_config.data.magCal.driverEnabled;
+    g_staticTest.magYawApplyEnabledAtStart = g_magYawCorrectionApplyEnabled;
+    g_staticTest.magRefValidAtStart = g_magHeadingRef.valid;
+
+    g_staticTest.magErrorStartDeg =
+        (g_magHeadingRef.valid && g_lastMagHeading.valid)
+            ? magHeadingErrorToReferenceDeg(g_lastMagHeading)
+            : 0.0f;
+    g_staticTest.magErrorEndDeg = g_staticTest.magErrorStartDeg;
+
+    g_staticTest.magTrustedAtStart = ms.trustedSamples;
+    g_staticTest.magRejectedAtStart = ms.rejectedSamples;
+
+    g_staticTest.magHeadingValidAtStart = hs.valid;
+    g_staticTest.magHeadingRejectedAtStart = hs.rejected;
+
+    g_staticTest.magYawUpdatesAtStart = ys.updates;
+    g_staticTest.magYawGateOpenAtStart = ys.gateOpenCount;
+    g_staticTest.magYawGateClosedAtStart = ys.gateClosedCount;
+    g_staticTest.magYawApplyAllowedAtStart = ys.applyAllowedCount;
+    g_staticTest.magYawAppliedAtStart = ys.appliedCount;
+
+    g_staticTest.magYawRejectNoReferenceAtStart = ys.rejectNoReference;
+    g_staticTest.magYawRejectHeadingInvalidAtStart = ys.rejectHeadingInvalid;
+    g_staticTest.magYawRejectMagNotTrustedAtStart = ys.rejectMagNotTrusted;
+    g_staticTest.magYawRejectMagStaleAtStart = ys.rejectMagStale;
+    g_staticTest.magYawRejectHorizontalBadAtStart = ys.rejectHorizontalBad;
+    g_staticTest.magYawRejectInnovationTooLargeAtStart = ys.rejectInnovationTooLarge;
+    g_staticTest.magYawRejectGyroMovingAtStart = ys.rejectGyroMoving;
+    g_staticTest.magYawRejectAccelNotTrustedAtStart = ys.rejectAccelNotTrusted;
+
     Serial.println("# STATIC TEST STARTED");
     Serial.print("# duration_s="); Serial.println(durationMs / 1000UL);
     Serial.println("# stop with: test stop");
@@ -1693,6 +1808,108 @@ static void finishStaticTest() {
     Serial.print("euler_delta_deg: roll="); Serial.print(dRoll, 3);
     Serial.print(" pitch="); Serial.print(dPitch, 3);
     Serial.print(" yaw="); Serial.println(dYaw, 3);
+
+    Serial.println("------------------------------------------------------------------------------");
+    Serial.println("MAG / YAW CORRECTION");
+
+    const auto& ms = g_magProcessor.stats();
+    const auto& hs = g_magHeading.stats();
+    const auto& ys = g_magYawCorrection.stats();
+
+    const float magErrorAbsMeanDeg =
+        g_staticTest.magErrorSamples > 0
+            ? static_cast<float>(g_staticTest.magErrorAbsSumDeg / static_cast<double>(g_staticTest.magErrorSamples))
+            : 0.0f;
+
+    Serial.print("mag_enabled_start: ");
+    Serial.println(g_staticTest.magEnabledAtStart ? "yes" : "no");
+
+    Serial.print("mag_yaw_apply_enabled_start: ");
+    Serial.println(g_staticTest.magYawApplyEnabledAtStart ? "yes" : "no");
+
+    Serial.print("mag_ref_valid_start: ");
+    Serial.println(g_staticTest.magRefValidAtStart ? "yes" : "no");
+
+    Serial.print("mag_ref_valid_end: ");
+    Serial.println(g_magHeadingRef.valid ? "yes" : "no");
+
+    Serial.print("mag_error_start_deg: ");
+    Serial.println(g_staticTest.magErrorStartDeg, 6);
+
+    Serial.print("mag_error_end_deg: ");
+    Serial.println(g_staticTest.magErrorEndDeg, 6);
+
+    Serial.print("mag_error_delta_deg: ");
+    Serial.println(g_staticTest.magErrorEndDeg - g_staticTest.magErrorStartDeg, 6);
+
+    Serial.print("mag_error_abs_mean_deg: ");
+    Serial.println(magErrorAbsMeanDeg, 6);
+
+    Serial.print("mag_error_abs_max_deg: ");
+    Serial.println(g_staticTest.magErrorAbsMaxDeg, 6);
+
+    Serial.print("mag_error_samples: ");
+    Serial.println(g_staticTest.magErrorSamples);
+
+    Serial.print("mag_trusted_delta: ");
+    Serial.println(ms.trustedSamples - g_staticTest.magTrustedAtStart);
+
+    Serial.print("mag_rejected_delta: ");
+    Serial.println(ms.rejectedSamples - g_staticTest.magRejectedAtStart);
+
+    Serial.print("mag_heading_valid_delta: ");
+    Serial.println(hs.valid - g_staticTest.magHeadingValidAtStart);
+
+    Serial.print("mag_heading_rejected_delta: ");
+    Serial.println(hs.rejected - g_staticTest.magHeadingRejectedAtStart);
+
+    Serial.print("mag_yaw_updates_delta: ");
+    Serial.println(ys.updates - g_staticTest.magYawUpdatesAtStart);
+
+    Serial.print("mag_yaw_gate_open_delta: ");
+    Serial.println(ys.gateOpenCount - g_staticTest.magYawGateOpenAtStart);
+
+    Serial.print("mag_yaw_gate_closed_delta: ");
+    Serial.println(ys.gateClosedCount - g_staticTest.magYawGateClosedAtStart);
+
+    Serial.print("mag_yaw_apply_allowed_delta: ");
+    Serial.println(ys.applyAllowedCount - g_staticTest.magYawApplyAllowedAtStart);
+
+    Serial.print("mag_yaw_applied_delta: ");
+    Serial.println(ys.appliedCount - g_staticTest.magYawAppliedAtStart);
+
+    Serial.print("mag_yaw_last_error_deg: ");
+    Serial.println(g_lastMagYawCorrection.errorDeg, 6);
+
+    Serial.print("mag_yaw_last_correction_rate_deg_s: ");
+    Serial.println(g_lastMagYawCorrection.correctionRateDegS, 6);
+
+    Serial.print("mag_yaw_last_correction_step_deg: ");
+    Serial.println(g_lastMagYawCorrection.correctionStepDeg, 6);
+
+    Serial.print("mag_yaw_reject_no_reference_delta: ");
+    Serial.println(ys.rejectNoReference - g_staticTest.magYawRejectNoReferenceAtStart);
+
+    Serial.print("mag_yaw_reject_heading_invalid_delta: ");
+    Serial.println(ys.rejectHeadingInvalid - g_staticTest.magYawRejectHeadingInvalidAtStart);
+
+    Serial.print("mag_yaw_reject_mag_not_trusted_delta: ");
+    Serial.println(ys.rejectMagNotTrusted - g_staticTest.magYawRejectMagNotTrustedAtStart);
+
+    Serial.print("mag_yaw_reject_mag_stale_delta: ");
+    Serial.println(ys.rejectMagStale - g_staticTest.magYawRejectMagStaleAtStart);
+
+    Serial.print("mag_yaw_reject_horizontal_bad_delta: ");
+    Serial.println(ys.rejectHorizontalBad - g_staticTest.magYawRejectHorizontalBadAtStart);
+
+    Serial.print("mag_yaw_reject_innovation_too_large_delta: ");
+    Serial.println(ys.rejectInnovationTooLarge - g_staticTest.magYawRejectInnovationTooLargeAtStart);
+
+    Serial.print("mag_yaw_reject_gyro_moving_delta: ");
+    Serial.println(ys.rejectGyroMoving - g_staticTest.magYawRejectGyroMovingAtStart);
+
+    Serial.print("mag_yaw_reject_accel_not_trusted_delta: ");
+    Serial.println(ys.rejectAccelNotTrusted - g_staticTest.magYawRejectAccelNotTrustedAtStart);
     Serial.println("==============================================================================");
     Serial.println("STATIC TEST DONE");
     Serial.println("==============================================================================");

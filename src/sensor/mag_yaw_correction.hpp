@@ -170,6 +170,12 @@ public:
     const MagYawCorrectionOutput& last() const { return last_; }
     const MagYawCorrectionStats& stats() const { return stats_; }
 
+    void markApplied(float correctionStepDeg) {
+        stats_.appliedCount++;
+        stats_.lastCorrectionStepDeg = correctionStepDeg;
+        last_.applied = true;
+    }
+
     bool update(const MagYawCorrectionInput& in,
                 const MagYawCorrectionConfig& cfg,
                 MagYawCorrectionOutput& out) {
