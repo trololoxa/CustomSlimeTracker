@@ -37,6 +37,12 @@ public:
     static constexpr uint8_t TAG_TIMESTAMP   = 0x04;
     static constexpr uint8_t TAG_CFG_CHANGE  = 0x05;
 
+    // External sensor hub FIFO tags. QMC6309 arrives here when SLV0 is
+    // configured with BATCH_EXT_SENS_0_EN=1. TAG_SENSORHUB_NACK indicates
+    // that the sensor hub saw a NACK during an auxiliary I2C transaction.
+    static constexpr uint8_t TAG_SENSORHUB_SLAVE0 = 0x0E;
+    static constexpr uint8_t TAG_SENSORHUB_NACK   = 0x19;
+
     static constexpr uint16_t FIFO_FLAG_SOURCE_FIFO       = 1u << 8;
     static constexpr uint16_t FIFO_FLAG_STATUS_WTM        = 1u << 9;
     static constexpr uint16_t FIFO_FLAG_STATUS_OVR        = 1u << 10;
@@ -101,6 +107,17 @@ public:
 
         // If 0, computed from ODR + INTERNAL_FREQ_FINE. Override only for debug.
         float samplePeriodUsOverride = 0.0f;
+
+        // Parser support for external sensor hub slave 0 data. This does not
+        // enable the LSM sensor hub by itself; Qmc6309::armHubFifoRead() does
+        // that. This only tells the FIFO parser not to count tag 0x0E as
+        // unknown and to queue it as MagRawSample.
+        bool enableSensorHubSlave0 = false;
+
+        // Used only for approximate mag timestamps. LSM6DSV timestamp tags are
+        // attached to FIFO timing, not directly to the external sensor word.
+        // For SHUB_ODR=60 Hz use 16666.666f. If 0, drainTimestampUs is used.
+        float sensorHubSlave0PeriodUs = 0.0f;
     };
 
     struct Status {
@@ -123,6 +140,25 @@ public:
         int16_t z = 0;
     };
 
+    struct MagRawSample {
+        uint64_t t_us = 0;
+        int16_t x = 0;
+        int16_t y = 0;
+        int16_t z = 0;
+        uint8_t rawTag = 0;
+        uint8_t tagCounter = 0;
+        uint16_t flags = 0;
+        uint32_t seq = 0;
+    };
+
+    enum MagFlags : uint16_t {
+        MAG_FLAG_NONE = 0,
+        MAG_FLAG_FROM_SENSORHUB_SLAVE0 = 1u << 0,
+        MAG_FLAG_TIMESTAMP_FALLBACK = 1u << 1,
+        MAG_FLAG_QUEUE_OVERFLOW = 1u << 2,
+        MAG_FLAG_RAW_SATURATED = 1u << 3,
+    };
+
     struct DrainStats {
         uint32_t drainCalls = 0;
         uint32_t fifoWordsRead = 0;
@@ -134,6 +170,23 @@ public:
         uint32_t cfgChangeWords = 0;
         uint32_t emptyWords = 0;
         uint32_t unknownWords = 0;
+
+        uint32_t sensorHubSlave0Words = 0;
+        uint32_t sensorHubNackWords = 0;
+        uint32_t magSamplesProduced = 0;
+        uint32_t magQueueOverflow = 0;
+        uint32_t magTagCounterJumps = 0;
+        uint32_t magRawSaturationCount = 0;
+        uint64_t lastMagTimestampUs = 0;
+        uint32_t lastMagDtUs = 0;
+        uint32_t minMagDtUs = 0;
+        uint32_t maxMagDtUs = 0;
+        double sumMagDtUs = 0.0;
+        uint32_t magDtCount = 0;
+        int16_t lastMagX = 0;
+        int16_t lastMagY = 0;
+        int16_t lastMagZ = 0;
+        float lastMagRawNorm = 0.0f;
 
         uint32_t overrunEvents = 0;
         uint32_t fullEvents = 0;
@@ -243,6 +296,25 @@ public:
     float timestampTickUs() const { return stats_.timestampTickUs; }
     const DrainStats& stats() const { return stats_; }
 
+    bool hasMagSamples() const { return magCount_ > 0; }
+
+    bool popMagSample(MagRawSample& out) {
+        if (magCount_ == 0) return false;
+        out = magSamples_[magHead_];
+        magHead_ = (magHead_ + 1) % MAG_SAMPLE_CAP;
+        magCount_--;
+        return true;
+    }
+
+    size_t popMagSamples(MagRawSample* out, size_t capacity) {
+        if (out == nullptr || capacity == 0) return 0;
+        size_t n = 0;
+        while (n < capacity && popMagSample(out[n])) {
+            n++;
+        }
+        return n;
+    }
+
     void resetTimestampReconstruction(uint64_t lastTimestampUs = 0) {
         stats_.lastAssignedTimestampUs = lastTimestampUs;
         stats_.lastHwTimestampUs = 0;
@@ -347,6 +419,20 @@ public:
                     stats_.cfgChangeWords++;
                     break;
 
+                case TAG_SENSORHUB_SLAVE0:
+                    if (cfg_.enableSensorHubSlave0) {
+                        stats_.sensorHubSlave0Words++;
+                        parseSensorHubSlave0Word(w, drainTimestampUs);
+                    } else {
+                        stats_.unknownWords++;
+                        pendingFlags_ |= FIFO_FLAG_UNKNOWN_TAG;
+                    }
+                    break;
+
+                case TAG_SENSORHUB_NACK:
+                    stats_.sensorHubNackWords++;
+                    break;
+
                 case TAG_EMPTY:
                     stats_.emptyWords++;
                     break;
@@ -406,6 +492,7 @@ private:
     static constexpr size_t TIMESTAMP_QUEUE_CAP = 64;
     static constexpr size_t WAITING_SAMPLE_CAP = 96;
     static constexpr size_t COMPLETED_SAMPLE_CAP = 128;
+    static constexpr size_t MAG_SAMPLE_CAP = 96;
 
     bool configureFifoInterrupts() {
         uint8_t int1 = 0;
@@ -488,29 +575,86 @@ private:
         tsHead_ = tsTail_ = tsCount_ = 0;
         waitingHead_ = waitingTail_ = waitingCount_ = 0;
         completedHead_ = completedTail_ = completedCount_ = 0;
+        magHead_ = magTail_ = magCount_ = 0;
     }
 
     void checkTagCounter(const FifoWord& w) {
-        if (w.tagSensor >= 32 || 
-            w.tagSensor == TAG_TEMPERATURE || 
-            w.tagSensor == TAG_CFG_CHANGE || 
-            w.tagSensor == TAG_EMPTY) return;
-            
-        uint8_t& last = lastTagCounter_[w.tagSensor];
-        if (last != 0xFF) {
-            const uint8_t expected = static_cast<uint8_t>((last + 1u) & 0x03u);
-            if (w.tagCounter != expected) {
-                stats_.tagCounterJumps++;
-                if (w.tagSensor == TAG_GYRO_NC) stats_.gyroTagCounterJumps++;
-                if (w.tagSensor == TAG_ACCEL_NC) stats_.accelTagCounterJumps++;
-            }
-        }
-        last = w.tagCounter;
+    if (w.tagSensor >= 32 ||
+        w.tagSensor == TAG_TEMPERATURE ||
+        w.tagSensor == TAG_CFG_CHANGE ||
+        w.tagSensor == TAG_EMPTY ||
+        w.tagSensor == TAG_SENSORHUB_SLAVE0 ||
+        w.tagSensor == TAG_SENSORHUB_NACK) {
+        return;
     }
+
+    uint8_t& last = lastTagCounter_[w.tagSensor];
+    if (last != 0xFF) {
+        const uint8_t expected = static_cast<uint8_t>((last + 1u) & 0x03u);
+        if (w.tagCounter != expected) {
+            stats_.tagCounterJumps++;
+            if (w.tagSensor == TAG_GYRO_NC) stats_.gyroTagCounterJumps++;
+            if (w.tagSensor == TAG_ACCEL_NC) stats_.accelTagCounterJumps++;
+        }
+    }
+    last = w.tagCounter;
+}
 
     void parseTemperatureWord(const FifoWord& w) {
         stats_.latestTempC = tempRawToC(w.x);
         stats_.latestTempValid = true;
+    }
+
+    void parseSensorHubSlave0Word(const FifoWord& w, uint64_t drainTimestampUs) {
+        MagRawSample m;
+        m.x = w.x;
+        m.y = w.y;
+        m.z = w.z;
+        m.rawTag = w.rawTag;
+        m.tagCounter = w.tagCounter;
+        m.flags = MAG_FLAG_FROM_SENSORHUB_SLAVE0;
+        if (isRawSaturated(m.x) || isRawSaturated(m.y) || isRawSaturated(m.z)) {
+            m.flags |= MAG_FLAG_RAW_SATURATED;
+            stats_.magRawSaturationCount++;
+        }
+
+        const uint64_t periodUs = cfg_.sensorHubSlave0PeriodUs > 0.0f
+            ? static_cast<uint64_t>(cfg_.sensorHubSlave0PeriodUs + 0.5f)
+            : 0;
+
+        if (stats_.lastMagTimestampUs != 0 && periodUs > 0) {
+            m.t_us = stats_.lastMagTimestampUs + periodUs;
+        } else if (stats_.lastAssignedTimestampUs != 0) {
+            m.t_us = stats_.lastAssignedTimestampUs;
+            m.flags |= MAG_FLAG_TIMESTAMP_FALLBACK;
+        } else if (stats_.lastHwTimestampUs != 0) {
+            m.t_us = stats_.lastHwTimestampUs;
+            m.flags |= MAG_FLAG_TIMESTAMP_FALLBACK;
+        } else {
+            m.t_us = drainTimestampUs;
+            m.flags |= MAG_FLAG_TIMESTAMP_FALLBACK;
+        }
+        if (m.t_us == 0) m.t_us = 1;
+
+        if (stats_.lastMagTimestampUs != 0 && m.t_us > stats_.lastMagTimestampUs) {
+            const uint32_t dt = static_cast<uint32_t>(m.t_us - stats_.lastMagTimestampUs);
+            stats_.lastMagDtUs = dt;
+            if (stats_.magDtCount == 0 || dt < stats_.minMagDtUs) stats_.minMagDtUs = dt;
+            if (dt > stats_.maxMagDtUs) stats_.maxMagDtUs = dt;
+            stats_.sumMagDtUs += static_cast<double>(dt);
+            stats_.magDtCount++;
+        }
+
+        stats_.lastMagTimestampUs = m.t_us;
+        stats_.lastMagX = m.x;
+        stats_.lastMagY = m.y;
+        stats_.lastMagZ = m.z;
+        stats_.lastMagRawNorm = std::sqrt(static_cast<float>(m.x) * static_cast<float>(m.x) +
+                                          static_cast<float>(m.y) * static_cast<float>(m.y) +
+                                          static_cast<float>(m.z) * static_cast<float>(m.z));
+        m.seq = stats_.magSamplesProduced + 1;
+
+        pushMagSample(m);
     }
 
     void parseTimestampWord(const FifoWord& w) {
@@ -670,6 +814,21 @@ private:
         return true;
     }
 
+    bool pushMagSample(const MagRawSample& m) {
+        MagRawSample sample = m;
+        if (magCount_ >= MAG_SAMPLE_CAP) {
+            magHead_ = (magHead_ + 1) % MAG_SAMPLE_CAP;
+            magCount_--;
+            stats_.magQueueOverflow++;
+            sample.flags |= MAG_FLAG_QUEUE_OVERFLOW;
+        }
+        magSamples_[magTail_] = sample;
+        magTail_ = (magTail_ + 1) % MAG_SAMPLE_CAP;
+        magCount_++;
+        stats_.magSamplesProduced++;
+        return true;
+    }
+
     bool pushCompleted(const Lsm6dsv::RawSample& s) {
         if (completedCount_ >= COMPLETED_SAMPLE_CAP) {
             // Drop oldest completed sample to preserve newest data and report via fallback/overflow.
@@ -724,6 +883,11 @@ private:
     size_t completedHead_ = 0;
     size_t completedTail_ = 0;
     size_t completedCount_ = 0;
+
+    MagRawSample magSamples_[MAG_SAMPLE_CAP];
+    size_t magHead_ = 0;
+    size_t magTail_ = 0;
+    size_t magCount_ = 0;
 
     DrainStats stats_;
 };

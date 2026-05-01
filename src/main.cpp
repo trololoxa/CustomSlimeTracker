@@ -1,9 +1,14 @@
 #include <Arduino.h>
 #include <SPI.h>
+#include <cmath>
 
 #include "core/math.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
+#include "connection/lsm6dsv_sensorhub.hpp"
+#include "sensor/qmc6309.hpp"
+#include "sensor/mag_calibration.hpp"
+#include "sensor/mag_runtime.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
@@ -48,6 +53,9 @@ static constexpr uint32_t SPI_HZ_DEFAULT = 1000000;
 static constexpr uint8_t SPI_MODE_DEFAULT = SPI_MODE0;
 
 static constexpr size_t FIFO_RAW_BUFFER_CAPACITY = 160;
+static constexpr size_t MAG_RAW_BUFFER_CAPACITY = 48;
+static constexpr float MAG_HUB_ODR_HZ = 60.0f;
+static constexpr float MAG_HUB_PERIOD_US = 1000000.0f / MAG_HUB_ODR_HZ;
 static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN_DEFAULT = 384;
 static constexpr uint8_t MAX_DRAIN_ROUNDS_PER_EVENT_DEFAULT = 6;
 static constexpr uint32_t FIFO_WAIT_TIMEOUT_MS = 1000;
@@ -60,6 +68,8 @@ static constexpr uint32_t HEARTBEAT_PERIOD_MS = 30000;
 ArduinoLsm6dsvSpiTransport lsmBus(SPI, PIN_LSM_CS, SPI_HZ_DEFAULT, SPI_MODE_DEFAULT);
 Lsm6dsv lsm(lsmBus);
 Lsm6dsvFifoReader lsmFifo(lsmBus, lsm);
+Lsm6dsvSensorHub lsmHub(lsmBus);
+Qmc6309 qmc(lsmHub);
 
 TrackerConfig g_config;
 TrackerConfigStore g_configStore;
@@ -77,6 +87,7 @@ FifoCalibrationIo g_calIo;
 FifoAccel6PosCalibrationRunner g_accelCalRunner;
 
 Lsm6dsv::RawSample g_fifoRaw[FIFO_RAW_BUFFER_CAPACITY];
+Lsm6dsvFifoReader::MagRawSample g_magRaw[MAG_RAW_BUFFER_CAPACITY];
 
 volatile uint32_t g_fifoIntCount = 0;
 volatile uint32_t g_fifoLastIrqUs = 0;
@@ -90,6 +101,26 @@ static uint32_t g_runtimeSamples = 0;
 static float g_latestTempC = 25.0f;
 static bool g_configLoadedFromNvs = false;
 static uint32_t g_lastHeartbeatMs = 0;
+
+struct MagRuntimeState {
+    bool hubInitialized = false;
+    bool runtimeEnabled = false;
+    bool fifoArmed = false;
+    bool lastInitOk = false;
+    uint32_t samples = 0;
+    uint32_t queuePops = 0;
+    uint32_t lastSampleMs = 0;
+    uint32_t lastEnableMs = 0;
+    uint32_t enableFailures = 0;
+    uint32_t nacksSeen = 0;
+    Lsm6dsvFifoReader::MagRawSample lastRaw;
+    float lastNormRaw = 0.0f;
+};
+
+static MagRuntimeState g_magState;
+static MagCalibrationCollector g_magCalCollector;
+static MagRuntimeProcessor g_magProcessor;
+static MagProcessedSample g_lastMagProcessed;
 
 // ============================================================
 // Small stats for command-driven static test
@@ -383,6 +414,8 @@ static bool initLsm() {
 
 static bool initFifo() {
     Lsm6dsvFifoReader::Config fifoCfg = g_config.makeFifoConfig();
+    fifoCfg.enableSensorHubSlave0 = g_config.data.magCal.driverEnabled;
+    fifoCfg.sensorHubSlave0PeriodUs = g_config.data.magCal.driverEnabled ? MAG_HUB_PERIOD_US : 0.0f;
 
     if (!lsmFifo.configure(fifoCfg)) {
         Serial.println("# ERR FIFO configure failed");
@@ -398,7 +431,416 @@ static bool initFifo() {
     Serial.print("# fifo_initial_unread_words="); Serial.println(st.unreadWords);
     Serial.print("# timestamp_tick_us="); Serial.println(fs.timestampTickUs, 6);
     Serial.print("# sample_period_us="); Serial.println(fs.samplePeriodUs, 3);
+    Serial.print("# mag_fifo_parser="); Serial.println(fifoCfg.enableSensorHubSlave0 ? "on" : "off");
     Serial.print("# internal_freq_fine="); Serial.println(fs.internalFreqFine);
+    return true;
+}
+
+static bool initSensorHubForMag() {
+    if (g_magState.hubInitialized) return true;
+
+    Lsm6dsvSensorHub::Config hubCfg;
+    hubCfg.resetMasterOnBegin = true;
+    hubCfg.enableInternalShubPullups = true;
+    hubCfg.forceDisablePrimaryI2cI3c = true;
+    hubCfg.transactionOdr = Lsm6dsvSensorHub::ShubOdr::Hz120;
+    hubCfg.transactionTimeoutMs = 150;
+
+    if (!lsmHub.begin(hubCfg)) {
+        Serial.print("# ERR sensor hub init failed error=");
+        Serial.println(lsmHub.lastErrorName());
+        g_magState.hubInitialized = false;
+        return false;
+    }
+
+    g_magState.hubInitialized = true;
+    Serial.println("# OK LSM6DSV sensor hub init for QMC6309");
+    return true;
+}
+
+static void resetMagRuntimeCounters() {
+    g_magState.samples = 0;
+    g_magState.queuePops = 0;
+    g_magState.lastSampleMs = 0;
+    g_magState.nacksSeen = lsmFifo.stats().sensorHubNackWords;
+    g_magState.lastRaw = Lsm6dsvFifoReader::MagRawSample{};
+    g_magState.lastNormRaw = 0.0f;
+
+    g_magProcessor.reset();
+    g_lastMagProcessed = MagProcessedSample{};
+}
+
+static bool reconfigureFifoForCurrentMagConfig(uint64_t keepTimestampUs) {
+    Lsm6dsvFifoReader::Config fifoCfg = g_config.makeFifoConfig();
+    fifoCfg.enableSensorHubSlave0 = g_config.data.magCal.driverEnabled;
+    fifoCfg.sensorHubSlave0PeriodUs = g_config.data.magCal.driverEnabled ? MAG_HUB_PERIOD_US : 0.0f;
+
+    if (!lsmFifo.configure(fifoCfg)) {
+        Serial.println("# ERR FIFO reconfigure for mag failed");
+        return false;
+    }
+
+    lsmFifo.resetTimestampReconstruction(keepTimestampUs);
+    if (g_quality.counters().samples > 0) {
+        g_quality.reset();
+        g_quality.syncFifoStats(lsmFifo.stats());
+    }
+    resetFifoRuntimeCounters();
+    return true;
+}
+
+static bool setMagRuntimeEnabledHook(bool enabled, bool persist, void* user) {
+    (void)user;
+
+    const uint64_t keepTs = lsmFifo.stats().lastAssignedTimestampUs != 0
+        ? lsmFifo.stats().lastAssignedTimestampUs
+        : g_lastSampleTimestampUs;
+
+    if (!enabled) {
+        g_config.data.magCal.driverEnabled = false;
+        g_config.updateCrc();
+        lsmHub.stopMaster();
+        g_magState.runtimeEnabled = false;
+        g_magState.fifoArmed = false;
+        g_magState.lastInitOk = true;
+        reconfigureFifoForCurrentMagConfig(keepTs);
+        resetMagRuntimeCounters();
+
+        if (persist && !g_configStore.save(g_config)) {
+            Serial.print("# ERR mag disable save failed: ");
+            Serial.println(g_configStore.lastErrorName());
+            return false;
+        }
+        return true;
+    }
+
+    g_config.data.magCal.driverEnabled = true;
+    g_config.updateCrc();
+
+    if (!initSensorHubForMag()) {
+        g_magState.lastInitOk = false;
+        g_magState.enableFailures++;
+        return false;
+    }
+
+    if (!qmc.configureNormal100Hz()) {
+        Serial.print("# ERR QMC6309 init100 failed qmcErr=");
+        Serial.print(qmc.lastErrorName());
+        Serial.print(" hubErr=");
+        Serial.println(lsmHub.lastErrorName());
+        g_magState.lastInitOk = false;
+        g_magState.enableFailures++;
+        return false;
+    }
+
+    if (!reconfigureFifoForCurrentMagConfig(keepTs)) {
+        g_magState.lastInitOk = false;
+        g_magState.enableFailures++;
+        return false;
+    }
+
+    if (!qmc.armHubFifoRead(Lsm6dsvSensorHub::ShubOdr::Hz60)) {
+        Serial.print("# ERR QMC6309 arm FIFO failed qmcErr=");
+        Serial.print(qmc.lastErrorName());
+        Serial.print(" hubErr=");
+        Serial.println(lsmHub.lastErrorName());
+        g_magState.lastInitOk = false;
+        g_magState.enableFailures++;
+        return false;
+    }
+
+    g_magState.runtimeEnabled = true;
+    g_magState.fifoArmed = true;
+    g_magState.lastInitOk = true;
+    g_magState.lastEnableMs = millis();
+    resetMagRuntimeCounters();
+
+    if (persist && !g_configStore.save(g_config)) {
+        Serial.print("# ERR mag enable save failed: ");
+        Serial.println(g_configStore.lastErrorName());
+        return false;
+    }
+
+    Serial.println("# OK QMC6309 -> LSM6DSV FIFO enabled: SLV0 0x01..0x06 @60Hz");
+    return true;
+}
+
+static MagRuntimeConfig makeMagRuntimeConfig() {
+    MagRuntimeConfig c;
+    c.enabled = g_config.data.magCal.driverEnabled;
+    c.calibrationValid = g_config.data.magCal.calibrationValid;
+    c.axisAlignmentValid = g_config.data.magCal.axisAlignmentValid;
+
+    c.hardIron = g_config.data.magCal.hardIron;
+    c.softIron = g_config.data.magCal.softIron;
+    c.magToImu = g_config.data.magCal.magToImu;
+
+    c.expectedFieldNorm = g_config.data.magCal.expectedFieldNorm;
+    c.minTrustNorm = g_config.data.magCal.minTrustNorm;
+    c.maxTrustNorm = g_config.data.magCal.maxTrustNorm;
+
+    c.maxSampleAgeMs = 250;
+    c.minUsableNorm = 1.0e-6f;
+    return c;
+}
+
+static float magRawNorm(const Lsm6dsvFifoReader::MagRawSample& m) {
+    return std::sqrt(static_cast<float>(m.x) * static_cast<float>(m.x) +
+                     static_cast<float>(m.y) * static_cast<float>(m.y) +
+                     static_cast<float>(m.z) * static_cast<float>(m.z));
+}
+
+static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
+    g_magState.samples++;
+    g_magState.queuePops++;
+    g_magState.lastSampleMs = millis();
+    g_magState.lastRaw = mag;
+    g_magState.lastNormRaw = magRawNorm(mag);
+
+    g_magCalCollector.push(mag, g_magState.lastNormRaw, millis());
+
+    MagProcessedSample processed;
+    g_magProcessor.process(mag, makeMagRuntimeConfig(), millis(), processed);
+    g_lastMagProcessed = processed;
+
+    const uint32_t nacks = lsmFifo.stats().sensorHubNackWords;
+    if (nacks != g_magState.nacksSeen) {
+        g_magState.nacksSeen = nacks;
+    }
+}
+
+static void printMagRuntimeStatus(Stream& out, void* user) {
+    (void)user;
+    out.print("mag_runtime_enabled="); out.println(g_magState.runtimeEnabled ? "yes" : "no");
+    out.print("mag_hub_initialized="); out.println(g_magState.hubInitialized ? "yes" : "no");
+    out.print("mag_fifo_armed="); out.println(g_magState.fifoArmed ? "yes" : "no");
+    out.print("mag_last_init_ok="); out.println(g_magState.lastInitOk ? "yes" : "no");
+    out.print("mag_enable_failures="); out.println(g_magState.enableFailures);
+    out.print("mag_runtime_samples="); out.println(g_magState.samples);
+    out.print("mag_last_age_ms="); out.println(g_magState.lastSampleMs == 0 ? 0UL : millis() - g_magState.lastSampleMs);
+    out.print("mag_last_t_us="); out.println(static_cast<unsigned long>(g_magState.lastRaw.t_us));
+    out.print("mag_last_xyz=");
+    out.print(g_magState.lastRaw.x); out.print(',');
+    out.print(g_magState.lastRaw.y); out.print(',');
+    out.println(g_magState.lastRaw.z);
+    out.print("mag_last_norm_raw="); out.println(g_magState.lastNormRaw, 3);
+    out.print("mag_last_flags=0x"); out.println(g_magState.lastRaw.flags, HEX);
+    out.print("mag_qmc_error="); out.println(qmc.lastErrorName());
+    out.print("mag_hub_error="); out.println(lsmHub.lastErrorName());
+}
+
+static void printMagProcessedStatus(Stream& out, void* user) {
+    (void)user;
+
+    const MagProcessedSample& m = g_lastMagProcessed;
+    const MagRuntimeStats& s = g_magProcessor.stats();
+    const MagRuntimeConfig cfg = makeMagRuntimeConfig();
+
+    const uint32_t nowMs = millis();
+    const uint32_t ageMs = MagRuntimeProcessor::ageMsForUse(m, nowMs);
+    const uint32_t rejectFlagsNow = MagRuntimeProcessor::rejectFlagsForUse(m, cfg, nowMs);
+    const bool trustedNow = MagRuntimeProcessor::trustedForUse(m, cfg, nowMs);
+
+    out.println("# MAG PROCESSED");
+
+    out.print("processed_valid="); out.println(m.valid ? "yes" : "no");
+    out.print("trusted="); out.println(trustedNow ? "yes" : "no");
+    out.print("reject_flags=0x"); out.println(rejectFlagsNow, HEX);
+    out.print("process_reject_flags=0x"); out.println(m.rejectFlags, HEX);
+    out.print("seq="); out.println(m.seq);
+    out.print("age_ms="); out.println(ageMs);
+    out.print("received_ms="); out.println(m.receivedMs);
+    out.print("t_us="); out.println(static_cast<unsigned long>(m.t_us));
+
+    out.print("raw=");
+    out.print(m.raw.x, 3); out.print(',');
+    out.print(m.raw.y, 3); out.print(',');
+    out.println(m.raw.z, 3);
+
+    out.print("calibrated_mag_frame=");
+    out.print(m.calibratedMagFrame.x, 6); out.print(',');
+    out.print(m.calibratedMagFrame.y, 6); out.print(',');
+    out.println(m.calibratedMagFrame.z, 6);
+
+    out.print("body=");
+    out.print(m.body.x, 6); out.print(',');
+    out.print(m.body.y, 6); out.print(',');
+    out.println(m.body.z, 6);
+
+    out.print("norms_raw_cal_body=");
+    out.print(m.rawNorm, 6); out.print(',');
+    out.print(m.calibratedNorm, 6); out.print(',');
+    out.println(m.bodyNorm, 6);
+
+    out.print("config_cal_valid="); out.println(g_config.data.magCal.calibrationValid ? "yes" : "no");
+    out.print("config_axis_valid="); out.println(g_config.data.magCal.axisAlignmentValid ? "yes" : "no");
+
+    out.print("trust_norm_min_max=");
+    out.print(g_config.data.magCal.minTrustNorm, 6); out.print(',');
+    out.println(g_config.data.magCal.maxTrustNorm, 6);
+
+    out.println("# MAG TRUST STATS");
+    out.print("raw_samples="); out.println(s.rawSamples);
+    out.print("processed_samples="); out.println(s.processedSamples);
+    out.print("trusted_samples="); out.println(s.trustedSamples);
+    out.print("rejected_samples="); out.println(s.rejectedSamples);
+
+    out.print("raw_norm_min_mean_max=");
+    out.print(s.rawNormMin, 6); out.print(',');
+    out.print(s.rawNormMean(), 6); out.print(',');
+    out.println(s.rawNormMax, 6);
+
+    out.print("body_norm_min_mean_max=");
+    out.print(s.bodyNormMin, 6); out.print(',');
+    out.print(s.bodyNormMean(), 6); out.print(',');
+    out.println(s.bodyNormMax, 6);
+
+    out.print("trusted_body_norm_min_mean_max=");
+    out.print(s.trustedBodyNormMin, 6); out.print(',');
+    out.print(s.trustedBodyNormMean(), 6); out.print(',');
+    out.println(s.trustedBodyNormMax, 6);
+
+    out.print("reject_disabled="); out.println(s.rejectedDisabled);
+    out.print("reject_raw_saturated="); out.println(s.rejectedRawSaturated);
+    out.print("reject_raw_nonfinite="); out.println(s.rejectedRawNonfinite);
+    out.print("reject_not_calibrated="); out.println(s.rejectedNotCalibrated);
+    out.print("reject_axis_not_aligned="); out.println(s.rejectedAxisNotAligned);
+    out.print("reject_norm_too_low="); out.println(s.rejectedNormTooLow);
+    out.print("reject_norm_too_high="); out.println(s.rejectedNormTooHigh);
+    out.print("reject_stale_process_time="); out.println(s.rejectedStale);
+    out.print("reject_zero_norm="); out.println(s.rejectedZeroNorm);
+}
+
+static void printMagCalibrationStatus(Stream& out, void* user) {
+    (void)user;
+
+    MagCalibrationResult result;
+    const bool canCompute = g_magCalCollector.compute(result);
+
+    out.println("# MAG CAL");
+    out.print("mag_cal_active="); out.println(g_magCalCollector.active() ? "yes" : "no");
+    out.print("mag_cal_samples="); out.println(g_magCalCollector.samples());
+    out.print("mag_cal_rejected="); out.println(g_magCalCollector.rejected());
+    out.print("mag_cal_saturated="); out.println(g_magCalCollector.saturated());
+    out.print("mag_cal_elapsed_s=");
+    out.println(g_magCalCollector.startMs() == 0 ? 0UL : (millis() - g_magCalCollector.startMs()) / 1000UL);
+    out.print("mag_cal_last_age_ms=");
+    out.println(g_magCalCollector.lastSampleMs() == 0 ? 0UL : millis() - g_magCalCollector.lastSampleMs());
+
+    out.print("min_xyz=");
+    out.print(g_magCalCollector.minX(), 3); out.print(',');
+    out.print(g_magCalCollector.minY(), 3); out.print(',');
+    out.println(g_magCalCollector.minZ(), 3);
+
+    out.print("max_xyz=");
+    out.print(g_magCalCollector.maxX(), 3); out.print(',');
+    out.print(g_magCalCollector.maxY(), 3); out.print(',');
+    out.println(g_magCalCollector.maxZ(), 3);
+
+    out.print("span_xyz=");
+    out.print(g_magCalCollector.spanX(), 3); out.print(',');
+    out.print(g_magCalCollector.spanY(), 3); out.print(',');
+    out.println(g_magCalCollector.spanZ(), 3);
+
+    out.print("mean_xyz=");
+    out.print(g_magCalCollector.meanX(), 3); out.print(',');
+    out.print(g_magCalCollector.meanY(), 3); out.print(',');
+    out.println(g_magCalCollector.meanZ(), 3);
+
+    out.print("norm_min_mean_max=");
+    out.print(g_magCalCollector.normMin(), 3); out.print(',');
+    out.print(g_magCalCollector.normMean(), 3); out.print(',');
+    out.println(g_magCalCollector.normMax(), 3);
+
+    out.print("can_compute=");
+    out.println(canCompute ? "yes" : "no");
+
+    if (canCompute) {
+        out.print("computed_hard_iron=");
+        out.print(result.hardIron.x, 6); out.print(',');
+        out.print(result.hardIron.y, 6); out.print(',');
+        out.println(result.hardIron.z, 6);
+
+        out.print("computed_soft_iron_diag=");
+        out.print(result.softIron.m[0][0], 6); out.print(',');
+        out.print(result.softIron.m[1][1], 6); out.print(',');
+        out.println(result.softIron.m[2][2], 6);
+
+        out.print("computed_expected_norm=");
+        out.println(result.expectedNorm, 6);
+
+        out.print("computed_radius_xyz=");
+        out.print(result.radiusX, 3); out.print(',');
+        out.print(result.radiusY, 3); out.print(',');
+        out.println(result.radiusZ, 3);
+
+        out.print("suggested_trust_norm_min_max=");
+        out.print(result.minTrustNorm, 6); out.print(',');
+        out.println(result.maxTrustNorm, 6);
+    }
+
+    out.println("# Rotate the whole final assembly through all orientations.");
+    out.println("# Use: mag cal apply save");
+}
+
+static bool startMagCalibrationHook(void* user) {
+    (void)user;
+    if (!g_magState.runtimeEnabled || !g_magState.fifoArmed) {
+        return false;
+    }
+    g_magCalCollector.start(millis());
+    return true;
+}
+
+static void stopMagCalibrationHook(void* user) {
+    (void)user;
+    g_magCalCollector.stop();
+}
+
+static void resetMagCalibrationHook(void* user) {
+    (void)user;
+    g_magCalCollector.reset();
+}
+
+static bool applyMagCalibrationHook(bool persist, void* user) {
+    (void)user;
+
+    MagCalibrationResult result;
+    if (!g_magCalCollector.compute(result)) {
+        Serial.println("# ERR mag calibration compute failed");
+        Serial.println("# Need more samples and wider 3-axis rotation coverage");
+        return false;
+    }
+
+    g_config.data.magCal.calibrationValid = true;
+    g_config.data.magCal.hardIron = result.hardIron;
+    g_config.data.magCal.softIron = result.softIron;
+    g_config.data.magCal.expectedFieldNorm = result.expectedNorm;
+    g_config.data.magCal.minTrustNorm = result.minTrustNorm;
+    g_config.data.magCal.maxTrustNorm = result.maxTrustNorm;
+    g_config.updateCrc();
+
+    if (persist) {
+        if (!g_configStore.save(g_config)) {
+            Serial.print("# ERR mag calibration save failed: ");
+            Serial.println(g_configStore.lastErrorName());
+            return false;
+        }
+    }
+
+    Serial.print("# OK mag hardIron=");
+    Serial.print(result.hardIron.x, 6); Serial.print(',');
+    Serial.print(result.hardIron.y, 6); Serial.print(',');
+    Serial.println(result.hardIron.z, 6);
+
+    Serial.print("# OK mag softIronDiag=");
+    Serial.print(result.softIron.m[0][0], 6); Serial.print(',');
+    Serial.print(result.softIron.m[1][1], 6); Serial.print(',');
+    Serial.println(result.softIron.m[2][2], 6);
+
+    Serial.print("# OK mag expectedNorm=");
+    Serial.println(result.expectedNorm, 6);
+
     return true;
 }
 
@@ -439,6 +881,9 @@ static void printRuntimeStatus(Stream& out, void* user) {
     out.print("fifo_status_fallback_events="); out.println(g_fifoStatusFallbackEvents);
     out.print("fifo_wait_timeouts="); out.println(g_fifoWaitTimeouts);
     out.print("latest_temp_c="); out.println(g_latestTempC, 3);
+    out.print("mag_enabled="); out.println(g_config.data.magCal.driverEnabled ? "yes" : "no");
+    out.print("mag_runtime_samples="); out.println(g_magState.samples);
+    out.print("mag_fifo_armed="); out.println(g_magState.fifoArmed ? "yes" : "no");
     out.print("gyro_bias_valid="); out.println(g_imuCal.gyroBiasValid ? "yes" : "no");
     out.print("accel_cal_valid="); out.println(g_imuCal.accelCalValid ? "yes" : "no");
     out.print("quality_recovery_requested="); out.println(g_quality.recoveryRequested() ? "yes" : "no");
@@ -472,6 +917,19 @@ static void printRuntimeHealth(Stream& out, void* user) {
     out.print("accel_words="); out.println(fs.accelWords);
     out.print("timestamp_words="); out.println(fs.timestampWords);
     out.print("temperature_words="); out.println(fs.tempWords);
+    out.print("sensorhub0_words="); out.println(fs.sensorHubSlave0Words);
+    out.print("sensorhub_nack_words="); out.println(fs.sensorHubNackWords);
+    out.print("mag_samples_produced="); out.println(fs.magSamplesProduced);
+    out.print("mag_queue_overflow="); out.println(fs.magQueueOverflow);
+
+    const auto& ms = g_magProcessor.stats();
+    out.print("mag_processed_samples="); out.println(ms.processedSamples);
+    out.print("mag_trusted_samples="); out.println(ms.trustedSamples);
+    out.print("mag_rejected_samples="); out.println(ms.rejectedSamples);
+    out.print("mag_last_reject_flags=0x"); out.println(g_lastMagProcessed.rejectFlags, HEX);
+    out.print("mag_last_body_norm="); out.println(g_lastMagProcessed.bodyNorm, 6);
+    out.print("mag_last_trusted="); out.println(g_lastMagProcessed.trusted ? "yes" : "no");
+
     out.print("unknown_words="); out.println(fs.unknownWords);
     out.print("overrun_events="); out.println(fs.overrunEvents);
     out.print("full_events="); out.println(fs.fullEvents);
@@ -542,6 +1000,8 @@ static void setupCommandInterface() {
     g_cmdCtx.configStore = &g_configStore;
     g_cmdCtx.lsm = &lsm;
     g_cmdCtx.fifo = &lsmFifo;
+    g_cmdCtx.sensorHub = &lsmHub;
+    g_cmdCtx.mag = &qmc;
     g_cmdCtx.imuCal = &g_imuCal;
     g_cmdCtx.gyroTempComp = &g_gyroTempComp;
     g_cmdCtx.quality = &g_quality;
@@ -564,6 +1024,22 @@ static void setupCommandInterface() {
     g_cmdCtx.stopStaticTestUser = nullptr;
     g_cmdCtx.printStaticTestStatus = printStaticTestStatus;
     g_cmdCtx.printStaticTestStatusUser = nullptr;
+    g_cmdCtx.setMagRuntimeEnabled = setMagRuntimeEnabledHook;
+    g_cmdCtx.setMagRuntimeEnabledUser = nullptr;
+    g_cmdCtx.printMagRuntimeStatus = printMagRuntimeStatus;
+    g_cmdCtx.printMagRuntimeStatusUser = nullptr;
+    g_cmdCtx.printMagProcessedStatus = printMagProcessedStatus;
+    g_cmdCtx.printMagProcessedStatusUser = nullptr;
+    g_cmdCtx.startMagCalibration = startMagCalibrationHook;
+    g_cmdCtx.startMagCalibrationUser = nullptr;
+    g_cmdCtx.stopMagCalibration = stopMagCalibrationHook;
+    g_cmdCtx.stopMagCalibrationUser = nullptr;
+    g_cmdCtx.resetMagCalibration = resetMagCalibrationHook;
+    g_cmdCtx.resetMagCalibrationUser = nullptr;
+    g_cmdCtx.applyMagCalibration = applyMagCalibrationHook;
+    g_cmdCtx.applyMagCalibrationUser = nullptr;
+    g_cmdCtx.printMagCalibrationStatus = printMagCalibrationStatus;
+    g_cmdCtx.printMagCalibrationStatusUser = nullptr;
 
     g_cli.begin(g_cmdCtx);
 }
@@ -784,11 +1260,17 @@ static void processFifoRuntime() {
             maxWords
         );
 
+        const size_t magCount = lsmFifo.popMagSamples(g_magRaw, MAG_RAW_BUFFER_CAPACITY);
+        for (size_t i = 0; i < magCount; ++i) {
+            processOneMagRawSample(g_magRaw[i]);
+        }
+
         if (!ok) {
             Serial.println("# ERR FIFO drain failed");
             return;
         }
-        if (count == 0) break;
+
+        if (count == 0 && magCount == 0) break;
 
         for (size_t i = 0; i < count; ++i) {
             processOneRawSample(g_fifoRaw[i]);
@@ -808,6 +1290,7 @@ static void maybePrintBootHeartbeat() {
     Serial.print(" samples="); Serial.print(g_runtimeSamples);
     Serial.print(" fifo_int="); Serial.print(g_fifoIntCount);
     Serial.print(" temp_c="); Serial.print(g_latestTempC, 2);
+    Serial.print(" mag="); Serial.print(g_magState.samples);
     Serial.print(" stream="); Serial.println("off");
 }
 
@@ -853,6 +1336,15 @@ void setup() {
     g_quality.reset();
     g_quality.syncFifoStats(lsmFifo.stats());
     g_ahrs6dof.reset();
+
+    if (g_config.data.magCal.driverEnabled) {
+        Serial.println("# mag enabled in config; starting QMC6309 FIFO stream");
+        if (!setMagRuntimeEnabledHook(true, false, nullptr)) {
+            Serial.println("# WARN mag startup failed; continuing 6DoF without mag");
+            g_config.data.magCal.driverEnabled = false;
+            g_config.updateCrc();
+        }
+    }
 
     Serial.println("# OK INT1 attached: FIFO_WTM/FIFO_OVR/FIFO_FULL, RISING");
     Serial.println("# Type: help");

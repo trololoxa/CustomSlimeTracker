@@ -9,6 +9,8 @@
 #include "core/math.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
+#include "connection/lsm6dsv_sensorhub.hpp"
+#include "sensor/qmc6309.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
@@ -167,6 +169,8 @@ struct TrackerSerialCommandContext {
 
     Lsm6dsv* lsm = nullptr;
     Lsm6dsvFifoReader* fifo = nullptr;
+    Lsm6dsvSensorHub* sensorHub = nullptr;
+    Qmc6309* mag = nullptr;
     ImuCalibration* imuCal = nullptr;
     GyroTempCompensator* gyroTempComp = nullptr;
     ImuQualityMonitor* quality = nullptr;
@@ -198,6 +202,30 @@ struct TrackerSerialCommandContext {
 
     void (*printStaticTestStatus)(Stream& out, void* user) = nullptr;
     void* printStaticTestStatusUser = nullptr;
+
+    bool (*setMagRuntimeEnabled)(bool enabled, bool persist, void* user) = nullptr;
+    void* setMagRuntimeEnabledUser = nullptr;
+
+    void (*printMagRuntimeStatus)(Stream& out, void* user) = nullptr;
+    void* printMagRuntimeStatusUser = nullptr;
+
+    void (*printMagProcessedStatus)(Stream& out, void* user) = nullptr;
+    void* printMagProcessedStatusUser = nullptr;
+
+    bool (*startMagCalibration)(void* user) = nullptr;
+    void* startMagCalibrationUser = nullptr;
+
+    void (*stopMagCalibration)(void* user) = nullptr;
+    void* stopMagCalibrationUser = nullptr;
+
+    void (*resetMagCalibration)(void* user) = nullptr;
+    void* resetMagCalibrationUser = nullptr;
+
+    bool (*applyMagCalibration)(bool persist, void* user) = nullptr;
+    void* applyMagCalibrationUser = nullptr;
+
+    void (*printMagCalibrationStatus)(Stream& out, void* user) = nullptr;
+    void* printMagCalibrationStatusUser = nullptr;
 };
 
 class TrackerCommandDispatcher {
@@ -241,6 +269,11 @@ public:
 
         if (is(argv[0], "config")) {
             cmdConfig(ctx, argc, argv);
+            return;
+        }
+
+        if (is(argv[0], "mag")) {
+            cmdMag(ctx, argc, argv);
             return;
         }
 
@@ -311,6 +344,11 @@ private:
         out.println();
         out.println("imu status | whoami | read");
         out.println("fifo status | stats | reset");
+        out.println("mag status | enable [save] | disable [save]");
+        out.println("mag id | qmcstatus | regs | hub | fifo");
+        out.println("mag processed | trust");
+        out.println("mag axis print | identity [save] | clear [save]");
+        out.println("mag cal start | stop | reset | status | print | apply [save]");
         out.println("quality stats | reset");
         out.println();
         out.println("cal gyro");
@@ -513,6 +551,311 @@ private:
         }
 
         tracker_serial_detail::printErr(out, "unknown imu command");
+    }
+
+    static bool magSaveConfigIfRequested(TrackerSerialCommandContext& ctx, bool saveRequested) {
+        if (!saveRequested) return true;
+        if (!ctx.config || !ctx.configStore) return false;
+        ctx.config->updateCrc();
+        return ctx.configStore->save(*ctx.config);
+    }
+
+    static void rearmMagIfNeeded(TrackerSerialCommandContext& ctx) {
+        if (!ctx.config || !ctx.config->data.magCal.driverEnabled) return;
+        if (!ctx.setMagRuntimeEnabled) return;
+        ctx.setMagRuntimeEnabled(true, false, ctx.setMagRuntimeEnabledUser);
+    }
+
+    static void cmdMag(TrackerSerialCommandContext& ctx, int argc, char** argv) {
+        Stream& out = stream(ctx);
+
+        if (argc < 2 || is(argv[1], "status")) {
+            out.println("# MAG STATUS");
+            if (ctx.config) {
+                out.print("mag_config_enabled="); out.println(ctx.config->data.magCal.driverEnabled ? "yes" : "no");
+                out.print("mag_cal_valid="); out.println(ctx.config->data.magCal.calibrationValid ? "yes" : "no");
+                out.print("mag_axis_valid="); out.println(ctx.config->data.magCal.axisAlignmentValid ? "yes" : "no");
+            }
+            if (ctx.printMagRuntimeStatus) {
+                ctx.printMagRuntimeStatus(out, ctx.printMagRuntimeStatusUser);
+            }
+            if (ctx.fifo) {
+                const auto& fs = ctx.fifo->stats();
+                out.print("sensorhub0_words="); out.println(fs.sensorHubSlave0Words);
+                out.print("sensorhub_nack_words="); out.println(fs.sensorHubNackWords);
+                out.print("mag_samples_produced="); out.println(fs.magSamplesProduced);
+                out.print("mag_last_xyz="); out.print(fs.lastMagX); out.print(','); out.print(fs.lastMagY); out.print(','); out.println(fs.lastMagZ);
+                out.print("mag_last_norm_raw="); out.println(fs.lastMagRawNorm, 3);
+            }
+            return;
+        }
+
+        if (is(argv[1], "enable") || is(argv[1], "on")) {
+            const bool saveRequested = argc >= 3 && is(argv[2], "save");
+            if (ctx.config) {
+                ctx.config->data.magCal.driverEnabled = true;
+                ctx.config->updateCrc();
+            }
+            bool ok = true;
+            if (ctx.setMagRuntimeEnabled) {
+                ok = ctx.setMagRuntimeEnabled(true, saveRequested, ctx.setMagRuntimeEnabledUser);
+            }
+            if (ok && !ctx.setMagRuntimeEnabled) {
+                ok = magSaveConfigIfRequested(ctx, saveRequested);
+            }
+            if (ok) tracker_serial_detail::printOk(out, saveRequested ? "mag enabled and saved" : "mag enabled in RAM");
+            else tracker_serial_detail::printErr(out, "mag enable failed");
+            return;
+        }
+
+        if (is(argv[1], "disable") || is(argv[1], "off")) {
+            const bool saveRequested = argc >= 3 && is(argv[2], "save");
+            if (ctx.config) {
+                ctx.config->data.magCal.driverEnabled = false;
+                ctx.config->updateCrc();
+            }
+            bool ok = true;
+            if (ctx.setMagRuntimeEnabled) {
+                ok = ctx.setMagRuntimeEnabled(false, saveRequested, ctx.setMagRuntimeEnabledUser);
+            }
+            if (ok && !ctx.setMagRuntimeEnabled) {
+                ok = magSaveConfigIfRequested(ctx, saveRequested);
+            }
+            if (ok) tracker_serial_detail::printOk(out, saveRequested ? "mag disabled and saved" : "mag disabled in RAM");
+            else tracker_serial_detail::printErr(out, "mag disable failed");
+            return;
+        }
+
+        if (is(argv[1], "cal")) {
+            if (argc < 3 || is(argv[2], "status") || is(argv[2], "print")) {
+                if (ctx.printMagCalibrationStatus) {
+                    ctx.printMagCalibrationStatus(out, ctx.printMagCalibrationStatusUser);
+                } else {
+                    tracker_serial_detail::printErr(out, "mag calibration status hook not available");
+                }
+                return;
+            }
+
+            if (is(argv[2], "start")) {
+                if (!ctx.config || !ctx.config->data.magCal.driverEnabled) {
+                    tracker_serial_detail::printErr(out, "enable mag first: mag enable");
+                    return;
+                }
+                if (!ctx.startMagCalibration) {
+                    tracker_serial_detail::printErr(out, "mag calibration start hook not available");
+                    return;
+                }
+                const bool ok = ctx.startMagCalibration(ctx.startMagCalibrationUser);
+                if (ok) tracker_serial_detail::printOk(out, "mag calibration collection started");
+                else tracker_serial_detail::printErr(out, "mag calibration start failed");
+                return;
+            }
+
+            if (is(argv[2], "stop")) {
+                if (ctx.stopMagCalibration) {
+                    ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+                    tracker_serial_detail::printOk(out, "mag calibration collection stopped");
+                } else {
+                    tracker_serial_detail::printErr(out, "mag calibration stop hook not available");
+                }
+                return;
+            }
+
+            if (is(argv[2], "reset")) {
+                if (ctx.resetMagCalibration) {
+                    ctx.resetMagCalibration(ctx.resetMagCalibrationUser);
+                    tracker_serial_detail::printOk(out, "mag calibration collector reset");
+                } else {
+                    tracker_serial_detail::printErr(out, "mag calibration reset hook not available");
+                }
+                return;
+            }
+
+            if (is(argv[2], "apply")) {
+                const bool saveRequested = argc >= 4 && is(argv[3], "save");
+                if (!ctx.applyMagCalibration) {
+                    tracker_serial_detail::printErr(out, "mag calibration apply hook not available");
+                    return;
+                }
+                const bool ok = ctx.applyMagCalibration(saveRequested, ctx.applyMagCalibrationUser);
+                if (ok) tracker_serial_detail::printOk(out, saveRequested ? "mag calibration applied and saved" : "mag calibration applied in RAM");
+                else tracker_serial_detail::printErr(out, "mag calibration apply failed");
+                return;
+            }
+
+            tracker_serial_detail::printErr(out, "unknown mag cal command");
+            return;
+        }
+
+        if (is(argv[1], "processed") || is(argv[1], "trust")) {
+            if (ctx.printMagProcessedStatus) {
+                ctx.printMagProcessedStatus(out, ctx.printMagProcessedStatusUser);
+            } else {
+                tracker_serial_detail::printErr(out, "mag processed hook not available");
+            }
+            return;
+        }
+
+        if (is(argv[1], "axis")) {
+            if (!ctx.config) {
+                tracker_serial_detail::printErr(out, "config not available");
+                return;
+            }
+
+            if (argc < 3 || is(argv[2], "print")) {
+                out.println("# MAG AXIS");
+                out.print("axisAlignmentValid=");
+                out.println(ctx.config->data.magCal.axisAlignmentValid ? "yes" : "no");
+
+                const Mat3& m = ctx.config->data.magCal.magToImu;
+                out.print("magToImu_row0=");
+                out.print(m.m[0][0], 6); out.print(',');
+                out.print(m.m[0][1], 6); out.print(',');
+                out.println(m.m[0][2], 6);
+
+                out.print("magToImu_row1=");
+                out.print(m.m[1][0], 6); out.print(',');
+                out.print(m.m[1][1], 6); out.print(',');
+                out.println(m.m[1][2], 6);
+
+                out.print("magToImu_row2=");
+                out.print(m.m[2][0], 6); out.print(',');
+                out.print(m.m[2][1], 6); out.print(',');
+                out.println(m.m[2][2], 6);
+                return;
+            }
+
+            if (is(argv[2], "identity")) {
+                const bool saveRequested = argc >= 4 && is(argv[3], "save");
+                ctx.config->data.magCal.magToImu = Mat3::identity();
+                ctx.config->data.magCal.axisAlignmentValid = true;
+                ctx.config->updateCrc();
+
+                bool ok = true;
+                if (saveRequested) {
+                    ok = ctx.configStore && ctx.configStore->save(*ctx.config);
+                }
+
+                if (ok) {
+                    tracker_serial_detail::printOk(out, saveRequested ? "mag axis identity saved" : "mag axis identity set in RAM");
+                } else {
+                    tracker_serial_detail::printErr(out, "mag axis identity save failed");
+                }
+                return;
+            }
+
+            if (is(argv[2], "clear")) {
+                const bool saveRequested = argc >= 4 && is(argv[3], "save");
+                ctx.config->data.magCal.magToImu = Mat3::identity();
+                ctx.config->data.magCal.axisAlignmentValid = false;
+                ctx.config->updateCrc();
+
+                bool ok = true;
+                if (saveRequested) {
+                    ok = ctx.configStore && ctx.configStore->save(*ctx.config);
+                }
+
+                if (ok) {
+                    tracker_serial_detail::printOk(out, saveRequested ? "mag axis cleared and saved" : "mag axis cleared in RAM");
+                } else {
+                    tracker_serial_detail::printErr(out, "mag axis clear save failed");
+                }
+                return;
+            }
+
+            tracker_serial_detail::printErr(out, "unknown mag axis command");
+            return;
+        }
+
+        if (!ctx.mag) {
+            tracker_serial_detail::printErr(out, "mag driver not available");
+            return;
+        }
+
+        if (is(argv[1], "id")) {
+            uint8_t id = 0;
+            const bool ok = ctx.mag->probe(&id);
+            out.print(ok ? "# OK " : "# ERR ");
+            out.print("qmc_id=0x"); out.print(id, HEX);
+            out.print(" expected=0x"); out.print(Qmc6309::EXPECTED_CHIP_ID, HEX);
+            out.print(" qmcErr="); out.print(ctx.mag->lastErrorName());
+            if (ctx.sensorHub) { out.print(" hubErr="); out.print(ctx.sensorHub->lastErrorName()); }
+            out.println();
+            rearmMagIfNeeded(ctx);
+            return;
+        }
+
+        if (is(argv[1], "qmcstatus")) {
+            Qmc6309::Status st;
+            const bool ok = ctx.mag->readStatus(st);
+            out.print(ok ? "# OK " : "# ERR ");
+            out.print("qmc_status=0x"); out.print(st.raw, HEX);
+            out.print(" drdy="); out.print(st.dataReady ? 1 : 0);
+            out.print(" ovfl="); out.print(st.overflow ? 1 : 0);
+            out.print(" nvm_ready="); out.print(st.nvmReady ? 1 : 0);
+            out.print(" nvm_load_done="); out.print(st.nvmLoadDone ? 1 : 0);
+            out.print(" qmcErr="); out.print(ctx.mag->lastErrorName());
+            if (ctx.sensorHub) { out.print(" hubErr="); out.print(ctx.sensorHub->lastErrorName()); }
+            out.println();
+            rearmMagIfNeeded(ctx);
+            return;
+        }
+
+        if (is(argv[1], "regs")) {
+            out.println("# QMC REGS 00..0B");
+            for (uint8_t r = 0; r <= 0x0B; ++r) {
+                uint8_t v = 0;
+                const bool ok = ctx.mag->readReg(r, v);
+                out.print("0x"); if (r < 0x10) out.print('0'); out.print(r, HEX);
+                out.print('=');
+                if (ok) { out.print("0x"); if (v < 0x10) out.print('0'); out.print(v, HEX); }
+                else out.print("ERR");
+                out.println();
+            }
+            rearmMagIfNeeded(ctx);
+            return;
+        }
+
+        if (is(argv[1], "hub")) {
+            if (!ctx.sensorHub) {
+                tracker_serial_detail::printErr(out, "sensor hub not available");
+                return;
+            }
+            Lsm6dsvSensorHub::MasterStatus st;
+            const bool ok = ctx.sensorHub->readMasterStatus(st);
+            out.print(ok ? "# OK " : "# ERR ");
+            out.print("hub_status=0x"); out.print(st.raw, HEX);
+            out.print(" endop="); out.print(st.endop ? 1 : 0);
+            out.print(" write_once_done="); out.print(st.writeOnceDone ? 1 : 0);
+            out.print(" nack0="); out.print(st.slave0Nack ? 1 : 0);
+            out.print(" nack1="); out.print(st.slave1Nack ? 1 : 0);
+            out.print(" nack2="); out.print(st.slave2Nack ? 1 : 0);
+            out.print(" nack3="); out.print(st.slave3Nack ? 1 : 0);
+            out.print(" hubErr="); out.println(ctx.sensorHub->lastErrorName());
+            return;
+        }
+
+        if (is(argv[1], "fifo")) {
+            if (!ctx.fifo) {
+                tracker_serial_detail::printErr(out, "fifo not available");
+                return;
+            }
+            const auto& fs = ctx.fifo->stats();
+            out.println("# MAG FIFO");
+            out.print("sensorhub0_words="); out.println(fs.sensorHubSlave0Words);
+            out.print("sensorhub_nack_words="); out.println(fs.sensorHubNackWords);
+            out.print("mag_samples_produced="); out.println(fs.magSamplesProduced);
+            out.print("mag_queue_overflow="); out.println(fs.magQueueOverflow);
+            out.print("mag_tag_counter_jumps="); out.println(fs.magTagCounterJumps);
+            out.print("mag_last_xyz="); out.print(fs.lastMagX); out.print(','); out.print(fs.lastMagY); out.print(','); out.println(fs.lastMagZ);
+            out.print("mag_last_norm_raw="); out.println(fs.lastMagRawNorm, 3);
+            out.print("mag_dt_last_us="); out.println(fs.lastMagDtUs);
+            out.print("mag_dt_min_us="); out.println(fs.minMagDtUs);
+            out.print("mag_dt_max_us="); out.println(fs.maxMagDtUs);
+            return;
+        }
+
+        tracker_serial_detail::printErr(out, "unknown mag command");
     }
 
     static void cmdFifo(TrackerSerialCommandContext& ctx, int argc, char** argv) {
@@ -1086,6 +1429,17 @@ private:
         out.print("timestamp_meta_bdr_gy_mismatch="); out.println(fs.timestampMetaBdrGyMismatch);
         out.print("gyro_saturation_count="); out.println(fs.gyroSaturationCount);
         out.print("accel_saturation_count="); out.println(fs.accelSaturationCount);
+        out.print("sensorhub0_words="); out.println(fs.sensorHubSlave0Words);
+        out.print("sensorhub_nack_words="); out.println(fs.sensorHubNackWords);
+        out.print("mag_samples_produced="); out.println(fs.magSamplesProduced);
+        out.print("mag_queue_overflow="); out.println(fs.magQueueOverflow);
+        out.print("mag_tag_counter_jumps="); out.println(fs.magTagCounterJumps);
+        out.print("mag_raw_saturation_count="); out.println(fs.magRawSaturationCount);
+        out.print("mag_last_xyz="); out.print(fs.lastMagX); out.print(','); out.print(fs.lastMagY); out.print(','); out.println(fs.lastMagZ);
+        out.print("mag_last_norm_raw="); out.println(fs.lastMagRawNorm, 3);
+        out.print("mag_dt_last_us="); out.println(fs.lastMagDtUs);
+        out.print("mag_dt_min_us="); out.println(fs.minMagDtUs);
+        out.print("mag_dt_max_us="); out.println(fs.maxMagDtUs);
         out.print("latest_temp_valid="); out.println(fs.latestTempValid ? "yes" : "no");
         out.print("latest_temp_c="); out.println(fs.latestTempC, 3);
         out.print("sample_period_us="); out.println(fs.samplePeriodUs, 3);

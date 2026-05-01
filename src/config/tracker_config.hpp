@@ -399,6 +399,14 @@ public:
         cfg.allowTimestampFallback = data.fifo.allowTimestampFallback;
         cfg.maxWaitingSamplesBeforeFallback = data.fifo.maxWaitingSamplesBeforeFallback;
         cfg.samplePeriodUsOverride = data.fifo.samplePeriodUsOverride;
+
+        // Phase 5: if magnetometer runtime is enabled in NVS/config,
+        // accept QMC6309 XYZ words batched by LSM6DSV sensor hub slave 0.
+        // The QMC stream is configured elsewhere; this only enables FIFO parsing.
+        cfg.enableSensorHubSlave0 = data.magCal.driverEnabled;
+        cfg.sensorHubSlave0PeriodUs = data.magCal.driverEnabled
+            ? (1000000.0f / 60.0f)
+            : 0.0f;
         return cfg;
     }
 
@@ -676,6 +684,19 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print(cfg.data.accelCal.scale.m[0][0], 8); out.print(',');
     out.print(cfg.data.accelCal.scale.m[1][1], 8); out.print(',');
     out.println(cfg.data.accelCal.scale.m[2][2], 8);
+
+    out.println("-- magnetometer --");
+    out.print("magDriverEnabled="); out.println(cfg.data.magCal.driverEnabled ? "yes" : "no");
+    out.print("magCalibrationValid="); out.println(cfg.data.magCal.calibrationValid ? "yes" : "no");
+    out.print("magAxisAlignmentValid="); out.println(cfg.data.magCal.axisAlignmentValid ? "yes" : "no");
+    out.print("magHardIron=");
+    out.print(cfg.data.magCal.hardIron.x, 6); out.print(',');
+    out.print(cfg.data.magCal.hardIron.y, 6); out.print(',');
+    out.println(cfg.data.magCal.hardIron.z, 6);
+    out.print("magExpectedFieldNorm="); out.println(cfg.data.magCal.expectedFieldNorm, 6);
+    out.print("magTrustNormMinMax=");
+    out.print(cfg.data.magCal.minTrustNorm, 6); out.print(',');
+    out.println(cfg.data.magCal.maxTrustNorm, 6);
 
     out.println("-- quality --");
     out.print("largeGapFactor="); out.println(cfg.data.quality.largeGapFactor, 3);

@@ -25,14 +25,14 @@ Phase 3 — Robust IMU pipeline: Closed
   config save/load
   command protocol
 
-Phase 4 — Calibration: Active
+Phase 4 — Calibration: Active?
   accel 6-position calibration
   gyro bias persistence
   gyro temp compensation
   mounting offset
   body/recenter offset
 
-Phase 5 — Magnetometer:
+Phase 5 — Magnetometer: Currently active
   QMC6309 driver
   raw mag logs
   hard/soft iron calibration
