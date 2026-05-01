@@ -202,15 +202,33 @@ struct Vec3Stats {
     uint32_t count = 0;
     Vec3 sum = Vec3::zero();
     Vec3 sumSq = Vec3::zero();
+    Vec3 minValue = Vec3::zero();
+    Vec3 maxValue = Vec3::zero();
 
     void reset() {
         count = 0;
         sum = Vec3::zero();
         sumSq = Vec3::zero();
+        minValue = Vec3::zero();
+        maxValue = Vec3::zero();
     }
 
     void push(const Vec3& v) {
         if (!v.isFinite()) return;
+
+        if (count == 0) {
+            minValue = v;
+            maxValue = v;
+        } else {
+            if (v.x < minValue.x) minValue.x = v.x;
+            if (v.y < minValue.y) minValue.y = v.y;
+            if (v.z < minValue.z) minValue.z = v.z;
+
+            if (v.x > maxValue.x) maxValue.x = v.x;
+            if (v.y > maxValue.y) maxValue.y = v.y;
+            if (v.z > maxValue.z) maxValue.z = v.z;
+        }
+
         count++;
         sum += v;
         sumSq += hadamard(v, v);
@@ -218,6 +236,20 @@ struct Vec3Stats {
 
     Vec3 mean() const {
         return count == 0 ? Vec3::zero() : sum / static_cast<float>(count);
+    }
+
+    Vec3 stddev() const {
+        if (count < 2) return Vec3::zero();
+
+        const Vec3 m = mean();
+        const Vec3 meanSq = sumSq / static_cast<float>(count);
+        Vec3 v = meanSq - hadamard(m, m);
+
+        if (v.x < 0.0f) v.x = 0.0f;
+        if (v.y < 0.0f) v.y = 0.0f;
+        if (v.z < 0.0f) v.z = 0.0f;
+
+        return Vec3(std::sqrt(v.x), std::sqrt(v.y), std::sqrt(v.z));
     }
 };
 
@@ -227,6 +259,10 @@ struct StaticRuntimeTest {
     uint32_t durationMs = 0;
     uint32_t startMs = 0;
     uint32_t lastProgressMs = 0;
+
+    float tempStartC = 0.0f;
+    float tempEndC = 0.0f;
+    bool tempCaptured = false;
 
     uint32_t samples = 0;
     uint32_t hwTs = 0;
@@ -281,6 +317,11 @@ struct StaticRuntimeTest {
     ScalarStats tempC;
     Vec3Stats gyroAfterRadS;
 
+    ScalarStats magHeadingHorizontalNorm;
+    ScalarStats magYawCombinedTrust;
+    ScalarStats magYawCorrectionRateDegS;
+    ScalarStats magYawCorrectionStepDeg;
+
     bool poseCaptured = false;
     Vec3 eulerStartDeg = Vec3::zero();
     Vec3 eulerEndDeg = Vec3::zero();
@@ -293,6 +334,9 @@ struct StaticRuntimeTest {
         durationMs = 0;
         startMs = 0;
         lastProgressMs = 0;
+        tempStartC = 0.0f;
+        tempEndC = 0.0f;
+        tempCaptured = false;
         samples = 0;
         hwTs = 0;
         fallbackTs = 0;
@@ -343,6 +387,10 @@ struct StaticRuntimeTest {
         accelTrust.reset();
         tempC.reset();
         gyroAfterRadS.reset();
+        magHeadingHorizontalNorm.reset();
+        magYawCombinedTrust.reset();
+        magYawCorrectionRateDegS.reset();
+        magYawCorrectionStepDeg.reset();
         poseCaptured = false;
         eulerStartDeg = Vec3::zero();
         eulerEndDeg = Vec3::zero();
@@ -824,6 +872,26 @@ static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
 
             if (g_staticTest.magErrorSamples == 1 || ae > g_staticTest.magErrorAbsMaxDeg) {
                 g_staticTest.magErrorAbsMaxDeg = ae;
+            }
+        }
+    }
+
+    if (g_staticTest.active) {
+        if (g_lastMagHeading.valid && std::isfinite(g_lastMagHeading.horizontalNorm)) {
+            g_staticTest.magHeadingHorizontalNorm.push(g_lastMagHeading.horizontalNorm);
+        }
+
+        if (yawOut.valid) {
+            if (std::isfinite(yawOut.combinedTrust)) {
+                g_staticTest.magYawCombinedTrust.push(yawOut.combinedTrust);
+            }
+
+            if (std::isfinite(yawOut.correctionRateDegS)) {
+                g_staticTest.magYawCorrectionRateDegS.push(yawOut.correctionRateDegS);
+            }
+
+            if (std::isfinite(yawOut.correctionStepDeg)) {
+                g_staticTest.magYawCorrectionStepDeg.push(yawOut.correctionStepDeg);
             }
         }
     }
@@ -1726,6 +1794,13 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
     if (quality.dtUs > 0) g_staticTest.dtUs.push(static_cast<float>(quality.dtUs));
     g_staticTest.accelNormG.push(calibrated.accel_g.norm());
     g_staticTest.accelTrust.push(quality.accelConfidence);
+    if (!g_staticTest.tempCaptured) {
+        g_staticTest.tempCaptured = true;
+        g_staticTest.tempStartC = calibrated.temp_c;
+    }
+
+    g_staticTest.tempEndC = calibrated.temp_c;
+
     g_staticTest.tempC.push(calibrated.temp_c);
     g_staticTest.gyroAfterRadS.push(calibrated.gyro_rad_s);
     g_staticTest.samples++;
@@ -1763,9 +1838,16 @@ static void finishStaticTest() {
     const float sampleRate = durationS > 0.0f ? static_cast<float>(g_staticTest.samples) / durationS : 0.0f;
 
     const Vec3 gyroAfterMeanDps = g_staticTest.gyroAfterRadS.mean() * MATH_RAD_TO_DEG;
+    const Vec3 gyroAfterStdDps = g_staticTest.gyroAfterRadS.stddev() * MATH_RAD_TO_DEG;
+    const Vec3 gyroAfterMinDps = g_staticTest.gyroAfterRadS.minValue * MATH_RAD_TO_DEG;
+    const Vec3 gyroAfterMaxDps = g_staticTest.gyroAfterRadS.maxValue * MATH_RAD_TO_DEG;
+
     const float dRoll = angleDiffDeg(g_staticTest.eulerStartDeg.x, g_staticTest.eulerEndDeg.x);
     const float dPitch = angleDiffDeg(g_staticTest.eulerStartDeg.y, g_staticTest.eulerEndDeg.y);
     const float dYaw = angleDiffDeg(g_staticTest.eulerStartDeg.z, g_staticTest.eulerEndDeg.z);
+
+    const float durationMin = durationS > 0.0f ? durationS / 60.0f : 0.0f;
+    const float yawDriftDegPerMin = durationMin > 0.0f ? dYaw / durationMin : 0.0f;
 
     Serial.println();
     Serial.println("==============================================================================");
@@ -1801,10 +1883,46 @@ static void finishStaticTest() {
     Serial.print("accel_norm_min_g: "); Serial.println(g_staticTest.accelNormG.minValue, 6);
     Serial.print("accel_norm_max_g: "); Serial.println(g_staticTest.accelNormG.maxValue, 6);
     Serial.print("accel_norm_std_g: "); Serial.println(g_staticTest.accelNormG.stddev(), 8);
-    Serial.print("gyro_after_mean_dps_norm: "); Serial.println(gyroAfterMeanDps.norm(), 6);
-    Serial.print("temp_mean_c: "); Serial.println(g_staticTest.tempC.mean(), 3);
-    Serial.print("temp_min_c: "); Serial.println(g_staticTest.tempC.minValue, 3);
-    Serial.print("temp_max_c: "); Serial.println(g_staticTest.tempC.maxValue, 3);
+    Serial.print("gyro_after_mean_dps_norm: ");
+    Serial.println(gyroAfterMeanDps.norm(), 6);
+
+    Serial.print("gyro_after_mean_dps_xyz: ");
+    Serial.print(gyroAfterMeanDps.x, 8); Serial.print(',');
+    Serial.print(gyroAfterMeanDps.y, 8); Serial.print(',');
+    Serial.println(gyroAfterMeanDps.z, 8);
+
+    Serial.print("gyro_after_std_dps_xyz: ");
+    Serial.print(gyroAfterStdDps.x, 8); Serial.print(',');
+    Serial.print(gyroAfterStdDps.y, 8); Serial.print(',');
+    Serial.println(gyroAfterStdDps.z, 8);
+
+    Serial.print("gyro_after_min_dps_xyz: ");
+    Serial.print(gyroAfterMinDps.x, 8); Serial.print(',');
+    Serial.print(gyroAfterMinDps.y, 8); Serial.print(',');
+    Serial.println(gyroAfterMinDps.z, 8);
+
+    Serial.print("gyro_after_max_dps_xyz: ");
+    Serial.print(gyroAfterMaxDps.x, 8); Serial.print(',');
+    Serial.print(gyroAfterMaxDps.y, 8); Serial.print(',');
+    Serial.println(gyroAfterMaxDps.z, 8);
+
+    Serial.print("temp_start_c: ");
+    Serial.println(g_staticTest.tempStartC, 3);
+
+    Serial.print("temp_end_c: ");
+    Serial.println(g_staticTest.tempEndC, 3);
+
+    Serial.print("temp_delta_c: ");
+    Serial.println(g_staticTest.tempEndC - g_staticTest.tempStartC, 3);
+
+    Serial.print("temp_mean_c: ");
+    Serial.println(g_staticTest.tempC.mean(), 3);
+
+    Serial.print("temp_min_c: ");
+    Serial.println(g_staticTest.tempC.minValue, 3);
+
+    Serial.print("temp_max_c: ");
+    Serial.println(g_staticTest.tempC.maxValue, 3);
 
     Serial.println("------------------------------------------------------------------------------");
     Serial.println("Orientation");
@@ -1819,6 +1937,8 @@ static void finishStaticTest() {
     Serial.print("euler_delta_deg: roll="); Serial.print(dRoll, 3);
     Serial.print(" pitch="); Serial.print(dPitch, 3);
     Serial.print(" yaw="); Serial.println(dYaw, 3);
+    Serial.print("yaw_drift_rate_deg_min: ");
+    Serial.println(yawDriftDegPerMin, 6);
 
     Serial.println("------------------------------------------------------------------------------");
     Serial.println("MAG / YAW CORRECTION");
@@ -1861,6 +1981,42 @@ static void finishStaticTest() {
 
     Serial.print("mag_error_samples: ");
     Serial.println(g_staticTest.magErrorSamples);
+
+    Serial.print("mag_heading_horizontal_norm_mean: ");
+    Serial.println(g_staticTest.magHeadingHorizontalNorm.mean(), 6);
+
+    Serial.print("mag_heading_horizontal_norm_min: ");
+    Serial.println(g_staticTest.magHeadingHorizontalNorm.minValue, 6);
+
+    Serial.print("mag_heading_horizontal_norm_max: ");
+    Serial.println(g_staticTest.magHeadingHorizontalNorm.maxValue, 6);
+
+    Serial.print("mag_yaw_combined_trust_mean: ");
+    Serial.println(g_staticTest.magYawCombinedTrust.mean(), 6);
+
+    Serial.print("mag_yaw_combined_trust_min: ");
+    Serial.println(g_staticTest.magYawCombinedTrust.minValue, 6);
+
+    Serial.print("mag_yaw_combined_trust_max: ");
+    Serial.println(g_staticTest.magYawCombinedTrust.maxValue, 6);
+
+    Serial.print("mag_yaw_correction_rate_mean_deg_s: ");
+    Serial.println(g_staticTest.magYawCorrectionRateDegS.mean(), 8);
+
+    Serial.print("mag_yaw_correction_rate_min_deg_s: ");
+    Serial.println(g_staticTest.magYawCorrectionRateDegS.minValue, 8);
+
+    Serial.print("mag_yaw_correction_rate_max_deg_s: ");
+    Serial.println(g_staticTest.magYawCorrectionRateDegS.maxValue, 8);
+
+    Serial.print("mag_yaw_correction_step_mean_deg: ");
+    Serial.println(g_staticTest.magYawCorrectionStepDeg.mean(), 9);
+
+    Serial.print("mag_yaw_correction_step_min_deg: ");
+    Serial.println(g_staticTest.magYawCorrectionStepDeg.minValue, 9);
+
+    Serial.print("mag_yaw_correction_step_max_deg: ");
+    Serial.println(g_staticTest.magYawCorrectionStepDeg.maxValue, 9);
 
     Serial.print("mag_trusted_delta: ");
     Serial.println(ms.trustedSamples - g_staticTest.magTrustedAtStart);
