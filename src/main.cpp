@@ -130,8 +130,6 @@ static MagHeadingSample g_lastMagHeading;
 static MagYawCorrectionController g_magYawCorrection;
 static MagYawCorrectionOutput g_lastMagYawCorrection;
 
-static bool g_magYawCorrectionApplyEnabled = false;
-
 struct MagHeadingReferenceState {
     bool valid = false;
     float worldYawRad = 0.0f;
@@ -681,26 +679,28 @@ static float magHeadingErrorToReferenceDeg(const MagHeadingSample& heading) {
 }
 
 static MagYawCorrectionConfig makeMagYawCorrectionConfig() {
+    const auto& y = g_config.data.magYaw;
+
     MagYawCorrectionConfig c;
-    c.enabled = true;
-    c.applyEnabled = g_magYawCorrectionApplyEnabled;
+    c.enabled = y.controllerEnabled && g_config.data.magCal.driverEnabled;
+    c.applyEnabled = y.applyEnabled;
 
-    c.maxInnovationDeg = 25.0f;
-    c.maxMagAgeMs = 250;
+    c.maxInnovationDeg = y.maxInnovationDeg;
+    c.maxMagAgeMs = y.maxMagAgeMs;
 
-    c.horizontalNormGood = 260.0f;
-    c.horizontalNormBad = 200.0f;
+    c.horizontalNormGood = y.horizontalNormGood;
+    c.horizontalNormBad = y.horizontalNormBad;
 
-    c.gyroNormGoodDps = 8.0f;
-    c.gyroNormBadDps = 35.0f;
+    c.gyroNormGoodDps = y.gyroNormGoodDps;
+    c.gyroNormBadDps = y.gyroNormBadDps;
 
-    c.accelTrustGood = 0.70f;
-    c.accelTrustBad = 0.20f;
-    c.requireAccelTrusted = true;
+    c.accelTrustGood = y.accelTrustGood;
+    c.accelTrustBad = y.accelTrustBad;
+    c.requireAccelTrusted = y.requireAccelTrusted;
 
-    c.timeConstantS = 30.0f;
-    c.maxCorrectionRateDegS = 2.0f;
-    c.maxCorrectionStepDeg = 0.25f;
+    c.timeConstantS = y.timeConstantS;
+    c.maxCorrectionRateDegS = y.maxCorrectionRateDegS;
+    c.maxCorrectionStepDeg = y.maxCorrectionStepDeg;
     c.fallbackDtS = 1.0f / 60.0f;
 
     return c;
@@ -1230,13 +1230,24 @@ static void resetMagYawCorrectionHook(void* user) {
     g_lastMagYawCorrection = MagYawCorrectionOutput{};
 }
 
-static bool setMagYawCorrectionApplyEnabledHook(bool enabled, void* user) {
+static bool setMagYawCorrectionApplyEnabledHook(bool enabled, bool persist, void* user) {
     (void)user;
-    g_magYawCorrectionApplyEnabled = enabled;
+
+    g_config.data.magYaw.applyEnabled = enabled;
+    g_config.sanitize();
+    g_config.updateCrc();
 
     // Reset controller timing/stats when changing mode.
     g_magYawCorrection.reset();
     g_lastMagYawCorrection = MagYawCorrectionOutput{};
+
+    if (persist) {
+        if (!g_configStore.save(g_config)) {
+            Serial.print("# ERR mag yaw correction save failed: ");
+            Serial.println(g_configStore.lastErrorName());
+            return false;
+        }
+    }
 
     Serial.print("# OK mag yaw correction apply=");
     Serial.println(enabled ? "enabled" : "disabled");
@@ -1513,7 +1524,7 @@ static void printRuntimeHealth(Stream& out, void* user) {
     out.println(g_lastMagYawCorrection.correctionStepDeg, 6);
 
     out.print("mag_yaw_apply_enabled=");
-    out.println(g_magYawCorrectionApplyEnabled ? "yes" : "no");
+    out.println(g_config.data.magYaw.applyEnabled ? "yes" : "no");
     out.print("mag_yaw_applied_last=");
     out.println(g_lastMagYawCorrection.applied ? "yes" : "no");
 
@@ -1557,7 +1568,7 @@ static bool startStaticTestHook(uint32_t durationMs, void* user) {
     const auto& ys = g_magYawCorrection.stats();
 
     g_staticTest.magEnabledAtStart = g_config.data.magCal.driverEnabled;
-    g_staticTest.magYawApplyEnabledAtStart = g_magYawCorrectionApplyEnabled;
+    g_staticTest.magYawApplyEnabledAtStart = g_config.data.magYaw.applyEnabled;
     g_staticTest.magRefValidAtStart = g_magHeadingRef.valid;
 
     g_staticTest.magErrorStartDeg =

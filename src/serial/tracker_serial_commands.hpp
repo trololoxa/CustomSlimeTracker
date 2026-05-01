@@ -228,7 +228,7 @@ struct TrackerSerialCommandContext {
     void (*resetMagYawCorrection)(void* user) = nullptr;
     void* resetMagYawCorrectionUser = nullptr;
 
-    bool (*setMagYawCorrectionApplyEnabled)(bool enabled, void* user) = nullptr;
+    bool (*setMagYawCorrectionApplyEnabled)(bool enabled, bool persist, void* user) = nullptr;
     void* setMagYawCorrectionApplyEnabledUser = nullptr;
 
     bool (*startMagCalibration)(void* user) = nullptr;
@@ -367,7 +367,12 @@ private:
         out.println("mag id | qmcstatus | regs | hub | fifo");
         out.println("mag processed | trust");
         out.println("mag heading | heading ref | heading status | heading clear");
-        out.println("mag yaw status | yaw reset | yaw enable | yaw disable");
+        out.println("mag yaw status | yaw reset | yaw enable [save] | yaw disable [save]");
+        out.println("mag yaw defaults [save] | tc <s> [save] | innovation <deg> [save]");
+        out.println("mag yaw gyro_gate <goodDps> <badDps> [save]");
+        out.println("mag yaw horiz_gate <bad> <good> [save]");
+        out.println("mag yaw accel_gate <bad> <good> [save]");
+        out.println("mag yaw age <ms> [save] | rate <deg_s> [save] | step <deg> [save]");
         out.println("mag axis print | set <bodyX> <bodyY> <bodyZ> [save]");
         out.println("mag axis identity [save] | clear [save]");
         out.println("mag axis examples: set +x +y +z | set +y -x +z");
@@ -932,9 +937,11 @@ private:
             }
 
             if (is(argv[2], "enable")) {
+                const bool saveRequested = argc >= 4 && is(argv[3], "save");
+
                 if (ctx.setMagYawCorrectionApplyEnabled) {
-                    const bool ok = ctx.setMagYawCorrectionApplyEnabled(true, ctx.setMagYawCorrectionApplyEnabledUser);
-                    if (ok) tracker_serial_detail::printOk(out, "mag yaw correction enabled");
+                    const bool ok = ctx.setMagYawCorrectionApplyEnabled(true, saveRequested, ctx.setMagYawCorrectionApplyEnabledUser);
+                    if (ok) tracker_serial_detail::printOk(out, saveRequested ? "mag yaw correction enabled and saved" : "mag yaw correction enabled");
                     else tracker_serial_detail::printErr(out, "mag yaw correction enable failed");
                 } else {
                     tracker_serial_detail::printErr(out, "mag yaw enable hook not available");
@@ -943,13 +950,262 @@ private:
             }
 
             if (is(argv[2], "disable")) {
+                const bool saveRequested = argc >= 4 && is(argv[3], "save");
+
                 if (ctx.setMagYawCorrectionApplyEnabled) {
-                    const bool ok = ctx.setMagYawCorrectionApplyEnabled(false, ctx.setMagYawCorrectionApplyEnabledUser);
-                    if (ok) tracker_serial_detail::printOk(out, "mag yaw correction disabled");
+                    const bool ok = ctx.setMagYawCorrectionApplyEnabled(false, saveRequested, ctx.setMagYawCorrectionApplyEnabledUser);
+                    if (ok) tracker_serial_detail::printOk(out, saveRequested ? "mag yaw correction disabled and saved" : "mag yaw correction disabled");
                     else tracker_serial_detail::printErr(out, "mag yaw correction disable failed");
                 } else {
                     tracker_serial_detail::printErr(out, "mag yaw disable hook not available");
                 }
+                return;
+            }
+
+            if (!ctx.config) {
+                tracker_serial_detail::printErr(out, "config not available");
+                return;
+            }
+
+            auto saveYawConfigIfRequested = [&](bool saveRequested) -> bool {
+                ctx.config->sanitize();
+                ctx.config->updateCrc();
+
+                if (!saveRequested) return true;
+
+                if (!ctx.configStore) return false;
+                return ctx.configStore->save(*ctx.config);
+            };
+
+            auto resetYawStats = [&]() {
+                if (ctx.resetMagYawCorrection) {
+                    ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
+                }
+            };
+
+            if (is(argv[2], "defaults")) {
+                const bool saveRequested = argc >= 4 && is(argv[3], "save");
+
+                const bool keepApply = ctx.config->data.magYaw.applyEnabled;
+                ctx.config->data.magYaw = TrackerMagYawCorrectionConfigPersisted{};
+                ctx.config->data.magYaw.applyEnabled = keepApply;
+
+                if (!saveYawConfigIfRequested(saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag yaw defaults save failed");
+                    return;
+                }
+
+                resetYawStats();
+                tracker_serial_detail::printOk(out, saveRequested ? "mag yaw defaults applied and saved" : "mag yaw defaults applied");
+                return;
+            }
+
+            if (is(argv[2], "tc")) {
+                if (argc < 4) {
+                    tracker_serial_detail::printErr(out, "usage: mag yaw tc <seconds> [save]");
+                    return;
+                }
+
+                float v = 0.0f;
+                if (!tracker_serial_detail::parseFloat(argv[3], v)) {
+                    tracker_serial_detail::printErr(out, "invalid time constant");
+                    return;
+                }
+
+                const bool saveRequested = argc >= 5 && is(argv[4], "save");
+                ctx.config->data.magYaw.timeConstantS = v;
+
+                if (!saveYawConfigIfRequested(saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag yaw tc save failed");
+                    return;
+                }
+
+                resetYawStats();
+                tracker_serial_detail::printOk(out, saveRequested ? "mag yaw tc saved" : "mag yaw tc set");
+                return;
+            }
+
+            if (is(argv[2], "innovation")) {
+                if (argc < 4) {
+                    tracker_serial_detail::printErr(out, "usage: mag yaw innovation <deg> [save]");
+                    return;
+                }
+
+                float v = 0.0f;
+                if (!tracker_serial_detail::parseFloat(argv[3], v)) {
+                    tracker_serial_detail::printErr(out, "invalid innovation");
+                    return;
+                }
+
+                const bool saveRequested = argc >= 5 && is(argv[4], "save");
+                ctx.config->data.magYaw.maxInnovationDeg = v;
+
+                if (!saveYawConfigIfRequested(saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag yaw innovation save failed");
+                    return;
+                }
+
+                resetYawStats();
+                tracker_serial_detail::printOk(out, saveRequested ? "mag yaw innovation saved" : "mag yaw innovation set");
+                return;
+            }
+
+            if (is(argv[2], "gyro_gate")) {
+                if (argc < 5) {
+                    tracker_serial_detail::printErr(out, "usage: mag yaw gyro_gate <goodDps> <badDps> [save]");
+                    return;
+                }
+
+                float good = 0.0f;
+                float bad = 0.0f;
+                if (!tracker_serial_detail::parseFloat(argv[3], good) ||
+                    !tracker_serial_detail::parseFloat(argv[4], bad)) {
+                    tracker_serial_detail::printErr(out, "invalid gyro gate");
+                    return;
+                }
+
+                const bool saveRequested = argc >= 6 && is(argv[5], "save");
+                ctx.config->data.magYaw.gyroNormGoodDps = good;
+                ctx.config->data.magYaw.gyroNormBadDps = bad;
+
+                if (!saveYawConfigIfRequested(saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag yaw gyro gate save failed");
+                    return;
+                }
+
+                resetYawStats();
+                tracker_serial_detail::printOk(out, saveRequested ? "mag yaw gyro gate saved" : "mag yaw gyro gate set");
+                return;
+            }
+
+            if (is(argv[2], "horiz_gate")) {
+                if (argc < 5) {
+                    tracker_serial_detail::printErr(out, "usage: mag yaw horiz_gate <bad> <good> [save]");
+                    return;
+                }
+
+                float bad = 0.0f;
+                float good = 0.0f;
+                if (!tracker_serial_detail::parseFloat(argv[3], bad) ||
+                    !tracker_serial_detail::parseFloat(argv[4], good)) {
+                    tracker_serial_detail::printErr(out, "invalid horizontal gate");
+                    return;
+                }
+
+                const bool saveRequested = argc >= 6 && is(argv[5], "save");
+                ctx.config->data.magYaw.horizontalNormBad = bad;
+                ctx.config->data.magYaw.horizontalNormGood = good;
+
+                if (!saveYawConfigIfRequested(saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag yaw horizontal gate save failed");
+                    return;
+                }
+
+                resetYawStats();
+                tracker_serial_detail::printOk(out, saveRequested ? "mag yaw horizontal gate saved" : "mag yaw horizontal gate set");
+                return;
+            }
+
+            if (is(argv[2], "accel_gate")) {
+                if (argc < 5) {
+                    tracker_serial_detail::printErr(out, "usage: mag yaw accel_gate <badTrust> <goodTrust> [save]");
+                    return;
+                }
+
+                float bad = 0.0f;
+                float good = 0.0f;
+                if (!tracker_serial_detail::parseFloat(argv[3], bad) ||
+                    !tracker_serial_detail::parseFloat(argv[4], good)) {
+                    tracker_serial_detail::printErr(out, "invalid accel gate");
+                    return;
+                }
+
+                const bool saveRequested = argc >= 6 && is(argv[5], "save");
+                ctx.config->data.magYaw.accelTrustBad = bad;
+                ctx.config->data.magYaw.accelTrustGood = good;
+
+                if (!saveYawConfigIfRequested(saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag yaw accel gate save failed");
+                    return;
+                }
+
+                resetYawStats();
+                tracker_serial_detail::printOk(out, saveRequested ? "mag yaw accel gate saved" : "mag yaw accel gate set");
+                return;
+            }
+
+            if (is(argv[2], "age")) {
+                if (argc < 4) {
+                    tracker_serial_detail::printErr(out, "usage: mag yaw age <ms> [save]");
+                    return;
+                }
+
+                uint32_t v = 0;
+                if (!tracker_serial_detail::parseU32(argv[3], v)) {
+                    tracker_serial_detail::printErr(out, "invalid age");
+                    return;
+                }
+
+                const bool saveRequested = argc >= 5 && is(argv[4], "save");
+                ctx.config->data.magYaw.maxMagAgeMs = v;
+
+                if (!saveYawConfigIfRequested(saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag yaw age save failed");
+                    return;
+                }
+
+                resetYawStats();
+                tracker_serial_detail::printOk(out, saveRequested ? "mag yaw age saved" : "mag yaw age set");
+                return;
+            }
+
+            if (is(argv[2], "rate")) {
+                if (argc < 4) {
+                    tracker_serial_detail::printErr(out, "usage: mag yaw rate <deg_s> [save]");
+                    return;
+                }
+
+                float v = 0.0f;
+                if (!tracker_serial_detail::parseFloat(argv[3], v)) {
+                    tracker_serial_detail::printErr(out, "invalid max rate");
+                    return;
+                }
+
+                const bool saveRequested = argc >= 5 && is(argv[4], "save");
+                ctx.config->data.magYaw.maxCorrectionRateDegS = v;
+
+                if (!saveYawConfigIfRequested(saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag yaw rate save failed");
+                    return;
+                }
+
+                resetYawStats();
+                tracker_serial_detail::printOk(out, saveRequested ? "mag yaw rate saved" : "mag yaw rate set");
+                return;
+            }
+
+            if (is(argv[2], "step")) {
+                if (argc < 4) {
+                    tracker_serial_detail::printErr(out, "usage: mag yaw step <deg> [save]");
+                    return;
+                }
+
+                float v = 0.0f;
+                if (!tracker_serial_detail::parseFloat(argv[3], v)) {
+                    tracker_serial_detail::printErr(out, "invalid max step");
+                    return;
+                }
+
+                const bool saveRequested = argc >= 5 && is(argv[4], "save");
+                ctx.config->data.magYaw.maxCorrectionStepDeg = v;
+
+                if (!saveYawConfigIfRequested(saveRequested)) {
+                    tracker_serial_detail::printErr(out, "mag yaw step save failed");
+                    return;
+                }
+
+                resetYawStats();
+                tracker_serial_detail::printOk(out, saveRequested ? "mag yaw step saved" : "mag yaw step set");
                 return;
             }
 

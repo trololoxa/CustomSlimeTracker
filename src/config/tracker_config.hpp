@@ -178,6 +178,26 @@ struct TrackerMagCalibrationConfig {
     float maxTrustNorm = 2.50f;
 };
 
+struct TrackerMagYawCorrectionConfigPersisted {
+    bool controllerEnabled = true;
+    bool applyEnabled = false;
+    bool requireAccelTrusted = true;
+    uint8_t reservedFlags = 0;
+
+    float maxInnovationDeg = 25.0f;
+    float horizontalNormBad = 200.0f;
+    float horizontalNormGood = 260.0f;
+    float gyroNormGoodDps = 8.0f;
+    float gyroNormBadDps = 35.0f;
+    float accelTrustBad = 0.20f;
+    float accelTrustGood = 0.70f;
+    float timeConstantS = 30.0f;
+    float maxCorrectionRateDegS = 2.0f;
+    float maxCorrectionStepDeg = 0.25f;
+
+    uint32_t maxMagAgeMs = 250;
+};
+
 struct TrackerQualityConfigPersisted {
     float expectedDtUs = 0.0f;
     float largeGapFactor = 1.75f;
@@ -226,9 +246,10 @@ struct TrackerConfigBlob {
     TrackerMagCalibrationConfig magCal;
     TrackerQualityConfigPersisted quality;
     TrackerOutputConfig output;
+    TrackerMagYawCorrectionConfigPersisted magYaw;
 
     uint32_t reservedU32[16] = {};
-    float reservedF32[16] = {};
+    float reservedF32[4] = {};
 };
 
 class TrackerConfig {
@@ -277,6 +298,20 @@ public:
         }
 
         if (data.magCal.axisAlignmentValid && !finiteMat3(data.magCal.magToImu)) return false;
+
+        // Keep these checks permissive so configs saved by older firmware, where
+        // the magYaw region was reserved/zeroed, can still load and then be
+        // repaired by sanitize().
+        if (!finiteFloat(data.magYaw.maxInnovationDeg)) return false;
+        if (!finiteFloat(data.magYaw.horizontalNormBad)) return false;
+        if (!finiteFloat(data.magYaw.horizontalNormGood)) return false;
+        if (!finiteFloat(data.magYaw.gyroNormGoodDps)) return false;
+        if (!finiteFloat(data.magYaw.gyroNormBadDps)) return false;
+        if (!finiteFloat(data.magYaw.accelTrustBad)) return false;
+        if (!finiteFloat(data.magYaw.accelTrustGood)) return false;
+        if (!finiteFloat(data.magYaw.timeConstantS)) return false;
+        if (!finiteFloat(data.magYaw.maxCorrectionRateDegS)) return false;
+        if (!finiteFloat(data.magYaw.maxCorrectionStepDeg)) return false;
 
         if (data.ahrs.mountingOffsetValid && !finiteQuat(data.ahrs.mountingOffset)) return false;
 
@@ -346,6 +381,58 @@ public:
         if (!finiteFloat(data.magCal.expectedFieldNorm)) data.magCal.expectedFieldNorm = 1.0f;
         if (!finiteFloat(data.magCal.minTrustNorm)) data.magCal.minTrustNorm = 0.25f;
         if (!finiteFloat(data.magCal.maxTrustNorm)) data.magCal.maxTrustNorm = 2.50f;
+
+        // If this config was written by older firmware, magYaw fields live in
+        // the previously-reserved zeroed region. Treat zero/invalid values as
+        // defaults instead of invalidating the whole NVS blob.
+        if (!finiteFloat(data.magYaw.maxInnovationDeg) || data.magYaw.maxInnovationDeg <= 0.0f) {
+            data.magYaw.maxInnovationDeg = 25.0f;
+        }
+
+        if (!finiteFloat(data.magYaw.horizontalNormBad) || data.magYaw.horizontalNormBad <= 0.0f) {
+            data.magYaw.horizontalNormBad = 200.0f;
+        }
+
+        if (!finiteFloat(data.magYaw.horizontalNormGood) || data.magYaw.horizontalNormGood <= data.magYaw.horizontalNormBad) {
+            data.magYaw.horizontalNormGood = 260.0f;
+        }
+
+        if (!finiteFloat(data.magYaw.gyroNormGoodDps) || data.magYaw.gyroNormGoodDps < 0.0f) {
+            data.magYaw.gyroNormGoodDps = 8.0f;
+        }
+
+        if (!finiteFloat(data.magYaw.gyroNormBadDps) || data.magYaw.gyroNormBadDps <= data.magYaw.gyroNormGoodDps) {
+            data.magYaw.gyroNormBadDps = 35.0f;
+        }
+
+        if (!finiteFloat(data.magYaw.accelTrustBad) || data.magYaw.accelTrustBad < 0.0f) {
+            data.magYaw.accelTrustBad = 0.20f;
+        }
+
+        if (!finiteFloat(data.magYaw.accelTrustGood) || data.magYaw.accelTrustGood <= data.magYaw.accelTrustBad) {
+            data.magYaw.accelTrustGood = 0.70f;
+        }
+
+        data.magYaw.accelTrustBad = clampFloat(data.magYaw.accelTrustBad, 0.0f, 1.0f);
+        data.magYaw.accelTrustGood = clampFloat(data.magYaw.accelTrustGood, data.magYaw.accelTrustBad + 0.01f, 1.0f);
+
+        if (!finiteFloat(data.magYaw.timeConstantS) || data.magYaw.timeConstantS <= 0.001f) {
+            data.magYaw.timeConstantS = 30.0f;
+        }
+        data.magYaw.timeConstantS = clampFloat(data.magYaw.timeConstantS, 1.0f, 300.0f);
+
+        if (!finiteFloat(data.magYaw.maxCorrectionRateDegS) || data.magYaw.maxCorrectionRateDegS <= 0.0f) {
+            data.magYaw.maxCorrectionRateDegS = 2.0f;
+        }
+        data.magYaw.maxCorrectionRateDegS = clampFloat(data.magYaw.maxCorrectionRateDegS, 0.01f, 45.0f);
+
+        if (!finiteFloat(data.magYaw.maxCorrectionStepDeg) || data.magYaw.maxCorrectionStepDeg <= 0.0f) {
+            data.magYaw.maxCorrectionStepDeg = 0.25f;
+        }
+        data.magYaw.maxCorrectionStepDeg = clampFloat(data.magYaw.maxCorrectionStepDeg, 0.001f, 5.0f);
+
+        if (data.magYaw.maxMagAgeMs == 0) data.magYaw.maxMagAgeMs = 250;
+        if (data.magYaw.maxMagAgeMs > 5000) data.magYaw.maxMagAgeMs = 5000;
 
         if (!finiteQuat(data.ahrs.mountingOffset)) {
             data.ahrs.mountingOffset = Quat::identity();
@@ -697,6 +784,30 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("magTrustNormMinMax=");
     out.print(cfg.data.magCal.minTrustNorm, 6); out.print(',');
     out.println(cfg.data.magCal.maxTrustNorm, 6);
+
+    out.println("-- mag yaw correction --");
+    out.print("magYawControllerEnabled="); out.println(cfg.data.magYaw.controllerEnabled ? "yes" : "no");
+    out.print("magYawApplyEnabled="); out.println(cfg.data.magYaw.applyEnabled ? "yes" : "no");
+    out.print("magYawRequireAccelTrusted="); out.println(cfg.data.magYaw.requireAccelTrusted ? "yes" : "no");
+
+    out.print("magYawMaxInnovationDeg="); out.println(cfg.data.magYaw.maxInnovationDeg, 3);
+
+    out.print("magYawHorizontalBadGood=");
+    out.print(cfg.data.magYaw.horizontalNormBad, 3); out.print(',');
+    out.println(cfg.data.magYaw.horizontalNormGood, 3);
+
+    out.print("magYawGyroGoodBadDps=");
+    out.print(cfg.data.magYaw.gyroNormGoodDps, 3); out.print(',');
+    out.println(cfg.data.magYaw.gyroNormBadDps, 3);
+
+    out.print("magYawAccelTrustBadGood=");
+    out.print(cfg.data.magYaw.accelTrustBad, 3); out.print(',');
+    out.println(cfg.data.magYaw.accelTrustGood, 3);
+
+    out.print("magYawMaxAgeMs="); out.println(cfg.data.magYaw.maxMagAgeMs);
+    out.print("magYawTimeConstantS="); out.println(cfg.data.magYaw.timeConstantS, 3);
+    out.print("magYawMaxRateDegS="); out.println(cfg.data.magYaw.maxCorrectionRateDegS, 3);
+    out.print("magYawMaxStepDeg="); out.println(cfg.data.magYaw.maxCorrectionStepDeg, 3);
 
     out.println("-- quality --");
     out.print("largeGapFactor="); out.println(cfg.data.quality.largeGapFactor, 3);

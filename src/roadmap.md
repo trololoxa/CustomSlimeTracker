@@ -32,13 +32,13 @@ Phase 4 — Calibration: Active?
   mounting offset
   body/recenter offset
 
-Phase 5 — Magnetometer: Currently active
+Phase 5 — Magnetometer: Closed
   QMC6309 driver +
   raw mag logs +
   hard/soft iron calibration +
   mag -> imu axis alignment +
-  magTrust/gating
-  slow yaw correction
+  magTrust/gating +
+  slow yaw correction +
 
 Phase 6 — Output/tools:
   quaternion packet
