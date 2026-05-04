@@ -222,6 +222,9 @@ struct TrackerSerialCommandContext {
     void (*clearMagHeadingReference)(void* user) = nullptr;
     void* clearMagHeadingReferenceUser = nullptr;
 
+    bool (*setMagHeadingAutoReferenceEnabled)(bool enabled, void* user) = nullptr;
+    void* setMagHeadingAutoReferenceEnabledUser = nullptr;
+
     void (*printMagYawCorrectionStatus)(Stream& out, void* user) = nullptr;
     void* printMagYawCorrectionStatusUser = nullptr;
 
@@ -245,6 +248,9 @@ struct TrackerSerialCommandContext {
 
     void (*printMagCalibrationStatus)(Stream& out, void* user) = nullptr;
     void* printMagCalibrationStatusUser = nullptr;
+
+    bool (*fitGyroTempFromLastStatic)(bool persist, Stream& out, void* user) = nullptr;
+    void* fitGyroTempFromLastStaticUser = nullptr;
 };
 
 class TrackerCommandDispatcher {
@@ -367,6 +373,7 @@ private:
         out.println("mag id | qmcstatus | regs | hub | fifo");
         out.println("mag processed | trust");
         out.println("mag heading | heading ref | heading status | heading clear");
+        out.println("mag heading auto on | auto off | auto status");
         out.println("mag yaw status | yaw reset | yaw enable [save] | yaw disable [save]");
         out.println("mag yaw defaults [save] | tc <s> [save] | innovation <deg> [save]");
         out.println("mag yaw gyro_gate <goodDps> <badDps> [save]");
@@ -383,7 +390,8 @@ private:
         out.println("cal gyro save | clear");
         out.println("cal accel face XP|XN|YP|YN|ZP|ZN");
         out.println("cal accel compute | dump | save | clear");
-        out.println("cal temp print | set_slope X Y Z | clear");
+        out.println("cal temp print | enable [save] | disable [save]");
+        out.println("cal temp set_slope X Y Z [save] | fit_static [save] | clear [save]");
         out.println("cal save | clear_all");
         out.println();
         out.println("ahrs status | reset");
@@ -909,6 +917,44 @@ private:
                 if (ctx.printMagHeadingStatus) {
                     ctx.printMagHeadingStatus(out, ctx.printMagHeadingStatusUser);
                 }
+                return;
+            }
+
+            if (is(argv[2], "auto")) {
+                if (argc < 4 || is(argv[3], "status")) {
+                    if (ctx.printMagHeadingStatus) {
+                        ctx.printMagHeadingStatus(out, ctx.printMagHeadingStatusUser);
+                    } else {
+                        tracker_serial_detail::printErr(out, "mag heading status hook not available");
+                    }
+                    return;
+                }
+
+                if (is(argv[3], "on") || is(argv[3], "enable")) {
+                    if (!ctx.setMagHeadingAutoReferenceEnabled) {
+                        tracker_serial_detail::printErr(out, "mag heading auto hook not available");
+                        return;
+                    }
+
+                    const bool ok = ctx.setMagHeadingAutoReferenceEnabled(true, ctx.setMagHeadingAutoReferenceEnabledUser);
+                    if (ok) tracker_serial_detail::printOk(out, "mag heading auto-ref enabled");
+                    else tracker_serial_detail::printErr(out, "mag heading auto-ref enable failed");
+                    return;
+                }
+
+                if (is(argv[3], "off") || is(argv[3], "disable")) {
+                    if (!ctx.setMagHeadingAutoReferenceEnabled) {
+                        tracker_serial_detail::printErr(out, "mag heading auto hook not available");
+                        return;
+                    }
+
+                    const bool ok = ctx.setMagHeadingAutoReferenceEnabled(false, ctx.setMagHeadingAutoReferenceEnabledUser);
+                    if (ok) tracker_serial_detail::printOk(out, "mag heading auto-ref disabled");
+                    else tracker_serial_detail::printErr(out, "mag heading auto-ref disable failed");
+                    return;
+                }
+
+                tracker_serial_detail::printErr(out, "usage: mag heading auto on|off|status");
                 return;
             }
 
@@ -1666,26 +1712,83 @@ private:
 
     static void cmdCalTemp(TrackerSerialCommandContext& ctx, int argc, char** argv) {
         Stream& out = stream(ctx);
+
         if (!ctx.gyroTempComp) {
             tracker_serial_detail::printErr(out, "gyro temp comp not available");
             return;
         }
 
+        auto saveTempConfigIfRequested = [&](bool saveRequested) -> bool {
+            if (!ctx.config) return false;
+
+            ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
+            ctx.config->sanitize();
+            ctx.config->updateCrc();
+
+            if (!saveRequested) return true;
+
+            if (!ctx.configStore) return false;
+            return ctx.configStore->save(*ctx.config);
+        };
+
+        const float currentTempC =
+            ctx.calibrationIo ? ctx.calibrationIo->latestTempC : 25.0f;
+
         if (argc < 3 || is(argv[2], "print")) {
-            const auto s = ctx.gyroTempComp->snapshot(25.0f);
+            const auto s = ctx.gyroTempComp->snapshot(currentTempC);
+
+            out.println("# GYRO TEMP COMP");
             out.print("temp_comp_valid="); out.println(s.valid ? "yes" : "no");
             out.print("temp_comp_enabled="); out.println(s.enabled ? "yes" : "no");
+            out.print("temp_learning_enabled="); out.println(s.learningEnabled ? "yes" : "no");
+
+            out.print("current_temp_c="); out.println(s.currentTempC, 3);
             out.print("reference_temp_c="); out.println(s.referenceTempC, 3);
-            tracker_serial_detail::printVec3Line(out, "slope_dps_per_c", s.slopeDpsPerC, 6);
-            tracker_serial_detail::printVec3Line(out, "reference_bias_dps", s.referenceBiasDps, 5);
+            out.print("delta_temp_c="); out.println(s.deltaTempC, 3);
+
+            tracker_serial_detail::printVec3Line(out, "reference_bias_dps", s.referenceBiasDps, 6);
+            tracker_serial_detail::printVec3Line(out, "slope_dps_per_c", s.slopeDpsPerC, 8);
+            tracker_serial_detail::printVec3Line(out, "current_bias_dps", s.currentBiasDps, 6);
+
+            out.print("learn_accepted="); out.println(s.learnAccepted);
+            out.print("learn_rejected="); out.println(s.learnRejected);
+            return;
+        }
+
+        if (is(argv[2], "enable")) {
+            const bool saveRequested = argc >= 4 && is(argv[3], "save");
+
+            ctx.gyroTempComp->setEnabled(true);
+
+            if (!saveTempConfigIfRequested(saveRequested)) {
+                tracker_serial_detail::printErr(out, "cal temp enable save failed");
+                return;
+            }
+
+            tracker_serial_detail::printOk(out, saveRequested ? "gyro temp compensation enabled and saved" : "gyro temp compensation enabled");
+            return;
+        }
+
+        if (is(argv[2], "disable")) {
+            const bool saveRequested = argc >= 4 && is(argv[3], "save");
+
+            ctx.gyroTempComp->setEnabled(false);
+
+            if (!saveTempConfigIfRequested(saveRequested)) {
+                tracker_serial_detail::printErr(out, "cal temp disable save failed");
+                return;
+            }
+
+            tracker_serial_detail::printOk(out, saveRequested ? "gyro temp compensation disabled and saved" : "gyro temp compensation disabled");
             return;
         }
 
         if (is(argv[2], "set_slope")) {
             if (argc < 6) {
-                tracker_serial_detail::printErr(out, "usage: cal temp set_slope X Y Z  ; values in dps/C");
+                tracker_serial_detail::printErr(out, "usage: cal temp set_slope X Y Z [save] ; values in dps/C");
                 return;
             }
+
             float x = 0, y = 0, z = 0;
             if (!tracker_serial_detail::parseFloat(argv[3], x) ||
                 !tracker_serial_detail::parseFloat(argv[4], y) ||
@@ -1693,20 +1796,60 @@ private:
                 tracker_serial_detail::printErr(out, "invalid slope values");
                 return;
             }
+
+            const bool saveRequested = argc >= 7 && is(argv[6], "save");
+
             ctx.gyroTempComp->setSlopeDpsPerC(Vec3(x, y, z));
-            if (ctx.config) ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
-            tracker_serial_detail::printOk(out, "temperature slope applied to RAM");
+
+            if (!saveTempConfigIfRequested(saveRequested)) {
+                tracker_serial_detail::printErr(out, "cal temp set_slope save failed");
+                return;
+            }
+
+            tracker_serial_detail::printOk(out, saveRequested ? "temperature slope applied and saved" : "temperature slope applied to RAM");
+            return;
+        }
+
+        if (is(argv[2], "fit_static")) {
+            const bool saveRequested = argc >= 4 && is(argv[3], "save");
+
+            if (!ctx.fitGyroTempFromLastStatic) {
+                tracker_serial_detail::printErr(out, "fit_static hook not available");
+                return;
+            }
+
+            const bool ok = ctx.fitGyroTempFromLastStatic(
+                saveRequested,
+                out,
+                ctx.fitGyroTempFromLastStaticUser
+            );
+
+            if (!ok) {
+                tracker_serial_detail::printErr(out, "temperature fit from static test failed");
+            }
             return;
         }
 
         if (is(argv[2], "clear")) {
+            const bool saveRequested = argc >= 4 && is(argv[3], "save");
+
             ctx.gyroTempComp->setSlopeRadSPerC(Vec3::zero());
+
             if (ctx.config) {
                 ctx.config->data.gyroCal.tempCompValid = false;
                 ctx.config->data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
+                ctx.config->sanitize();
                 ctx.config->updateCrc();
+
+                if (saveRequested) {
+                    if (!ctx.configStore || !ctx.configStore->save(*ctx.config)) {
+                        tracker_serial_detail::printErr(out, "cal temp clear save failed");
+                        return;
+                    }
+                }
             }
-            tracker_serial_detail::printOk(out, "temperature compensation slope cleared in RAM");
+
+            tracker_serial_detail::printOk(out, saveRequested ? "temperature compensation cleared and saved" : "temperature compensation cleared in RAM");
             return;
         }
 

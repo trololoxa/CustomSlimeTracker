@@ -23,47 +23,40 @@ enum MagYawCorrectionRejectFlags : uint32_t {
     MAG_YAW_REJECT_ACCEL_NOT_TRUSTED     = 1u << 9,
     MAG_YAW_REJECT_DT_INVALID            = 1u << 10,
     MAG_YAW_REJECT_NONFINITE             = 1u << 11,
+
+    // Recovery latch:
+    // after strong motion or magnetic disturbance, keep yaw correction closed
+    // for a short time even after instant gates become good again.
+    MAG_YAW_REJECT_COOLDOWN              = 1u << 12,
 };
 
 struct MagYawCorrectionConfig {
-    // Controller computes status when enabled.
     bool enabled = true;
-
-    // If false, gate/status still works, but no quaternion correction is applied.
     bool applyEnabled = false;
 
-    // Safety gates.
     float maxInnovationDeg = 25.0f;
     uint32_t maxMagAgeMs = 250;
 
-    // Horizontal magnetic component gate with ramp.
-    // Good => full trust, bad => reject.
-    // Your logs: good static around 278..303, questionable extreme around 183.
     float horizontalNormGood = 260.0f;
     float horizontalNormBad = 200.0f;
 
-    // Gyro motion gate with ramp.
-    // Good => full trust, bad => reject.
-    // This prevents mag correction during active turns.
     float gyroNormGoodDps = 8.0f;
     float gyroNormBadDps = 35.0f;
 
-    // Accel/AHRS gate with ramp. Uses current accel gate trust.
-    // This keeps mag yaw correction aligned with the same trust philosophy as accel.
     float accelTrustGood = 0.70f;
     float accelTrustBad = 0.20f;
     bool requireAccelTrusted = true;
 
-    // Correction dynamics.
-    // error / timeConstant = target correction rate.
     float timeConstantS = 30.0f;
-
-    // Hard limits.
     float maxCorrectionRateDegS = 2.0f;
     float maxCorrectionStepDeg = 0.25f;
-
-    // Used only if controller update interval is weird.
     float fallbackDtS = 1.0f / 60.0f;
+
+    // New recovery cooldowns.
+    // Motion cooldown is short; magnetic disturbance cooldown is longer.
+    uint32_t gyroMovingCooldownMs = 1000;
+    uint32_t accelBadCooldownMs = 750;
+    uint32_t magDisturbanceCooldownMs = 3000;
 };
 
 struct MagYawCorrectionInput {
@@ -73,11 +66,9 @@ struct MagYawCorrectionInput {
     bool referenceValid = false;
     float referenceWorldYawRad = 0.0f;
 
-    // Use-time mag trust, including stale.
     bool magTrustedForUse = false;
     uint32_t magRejectFlagsForUse = MAG_REJECT_NONE;
 
-    // Motion/quality gates.
     float gyroNormDps = 0.0f;
     float accelTrust = 0.0f;
 
@@ -87,8 +78,6 @@ struct MagYawCorrectionInput {
 struct MagYawCorrectionOutput {
     bool valid = false;
 
-    // gateOpen means all sensor/data gates are open.
-    // applyAllowed means gateOpen && applyEnabled.
     bool gateOpen = false;
     bool applyAllowed = false;
     bool applied = false;
@@ -121,6 +110,10 @@ struct MagYawCorrectionOutput {
     uint32_t magAgeMs = 0;
     uint32_t magSeq = 0;
     uint64_t magTimestampUs = 0;
+
+    bool cooldownActive = false;
+    uint32_t cooldownRemainingMs = 0;
+    uint32_t cooldownReasonFlags = 0;
 };
 
 struct MagYawCorrectionStats {
@@ -142,6 +135,7 @@ struct MagYawCorrectionStats {
     uint32_t rejectAccelNotTrusted = 0;
     uint32_t rejectDtInvalid = 0;
     uint32_t rejectNonfinite = 0;
+    uint32_t rejectCooldown = 0;
 
     float lastAbsErrorDeg = 0.0f;
     float maxAbsErrorDeg = 0.0f;
@@ -165,6 +159,8 @@ public:
         last_ = MagYawCorrectionOutput{};
         stats_ = MagYawCorrectionStats{};
         lastUpdateMs_ = 0;
+        cooldownUntilMs_ = 0;
+        cooldownReasonFlags_ = MAG_YAW_REJECT_NONE;
     }
 
     const MagYawCorrectionOutput& last() const { return last_; }
@@ -187,6 +183,8 @@ public:
         out.accelTrust = in.accelTrust;
         out.magSeq = in.mag.seq;
         out.magTimestampUs = in.mag.t_us;
+
+        expireCooldownIfNeeded(in.nowMs);
 
         if (lastUpdateMs_ != 0 && in.nowMs >= lastUpdateMs_) {
             out.dtMs = in.nowMs - lastUpdateMs_;
@@ -264,6 +262,31 @@ public:
             }
         }
 
+        const uint32_t instantRejectFlags = out.rejectFlags;
+
+        if (instantRejectFlags & MAG_YAW_REJECT_GYRO_MOVING) {
+            requestCooldown(in.nowMs, cfg.gyroMovingCooldownMs, instantRejectFlags);
+        }
+
+        if (instantRejectFlags & MAG_YAW_REJECT_ACCEL_NOT_TRUSTED) {
+            requestCooldown(in.nowMs, cfg.accelBadCooldownMs, instantRejectFlags);
+        }
+
+        if (instantRejectFlags & (
+                MAG_YAW_REJECT_HEADING_INVALID |
+                MAG_YAW_REJECT_MAG_NOT_TRUSTED |
+                MAG_YAW_REJECT_HORIZONTAL_BAD |
+                MAG_YAW_REJECT_INNOVATION_TOO_LARGE)) {
+            requestCooldown(in.nowMs, cfg.magDisturbanceCooldownMs, instantRejectFlags);
+        }
+
+        if (cfg.enabled && in.referenceValid && cooldownActive(in.nowMs)) {
+            addReject(out, MAG_YAW_REJECT_COOLDOWN);
+            out.cooldownActive = true;
+            out.cooldownRemainingMs = cooldownRemainingMs(in.nowMs);
+            out.cooldownReasonFlags = cooldownReasonFlags_;
+        }
+
         float dtS = static_cast<float>(out.dtMs) * 0.001f;
         if (dtS <= 0.0f || dtS > 1.0f || !tracker::isFinite(dtS)) {
             dtS = cfg.fallbackDtS;
@@ -285,9 +308,6 @@ public:
 
             const float tc = cfg.timeConstantS > 0.001f ? cfg.timeConstantS : 30.0f;
 
-            // Negative feedback:
-            // If magnetic north in world moved positive relative to reference,
-            // rotate estimate back with a negative world-up correction.
             float rateRadS = -out.errorRad / tc;
             rateRadS *= out.combinedTrust;
 
@@ -336,6 +356,39 @@ public:
     }
 
 private:
+    static bool timeBefore(uint32_t a, uint32_t b) {
+        return static_cast<int32_t>(a - b) < 0;
+    }
+
+    void expireCooldownIfNeeded(uint32_t nowMs) {
+        if (cooldownUntilMs_ == 0) return;
+        if (!timeBefore(nowMs, cooldownUntilMs_)) {
+            cooldownUntilMs_ = 0;
+            cooldownReasonFlags_ = MAG_YAW_REJECT_NONE;
+        }
+    }
+
+    void requestCooldown(uint32_t nowMs, uint32_t durationMs, uint32_t reasonFlags) {
+        if (durationMs == 0) return;
+
+        const uint32_t until = nowMs + durationMs;
+        if (cooldownUntilMs_ == 0 || timeBefore(cooldownUntilMs_, until)) {
+            cooldownUntilMs_ = until;
+            cooldownReasonFlags_ = reasonFlags;
+        } else {
+            cooldownReasonFlags_ |= reasonFlags;
+        }
+    }
+
+    bool cooldownActive(uint32_t nowMs) const {
+        return cooldownUntilMs_ != 0 && timeBefore(nowMs, cooldownUntilMs_);
+    }
+
+    uint32_t cooldownRemainingMs(uint32_t nowMs) const {
+        if (!cooldownActive(nowMs)) return 0;
+        return cooldownUntilMs_ - nowMs;
+    }
+
     static float rampUp(float x, float bad, float good) {
         if (x >= good) return 1.0f;
         if (x <= bad) return 0.0f;
@@ -367,11 +420,15 @@ private:
         if (flags & MAG_YAW_REJECT_ACCEL_NOT_TRUSTED)    stats_.rejectAccelNotTrusted++;
         if (flags & MAG_YAW_REJECT_DT_INVALID)           stats_.rejectDtInvalid++;
         if (flags & MAG_YAW_REJECT_NONFINITE)            stats_.rejectNonfinite++;
+        if (flags & MAG_YAW_REJECT_COOLDOWN)             stats_.rejectCooldown++;
     }
 
     MagYawCorrectionOutput last_;
     MagYawCorrectionStats stats_;
     uint32_t lastUpdateMs_ = 0;
+
+    uint32_t cooldownUntilMs_ = 0;
+    uint32_t cooldownReasonFlags_ = MAG_YAW_REJECT_NONE;
 };
 
 } // namespace tracker

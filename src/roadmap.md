@@ -1,36 +1,36 @@
 Delayed:
-1. FIFO on IMU
-2. Accel calibration
+1. FIFO on IMU +
+2. Accel calibration +
 3. SPI speed
-4. Accel/gyro/mag Mhz speed
-5. Accel trust чуть построже
+4. Accel/gyro/mag Mhz speed ?
+5. Accel trust чуть построже +
 
 Phase 1 — IMU bring-up: Closed
-  math
-  LSM6DSV driver
-  raw/scaled logs
-  timestamped samples
-  gyro startup calibration
+  math +
+  LSM6DSV driver +
+  raw/scaled logs +
+  timestamped samples +
+  gyro startup calibration +
 
 Phase 2 — 6DoF: Closed
-  gyro-only quaternion
-  accel gravity correction
-  accel gating
-  stable 6DoF validation
+  gyro-only quaternion +
+  accel gravity correction +
+  accel gating +
+  stable 6DoF validation +
 
 Phase 3 — Robust IMU pipeline: Closed
-  FIFO
-  dropped sample detection
-  saturation flags
-  config save/load
-  command protocol
+  FIFO +
+  dropped sample detection +
+  saturation flags +
+  config save/load +
+  command protocol +
 
 Phase 4 — Calibration: Active?
   accel 6-position calibration
   gyro bias persistence
-  gyro temp compensation
-  mounting offset
-  body/recenter offset
+  gyro temp compensation +-
+  mounting offset (Maybe on server)
+  body/recenter offset (Maybe on server)
 
 Phase 5 — Magnetometer: Closed
   QMC6309 driver +
@@ -55,4 +55,3 @@ Phase 7 — Advanced:
 
 For earth compensation check:
     Add gyro_after_mean_dps: x=... y=... z=... to static report
-    Don't do temp calibration

@@ -152,6 +152,42 @@ struct MagHeadingReferenceState {
 
 static MagHeadingReferenceState g_magHeadingRef;
 
+struct MagHeadingAutoReferenceState {
+    bool enabled = true;
+    bool done = false;
+
+    uint32_t stableSinceMs = 0;
+    uint32_t setCount = 0;
+    uint32_t lastSetMs = 0;
+    uint32_t lastRejectFlags = 0;
+
+    float lastGyroNormDps = 0.0f;
+    float lastAccelTrust = 0.0f;
+    float lastHorizontalTrust = 0.0f;
+
+    void resetCandidate() {
+        stableSinceMs = 0;
+        lastRejectFlags = 0;
+        lastGyroNormDps = 0.0f;
+        lastAccelTrust = 0.0f;
+        lastHorizontalTrust = 0.0f;
+    }
+
+    void resetAll() {
+        enabled = true;
+        done = false;
+        stableSinceMs = 0;
+        setCount = 0;
+        lastSetMs = 0;
+        lastRejectFlags = 0;
+        lastGyroNormDps = 0.0f;
+        lastAccelTrust = 0.0f;
+        lastHorizontalTrust = 0.0f;
+    }
+};
+
+static MagHeadingAutoReferenceState g_magHeadingAutoRef;
+
 // ============================================================
 // Small stats for command-driven static test
 // ============================================================
@@ -618,6 +654,7 @@ static void resetMagRuntimeCounters() {
     g_lastMagYawCorrection = MagYawCorrectionOutput{};
 
     g_magHeadingRef.clear();
+    g_magHeadingAutoRef.resetAll();
 }
 
 static bool reconfigureFifoForCurrentMagConfig(uint64_t keepTimestampUs) {
@@ -751,6 +788,10 @@ static MagYawCorrectionConfig makeMagYawCorrectionConfig() {
     c.maxCorrectionStepDeg = y.maxCorrectionStepDeg;
     c.fallbackDtS = 1.0f / 60.0f;
 
+    c.gyroMovingCooldownMs = 1000;
+    c.accelBadCooldownMs = 750;
+    c.magDisturbanceCooldownMs = 3000;
+
     return c;
 }
 
@@ -784,6 +825,125 @@ static float magRawNorm(const Lsm6dsvFifoReader::MagRawSample& m) {
     return std::sqrt(static_cast<float>(m.x) * static_cast<float>(m.x) +
                      static_cast<float>(m.y) * static_cast<float>(m.y) +
                      static_cast<float>(m.z) * static_cast<float>(m.z));
+}
+
+static float magYawRampUpLocal(float x, float bad, float good) {
+    if (x >= good) return 1.0f;
+    if (x <= bad) return 0.0f;
+    if (good <= bad) return 0.0f;
+    return (x - bad) / (good - bad);
+}
+
+static void resetMagYawCorrectionRuntime() {
+    g_magYawCorrection.reset();
+    g_lastMagYawCorrection = MagYawCorrectionOutput{};
+}
+
+static bool setMagHeadingReferenceInternal(const char* reason, bool verbose) {
+    if (!g_lastMagHeading.valid) {
+        if (verbose) Serial.println("# ERR cannot set mag heading reference: last heading is invalid");
+        return false;
+    }
+
+    if (!MagRuntimeProcessor::trustedForUse(g_lastMagProcessed, makeMagRuntimeConfig(), millis())) {
+        if (verbose) Serial.println("# ERR cannot set mag heading reference: last mag is not trusted");
+        return false;
+    }
+
+    g_magHeadingRef.valid = true;
+    g_magHeadingRef.worldYawRad = g_lastMagHeading.magneticNorthWorldYawRad;
+    g_magHeadingRef.setMs = millis();
+    g_magHeadingRef.magSeq = g_lastMagHeading.magSeq;
+    g_magHeadingRef.magTimestampUs = g_lastMagHeading.magTimestampUs;
+
+    g_magHeadingAutoRef.done = true;
+    g_magHeadingAutoRef.setCount++;
+    g_magHeadingAutoRef.lastSetMs = millis();
+    g_magHeadingAutoRef.resetCandidate();
+
+    // Important: a new reference invalidates previous controller timing/stats.
+    resetMagYawCorrectionRuntime();
+
+    if (verbose) {
+        Serial.print("# OK mag heading ref");
+        if (reason && reason[0] != '\0') {
+            Serial.print(" reason=");
+            Serial.print(reason);
+        }
+        Serial.print(" world_yaw_deg=");
+        Serial.println(g_magHeadingRef.worldYawDeg(), 6);
+    }
+
+    return true;
+}
+
+static void updateMagHeadingAutoReference(uint32_t nowMs,
+                                          float gyroNormDps,
+                                          float accelTrust,
+                                          bool magTrustedForUse) {
+    if (!g_magHeadingAutoRef.enabled) return;
+
+    // Already have a reference for this AHRS world-frame.
+    if (g_magHeadingRef.valid) {
+        g_magHeadingAutoRef.done = true;
+        return;
+    }
+
+    const MagYawCorrectionConfig yawCfg = makeMagYawCorrectionConfig();
+
+    uint32_t reject = 0;
+
+    if (!yawCfg.enabled || !yawCfg.applyEnabled) {
+        reject |= 1u << 0;
+    }
+
+    if (!g_lastMagHeading.valid) {
+        reject |= 1u << 1;
+    }
+
+    if (!magTrustedForUse) {
+        reject |= 1u << 2;
+    }
+
+    if (!tracker::isFinite(gyroNormDps) || gyroNormDps > 1.5f) {
+        reject |= 1u << 3;
+    }
+
+    if (!tracker::isFinite(accelTrust) || accelTrust < 0.90f) {
+        reject |= 1u << 4;
+    }
+
+    const float hTrust = magYawRampUpLocal(
+        g_lastMagHeading.horizontalNorm,
+        yawCfg.horizontalNormBad,
+        yawCfg.horizontalNormGood
+    );
+
+    // Auto-ref only needs heading to be usable, not perfect.
+    // Continuous yaw correction still uses full combinedTrust ramp later.
+    if (!tracker::isFinite(hTrust) || hTrust < 0.25f) {
+        reject |= 1u << 5;
+    }
+
+    g_magHeadingAutoRef.lastRejectFlags = reject;
+    g_magHeadingAutoRef.lastGyroNormDps = gyroNormDps;
+    g_magHeadingAutoRef.lastAccelTrust = accelTrust;
+    g_magHeadingAutoRef.lastHorizontalTrust = hTrust;
+
+    if (reject != 0) {
+        g_magHeadingAutoRef.stableSinceMs = 0;
+        return;
+    }
+
+    if (g_magHeadingAutoRef.stableSinceMs == 0) {
+        g_magHeadingAutoRef.stableSinceMs = nowMs;
+        return;
+    }
+
+    const uint32_t stableMs = nowMs - g_magHeadingAutoRef.stableSinceMs;
+    if (stableMs >= 3000) {
+        setMagHeadingReferenceInternal("auto", true);
+    }
 }
 
 static bool applyMagYawCorrectionToAhrs(const MagYawCorrectionOutput& yaw) {
@@ -836,20 +996,28 @@ static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
 
     const uint32_t nowMs = millis();
     const MagRuntimeConfig magCfg = makeMagRuntimeConfig();
+    const Ahrs6DofStats& ahrsStats = g_ahrs6dof.stats();
+
+    const float gyroNormDps = ahrsStats.lastGyroRadS.norm() * MATH_RAD_TO_DEG;
+    const float accelTrust = ahrsStats.lastAccelGate.trust;
+
+    const bool magTrustedForUse =
+        MagRuntimeProcessor::trustedForUse(g_lastMagProcessed, magCfg, nowMs);
+    const uint32_t magRejectFlagsForUse =
+        MagRuntimeProcessor::rejectFlagsForUse(g_lastMagProcessed, magCfg, nowMs);
+
+    updateMagHeadingAutoReference(nowMs, gyroNormDps, accelTrust, magTrustedForUse);
 
     MagYawCorrectionInput yawIn;
     yawIn.mag = g_lastMagProcessed;
     yawIn.heading = g_lastMagHeading;
     yawIn.referenceValid = g_magHeadingRef.valid;
     yawIn.referenceWorldYawRad = g_magHeadingRef.worldYawRad;
-    yawIn.magTrustedForUse = MagRuntimeProcessor::trustedForUse(g_lastMagProcessed, magCfg, nowMs);
-    yawIn.magRejectFlagsForUse = MagRuntimeProcessor::rejectFlagsForUse(g_lastMagProcessed, magCfg, nowMs);
+    yawIn.magTrustedForUse = magTrustedForUse;
+    yawIn.magRejectFlagsForUse = magRejectFlagsForUse;
+    yawIn.gyroNormDps = gyroNormDps;
+    yawIn.accelTrust = accelTrust;
     yawIn.nowMs = nowMs;
-
-    const Ahrs6DofStats& ahrsStats = g_ahrs6dof.stats();
-
-    yawIn.gyroNormDps = ahrsStats.lastGyroRadS.norm() * MATH_RAD_TO_DEG;
-    yawIn.accelTrust = ahrsStats.lastAccelGate.trust;
 
     MagYawCorrectionOutput yawOut;
     g_magYawCorrection.update(yawIn, makeMagYawCorrectionConfig(), yawOut);
@@ -1083,6 +1251,35 @@ static void printMagHeadingStatus(Stream& out, void* user) {
     out.print("mag_error_to_ref_rad=");
     out.println(g_magHeadingRef.valid && h.valid ? errorToRefRad : 0.0f, 9);
 
+    out.println("# MAG HEADING AUTO REFERENCE");
+
+    out.print("mag_auto_ref_enabled=");
+    out.println(g_magHeadingAutoRef.enabled ? "yes" : "no");
+
+    out.print("mag_auto_ref_done=");
+    out.println(g_magHeadingAutoRef.done ? "yes" : "no");
+
+    out.print("mag_auto_ref_stable_ms=");
+    out.println(g_magHeadingAutoRef.stableSinceMs == 0 ? 0UL : millis() - g_magHeadingAutoRef.stableSinceMs);
+
+    out.print("mag_auto_ref_set_count=");
+    out.println(g_magHeadingAutoRef.setCount);
+
+    out.print("mag_auto_ref_last_set_age_ms=");
+    out.println(g_magHeadingAutoRef.lastSetMs == 0 ? 0UL : millis() - g_magHeadingAutoRef.lastSetMs);
+
+    out.print("mag_auto_ref_last_reject_flags=0x");
+    out.println(g_magHeadingAutoRef.lastRejectFlags, HEX);
+
+    out.print("mag_auto_ref_last_gyro_norm_dps=");
+    out.println(g_magHeadingAutoRef.lastGyroNormDps, 6);
+
+    out.print("mag_auto_ref_last_accel_trust=");
+    out.println(g_magHeadingAutoRef.lastAccelTrust, 6);
+
+    out.print("mag_auto_ref_last_horizontal_trust=");
+    out.println(g_magHeadingAutoRef.lastHorizontalTrust, 6);
+
     out.println("# MAG HEADING STATS");
 
     out.print("heading_attempts=");
@@ -1139,6 +1336,15 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
 
     out.print("reject_flags=0x");
     out.println(y.rejectFlags, HEX);
+
+    out.print("cooldown_active=");
+    out.println(y.cooldownActive ? "yes" : "no");
+
+    out.print("cooldown_remaining_ms=");
+    out.println(y.cooldownRemainingMs);
+
+    out.print("cooldown_reason_flags=0x");
+    out.println(y.cooldownReasonFlags, HEX);
 
     out.print("mag_seq=");
     out.println(y.magSeq);
@@ -1285,6 +1491,9 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
     out.print("reject_accel_not_trusted=");
     out.println(s.rejectAccelNotTrusted);
 
+    out.print("reject_cooldown=");
+    out.println(s.rejectCooldown);
+
     out.print("reject_dt_invalid=");
     out.println(s.rejectDtInvalid);
 
@@ -1294,8 +1503,7 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
 
 static void resetMagYawCorrectionHook(void* user) {
     (void)user;
-    g_magYawCorrection.reset();
-    g_lastMagYawCorrection = MagYawCorrectionOutput{};
+    resetMagYawCorrectionRuntime();
 }
 
 static bool setMagYawCorrectionApplyEnabledHook(bool enabled, bool persist, void* user) {
@@ -1324,32 +1532,32 @@ static bool setMagYawCorrectionApplyEnabledHook(bool enabled, bool persist, void
 
 static bool setMagHeadingReferenceHook(void* user) {
     (void)user;
-
-    if (!g_lastMagHeading.valid) {
-        Serial.println("# ERR cannot set mag heading reference: last heading is invalid");
-        return false;
-    }
-
-    if (!MagRuntimeProcessor::trustedForUse(g_lastMagProcessed, makeMagRuntimeConfig(), millis())) {
-        Serial.println("# ERR cannot set mag heading reference: last mag is not trusted");
-        return false;
-    }
-
-    g_magHeadingRef.valid = true;
-    g_magHeadingRef.worldYawRad = g_lastMagHeading.magneticNorthWorldYawRad;
-    g_magHeadingRef.setMs = millis();
-    g_magHeadingRef.magSeq = g_lastMagHeading.magSeq;
-    g_magHeadingRef.magTimestampUs = g_lastMagHeading.magTimestampUs;
-
-    Serial.print("# OK mag heading ref world_yaw_deg=");
-    Serial.println(g_magHeadingRef.worldYawDeg(), 6);
-
-    return true;
+    return setMagHeadingReferenceInternal("manual", true);
 }
 
 static void clearMagHeadingReferenceHook(void* user) {
     (void)user;
     g_magHeadingRef.clear();
+    g_magHeadingAutoRef.done = false;
+    g_magHeadingAutoRef.resetCandidate();
+    resetMagYawCorrectionRuntime();
+}
+
+static bool setMagHeadingAutoReferenceEnabledHook(bool enabled, void* user) {
+    (void)user;
+
+    g_magHeadingAutoRef.enabled = enabled;
+
+    if (!enabled) {
+        g_magHeadingAutoRef.resetCandidate();
+    } else if (!g_magHeadingRef.valid) {
+        g_magHeadingAutoRef.done = false;
+        g_magHeadingAutoRef.resetCandidate();
+    }
+
+    Serial.print("# OK mag heading auto-ref ");
+    Serial.println(enabled ? "enabled" : "disabled");
+    return true;
 }
 
 static void printMagCalibrationStatus(Stream& out, void* user) {
@@ -1578,12 +1786,19 @@ static void printRuntimeHealth(Stream& out, void* user) {
     out.print("mag_heading_valid_count="); out.println(hs.valid);
     out.print("mag_heading_north_minus_ahrs_yaw_deg="); out.println(g_lastMagHeading.yawInnovationDeg, 6);
     out.print("mag_heading_ref_valid="); out.println(g_magHeadingRef.valid ? "yes" : "no");
+    out.print("mag_heading_auto_ref_done="); out.println(g_magHeadingAutoRef.done ? "yes" : "no");
+    out.print("mag_heading_auto_ref_reject_flags=0x"); out.println(g_magHeadingAutoRef.lastRejectFlags, HEX);
     out.print("mag_heading_error_to_ref_deg=");
     out.println(g_magHeadingRef.valid && g_lastMagHeading.valid ? magHeadingErrorToReferenceDeg(g_lastMagHeading) : 0.0f, 6);
     out.print("mag_yaw_gate_open=");
     out.println(g_lastMagYawCorrection.gateOpen ? "yes" : "no");
     out.print("mag_yaw_reject_flags=0x");
     out.println(g_lastMagYawCorrection.rejectFlags, HEX);
+    out.print("mag_yaw_cooldown_active=");
+    out.println(g_lastMagYawCorrection.cooldownActive ? "yes" : "no");
+
+    out.print("mag_yaw_cooldown_remaining_ms=");
+    out.println(g_lastMagYawCorrection.cooldownRemainingMs);
     out.print("mag_yaw_error_deg=");
     out.println(g_lastMagYawCorrection.errorDeg, 6);
     out.print("mag_yaw_correction_rate_deg_s=");
@@ -1737,6 +1952,8 @@ static void setupCommandInterface() {
     g_cmdCtx.setMagHeadingReferenceUser = nullptr;
     g_cmdCtx.clearMagHeadingReference = clearMagHeadingReferenceHook;
     g_cmdCtx.clearMagHeadingReferenceUser = nullptr;
+    g_cmdCtx.setMagHeadingAutoReferenceEnabled = setMagHeadingAutoReferenceEnabledHook;
+    g_cmdCtx.setMagHeadingAutoReferenceEnabledUser = nullptr;
     g_cmdCtx.printMagYawCorrectionStatus = printMagYawCorrectionStatus;
     g_cmdCtx.printMagYawCorrectionStatusUser = nullptr;
     g_cmdCtx.resetMagYawCorrection = resetMagYawCorrectionHook;
@@ -1753,6 +1970,8 @@ static void setupCommandInterface() {
     g_cmdCtx.applyMagCalibrationUser = nullptr;
     g_cmdCtx.printMagCalibrationStatus = printMagCalibrationStatus;
     g_cmdCtx.printMagCalibrationStatusUser = nullptr;
+    g_cmdCtx.fitGyroTempFromLastStatic = fitGyroTempFromLastStaticHook;
+    g_cmdCtx.fitGyroTempFromLastStaticUser = nullptr;
 
     g_cli.begin(g_cmdCtx);
 }
@@ -1772,61 +1991,6 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     lsmFifo.resetTimestampReconstruction(ts);
     g_quality.clearRecoveryRequest();
     resetFifoRuntimeCounters();
-}
-
-static void finishStaticTest();
-static void updateStaticTest(const Lsm6dsv::RawSample& raw,
-                             const Lsm6dsv::Sample& calibrated,
-                             const ImuQualityResult& quality) {
-    if (!g_staticTest.active) return;
-
-    const uint32_t nowMs = millis();
-    const uint32_t elapsedMs = nowMs - g_staticTest.startMs;
-
-    if (quality.has(imu_quality_flags::TIMESTAMP_HARDWARE)) g_staticTest.hwTs++;
-    if (quality.has(imu_quality_flags::TIMESTAMP_FALLBACK)) g_staticTest.fallbackTs++;
-    if (quality.has(imu_quality_flags::TIMESTAMP_ZERO) || quality.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC)) g_staticTest.badTs++;
-    if (quality.has(imu_quality_flags::SAMPLE_DROPPED_BEFORE)) g_staticTest.droppedEstimate += quality.estimatedDroppedBefore;
-    if (quality.shouldRequestFifoRecovery) g_staticTest.recoveryRequests++;
-    if (!quality.shouldUpdateAhrs) g_staticTest.ahrsSkipped++;
-    if (!quality.shouldUseAccelCorrection) g_staticTest.accelDisabled++;
-
-    if (quality.dtUs > 0) g_staticTest.dtUs.push(static_cast<float>(quality.dtUs));
-    g_staticTest.accelNormG.push(calibrated.accel_g.norm());
-    g_staticTest.accelTrust.push(quality.accelConfidence);
-    if (!g_staticTest.tempCaptured) {
-        g_staticTest.tempCaptured = true;
-        g_staticTest.tempStartC = calibrated.temp_c;
-    }
-
-    g_staticTest.tempEndC = calibrated.temp_c;
-
-    g_staticTest.tempC.push(calibrated.temp_c);
-    g_staticTest.gyroAfterRadS.push(calibrated.gyro_rad_s);
-    g_staticTest.samples++;
-
-    if (!g_staticTest.poseCaptured && g_ahrs6dof.initialized()) {
-        g_staticTest.poseCaptured = true;
-        g_staticTest.eulerStartDeg = g_ahrs6dof.eulerDeg();
-        g_staticTest.qStart = g_ahrs6dof.quaternionPositiveW();
-    }
-    g_staticTest.eulerEndDeg = g_ahrs6dof.eulerDeg();
-    g_staticTest.qEnd = g_ahrs6dof.quaternionPositiveW();
-
-    if (nowMs - g_staticTest.lastProgressMs >= HEARTBEAT_PERIOD_MS) {
-        g_staticTest.lastProgressMs = nowMs;
-        Serial.print("# test progress elapsed_s="); Serial.print(elapsedMs / 1000UL);
-        Serial.print(" samples="); Serial.print(g_staticTest.samples);
-        Serial.print(" hw_ts="); Serial.print(g_staticTest.hwTs);
-        Serial.print(" fb_ts="); Serial.print(g_staticTest.fallbackTs);
-        Serial.print(" dropped_est="); Serial.print(g_staticTest.droppedEstimate);
-        Serial.print(" accel_norm_mean="); Serial.print(g_staticTest.accelNormG.mean(), 6);
-        Serial.print(" gyro_after_mean_dps_norm="); Serial.println((g_staticTest.gyroAfterRadS.mean() * MATH_RAD_TO_DEG).norm(), 6);
-    }
-
-    if (g_staticTest.stopRequested || elapsedMs >= g_staticTest.durationMs) {
-        finishStaticTest();
-    }
 }
 
 static void finishStaticTest() {
@@ -2082,6 +2246,152 @@ static void finishStaticTest() {
     Serial.println("==============================================================================");
 
     g_staticTest.reset();
+}
+
+static void updateStaticTest(const Lsm6dsv::RawSample& raw,
+                             const Lsm6dsv::Sample& calibrated,
+                             const ImuQualityResult& quality) {
+    if (!g_staticTest.active) return;
+
+    const uint32_t nowMs = millis();
+    const uint32_t elapsedMs = nowMs - g_staticTest.startMs;
+
+    if (quality.has(imu_quality_flags::TIMESTAMP_HARDWARE)) g_staticTest.hwTs++;
+    if (quality.has(imu_quality_flags::TIMESTAMP_FALLBACK)) g_staticTest.fallbackTs++;
+    if (quality.has(imu_quality_flags::TIMESTAMP_ZERO) || quality.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC)) g_staticTest.badTs++;
+    if (quality.has(imu_quality_flags::SAMPLE_DROPPED_BEFORE)) g_staticTest.droppedEstimate += quality.estimatedDroppedBefore;
+    if (quality.shouldRequestFifoRecovery) g_staticTest.recoveryRequests++;
+    if (!quality.shouldUpdateAhrs) g_staticTest.ahrsSkipped++;
+    if (!quality.shouldUseAccelCorrection) g_staticTest.accelDisabled++;
+
+    if (quality.dtUs > 0) g_staticTest.dtUs.push(static_cast<float>(quality.dtUs));
+    g_staticTest.accelNormG.push(calibrated.accel_g.norm());
+    g_staticTest.accelTrust.push(quality.accelConfidence);
+    if (!g_staticTest.tempCaptured) {
+        g_staticTest.tempCaptured = true;
+        g_staticTest.tempStartC = calibrated.temp_c;
+    }
+
+    g_staticTest.tempEndC = calibrated.temp_c;
+
+    g_staticTest.tempC.push(calibrated.temp_c);
+    g_staticTest.gyroAfterRadS.push(calibrated.gyro_rad_s);
+    g_staticTest.samples++;
+
+    if (!g_staticTest.poseCaptured && g_ahrs6dof.initialized()) {
+        g_staticTest.poseCaptured = true;
+        g_staticTest.eulerStartDeg = g_ahrs6dof.eulerDeg();
+        g_staticTest.qStart = g_ahrs6dof.quaternionPositiveW();
+    }
+    g_staticTest.eulerEndDeg = g_ahrs6dof.eulerDeg();
+    g_staticTest.qEnd = g_ahrs6dof.quaternionPositiveW();
+
+    if (nowMs - g_staticTest.lastProgressMs >= HEARTBEAT_PERIOD_MS) {
+        g_staticTest.lastProgressMs = nowMs;
+        Serial.print("# test progress elapsed_s="); Serial.print(elapsedMs / 1000UL);
+        Serial.print(" samples="); Serial.print(g_staticTest.samples);
+        Serial.print(" hw_ts="); Serial.print(g_staticTest.hwTs);
+        Serial.print(" fb_ts="); Serial.print(g_staticTest.fallbackTs);
+        Serial.print(" dropped_est="); Serial.print(g_staticTest.droppedEstimate);
+        Serial.print(" accel_norm_mean="); Serial.print(g_staticTest.accelNormG.mean(), 6);
+        Serial.print(" gyro_after_mean_dps_norm="); Serial.println((g_staticTest.gyroAfterRadS.mean() * MATH_RAD_TO_DEG).norm(), 6);
+    }
+
+    if (g_staticTest.stopRequested || elapsedMs >= g_staticTest.durationMs) {
+        finishStaticTest();
+    }
+}
+
+static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user) {
+    (void)user;
+
+    if (!g_gyroTempComp.valid()) {
+        out.println("# ERR gyro temp comp is not valid; run cal gyro first");
+        return false;
+    }
+
+    if (g_staticTest.samples < 1000 || g_staticTest.gyroAfterRadS.count < 1000) {
+        out.println("# ERR no usable static test data; run test static first");
+        return false;
+    }
+
+    const float tempMeanC = g_staticTest.tempC.mean();
+    const float tempStartC = g_staticTest.tempStartC;
+    const float tempEndC = g_staticTest.tempEndC;
+    const float tempDeltaDuringTestC = tempEndC - tempStartC;
+
+    const float refTempC = g_gyroTempComp.referenceTempC();
+    const float dT = tempMeanC - refTempC;
+
+    if (!tracker::isFinite(tempMeanC) || !tracker::isFinite(dT) || std::fabs(dT) < 1.5f) {
+        out.print("# ERR temp delta from reference too small: dT=");
+        out.println(dT, 3);
+        return false;
+    }
+
+    const Vec3 residualRadS = g_staticTest.gyroAfterRadS.mean();
+    if (!residualRadS.isFinite()) {
+        out.println("# ERR residual gyro mean is non-finite");
+        return false;
+    }
+
+    const Vec3 oldSlopeRadSPerC = g_gyroTempComp.slopeRadSPerC();
+    const Vec3 correctionSlopeRadSPerC = residualRadS / dT;
+    const Vec3 newSlopeRadSPerC = oldSlopeRadSPerC + correctionSlopeRadSPerC;
+
+    const Vec3 oldSlopeDpsPerC = oldSlopeRadSPerC * MATH_RAD_TO_DEG;
+    const Vec3 correctionSlopeDpsPerC = correctionSlopeRadSPerC * MATH_RAD_TO_DEG;
+    const Vec3 newSlopeDpsPerC = newSlopeRadSPerC * MATH_RAD_TO_DEG;
+    const Vec3 residualDps = residualRadS * MATH_RAD_TO_DEG;
+
+    const GyroTempCompConfig& cfg = g_gyroTempComp.config();
+    if (std::fabs(newSlopeDpsPerC.x) > cfg.maxAbsSlopeDpsPerC ||
+        std::fabs(newSlopeDpsPerC.y) > cfg.maxAbsSlopeDpsPerC ||
+        std::fabs(newSlopeDpsPerC.z) > cfg.maxAbsSlopeDpsPerC) {
+        out.println("# ERR fitted slope exceeds maxAbsSlopeDpsPerC");
+        out.print("max_abs_slope_dps_per_c=");
+        out.println(cfg.maxAbsSlopeDpsPerC, 6);
+        tracker_serial_detail::printVec3Line(out, "candidate_slope_dps_per_c", newSlopeDpsPerC, 8);
+        return false;
+    }
+
+    g_gyroTempComp.setSlopeRadSPerC(newSlopeRadSPerC);
+    g_gyroTempComp.setEnabled(true);
+
+    g_config.captureFromGyroTempComp(g_gyroTempComp);
+    g_config.sanitize();
+    g_config.updateCrc();
+
+    if (persist) {
+        if (!g_configStore.save(g_config)) {
+            out.print("# ERR gyro temp fit save failed: ");
+            out.println(g_configStore.lastErrorName());
+            return false;
+        }
+    }
+
+    out.println("# GYRO TEMP FIT FROM STATIC");
+    out.print("reference_temp_c="); out.println(refTempC, 3);
+    out.print("static_temp_mean_c="); out.println(tempMeanC, 3);
+    out.print("static_temp_start_c="); out.println(tempStartC, 3);
+    out.print("static_temp_end_c="); out.println(tempEndC, 3);
+    out.print("static_temp_delta_during_test_c="); out.println(tempDeltaDuringTestC, 3);
+    out.print("delta_from_reference_c="); out.println(dT, 3);
+
+    if (std::fabs(tempDeltaDuringTestC) > 2.0f) {
+        out.println("# WARN static test temperature changed by >2C; fit is usable but less clean than a stabilized temp point");
+    }
+
+    tracker_serial_detail::printVec3Line(out, "residual_mean_dps", residualDps, 8);
+    tracker_serial_detail::printVec3Line(out, "old_slope_dps_per_c", oldSlopeDpsPerC, 8);
+    tracker_serial_detail::printVec3Line(out, "correction_slope_dps_per_c", correctionSlopeDpsPerC, 8);
+    tracker_serial_detail::printVec3Line(out, "new_slope_dps_per_c", newSlopeDpsPerC, 8);
+
+    out.print("# OK gyro temperature compensation fitted");
+    if (persist) out.print(" and saved");
+    out.println();
+
+    return true;
 }
 
 static void emitStreamIfNeeded(const Lsm6dsv::RawSample& raw,
