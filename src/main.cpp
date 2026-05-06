@@ -1910,6 +1910,7 @@ static void printStaticTestStatus(Stream& out, void* user) {
     out.print("gyro_after_mean_dps_norm="); out.println((g_staticTest.gyroAfterRadS.mean() * MATH_RAD_TO_DEG).norm(), 6);
 }
 
+static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user);
 static void setupCommandInterface() {
     g_cmdCtx.io = &Serial;
     g_cmdCtx.config = &g_config;
