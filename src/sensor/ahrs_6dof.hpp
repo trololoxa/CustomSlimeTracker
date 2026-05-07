@@ -40,6 +40,14 @@ struct Ahrs6DofConfig {
     // Gyro noise deadband. Keep 0 while validating sensor data.
     float gyroDeadbandRadS = 0.0f;
 
+    // Master switch for accel gravity correction. Gyro integration still runs.
+    bool accelCorrectionEnabled = true;
+
+    // Adaptive accel trust adds norm-variance and gyro-motion gates on top of
+    // norm/innovation checks. This is intentionally conservative: it only
+    // weakens accel correction during vibration, impacts or very fast motion.
+    bool adaptiveAccelCorrection = true;
+
     // Accel correction proportional gain, in 1/s.
     // Effective correction angle per update is roughly:
     //      correction_rad = accelKp * accelTrust * error_rad * dt
@@ -60,6 +68,17 @@ struct Ahrs6DofConfig {
     float accelInnovationGoodRad = 8.0f * MATH_DEG_TO_RAD;
     float accelInnovationBadRad = 45.0f * MATH_DEG_TO_RAD;
 
+    // Adaptive accel trust: exponentially tracked variance of accel norm.
+    // stddev <= 0.01g => full trust, stddev >= 0.08g => zero adaptive trust.
+    float accelNormVarianceGoodG2 = square(0.010f);
+    float accelNormVarianceBadG2 = square(0.080f);
+    float accelNormVarianceAlpha = 0.02f;
+
+    // Very fast gyro motion often correlates with linear acceleration/vibration.
+    // Keep the gate permissive so normal body movement is not penalized.
+    float gyroNormAccelTrustGoodRadS = 250.0f * MATH_DEG_TO_RAD;
+    float gyroNormAccelTrustBadRadS = 720.0f * MATH_DEG_TO_RAD;
+
     // Normalize quaternion every N updates.
     uint32_t normalizeEvery = 16;
 };
@@ -72,6 +91,8 @@ struct Ahrs6DofAccelGate {
     float innovationRad = 0.0f;
     float normTrust = 0.0f;
     float innovationTrust = 0.0f;
+    float varianceTrust = 1.0f;
+    float gyroMotionTrust = 1.0f;
 };
 
 struct Ahrs6DofStats {
@@ -105,18 +126,21 @@ struct Ahrs6DofStats {
     float lastGyroAngleRad = 0.0f;
     float lastAccelCorrectionAngleRad = 0.0f;
 
+    // Adaptive accel-correction diagnostics.
+    bool accelNormStatsInitialized = false;
+    float accelNormMeanG = 0.0f;
+    float accelNormVarianceG2 = 0.0f;
+    float lastAccelNormVarianceTrust = 1.0f;
+    float lastGyroMotionTrust = 1.0f;
+    float lastAdaptiveAccelTrust = 1.0f;
+
     Ahrs6DofAccelGate lastAccelGate;
 };
 
 class Ahrs6Dof {
 public:
     explicit Ahrs6Dof(const Ahrs6DofConfig& config = Ahrs6DofConfig{})
-        : cfg_(config) {
-        cfg_.worldUp = cfg_.worldUp.normalized();
-        if (cfg_.worldUp.normSq() < MATH_EPSILON) {
-            cfg_.worldUp = Vec3(0.0f, 0.0f, 1.0f);
-        }
-    }
+        : cfg_(sanitizeConfig(config)) {}
 
     void reset(const Quat& initialQ = Quat::identity(), uint64_t timestampUs = 0) {
         q_ = initialQ.normalized().withPositiveW();
@@ -172,6 +196,10 @@ public:
         return cfg_;
     }
 
+    void setConfig(const Ahrs6DofConfig& config) {
+        cfg_ = sanitizeConfig(config);
+    }
+
     void setQuaternion(const Quat& q) {
         q_ = q.normalized().withPositiveW();
     }
@@ -195,6 +223,10 @@ public:
 
     Ahrs6DofAccelGate evaluateAccelGate(const Vec3& accelG) const {
         Ahrs6DofAccelGate gate;
+
+        if (!cfg_.accelCorrectionEnabled) {
+            return gate;
+        }
 
         if (!accelG.isFinite()) {
             return gate;
@@ -223,7 +255,9 @@ public:
                                         cfg_.accelInnovationGoodRad,
                                         cfg_.accelInnovationBadRad);
 
-        gate.trust = gate.normTrust * gate.innovationTrust;
+        gate.varianceTrust = cfg_.adaptiveAccelCorrection ? stats_.lastAccelNormVarianceTrust : 1.0f;
+        gate.gyroMotionTrust = cfg_.adaptiveAccelCorrection ? stats_.lastGyroMotionTrust : 1.0f;
+        gate.trust = gate.normTrust * gate.innovationTrust * gate.varianceTrust * gate.gyroMotionTrust;
         gate.accepted = gate.trust > 0.0f;
         return gate;
     }
@@ -277,6 +311,8 @@ public:
             if (std::fabs(gyroUsed.z) < cfg_.gyroDeadbandRadS) gyroUsed.z = 0.0f;
         }
 
+        updateAdaptiveAccelTrust(accelG, gyroUsed);
+
         // 1. High-rate gyro prediction.
         const Vec3 gyroRotationVector = gyroUsed * dtS;
         q_ = integrateBodyRate(q_, gyroUsed, dtS);
@@ -303,11 +339,75 @@ public:
     }
 
 private:
+    static Ahrs6DofConfig sanitizeConfig(Ahrs6DofConfig cfg) {
+        cfg.worldUp = cfg.worldUp.normalized();
+        if (!cfg.worldUp.isFinite() || cfg.worldUp.normSq() < MATH_EPSILON) {
+            cfg.worldUp = Vec3(0.0f, 0.0f, 1.0f);
+        }
+
+        if (!std::isfinite(cfg.minDtS) || cfg.minDtS <= 0.0f) cfg.minDtS = 0.0001f;
+        if (!std::isfinite(cfg.maxDtS) || cfg.maxDtS <= cfg.minDtS) cfg.maxDtS = 0.0200f;
+        if (!std::isfinite(cfg.gyroDeadbandRadS) || cfg.gyroDeadbandRadS < 0.0f) cfg.gyroDeadbandRadS = 0.0f;
+        if (!std::isfinite(cfg.accelKp) || cfg.accelKp <= 0.0f) cfg.accelKp = 3.0f;
+        if (!std::isfinite(cfg.maxAccelCorrectionRadPerUpdate) || cfg.maxAccelCorrectionRadPerUpdate <= 0.0f) {
+            cfg.maxAccelCorrectionRadPerUpdate = 2.0f * MATH_DEG_TO_RAD;
+        }
+        if (!std::isfinite(cfg.accelNormGoodErrorG) || cfg.accelNormGoodErrorG < 0.0f) cfg.accelNormGoodErrorG = 0.06f;
+        if (!std::isfinite(cfg.accelNormBadErrorG) || cfg.accelNormBadErrorG <= cfg.accelNormGoodErrorG) cfg.accelNormBadErrorG = 0.35f;
+        if (!std::isfinite(cfg.accelInnovationGoodRad) || cfg.accelInnovationGoodRad < 0.0f) cfg.accelInnovationGoodRad = 8.0f * MATH_DEG_TO_RAD;
+        if (!std::isfinite(cfg.accelInnovationBadRad) || cfg.accelInnovationBadRad <= cfg.accelInnovationGoodRad) cfg.accelInnovationBadRad = 45.0f * MATH_DEG_TO_RAD;
+        if (!std::isfinite(cfg.accelNormVarianceGoodG2) || cfg.accelNormVarianceGoodG2 < 0.0f) cfg.accelNormVarianceGoodG2 = square(0.010f);
+        if (!std::isfinite(cfg.accelNormVarianceBadG2) || cfg.accelNormVarianceBadG2 <= cfg.accelNormVarianceGoodG2) cfg.accelNormVarianceBadG2 = square(0.080f);
+        if (!std::isfinite(cfg.accelNormVarianceAlpha) || cfg.accelNormVarianceAlpha <= 0.0f || cfg.accelNormVarianceAlpha > 1.0f) cfg.accelNormVarianceAlpha = 0.02f;
+        if (!std::isfinite(cfg.gyroNormAccelTrustGoodRadS) || cfg.gyroNormAccelTrustGoodRadS < 0.0f) cfg.gyroNormAccelTrustGoodRadS = 250.0f * MATH_DEG_TO_RAD;
+        if (!std::isfinite(cfg.gyroNormAccelTrustBadRadS) || cfg.gyroNormAccelTrustBadRadS <= cfg.gyroNormAccelTrustGoodRadS) cfg.gyroNormAccelTrustBadRadS = 720.0f * MATH_DEG_TO_RAD;
+        if (cfg.normalizeEvery == 0) cfg.normalizeEvery = 16;
+        return cfg;
+    }
+
     static float rampDown(float x, float good, float bad) {
         if (x <= good) return 1.0f;
         if (x >= bad) return 0.0f;
         if (bad <= good) return 0.0f;
         return 1.0f - ((x - good) / (bad - good));
+    }
+
+    void updateAdaptiveAccelTrust(const Vec3& accelG, const Vec3& gyroRadS) {
+        stats_.lastAccelNormVarianceTrust = 1.0f;
+        stats_.lastGyroMotionTrust = 1.0f;
+        stats_.lastAdaptiveAccelTrust = 1.0f;
+
+        if (!cfg_.adaptiveAccelCorrection || !accelG.isFinite() || !gyroRadS.isFinite()) {
+            return;
+        }
+
+        const float accelNormG = accelG.norm();
+        if (!std::isfinite(accelNormG)) {
+            return;
+        }
+
+        if (!stats_.accelNormStatsInitialized) {
+            stats_.accelNormStatsInitialized = true;
+            stats_.accelNormMeanG = accelNormG;
+            stats_.accelNormVarianceG2 = 0.0f;
+        } else {
+            const float alpha = cfg_.accelNormVarianceAlpha;
+            const float delta = accelNormG - stats_.accelNormMeanG;
+            stats_.accelNormMeanG += alpha * delta;
+            const float delta2 = accelNormG - stats_.accelNormMeanG;
+            const float sampleVar = delta * delta2;
+            stats_.accelNormVarianceG2 = (1.0f - alpha) * stats_.accelNormVarianceG2 + alpha * std::fabs(sampleVar);
+        }
+
+        stats_.lastAccelNormVarianceTrust = rampDown(stats_.accelNormVarianceG2,
+                                                    cfg_.accelNormVarianceGoodG2,
+                                                    cfg_.accelNormVarianceBadG2);
+
+        const float gyroNorm = gyroRadS.norm();
+        stats_.lastGyroMotionTrust = rampDown(gyroNorm,
+                                              cfg_.gyroNormAccelTrustGoodRadS,
+                                              cfg_.gyroNormAccelTrustBadRadS);
+        stats_.lastAdaptiveAccelTrust = stats_.lastAccelNormVarianceTrust * stats_.lastGyroMotionTrust;
     }
 
     void applyAccelCorrection(const Vec3& accelG, float dtS) {
@@ -373,6 +473,10 @@ struct Ahrs6DofDebugSnapshot {
     uint32_t accelRejectedCount = 0;
     uint32_t skippedBadDt = 0;
     uint32_t clampedLargeDt = 0;
+
+    float accelNormVarianceG2 = 0.0f;
+    float accelVarianceTrust = 1.0f;
+    float gyroMotionTrust = 1.0f;
 };
 
 inline Ahrs6DofDebugSnapshot makeAhrs6DofDebugSnapshot(const Ahrs6Dof& ahrs) {
@@ -390,6 +494,9 @@ inline Ahrs6DofDebugSnapshot makeAhrs6DofDebugSnapshot(const Ahrs6Dof& ahrs) {
     s.accelTrust = st.lastAccelGate.trust;
     s.accelInnovationDeg = st.lastAccelGate.innovationRad * MATH_RAD_TO_DEG;
     s.accelCorrectionDeg = st.lastAccelCorrectionAngleRad * MATH_RAD_TO_DEG;
+    s.accelNormVarianceG2 = st.accelNormVarianceG2;
+    s.accelVarianceTrust = st.lastAccelNormVarianceTrust;
+    s.gyroMotionTrust = st.lastGyroMotionTrust;
 
     s.updateCount = st.updateCount;
     s.accelUpdateCount = st.accelUpdateCount;

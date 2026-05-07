@@ -10,6 +10,7 @@
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/calibration.hpp"
+#include "sensor/ahrs_6dof.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/imu_quality.hpp"
 
@@ -135,17 +136,49 @@ struct TrackerFifoConfig {
 };
 
 struct TrackerAhrsConfig {
-    // These are generic placeholders. Keep actual AHRS defaults inside Ahrs6Dof
-    // until that class exposes a public Config struct.
-    float accelCorrectionGain = 0.0f;
-    float accelTrustMinNormG = 0.50f;
-    float accelTrustMaxNormG = 1.50f;
+    // Legacy/user-facing AHRS fields kept in place to preserve the persistent
+    // config layout. Phase B effective AHRS parameters live in ahrsRuntime below.
+    float accelCorrectionGain = 3.0f;
+    float accelTrustMinNormG = 0.94f;
+    float accelTrustMaxNormG = 1.35f;
     bool useAccelCorrection = true;
 
     // Mounting offset from sensor frame to tracker/body frame.
     bool mountingOffsetValid = false;
     Quat mountingOffset = Quat::identity();
 };
+
+struct TrackerAhrsRuntimeConfigPersisted {
+    // This struct intentionally consumes bytes that were previously reserved in
+    // TrackerConfigBlob. That preserves blob size and lets old NVS configs load;
+    // sanitize() converts zero-filled legacy reserved bytes to these defaults.
+    float minDtS = 0.0001f;
+    float maxDtS = 0.0200f;
+    float accelKp = 3.0f;
+    float maxAccelCorrectionDegPerUpdate = 2.0f;
+
+    float accelNormGoodErrorG = 0.06f;
+    float accelNormBadErrorG = 0.35f;
+    float accelInnovationGoodDeg = 8.0f;
+    float accelInnovationBadDeg = 45.0f;
+
+    float accelNormStdGoodG = 0.010f;
+    float accelNormStdBadG = 0.080f;
+    float accelNormVarianceAlpha = 0.02f;
+
+    float gyroMotionGoodDps = 250.0f;
+    float gyroMotionBadDps = 720.0f;
+
+    uint32_t normalizeEvery = 16;
+
+    bool clampLargeDt = false;
+    bool accelCorrectionEnabled = true;
+    bool adaptiveAccelCorrection = true;
+    uint8_t reserved = 0;
+};
+
+static_assert(sizeof(TrackerAhrsRuntimeConfigPersisted) == 60,
+              "TrackerAhrsRuntimeConfigPersisted must keep config blob size stable");
 
 struct TrackerGyroCalibrationConfig {
     bool biasValid = false;
@@ -247,9 +280,9 @@ struct TrackerConfigBlob {
     TrackerQualityConfigPersisted quality;
     TrackerOutputConfig output;
     TrackerMagYawCorrectionConfigPersisted magYaw;
+    TrackerAhrsRuntimeConfigPersisted ahrsRuntime;
 
-    uint32_t reservedU32[16] = {};
-    float reservedF32[4] = {};
+    uint32_t reservedU32[5] = {};
 };
 
 class TrackerConfig {
@@ -314,6 +347,20 @@ public:
         if (!finiteFloat(data.magYaw.maxCorrectionStepDeg)) return false;
 
         if (data.ahrs.mountingOffsetValid && !finiteQuat(data.ahrs.mountingOffset)) return false;
+
+        if (!finiteFloat(data.ahrsRuntime.minDtS)) return false;
+        if (!finiteFloat(data.ahrsRuntime.maxDtS)) return false;
+        if (!finiteFloat(data.ahrsRuntime.accelKp)) return false;
+        if (!finiteFloat(data.ahrsRuntime.maxAccelCorrectionDegPerUpdate)) return false;
+        if (!finiteFloat(data.ahrsRuntime.accelNormGoodErrorG)) return false;
+        if (!finiteFloat(data.ahrsRuntime.accelNormBadErrorG)) return false;
+        if (!finiteFloat(data.ahrsRuntime.accelInnovationGoodDeg)) return false;
+        if (!finiteFloat(data.ahrsRuntime.accelInnovationBadDeg)) return false;
+        if (!finiteFloat(data.ahrsRuntime.accelNormStdGoodG)) return false;
+        if (!finiteFloat(data.ahrsRuntime.accelNormStdBadG)) return false;
+        if (!finiteFloat(data.ahrsRuntime.accelNormVarianceAlpha)) return false;
+        if (!finiteFloat(data.ahrsRuntime.gyroMotionGoodDps)) return false;
+        if (!finiteFloat(data.ahrsRuntime.gyroMotionBadDps)) return false;
 
         if (!finiteFloat(data.quality.largeGapFactor) || data.quality.largeGapFactor <= 1.0f) return false;
         if (!finiteFloat(data.quality.accelNormOutlierMinG)) return false;
@@ -439,6 +486,44 @@ public:
             data.ahrs.mountingOffsetValid = false;
         }
 
+        // Phase B: old configs have zero-filled ahrsRuntime because this region
+        // used to be reserved. Repair zeros/invalid values to production-safe
+        // defaults instead of invalidating the whole calibration blob.
+        if (!finiteFloat(data.ahrsRuntime.minDtS) || data.ahrsRuntime.minDtS <= 0.0f) data.ahrsRuntime.minDtS = 0.0001f;
+        if (!finiteFloat(data.ahrsRuntime.maxDtS) || data.ahrsRuntime.maxDtS <= data.ahrsRuntime.minDtS) data.ahrsRuntime.maxDtS = 0.0200f;
+        if (!finiteFloat(data.ahrsRuntime.accelKp) || data.ahrsRuntime.accelKp <= 0.0f) data.ahrsRuntime.accelKp = 3.0f;
+        data.ahrsRuntime.accelKp = clampFloat(data.ahrsRuntime.accelKp, 0.0f, 20.0f);
+
+        if (!finiteFloat(data.ahrsRuntime.maxAccelCorrectionDegPerUpdate) || data.ahrsRuntime.maxAccelCorrectionDegPerUpdate <= 0.0f) {
+            data.ahrsRuntime.maxAccelCorrectionDegPerUpdate = 2.0f;
+        }
+        data.ahrsRuntime.maxAccelCorrectionDegPerUpdate = clampFloat(data.ahrsRuntime.maxAccelCorrectionDegPerUpdate, 0.01f, 20.0f);
+
+        if (!finiteFloat(data.ahrsRuntime.accelNormGoodErrorG) || data.ahrsRuntime.accelNormGoodErrorG < 0.0f) data.ahrsRuntime.accelNormGoodErrorG = 0.06f;
+        if (!finiteFloat(data.ahrsRuntime.accelNormBadErrorG) || data.ahrsRuntime.accelNormBadErrorG <= data.ahrsRuntime.accelNormGoodErrorG) data.ahrsRuntime.accelNormBadErrorG = 0.35f;
+        data.ahrsRuntime.accelNormGoodErrorG = clampFloat(data.ahrsRuntime.accelNormGoodErrorG, 0.0f, 1.0f);
+        data.ahrsRuntime.accelNormBadErrorG = clampFloat(data.ahrsRuntime.accelNormBadErrorG, data.ahrsRuntime.accelNormGoodErrorG + 0.001f, 2.0f);
+
+        if (!finiteFloat(data.ahrsRuntime.accelInnovationGoodDeg) || data.ahrsRuntime.accelInnovationGoodDeg < 0.0f) data.ahrsRuntime.accelInnovationGoodDeg = 8.0f;
+        if (!finiteFloat(data.ahrsRuntime.accelInnovationBadDeg) || data.ahrsRuntime.accelInnovationBadDeg <= data.ahrsRuntime.accelInnovationGoodDeg) data.ahrsRuntime.accelInnovationBadDeg = 45.0f;
+        data.ahrsRuntime.accelInnovationGoodDeg = clampFloat(data.ahrsRuntime.accelInnovationGoodDeg, 0.0f, 90.0f);
+        data.ahrsRuntime.accelInnovationBadDeg = clampFloat(data.ahrsRuntime.accelInnovationBadDeg, data.ahrsRuntime.accelInnovationGoodDeg + 0.1f, 180.0f);
+
+        if (!finiteFloat(data.ahrsRuntime.accelNormStdGoodG) || data.ahrsRuntime.accelNormStdGoodG < 0.0f) data.ahrsRuntime.accelNormStdGoodG = 0.010f;
+        if (!finiteFloat(data.ahrsRuntime.accelNormStdBadG) || data.ahrsRuntime.accelNormStdBadG <= data.ahrsRuntime.accelNormStdGoodG) data.ahrsRuntime.accelNormStdBadG = 0.080f;
+        data.ahrsRuntime.accelNormStdGoodG = clampFloat(data.ahrsRuntime.accelNormStdGoodG, 0.0f, 0.50f);
+        data.ahrsRuntime.accelNormStdBadG = clampFloat(data.ahrsRuntime.accelNormStdBadG, data.ahrsRuntime.accelNormStdGoodG + 0.001f, 2.0f);
+
+        if (!finiteFloat(data.ahrsRuntime.accelNormVarianceAlpha) || data.ahrsRuntime.accelNormVarianceAlpha <= 0.0f) data.ahrsRuntime.accelNormVarianceAlpha = 0.02f;
+        data.ahrsRuntime.accelNormVarianceAlpha = clampFloat(data.ahrsRuntime.accelNormVarianceAlpha, 0.001f, 1.0f);
+
+        if (!finiteFloat(data.ahrsRuntime.gyroMotionGoodDps) || data.ahrsRuntime.gyroMotionGoodDps < 0.0f) data.ahrsRuntime.gyroMotionGoodDps = 250.0f;
+        if (!finiteFloat(data.ahrsRuntime.gyroMotionBadDps) || data.ahrsRuntime.gyroMotionBadDps <= data.ahrsRuntime.gyroMotionGoodDps) data.ahrsRuntime.gyroMotionBadDps = 720.0f;
+        data.ahrsRuntime.gyroMotionGoodDps = clampFloat(data.ahrsRuntime.gyroMotionGoodDps, 0.0f, 2000.0f);
+        data.ahrsRuntime.gyroMotionBadDps = clampFloat(data.ahrsRuntime.gyroMotionBadDps, data.ahrsRuntime.gyroMotionGoodDps + 1.0f, 4000.0f);
+
+        if (data.ahrsRuntime.normalizeEvery == 0 || data.ahrsRuntime.normalizeEvery > 4096) data.ahrsRuntime.normalizeEvery = 16;
+
         data.quality.largeGapFactor = clampFloat(data.quality.largeGapFactor, 1.01f, 10.0f);
         data.quality.accelNormOutlierMinG = clampFloat(data.quality.accelNormOutlierMinG, 0.01f, 2.0f);
         data.quality.accelNormOutlierMaxG = clampFloat(data.quality.accelNormOutlierMaxG, data.quality.accelNormOutlierMinG + 0.01f, 20.0f);
@@ -494,6 +579,29 @@ public:
         cfg.sensorHubSlave0PeriodUs = data.magCal.driverEnabled
             ? (1000000.0f / 60.0f)
             : 0.0f;
+        return cfg;
+    }
+
+    Ahrs6DofConfig makeAhrsConfig() const {
+        Ahrs6DofConfig cfg;
+        cfg.minDtS = data.ahrsRuntime.minDtS;
+        cfg.maxDtS = data.ahrsRuntime.maxDtS;
+        cfg.clampLargeDt = data.ahrsRuntime.clampLargeDt;
+        cfg.accelCorrectionEnabled = data.ahrs.useAccelCorrection && data.ahrsRuntime.accelCorrectionEnabled;
+        cfg.adaptiveAccelCorrection = data.ahrsRuntime.adaptiveAccelCorrection;
+        cfg.accelKp = data.ahrsRuntime.accelKp > 0.0f ? data.ahrsRuntime.accelKp : data.ahrs.accelCorrectionGain;
+        if (!std::isfinite(cfg.accelKp) || cfg.accelKp <= 0.0f) cfg.accelKp = 3.0f;
+        cfg.maxAccelCorrectionRadPerUpdate = data.ahrsRuntime.maxAccelCorrectionDegPerUpdate * MATH_DEG_TO_RAD;
+        cfg.accelNormGoodErrorG = data.ahrsRuntime.accelNormGoodErrorG;
+        cfg.accelNormBadErrorG = data.ahrsRuntime.accelNormBadErrorG;
+        cfg.accelInnovationGoodRad = data.ahrsRuntime.accelInnovationGoodDeg * MATH_DEG_TO_RAD;
+        cfg.accelInnovationBadRad = data.ahrsRuntime.accelInnovationBadDeg * MATH_DEG_TO_RAD;
+        cfg.accelNormVarianceGoodG2 = square(data.ahrsRuntime.accelNormStdGoodG);
+        cfg.accelNormVarianceBadG2 = square(data.ahrsRuntime.accelNormStdBadG);
+        cfg.accelNormVarianceAlpha = data.ahrsRuntime.accelNormVarianceAlpha;
+        cfg.gyroNormAccelTrustGoodRadS = data.ahrsRuntime.gyroMotionGoodDps * MATH_DEG_TO_RAD;
+        cfg.gyroNormAccelTrustBadRadS = data.ahrsRuntime.gyroMotionBadDps * MATH_DEG_TO_RAD;
+        cfg.normalizeEvery = data.ahrsRuntime.normalizeEvery;
         return cfg;
     }
 
@@ -746,6 +854,19 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("maxDrainRoundsPerEvent="); out.println(cfg.data.fifo.maxDrainRoundsPerEvent);
     out.print("useHardwareTimestamps="); out.println(cfg.data.fifo.useHardwareTimestamps ? "yes" : "no");
     out.print("timestampFallback="); out.println(cfg.data.fifo.allowTimestampFallback ? "yes" : "no");
+
+    out.println("-- ahrs effective config --");
+    out.print("ahrsAccelCorrectionEnabled="); out.println((cfg.data.ahrs.useAccelCorrection && cfg.data.ahrsRuntime.accelCorrectionEnabled) ? "yes" : "no");
+    out.print("ahrsAdaptiveAccelCorrection="); out.println(cfg.data.ahrsRuntime.adaptiveAccelCorrection ? "yes" : "no");
+    out.print("ahrsAccelKp="); out.println(cfg.data.ahrsRuntime.accelKp, 6);
+    out.print("ahrsDtMinMaxS="); out.print(cfg.data.ahrsRuntime.minDtS, 7); out.print(','); out.println(cfg.data.ahrsRuntime.maxDtS, 7);
+    out.print("ahrsClampLargeDt="); out.println(cfg.data.ahrsRuntime.clampLargeDt ? "yes" : "no");
+    out.print("ahrsMaxAccelCorrectionDeg="); out.println(cfg.data.ahrsRuntime.maxAccelCorrectionDegPerUpdate, 6);
+    out.print("ahrsAccelNormGoodBadErrG="); out.print(cfg.data.ahrsRuntime.accelNormGoodErrorG, 6); out.print(','); out.println(cfg.data.ahrsRuntime.accelNormBadErrorG, 6);
+    out.print("ahrsAccelInnovationGoodBadDeg="); out.print(cfg.data.ahrsRuntime.accelInnovationGoodDeg, 3); out.print(','); out.println(cfg.data.ahrsRuntime.accelInnovationBadDeg, 3);
+    out.print("ahrsAccelNormStdGoodBadG="); out.print(cfg.data.ahrsRuntime.accelNormStdGoodG, 6); out.print(','); out.println(cfg.data.ahrsRuntime.accelNormStdBadG, 6);
+    out.print("ahrsGyroMotionGoodBadDps="); out.print(cfg.data.ahrsRuntime.gyroMotionGoodDps, 3); out.print(','); out.println(cfg.data.ahrsRuntime.gyroMotionBadDps, 3);
+    out.print("ahrsNormalizeEvery="); out.println(cfg.data.ahrsRuntime.normalizeEvery);
 
     out.println("-- gyro calibration --");
     out.print("gyroBiasValid="); out.println(cfg.data.gyroCal.biasValid ? "yes" : "no");

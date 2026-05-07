@@ -394,7 +394,14 @@ private:
         out.println("cal temp set_slope X Y Z [save] | fit_static [save] | clear [save]");
         out.println("cal save | clear_all");
         out.println();
-        out.println("ahrs status | reset");
+        out.println("ahrs status | config | reset");
+        out.println("ahrs defaults [save]");
+        out.println("ahrs accel on|off [save] | adaptive on|off [save]");
+        out.println("ahrs accel_kp <gain> [save] | max_step <deg> [save]");
+        out.println("ahrs accel_norm <goodErrG> <badErrG> [save]");
+        out.println("ahrs accel_innovation <goodDeg> <badDeg> [save]");
+        out.println("ahrs accel_var <goodStdG> <badStdG> [save]");
+        out.println("ahrs gyro_gate <goodDps> <badDps> [save] | dt <minMs> <maxMs> [save]");
         out.println();
         out.println("stream off | heartbeat | raw | scaled | quat | debug");
         out.println("stream rate <hz>");
@@ -1669,7 +1676,8 @@ private:
 
         if (is(argv[2], "compute")) {
             if (!ctx.accelCalRunner->compute()) {
-                tracker_serial_detail::printErr(out, "accel calibration compute failed; capture all faces first");
+                printAccelCal(out, ctx.accelCalRunner->calibration());
+                tracker_serial_detail::printErr(out, "accel calibration rejected by quality gates; see quality_flags");
                 return;
             }
             printAccelCal(out, ctx.accelCalRunner->calibration());
@@ -1884,6 +1892,17 @@ private:
             out.print("last_integrated_t_us="); out.println(static_cast<unsigned long>(st.lastIntegratedTimestampUs));
             out.print("bad_dt_rejects="); out.println(st.skippedBadDt);
             out.print("large_dt_clamps="); out.println(st.clampedLargeDt);
+            out.print("last_accel_trust="); out.println(st.lastAccelGate.trust, 6);
+            out.print("last_accel_norm_trust="); out.println(st.lastAccelGate.normTrust, 6);
+            out.print("last_accel_innovation_trust="); out.println(st.lastAccelGate.innovationTrust, 6);
+            out.print("last_accel_variance_trust="); out.println(st.lastAccelGate.varianceTrust, 6);
+            out.print("last_gyro_motion_trust="); out.println(st.lastAccelGate.gyroMotionTrust, 6);
+            out.print("accel_norm_variance_g2="); out.println(st.accelNormVarianceG2, 9);
+            return;
+        }
+
+        if (is(argv[1], "config")) {
+            printAhrsConfig(out, ctx.ahrs->config());
             return;
         }
 
@@ -1894,7 +1913,135 @@ private:
             return;
         }
 
+        if (!ctx.config) {
+            tracker_serial_detail::printErr(out, "config not available");
+            return;
+        }
+
+        auto applyAndMaybeSave = [&](bool saveRequested, const char* okMsg, const char* saveErr) -> void {
+            ctx.config->sanitize();
+            ctx.ahrs->setConfig(ctx.config->makeAhrsConfig());
+            ctx.config->updateCrc();
+            if (saveRequested) {
+                if (!ctx.configStore || !ctx.configStore->save(*ctx.config)) {
+                    tracker_serial_detail::printErr(out, saveErr);
+                    return;
+                }
+            }
+            tracker_serial_detail::printOk(out, okMsg);
+        };
+
+        if (is(argv[1], "defaults")) {
+            const bool saveRequested = argc >= 3 && is(argv[2], "save");
+            ctx.config->data.ahrsRuntime = TrackerAhrsRuntimeConfigPersisted{};
+            ctx.config->data.ahrs.accelCorrectionGain = 3.0f;
+            ctx.config->data.ahrs.useAccelCorrection = true;
+            applyAndMaybeSave(saveRequested,
+                              saveRequested ? "ahrs defaults applied and saved" : "ahrs defaults applied",
+                              "ahrs defaults save failed");
+            return;
+        }
+
+        if (is(argv[1], "accel") || is(argv[1], "adaptive")) {
+            if (argc < 3) {
+                tracker_serial_detail::printErr(out, "usage: ahrs accel|adaptive on|off [save]");
+                return;
+            }
+            bool enabled = false;
+            if (!tracker_serial_detail::parseBool(argv[2], enabled)) {
+                tracker_serial_detail::printErr(out, "expected on/off");
+                return;
+            }
+            const bool saveRequested = argc >= 4 && is(argv[3], "save");
+            if (is(argv[1], "accel")) {
+                ctx.config->data.ahrsRuntime.accelCorrectionEnabled = enabled;
+                ctx.config->data.ahrs.useAccelCorrection = enabled;
+            } else {
+                ctx.config->data.ahrsRuntime.adaptiveAccelCorrection = enabled;
+            }
+            applyAndMaybeSave(saveRequested,
+                              saveRequested ? "ahrs gate saved" : "ahrs gate set",
+                              "ahrs gate save failed");
+            return;
+        }
+
+        if (is(argv[1], "accel_kp") || is(argv[1], "max_step")) {
+            if (argc < 3) {
+                tracker_serial_detail::printErr(out, "usage: ahrs accel_kp <gain> [save] | max_step <deg> [save]");
+                return;
+            }
+            float v = 0.0f;
+            if (!tracker_serial_detail::parseFloat(argv[2], v)) {
+                tracker_serial_detail::printErr(out, "invalid value");
+                return;
+            }
+            const bool saveRequested = argc >= 4 && is(argv[3], "save");
+            if (is(argv[1], "accel_kp")) {
+                ctx.config->data.ahrsRuntime.accelKp = v;
+                ctx.config->data.ahrs.accelCorrectionGain = v;
+            } else {
+                ctx.config->data.ahrsRuntime.maxAccelCorrectionDegPerUpdate = v;
+            }
+            applyAndMaybeSave(saveRequested,
+                              saveRequested ? "ahrs parameter saved" : "ahrs parameter set",
+                              "ahrs parameter save failed");
+            return;
+        }
+
+        if (is(argv[1], "accel_norm") || is(argv[1], "accel_innovation") ||
+            is(argv[1], "accel_var") || is(argv[1], "gyro_gate") || is(argv[1], "dt")) {
+            if (argc < 4) {
+                tracker_serial_detail::printErr(out, "usage: ahrs accel_norm|accel_innovation|accel_var|gyro_gate|dt <good/min> <bad/max> [save]");
+                return;
+            }
+            float a = 0.0f;
+            float b = 0.0f;
+            if (!tracker_serial_detail::parseFloat(argv[2], a) ||
+                !tracker_serial_detail::parseFloat(argv[3], b)) {
+                tracker_serial_detail::printErr(out, "invalid values");
+                return;
+            }
+            const bool saveRequested = argc >= 5 && is(argv[4], "save");
+            if (is(argv[1], "accel_norm")) {
+                ctx.config->data.ahrsRuntime.accelNormGoodErrorG = a;
+                ctx.config->data.ahrsRuntime.accelNormBadErrorG = b;
+            } else if (is(argv[1], "accel_innovation")) {
+                ctx.config->data.ahrsRuntime.accelInnovationGoodDeg = a;
+                ctx.config->data.ahrsRuntime.accelInnovationBadDeg = b;
+            } else if (is(argv[1], "accel_var")) {
+                ctx.config->data.ahrsRuntime.accelNormStdGoodG = a;
+                ctx.config->data.ahrsRuntime.accelNormStdBadG = b;
+            } else if (is(argv[1], "gyro_gate")) {
+                ctx.config->data.ahrsRuntime.gyroMotionGoodDps = a;
+                ctx.config->data.ahrsRuntime.gyroMotionBadDps = b;
+            } else {
+                ctx.config->data.ahrsRuntime.minDtS = a * 0.001f;
+                ctx.config->data.ahrsRuntime.maxDtS = b * 0.001f;
+            }
+            applyAndMaybeSave(saveRequested,
+                              saveRequested ? "ahrs gate saved" : "ahrs gate set",
+                              "ahrs gate save failed");
+            return;
+        }
+
         tracker_serial_detail::printErr(out, "unknown ahrs command");
+    }
+
+    static void printAhrsConfig(Stream& out, const Ahrs6DofConfig& cfg) {
+        out.println("# AHRS CONFIG");
+        out.print("accelCorrectionEnabled="); out.println(cfg.accelCorrectionEnabled ? "yes" : "no");
+        out.print("adaptiveAccelCorrection="); out.println(cfg.adaptiveAccelCorrection ? "yes" : "no");
+        out.print("accelKp="); out.println(cfg.accelKp, 6);
+        out.print("minDtS="); out.println(cfg.minDtS, 7);
+        out.print("maxDtS="); out.println(cfg.maxDtS, 7);
+        out.print("clampLargeDt="); out.println(cfg.clampLargeDt ? "yes" : "no");
+        out.print("maxAccelCorrectionDegPerUpdate="); out.println(cfg.maxAccelCorrectionRadPerUpdate * MATH_RAD_TO_DEG, 6);
+        out.print("accelNormGoodBadErrorG="); out.print(cfg.accelNormGoodErrorG, 6); out.print(','); out.println(cfg.accelNormBadErrorG, 6);
+        out.print("accelInnovationGoodBadDeg="); out.print(cfg.accelInnovationGoodRad * MATH_RAD_TO_DEG, 3); out.print(','); out.println(cfg.accelInnovationBadRad * MATH_RAD_TO_DEG, 3);
+        out.print("accelNormStdGoodBadG="); out.print(std::sqrt(cfg.accelNormVarianceGoodG2), 6); out.print(','); out.println(std::sqrt(cfg.accelNormVarianceBadG2), 6);
+        out.print("accelNormVarianceAlpha="); out.println(cfg.accelNormVarianceAlpha, 6);
+        out.print("gyroMotionGoodBadDps="); out.print(cfg.gyroNormAccelTrustGoodRadS * MATH_RAD_TO_DEG, 3); out.print(','); out.println(cfg.gyroNormAccelTrustBadRadS * MATH_RAD_TO_DEG, 3);
+        out.print("normalizeEvery="); out.println(cfg.normalizeEvery);
     }
 
     static void cmdStream(TrackerSerialCommandContext& ctx, int argc, char** argv) {
@@ -2065,6 +2212,7 @@ private:
         if (!ctx.config) return;
         if (ctx.imuCal) ctx.config->applyToImuCalibration(*ctx.imuCal);
         if (ctx.gyroTempComp) ctx.config->applyToGyroTempComp(*ctx.gyroTempComp);
+        if (ctx.ahrs) ctx.ahrs->setConfig(ctx.config->makeAhrsConfig());
         if (ctx.quality) {
             ctx.quality->setConfig(ctx.config->makeQualityConfig());
             ctx.quality->reset();
@@ -2238,10 +2386,57 @@ private:
 
         const auto& r = cal.result();
         out.print("result_valid="); out.println(r.valid ? "yes" : "no");
+        out.print("quality_score="); out.println(r.qualityScore, 6);
+        out.print("quality_flags=0x"); out.println(r.qualityFlags, HEX);
+        printAccelQualityFlags(out, r.qualityFlags);
         tracker_serial_detail::printVec3Line(out, "accel_bias_g", r.biasG, 8);
         tracker_serial_detail::printVec3Line(out, "accel_scale_diag", r.scale, 8);
+        out.print("accel_matrix_row0="); out.print(r.scaleMatrix.m[0][0], 8); out.print(','); out.print(r.scaleMatrix.m[0][1], 8); out.print(','); out.println(r.scaleMatrix.m[0][2], 8);
+        out.print("accel_matrix_row1="); out.print(r.scaleMatrix.m[1][0], 8); out.print(','); out.print(r.scaleMatrix.m[1][1], 8); out.print(','); out.println(r.scaleMatrix.m[1][2], 8);
+        out.print("accel_matrix_row2="); out.print(r.scaleMatrix.m[2][0], 8); out.print(','); out.print(r.scaleMatrix.m[2][1], 8); out.print(','); out.println(r.scaleMatrix.m[2][2], 8);
         out.print("max_face_norm_error_g="); out.println(r.maxFaceNormErrorG, 8);
         out.print("max_axis_residual_g="); out.println(r.maxAxisResidualG, 8);
+        out.print("face_norm_errors_g=");
+        for (uint8_t i = 0; i < 6; ++i) {
+            if (i) out.print(',');
+            out.print(r.faceNormErrorG[i], 8);
+        }
+        out.println();
+        out.print("face_axis_residuals_g=");
+        for (uint8_t i = 0; i < 6; ++i) {
+            if (i) out.print(',');
+            out.print(r.faceAxisResidualG[i], 8);
+        }
+        out.println();
+    }
+
+    static void printAccelQualityFlags(Stream& out, uint32_t flags) {
+        if (flags == accel_cal_quality_flags::OK) {
+            out.println("quality_flag_names=OK");
+            return;
+        }
+
+        out.print("quality_flag_names=");
+        bool first = true;
+        const uint32_t known[] = {
+            accel_cal_quality_flags::MISSING_FACE,
+            accel_cal_quality_flags::TOO_FEW_SAMPLES,
+            accel_cal_quality_flags::FACE_VARIANCE_HIGH,
+            accel_cal_quality_flags::FACE_NORM_IMPLAUSIBLE,
+            accel_cal_quality_flags::FACE_DIRECTION_BAD,
+            accel_cal_quality_flags::AXIS_SEPARATION_LOW,
+            accel_cal_quality_flags::BIAS_IMPLAUSIBLE,
+            accel_cal_quality_flags::SCALE_IMPLAUSIBLE,
+            accel_cal_quality_flags::NORM_RESIDUAL_HIGH,
+            accel_cal_quality_flags::AXIS_RESIDUAL_HIGH,
+        };
+        for (uint8_t i = 0; i < sizeof(known) / sizeof(known[0]); ++i) {
+            if ((flags & known[i]) == 0) continue;
+            if (!first) out.print('|');
+            first = false;
+            out.print(Accel6PosCalibration::qualityFlagName(known[i]));
+        }
+        out.println();
     }
 
     static void printAccelFace(Stream& out, const Accel6PosCalibration& cal, Accel6PosCalibration::Face face) {

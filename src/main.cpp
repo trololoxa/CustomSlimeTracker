@@ -575,6 +575,7 @@ static bool loadConfigAndApplyRuntime() {
 
     g_config.applyToImuCalibration(g_imuCal);
     g_config.applyToGyroTempComp(g_gyroTempComp);
+    g_ahrs6dof.setConfig(g_config.makeAhrsConfig());
 
     g_quality.setConfig(g_config.makeQualityConfig());
     g_quality.reset();
@@ -1853,6 +1854,16 @@ static void printRuntimeStatus(Stream& out, void* user) {
     out.print("tracking_recovery_last_flags=0x"); out.println(g_trackingRecoveryLastFlags, HEX);
     out.print("last_output_confidence="); out.println(g_lastOutputConfidence, 6);
     out.print("quality_recovery_requested="); out.println(g_quality.recoveryRequested() ? "yes" : "no");
+
+    const Ahrs6DofConfig& acfg = g_ahrs6dof.config();
+    const Ahrs6DofStats& ast = g_ahrs6dof.stats();
+    out.print("ahrs_accel_enabled="); out.println(acfg.accelCorrectionEnabled ? "yes" : "no");
+    out.print("ahrs_adaptive_accel="); out.println(acfg.adaptiveAccelCorrection ? "yes" : "no");
+    out.print("ahrs_accel_kp="); out.println(acfg.accelKp, 6);
+    out.print("ahrs_accel_trust="); out.println(ast.lastAccelGate.trust, 6);
+    out.print("ahrs_accel_variance_trust="); out.println(ast.lastAccelNormVarianceTrust, 6);
+    out.print("ahrs_gyro_motion_trust="); out.println(ast.lastGyroMotionTrust, 6);
+    out.print("ahrs_accel_norm_variance_g2="); out.println(ast.accelNormVarianceG2, 9);
     out.print("stream_mode="); out.println(g_streamState.mode == TrackerStreamMode::Off ? "off" :
                                         g_streamState.mode == TrackerStreamMode::Raw ? "raw" :
                                         g_streamState.mode == TrackerStreamMode::Scaled ? "scaled" :
