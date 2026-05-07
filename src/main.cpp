@@ -82,6 +82,7 @@ ImuQualityMonitor g_quality;
 Ahrs6Dof g_ahrs6dof;
 
 TrackerSerialStreamState g_streamState;
+TrackerSerialLogState g_logState;
 TrackerSerialCommandContext g_cmdCtx;
 TrackerSerialCommandInterface<> g_cli;
 
@@ -448,6 +449,17 @@ static StaticRuntimeTest g_lastCompletedStaticTest;
 static bool g_lastCompletedStaticTestValid = false;
 static uint32_t g_lastCompletedStaticTestFinishedMs = 0;
 
+struct MachineLogCounters {
+    uint32_t q = 0;
+    uint32_t cal = 0;
+    uint32_t fifo = 0;
+    uint32_t mag = 0;
+    uint32_t yaw = 0;
+    uint32_t state = 0;
+};
+
+static MachineLogCounters g_logCounters;
+
 // ============================================================
 // Utility
 // ============================================================
@@ -471,6 +483,82 @@ static const char* errorName(Lsm6dsv::Error e) {
 
 static float angleDiffDeg(float a, float b) {
     return wrapPi((b - a) * MATH_DEG_TO_RAD) * MATH_RAD_TO_DEG;
+}
+
+static void printU64Dec(Stream& out, uint64_t v) {
+    char buf[21];
+    size_t i = sizeof(buf);
+    buf[--i] = '\0';
+    if (v == 0) {
+        buf[--i] = '0';
+    } else {
+        while (v > 0 && i > 0) {
+            buf[--i] = static_cast<char>('0' + (v % 10));
+            v /= 10;
+        }
+    }
+    out.print(&buf[i]);
+}
+
+static const char* machineLogModeName(TrackerLogMode mode) {
+    switch (mode) {
+        case TrackerLogMode::Off:   return "off";
+        case TrackerLogMode::Basic: return "basic";
+        case TrackerLogMode::Full:  return "full";
+    }
+    return "unknown";
+}
+
+static bool machineLogDue(uint32_t nowUs) {
+    if (!g_logState.enabled()) return false;
+    const uint32_t period = g_logState.periodUs();
+    if (g_logState.lastEmitUs == 0 || static_cast<uint32_t>(nowUs - g_logState.lastEmitUs) >= period) {
+        g_logState.lastEmitUs = nowUs;
+        return true;
+    }
+    return false;
+}
+
+static bool machineLogMagDue(uint32_t nowUs) {
+    if (!g_logState.enabled()) return false;
+    const uint32_t period = g_logState.periodUs();
+    if (g_logState.lastMagEmitUs == 0 || static_cast<uint32_t>(nowUs - g_logState.lastMagEmitUs) >= period) {
+        g_logState.lastMagEmitUs = nowUs;
+        return true;
+    }
+    return false;
+}
+
+static void resetLogCountersHook(void* user) {
+    (void)user;
+    g_logCounters = MachineLogCounters{};
+}
+
+static void emitMachineLogHeader(Stream& out, void* user) {
+    (void)user;
+    out.print("LOGVER,1,E0,mode,"); out.print(machineLogModeName(g_logState.mode));
+    out.print(",rate_hz,"); out.print(g_logState.rateHz);
+    out.print(",config_crc,0x"); out.print(g_config.data.crc32, HEX);
+    out.print(",config_version,"); out.println(g_config.data.version);
+    out.println("LOGFMT,Q,t_us,seq,dt_us,w,x,y,z,qflags,conf,state,acc_trust,acc_norm_g,acc_var_g2,gyro_trust,gyro_dps,recovery");
+    out.println("LOGFMT,FIFO,t_us,seq,dt_us,hw_ts,fb_ts,dropped_before,overrun,full,unknown,quality_flags");
+    out.println("LOGFMT,CAL,t_us,seq,ax_g,ay_g,az_g,gx_rads,gy_rads,gz_rads,temp_c,quality_flags");
+    out.println("LOGFMT,MAG,t_us,seq,mag_seq,age_ms,raw_norm,body_norm,horiz_norm,heading_valid,heading_yaw_deg,heading_innov_deg,trusted,reject_flags");
+    out.println("LOGFMT,YAW,t_us,seq,valid,gate_open,apply_allowed,applied,error_deg,step_deg,trust,reject_flags,cooldown_ms");
+    out.println("LOGFMT,STATE,t_us,seq,state,reason,flags,conf");
+    out.println("LOGFMT,LOGSUM,uptime_ms,mode,rate_hz,q,cal,fifo,mag,yaw,state,samples,quality_samples,fifo_overruns,fifo_full,large_gaps,recoveries,mag_trusted,mag_rejected,yaw_applied");
+}
+
+static void emitLogStateEvent(const char* state, const char* reason, uint64_t tUs, uint32_t flags, float confidence) {
+    if (!g_logState.enabled()) return;
+    const uint32_t seq = g_logState.sequence++;
+    Serial.print("STATE,"); printU64Dec(Serial, tUs);
+    Serial.print(','); Serial.print(seq);
+    Serial.print(','); Serial.print(state ? state : "UNKNOWN");
+    Serial.print(','); Serial.print(reason ? reason : "none");
+    Serial.print(",0x"); Serial.print(flags, HEX);
+    Serial.print(','); Serial.println(confidence, 4);
+    g_logCounters.state++;
 }
 
 static void resetFifoRuntimeCounters() {
@@ -888,6 +976,8 @@ static void resetOrientationDependentState(const char* reason, uint64_t timestam
         Serial.print(static_cast<unsigned long>(timestampUs));
     }
     Serial.println();
+
+    emitLogStateEvent("ORIENTATION_RESET", reason, timestampUs, 0, g_lastOutputConfidence);
 }
 
 static void enterTrackingRecovery(uint32_t reasonFlags, const char* reason, uint64_t timestampUs) {
@@ -906,6 +996,8 @@ static void enterTrackingRecovery(uint32_t reasonFlags, const char* reason, uint
     }
     Serial.print(" flags=0x");
     Serial.println(reasonFlags, HEX);
+
+    emitLogStateEvent("RECOVERING", reason, timestampUs, reasonFlags, g_lastOutputConfidence);
 }
 
 static void updateTrackingRecoveryState(const ImuQualityResult& quality) {
@@ -932,6 +1024,7 @@ static void updateTrackingRecoveryState(const ImuQualityResult& quality) {
         g_trackingRecovering = false;
         g_trackingRecoveryStableSamples = 0;
         Serial.println("# TRACKING state=TRACKING_6DOF reason=recovery_stable");
+        emitLogStateEvent("TRACKING_6DOF", "recovery_stable", quality.dtUs != 0 ? g_lastSampleTimestampUs : g_trackingRecoveryLastTimestampUs, quality.flags, quality.overallConfidence);
     }
 }
 
@@ -1080,6 +1173,12 @@ static bool applyMagYawCorrectionToAhrs(const MagYawCorrectionOutput& yaw) {
     return true;
 }
 
+static void emitMachineLogMagFrame(const MagProcessedSample& mag,
+                                   const MagHeadingSample& heading,
+                                   const MagYawCorrectionOutput& yaw,
+                                   uint32_t rejectFlagsForUse,
+                                   bool trustedForUse);
+
 static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
     g_magState.samples++;
     g_magState.queuePops++;
@@ -1137,6 +1236,12 @@ static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
     }
 
     g_lastMagYawCorrection = yawOut;
+
+    emitMachineLogMagFrame(g_lastMagProcessed,
+                           g_lastMagHeading,
+                           g_lastMagYawCorrection,
+                           magRejectFlagsForUse,
+                           magTrustedForUse);
 
     if (g_staticTest.active && g_magHeadingRef.valid && g_lastMagHeading.valid) {
         const float e = magHeadingErrorToReferenceDeg(g_lastMagHeading);
@@ -1957,6 +2062,153 @@ static void printRuntimeHealth(Stream& out, void* user) {
     out.print("mean_dt_us="); out.println(qc.meanDtUs(), 6);
 }
 
+static void printLogSummary(Stream& out, void* user) {
+    (void)user;
+    const auto& qc = g_quality.counters();
+    const auto& fs = lsmFifo.stats();
+    const auto& ms = g_magProcessor.stats();
+    const auto& ys = g_magYawCorrection.stats();
+
+    out.print("LOGSUM,"); out.print(millis());
+    out.print(','); out.print(machineLogModeName(g_logState.mode));
+    out.print(','); out.print(g_logState.rateHz);
+    out.print(','); out.print(g_logCounters.q);
+    out.print(','); out.print(g_logCounters.cal);
+    out.print(','); out.print(g_logCounters.fifo);
+    out.print(','); out.print(g_logCounters.mag);
+    out.print(','); out.print(g_logCounters.yaw);
+    out.print(','); out.print(g_logCounters.state);
+    out.print(','); out.print(g_runtimeSamples);
+    out.print(','); out.print(qc.samples);
+    out.print(','); out.print(fs.overrunEvents);
+    out.print(','); out.print(fs.fullEvents);
+    out.print(','); out.print(qc.largeGapSamples);
+    out.print(','); out.print(g_trackingRecoveryEnterCount);
+    out.print(','); out.print(ms.trustedSamples);
+    out.print(','); out.print(ms.rejectedSamples);
+    out.print(','); out.println(ys.appliedCount);
+
+    out.print("LOGSTAT,AHRS,");
+    const Ahrs6DofStats& ast = g_ahrs6dof.stats();
+    out.print(ast.updateCount); out.print(',');
+    out.print(ast.gyroPredictCount); out.print(',');
+    out.print(ast.accelUpdateCount); out.print(',');
+    out.print(ast.accelRejectedCount); out.print(',');
+    out.print(ast.skippedBadDt); out.print(',');
+    out.println(ast.clampedLargeDt);
+
+    out.print("LOGSTAT,QUALITY,");
+    out.print(qc.samples); out.print(',');
+    out.print(qc.hwTimestampSamples); out.print(',');
+    out.print(qc.fallbackTimestampSamples); out.print(',');
+    out.print(qc.largeGapSamples); out.print(',');
+    out.print(qc.estimatedDroppedSamples); out.print(',');
+    out.println(qc.fifoRecoveryRequests);
+
+    out.print("LOGSTAT,MAG,");
+    out.print(ms.processedSamples); out.print(',');
+    out.print(ms.trustedSamples); out.print(',');
+    out.print(ms.rejectedSamples); out.print(',');
+    out.print(g_lastMagProcessed.rejectFlags, HEX); out.print(',');
+    out.println(g_lastMagYawCorrection.rejectFlags, HEX);
+}
+
+static void emitMachineLogFrame(const Lsm6dsv::RawSample& raw,
+                                const Lsm6dsv::Sample& calibrated,
+                                const ImuQualityResult& quality) {
+    if (!machineLogDue(micros())) return;
+
+    const uint32_t seq = g_logState.sequence++;
+    const Ahrs6DofStats& ast = g_ahrs6dof.stats();
+    const Quat q = g_ahrs6dof.quaternionPositiveW();
+    const float gyroDps = calibrated.gyro_rad_s.norm() * MATH_RAD_TO_DEG;
+    const bool hwTs = (quality.flags & imu_quality_flags::TIMESTAMP_HARDWARE) != 0;
+    const bool fbTs = (quality.flags & imu_quality_flags::TIMESTAMP_FALLBACK) != 0;
+
+    Serial.print("Q,"); printU64Dec(Serial, raw.t_us);
+    Serial.print(','); Serial.print(seq);
+    Serial.print(','); Serial.print(quality.dtUs);
+    Serial.print(','); Serial.print(q.w, 7);
+    Serial.print(','); Serial.print(q.x, 7);
+    Serial.print(','); Serial.print(q.y, 7);
+    Serial.print(','); Serial.print(q.z, 7);
+    Serial.print(",0x"); Serial.print(quality.flags, HEX);
+    Serial.print(','); Serial.print(quality.overallConfidence, 4);
+    Serial.print(','); Serial.print(trackingStateName());
+    Serial.print(','); Serial.print(ast.lastAccelGate.trust, 4);
+    Serial.print(','); Serial.print(ast.lastAccelGate.normG, 5);
+    Serial.print(','); Serial.print(ast.accelNormVarianceG2, 8);
+    Serial.print(','); Serial.print(ast.lastGyroMotionTrust, 4);
+    Serial.print(','); Serial.print(gyroDps, 4);
+    Serial.print(','); Serial.println(g_trackingRecovering ? 1 : 0);
+    g_logCounters.q++;
+
+    Serial.print("FIFO,"); printU64Dec(Serial, raw.t_us);
+    Serial.print(','); Serial.print(seq);
+    Serial.print(','); Serial.print(quality.dtUs);
+    Serial.print(','); Serial.print(hwTs ? 1 : 0);
+    Serial.print(','); Serial.print(fbTs ? 1 : 0);
+    Serial.print(','); Serial.print(quality.estimatedDroppedBefore);
+    Serial.print(','); Serial.print(quality.has(imu_quality_flags::FIFO_OVERRUN) ? 1 : 0);
+    Serial.print(','); Serial.print(quality.has(imu_quality_flags::FIFO_FULL) ? 1 : 0);
+    Serial.print(','); Serial.print(quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG) ? 1 : 0);
+    Serial.print(",0x"); Serial.println(quality.flags, HEX);
+    g_logCounters.fifo++;
+
+    if (g_logState.mode == TrackerLogMode::Full) {
+        Serial.print("CAL,"); printU64Dec(Serial, raw.t_us);
+        Serial.print(','); Serial.print(seq);
+        Serial.print(','); Serial.print(calibrated.accel_g.x, 6);
+        Serial.print(','); Serial.print(calibrated.accel_g.y, 6);
+        Serial.print(','); Serial.print(calibrated.accel_g.z, 6);
+        Serial.print(','); Serial.print(calibrated.gyro_rad_s.x, 8);
+        Serial.print(','); Serial.print(calibrated.gyro_rad_s.y, 8);
+        Serial.print(','); Serial.print(calibrated.gyro_rad_s.z, 8);
+        Serial.print(','); Serial.print(calibrated.temp_c, 3);
+        Serial.print(",0x"); Serial.println(quality.flags, HEX);
+        g_logCounters.cal++;
+    }
+}
+
+static void emitMachineLogMagFrame(const MagProcessedSample& mag,
+                                   const MagHeadingSample& heading,
+                                   const MagYawCorrectionOutput& yaw,
+                                   uint32_t rejectFlagsForUse,
+                                   bool trustedForUse) {
+    if (!machineLogMagDue(micros())) return;
+
+    const uint32_t seq = g_logState.sequence++;
+    const uint32_t nowMs = millis();
+    const uint32_t ageMs = mag.receivedMs == 0 ? 0UL : nowMs - mag.receivedMs;
+
+    Serial.print("MAG,"); printU64Dec(Serial, mag.t_us);
+    Serial.print(','); Serial.print(seq);
+    Serial.print(','); Serial.print(mag.seq);
+    Serial.print(','); Serial.print(ageMs);
+    Serial.print(','); Serial.print(mag.rawNorm, 5);
+    Serial.print(','); Serial.print(mag.bodyNorm, 5);
+    Serial.print(','); Serial.print(heading.horizontalNorm, 5);
+    Serial.print(','); Serial.print(heading.valid ? 1 : 0);
+    Serial.print(','); Serial.print(heading.magneticNorthWorldYawDeg, 4);
+    Serial.print(','); Serial.print(heading.yawInnovationDeg, 4);
+    Serial.print(','); Serial.print(trustedForUse ? 1 : 0);
+    Serial.print(",0x"); Serial.println(rejectFlagsForUse, HEX);
+    g_logCounters.mag++;
+
+    Serial.print("YAW,"); printU64Dec(Serial, yaw.magTimestampUs != 0 ? yaw.magTimestampUs : mag.t_us);
+    Serial.print(','); Serial.print(seq);
+    Serial.print(','); Serial.print(yaw.valid ? 1 : 0);
+    Serial.print(','); Serial.print(yaw.gateOpen ? 1 : 0);
+    Serial.print(','); Serial.print(yaw.applyAllowed ? 1 : 0);
+    Serial.print(','); Serial.print(yaw.applied ? 1 : 0);
+    Serial.print(','); Serial.print(yaw.errorDeg, 5);
+    Serial.print(','); Serial.print(yaw.correctionStepDeg, 7);
+    Serial.print(','); Serial.print(yaw.combinedTrust, 4);
+    Serial.print(",0x"); Serial.print(yaw.rejectFlags, HEX);
+    Serial.print(','); Serial.println(yaw.cooldownRemainingMs);
+    g_logCounters.yaw++;
+}
+
 static bool startStaticTestHook(uint32_t durationMs, void* user) {
     (void)user;
     if (g_staticTest.active) return false;
@@ -2064,6 +2316,7 @@ static void setupCommandInterface() {
     g_cmdCtx.calibrationIo = &g_calIo;
     g_cmdCtx.accelCalRunner = &g_accelCalRunner;
     g_cmdCtx.streamState = &g_streamState;
+    g_cmdCtx.logState = &g_logState;
 
     g_cmdCtx.resetFifoRuntime = hookResetFifoRuntime;
     g_cmdCtx.resetFifoRuntimeUser = nullptr;
@@ -2073,6 +2326,12 @@ static void setupCommandInterface() {
     g_cmdCtx.printRuntimeStatusUser = nullptr;
     g_cmdCtx.printRuntimeHealth = printRuntimeHealth;
     g_cmdCtx.printRuntimeHealthUser = nullptr;
+    g_cmdCtx.emitLogHeader = emitMachineLogHeader;
+    g_cmdCtx.emitLogHeaderUser = nullptr;
+    g_cmdCtx.printLogSummary = printLogSummary;
+    g_cmdCtx.printLogSummaryUser = nullptr;
+    g_cmdCtx.resetLogCounters = resetLogCountersHook;
+    g_cmdCtx.resetLogCountersUser = nullptr;
     g_cmdCtx.startStaticTest = startStaticTestHook;
     g_cmdCtx.startStaticTestUser = nullptr;
     g_cmdCtx.stopStaticTest = stopStaticTestHook;
@@ -2601,6 +2860,7 @@ static void processOneRawSample(const Lsm6dsv::RawSample& raw) {
         g_lastSampleTimestampUs = raw.t_us;
         g_lastOutputConfidence = quality.overallConfidence;
         emitStreamIfNeeded(raw, scaled, calibrated, quality);
+        emitMachineLogFrame(raw, calibrated, quality);
         updateStaticTest(raw, calibrated, quality);
         maybeRecoverFifo(quality, raw);
         return;
@@ -2618,6 +2878,7 @@ static void processOneRawSample(const Lsm6dsv::RawSample& raw) {
     g_lastOutputConfidence = quality.overallConfidence;
 
     emitStreamIfNeeded(raw, scaled, calibrated, quality);
+    emitMachineLogFrame(raw, calibrated, quality);
     updateStaticTest(raw, calibrated, quality);
     updateTrackingRecoveryState(quality);
 }

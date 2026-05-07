@@ -162,6 +162,29 @@ struct TrackerSerialStreamState {
     }
 };
 
+enum class TrackerLogMode : uint8_t {
+    Off,
+    Basic,
+    Full
+};
+
+struct TrackerSerialLogState {
+    TrackerLogMode mode = TrackerLogMode::Off;
+    uint16_t rateHz = 20;
+    uint32_t lastEmitUs = 0;
+    uint32_t lastMagEmitUs = 0;
+    uint32_t sequence = 0;
+
+    bool enabled() const {
+        return mode != TrackerLogMode::Off;
+    }
+
+    uint32_t periodUs() const {
+        const uint16_t hz = rateHz == 0 ? 1 : rateHz;
+        return 1000000UL / hz;
+    }
+};
+
 struct TrackerSerialCommandContext {
     Stream* io = nullptr;
 
@@ -181,6 +204,7 @@ struct TrackerSerialCommandContext {
     FifoAccel6PosCalibrationRunner* accelCalRunner = nullptr;
 
     TrackerSerialStreamState* streamState = nullptr;
+    TrackerSerialLogState* logState = nullptr;
 
     // Optional hooks supplied by main.cpp.
     void (*resetFifoRuntime)(void* user) = nullptr;
@@ -194,6 +218,15 @@ struct TrackerSerialCommandContext {
 
     void (*printRuntimeHealth)(Stream& out, void* user) = nullptr;
     void* printRuntimeHealthUser = nullptr;
+
+    void (*emitLogHeader)(Stream& out, void* user) = nullptr;
+    void* emitLogHeaderUser = nullptr;
+
+    void (*printLogSummary)(Stream& out, void* user) = nullptr;
+    void* printLogSummaryUser = nullptr;
+
+    void (*resetLogCounters)(void* user) = nullptr;
+    void* resetLogCountersUser = nullptr;
 
     bool (*startStaticTest)(uint32_t durationMs, void* user) = nullptr;
     void* startStaticTestUser = nullptr;
@@ -332,6 +365,11 @@ public:
             return;
         }
 
+        if (is(argv[0], "log")) {
+            cmdLog(ctx, argc, argv);
+            return;
+        }
+
         if (is(argv[0], "test")) {
             cmdTest(ctx, argc, argv);
             return;
@@ -405,6 +443,9 @@ private:
         out.println();
         out.println("stream off | heartbeat | raw | scaled | quat | debug");
         out.println("stream rate <hz>");
+        out.println();
+        out.println("log off | basic | full | start [basic|full] | stop");
+        out.println("log rate <hz> | header | summary | reset");
         out.println();
         out.println("test static <seconds>");
         out.println("test stop");
@@ -2094,6 +2135,100 @@ private:
         out.println(streamModeName(mode));
     }
 
+    static void cmdLog(TrackerSerialCommandContext& ctx, int argc, char** argv) {
+        Stream& out = stream(ctx);
+        if (!ctx.logState) {
+            tracker_serial_detail::printErr(out, "log state not available");
+            return;
+        }
+
+        if (argc < 2) {
+            out.print("log_mode="); out.println(logModeName(ctx.logState->mode));
+            out.print("log_rate_hz="); out.println(ctx.logState->rateHz);
+            out.print("log_sequence="); out.println(ctx.logState->sequence);
+            return;
+        }
+
+        if (is(argv[1], "rate")) {
+            if (argc < 3) {
+                tracker_serial_detail::printErr(out, "usage: log rate <hz>");
+                return;
+            }
+            uint32_t hz = 0;
+            if (!tracker_serial_detail::parseU32(argv[2], hz) || hz == 0 || hz > 200) {
+                tracker_serial_detail::printErr(out, "invalid log rate; expected 1..200");
+                return;
+            }
+            ctx.logState->rateHz = static_cast<uint16_t>(hz);
+            ctx.logState->lastEmitUs = 0;
+            ctx.logState->lastMagEmitUs = 0;
+            tracker_serial_detail::printOk(out, "log rate set");
+            return;
+        }
+
+        if (is(argv[1], "header")) {
+            if (ctx.emitLogHeader) ctx.emitLogHeader(out, ctx.emitLogHeaderUser);
+            else tracker_serial_detail::printErr(out, "log header hook not available");
+            return;
+        }
+
+        if (is(argv[1], "summary")) {
+            if (ctx.printLogSummary) ctx.printLogSummary(out, ctx.printLogSummaryUser);
+            else tracker_serial_detail::printErr(out, "log summary hook not available");
+            return;
+        }
+
+        if (is(argv[1], "reset")) {
+            ctx.logState->sequence = 0;
+            ctx.logState->lastEmitUs = 0;
+            ctx.logState->lastMagEmitUs = 0;
+            if (ctx.resetLogCounters) ctx.resetLogCounters(ctx.resetLogCountersUser);
+            tracker_serial_detail::printOk(out, "log counters reset");
+            return;
+        }
+
+        if (is(argv[1], "off") || is(argv[1], "stop")) {
+            ctx.logState->mode = TrackerLogMode::Off;
+            ctx.logState->lastEmitUs = 0;
+            ctx.logState->lastMagEmitUs = 0;
+            tracker_serial_detail::printOk(out, "log stopped");
+            return;
+        }
+
+        TrackerLogMode mode = TrackerLogMode::Off;
+        bool start = false;
+        if (is(argv[1], "start")) {
+            start = true;
+            if (argc >= 3) {
+                if (!parseLogMode(argv[2], mode) || mode == TrackerLogMode::Off) {
+                    tracker_serial_detail::printErr(out, "usage: log start [basic|full]");
+                    return;
+                }
+            } else {
+                mode = TrackerLogMode::Basic;
+            }
+        } else if (parseLogMode(argv[1], mode)) {
+            start = (mode != TrackerLogMode::Off);
+        } else {
+            tracker_serial_detail::printErr(out, "unknown log command; use off|basic|full|start|stop|rate|header|summary|reset");
+            return;
+        }
+
+        ctx.logState->mode = mode;
+        ctx.logState->lastEmitUs = 0;
+        ctx.logState->lastMagEmitUs = 0;
+        if (mode == TrackerLogMode::Off) {
+            tracker_serial_detail::printOk(out, "log stopped");
+            return;
+        }
+
+        out.print("# OK log mode ");
+        out.println(logModeName(mode));
+        if (start && ctx.emitLogHeader) {
+            ctx.emitLogHeader(out, ctx.emitLogHeaderUser);
+        }
+    }
+
     static void cmdTest(TrackerSerialCommandContext& ctx, int argc, char** argv) {
         Stream& out = stream(ctx);
         if (argc < 2) {
@@ -2463,6 +2598,22 @@ private:
         if (is(s, "quat"))      { mode = TrackerStreamMode::Quat; return true; }
         if (is(s, "debug"))     { mode = TrackerStreamMode::Debug; return true; }
         return false;
+    }
+
+    static bool parseLogMode(const char* s, TrackerLogMode& mode) {
+        if (is(s, "off"))   { mode = TrackerLogMode::Off; return true; }
+        if (is(s, "basic")) { mode = TrackerLogMode::Basic; return true; }
+        if (is(s, "full"))  { mode = TrackerLogMode::Full; return true; }
+        return false;
+    }
+
+    static const char* logModeName(TrackerLogMode mode) {
+        switch (mode) {
+            case TrackerLogMode::Off:   return "off";
+            case TrackerLogMode::Basic: return "basic";
+            case TrackerLogMode::Full:  return "full";
+        }
+        return "unknown";
     }
 
     static const char* streamModeName(TrackerStreamMode mode) {
