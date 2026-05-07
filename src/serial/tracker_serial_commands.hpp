@@ -1301,6 +1301,7 @@ private:
                     return;
                 }
 
+                if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
                 tracker_serial_detail::printOk(out, saveRequested ? "mag axis mapping saved" : "mag axis mapping set in RAM");
                 printMagAxisMatrix(out, *ctx.config);
                 return;
@@ -1318,6 +1319,7 @@ private:
                     return;
                 }
 
+                if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
                 tracker_serial_detail::printOk(out, saveRequested ? "mag axis identity saved" : "mag axis identity set in RAM");
                 printMagAxisMatrix(out, *ctx.config);
                 return;
@@ -1335,6 +1337,7 @@ private:
                     return;
                 }
 
+                if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
                 tracker_serial_detail::printOk(out, saveRequested ? "mag axis cleared and saved" : "mag axis cleared in RAM");
                 printMagAxisMatrix(out, *ctx.config);
                 return;
@@ -1543,6 +1546,7 @@ private:
                 ctx.config->data.accelCal = TrackerAccelCalibrationConfig{};
                 ctx.config->updateCrc();
             }
+            if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
             tracker_serial_detail::printOk(out, "all calibration cleared in RAM");
             return;
         }
@@ -1576,6 +1580,7 @@ private:
                 ctx.config->data.gyroCal = TrackerGyroCalibrationConfig{};
                 ctx.config->updateCrc();
             }
+            if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
             tracker_serial_detail::printOk(out, "gyro calibration cleared in RAM");
             return;
         }
@@ -1614,6 +1619,7 @@ private:
             ctx.config->captureFromImuCalibration(*ctx.imuCal);
             if (ctx.gyroTempComp) ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
         }
+        if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
 
         tracker_serial_detail::printOk(out, "gyro calibration applied to RAM; use cal gyro save or config save");
     }
@@ -1669,6 +1675,7 @@ private:
             printAccelCal(out, ctx.accelCalRunner->calibration());
             if (ctx.imuCal) ctx.accelCalRunner->applyToImuCalibration(*ctx.imuCal);
             if (ctx.config && ctx.imuCal) ctx.config->captureFromImuCalibration(*ctx.imuCal);
+            if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
             tracker_serial_detail::printOk(out, "accel calibration computed and applied to RAM");
             return;
         }
@@ -1703,6 +1710,7 @@ private:
                 ctx.config->data.accelCal = TrackerAccelCalibrationConfig{};
                 ctx.config->updateCrc();
             }
+            if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
             tracker_serial_detail::printOk(out, "accel calibration cleared in RAM");
             return;
         }
@@ -1872,6 +1880,10 @@ private:
             out.print("ahrs_updates="); out.println(st.updateCount);
             out.print("accel_updates="); out.println(st.accelUpdateCount);
             out.print("accel_rejects="); out.println(st.accelRejectedCount);
+            out.print("last_seen_t_us="); out.println(static_cast<unsigned long>(st.lastSeenTimestampUs));
+            out.print("last_integrated_t_us="); out.println(static_cast<unsigned long>(st.lastIntegratedTimestampUs));
+            out.print("bad_dt_rejects="); out.println(st.skippedBadDt);
+            out.print("large_dt_clamps="); out.println(st.clampedLargeDt);
             return;
         }
 
@@ -2064,6 +2076,7 @@ private:
                 ? TrackerStreamMode::Quat
                 : TrackerStreamMode::Off;
         }
+        if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
     }
 
     static void captureRuntimeToConfig(TrackerSerialCommandContext& ctx) {

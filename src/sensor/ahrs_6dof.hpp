@@ -83,6 +83,14 @@ struct Ahrs6DofStats {
     uint32_t clampedLargeDt = 0;
     uint32_t normalizedCount = 0;
 
+    // Timestamp semantics:
+    //   lastSeenTimestampUs       = latest timestamp observed by update(), even if rejected.
+    //   lastIntegratedTimestampUs = latest timestamp that actually affected gyro integration.
+    //
+    // Keep lastTimestampUs as a backwards-compatible mirror of
+    // lastIntegratedTimestampUs for existing diagnostics/users of stats().
+    uint64_t lastSeenTimestampUs = 0;
+    uint64_t lastIntegratedTimestampUs = 0;
     uint64_t lastTimestampUs = 0;
     float lastDtS = 0.0f;
     float lastUsedDtS = 0.0f;
@@ -113,6 +121,8 @@ public:
     void reset(const Quat& initialQ = Quat::identity(), uint64_t timestampUs = 0) {
         q_ = initialQ.normalized().withPositiveW();
         stats_ = Ahrs6DofStats{};
+        stats_.lastSeenTimestampUs = timestampUs;
+        stats_.lastIntegratedTimestampUs = timestampUs;
         stats_.lastTimestampUs = timestampUs;
         initialized_ = timestampUs != 0;
     }
@@ -127,6 +137,8 @@ public:
         // q rotates measured up direction from sensor frame into worldUp.
         q_ = Quat::fromTwoUnitVectors(a, cfg_.worldUp).withPositiveW();
         stats_ = Ahrs6DofStats{};
+        stats_.lastSeenTimestampUs = timestampUs;
+        stats_.lastIntegratedTimestampUs = timestampUs;
         stats_.lastTimestampUs = timestampUs;
         initialized_ = timestampUs != 0;
         return true;
@@ -162,6 +174,23 @@ public:
 
     void setQuaternion(const Quat& q) {
         q_ = q.normalized().withPositiveW();
+    }
+
+    // Explicitly rebase AHRS integration time after a known recovery event
+    // (FIFO reset, timestamp reconstruction reset, sensor reset). This does
+    // not rotate the quaternion and must not be used for ordinary rejected
+    // samples; it is for explicit RECOVERING paths where the missing interval
+    // cannot be reconstructed safely.
+    void rebaseTimestamp(uint64_t timestampUs) {
+        stats_.lastSeenTimestampUs = timestampUs;
+        if (!initialized_) {
+            return;
+        }
+
+        stats_.lastIntegratedTimestampUs = timestampUs;
+        stats_.lastTimestampUs = timestampUs;
+        stats_.lastDtS = 0.0f;
+        stats_.lastUsedDtS = 0.0f;
     }
 
     Ahrs6DofAccelGate evaluateAccelGate(const Vec3& accelG) const {
@@ -216,8 +245,8 @@ public:
             return false;
         }
 
-        const uint64_t lastUs = stats_.lastTimestampUs;
-        stats_.lastTimestampUs = timestampUs;
+        stats_.lastSeenTimestampUs = timestampUs;
+        const uint64_t lastUs = stats_.lastIntegratedTimestampUs;
 
         if (timestampUs <= lastUs) {
             stats_.skippedBadDt++;
@@ -254,6 +283,8 @@ public:
 
         stats_.updateCount++;
         stats_.gyroPredictCount++;
+        stats_.lastIntegratedTimestampUs = timestampUs;
+        stats_.lastTimestampUs = timestampUs;
         stats_.lastUsedDtS = dtS;
         stats_.lastGyroRadS = gyroUsed;
         stats_.lastAccelG = accelG;

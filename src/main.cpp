@@ -103,6 +103,14 @@ static uint32_t g_runtimeSamples = 0;
 static float g_latestTempC = 25.0f;
 static bool g_configLoadedFromNvs = false;
 static uint32_t g_lastHeartbeatMs = 0;
+static float g_lastOutputConfidence = 0.0f;
+
+static constexpr uint32_t TRACKING_RECOVERY_STABLE_SAMPLES = 128;
+static bool g_trackingRecovering = false;
+static uint32_t g_trackingRecoveryStableSamples = 0;
+static uint32_t g_trackingRecoveryEnterCount = 0;
+static uint32_t g_trackingRecoveryLastFlags = 0;
+static uint64_t g_trackingRecoveryLastTimestampUs = 0;
 
 struct MagRuntimeState {
     bool hubInitialized = false;
@@ -436,6 +444,9 @@ struct StaticRuntimeTest {
 };
 
 static StaticRuntimeTest g_staticTest;
+static StaticRuntimeTest g_lastCompletedStaticTest;
+static bool g_lastCompletedStaticTestValid = false;
+static uint32_t g_lastCompletedStaticTestFinishedMs = 0;
 
 // ============================================================
 // Utility
@@ -540,21 +551,27 @@ static Lsm6dsv::Sample makeCalibratedSample(const Lsm6dsv::Sample& scaled) {
 // Config / init
 // ============================================================
 
-static void seedDefaultCalibrationIfNvsEmpty() {
-    // Optional convenience: your measured accel calibration from previous phase.
-    // It is only inserted into RAM defaults when NVS has no config.
-    if (g_configLoadedFromNvs) return;
+static void enforceProductCalibrationValidityAtBoot() {
+    // Production rule: never seed a universal accel calibration into a new
+    // device. A missing accel calibration must remain explicit so mag yaw
+    // correction cannot silently run with another device's tilt calibration.
+    if (!g_config.data.accelCal.valid) {
+        g_config.data.accelCal.biasG = Vec3::zero();
+        g_config.data.accelCal.scale = Mat3::identity();
+        g_config.data.magYaw.applyEnabled = false;
+    }
 
-    g_config.data.accelCal.valid = true;
-    g_config.data.accelCal.biasG = Vec3(0.00214949f, 0.00605807f, 0.00125885f);
-    g_config.data.accelCal.scale = Mat3::diagonal(1.00130630f, 1.00026011f, 1.00308013f);
+    if (!g_config.data.accelCal.valid || !g_config.data.magCal.calibrationValid) {
+        g_config.data.magYaw.applyEnabled = false;
+    }
+
     g_config.updateCrc();
 }
 
 static bool loadConfigAndApplyRuntime() {
     g_configStore.loadOrDefaults(g_config, &g_configLoadedFromNvs);
     g_config.sanitize();
-    seedDefaultCalibrationIfNvsEmpty();
+    enforceProductCalibrationValidityAtBoot();
 
     g_config.applyToImuCalibration(g_imuCal);
     g_config.applyToGyroTempComp(g_gyroTempComp);
@@ -767,8 +784,15 @@ static MagYawCorrectionConfig makeMagYawCorrectionConfig() {
     const auto& y = g_config.data.magYaw;
 
     MagYawCorrectionConfig c;
-    c.enabled = y.controllerEnabled && g_config.data.magCal.driverEnabled;
-    c.applyEnabled = y.applyEnabled;
+    const bool accelCalReady = g_imuCal.accelCalValid;
+    const bool recoverySafe = !g_trackingRecovering;
+
+    c.enabled = y.controllerEnabled &&
+                g_config.data.magCal.driverEnabled &&
+                g_config.data.magCal.calibrationValid &&
+                accelCalReady &&
+                recoverySafe;
+    c.applyEnabled = y.applyEnabled && accelCalReady && recoverySafe;
 
     c.maxInnovationDeg = y.maxInnovationDeg;
     c.maxMagAgeMs = y.maxMagAgeMs;
@@ -839,6 +863,86 @@ static void resetMagYawCorrectionRuntime() {
     g_lastMagYawCorrection = MagYawCorrectionOutput{};
 }
 
+static void resetOrientationDependentState(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase) {
+    g_magHeading.reset();
+    g_lastMagHeading = MagHeadingSample{};
+
+    g_magHeadingRef.clear();
+    g_magHeadingAutoRef.done = false;
+    g_magHeadingAutoRef.resetCandidate();
+
+    resetMagYawCorrectionRuntime();
+
+    if (rebaseAhrsTimebase && timestampUs != 0) {
+        g_ahrs6dof.rebaseTimestamp(timestampUs);
+    }
+
+    Serial.print("# TRACKING orientation-dependent state reset");
+    if (reason && reason[0] != '\0') {
+        Serial.print(" reason=");
+        Serial.print(reason);
+    }
+    if (timestampUs != 0) {
+        Serial.print(" t_us=");
+        Serial.print(static_cast<unsigned long>(timestampUs));
+    }
+    Serial.println();
+}
+
+static void enterTrackingRecovery(uint32_t reasonFlags, const char* reason, uint64_t timestampUs) {
+    g_trackingRecovering = true;
+    g_trackingRecoveryStableSamples = 0;
+    g_trackingRecoveryEnterCount++;
+    g_trackingRecoveryLastFlags = reasonFlags;
+    g_trackingRecoveryLastTimestampUs = timestampUs;
+
+    resetOrientationDependentState(reason, timestampUs, true);
+
+    Serial.print("# TRACKING state=RECOVERING");
+    if (reason && reason[0] != '\0') {
+        Serial.print(" reason=");
+        Serial.print(reason);
+    }
+    Serial.print(" flags=0x");
+    Serial.println(reasonFlags, HEX);
+}
+
+static void updateTrackingRecoveryState(const ImuQualityResult& quality) {
+    if (!g_trackingRecovering) return;
+
+    const bool stable = quality.shouldUpdateAhrs &&
+                        !quality.shouldRequestFifoRecovery &&
+                        !quality.has(imu_quality_flags::TIMESTAMP_ZERO) &&
+                        !quality.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC) &&
+                        !quality.has(imu_quality_flags::TIMESTAMP_BACKWARDS) &&
+                        !quality.has(imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) &&
+                        !quality.has(imu_quality_flags::TIMESTAMP_LARGE_GAP) &&
+                        !quality.has(imu_quality_flags::FIFO_OVERRUN) &&
+                        !quality.has(imu_quality_flags::FIFO_FULL) &&
+                        !quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG);
+
+    if (!stable) {
+        g_trackingRecoveryStableSamples = 0;
+        return;
+    }
+
+    g_trackingRecoveryStableSamples++;
+    if (g_trackingRecoveryStableSamples >= TRACKING_RECOVERY_STABLE_SAMPLES) {
+        g_trackingRecovering = false;
+        g_trackingRecoveryStableSamples = 0;
+        Serial.println("# TRACKING state=TRACKING_6DOF reason=recovery_stable");
+    }
+}
+
+static const char* trackingStateName() {
+    if (!g_imuCal.accelCalValid || !g_imuCal.gyroBiasValid) return "CALIBRATION_REQUIRED";
+    if (g_trackingRecovering) return "RECOVERING";
+    if (g_quality.recoveryRequested()) return "DEGRADED_TIMING";
+    if (!g_ahrs6dof.initialized()) return "STARTUP_CONVERGENCE";
+    if (g_magHeadingRef.valid && g_lastMagYawCorrection.applied) return "TRACKING_6DOF_MAG_YAW";
+    return "TRACKING_6DOF";
+}
+
 static bool setMagHeadingReferenceInternal(const char* reason, bool verbose) {
     if (!g_lastMagHeading.valid) {
         if (verbose) Serial.println("# ERR cannot set mag heading reference: last heading is invalid");
@@ -882,6 +986,10 @@ static void updateMagHeadingAutoReference(uint32_t nowMs,
                                           float accelTrust,
                                           bool magTrustedForUse) {
     if (!g_magHeadingAutoRef.enabled) return;
+    if (g_trackingRecovering) {
+        g_magHeadingAutoRef.resetCandidate();
+        return;
+    }
 
     // Already have a reference for this AHRS world-frame.
     if (g_magHeadingRef.valid) {
@@ -1677,6 +1785,8 @@ static bool applyMagCalibrationHook(bool persist, void* user) {
         }
     }
 
+    resetOrientationDependentState("mag_calibration_changed", lsmFifo.stats().lastAssignedTimestampUs, false);
+
     Serial.print("# OK mag hardIron=");
     Serial.print(result.hardIron.x, 6); Serial.print(',');
     Serial.print(result.hardIron.y, 6); Serial.print(',');
@@ -1713,11 +1823,13 @@ static void hookResetFifoRuntime(void* user) {
     (void)user;
     resetFifoRuntimeCounters();
     g_lastSampleTimestampUs = 0;
+    enterTrackingRecovery(imu_quality_flags::FIFO_RECOVERY_REQUESTED, "manual_fifo_reset", lsmFifo.stats().lastAssignedTimestampUs);
 }
 
 static void hookResetAhrsRuntime(void* user) {
     (void)user;
     g_lastSampleTimestampUs = 0;
+    resetOrientationDependentState("ahrs_or_config_reset", lsmFifo.stats().lastAssignedTimestampUs, false);
 }
 
 static void printRuntimeStatus(Stream& out, void* user) {
@@ -1735,6 +1847,11 @@ static void printRuntimeStatus(Stream& out, void* user) {
     out.print("mag_fifo_armed="); out.println(g_magState.fifoArmed ? "yes" : "no");
     out.print("gyro_bias_valid="); out.println(g_imuCal.gyroBiasValid ? "yes" : "no");
     out.print("accel_cal_valid="); out.println(g_imuCal.accelCalValid ? "yes" : "no");
+    out.print("tracking_state="); out.println(trackingStateName());
+    out.print("tracking_recovery_active="); out.println(g_trackingRecovering ? "yes" : "no");
+    out.print("tracking_recovery_enter_count="); out.println(g_trackingRecoveryEnterCount);
+    out.print("tracking_recovery_last_flags=0x"); out.println(g_trackingRecoveryLastFlags, HEX);
+    out.print("last_output_confidence="); out.println(g_lastOutputConfidence, 6);
     out.print("quality_recovery_requested="); out.println(g_quality.recoveryRequested() ? "yes" : "no");
     out.print("stream_mode="); out.println(g_streamState.mode == TrackerStreamMode::Off ? "off" :
                                         g_streamState.mode == TrackerStreamMode::Raw ? "raw" :
@@ -1897,7 +2014,17 @@ static bool stopStaticTestHook(void* user) {
 static void printStaticTestStatus(Stream& out, void* user) {
     (void)user;
     out.print("test_active="); out.println(g_staticTest.active ? "yes" : "no");
-    if (!g_staticTest.active) return;
+    out.print("last_completed_valid="); out.println(g_lastCompletedStaticTestValid ? "yes" : "no");
+    if (!g_staticTest.active) {
+        if (g_lastCompletedStaticTestValid) {
+            out.print("last_completed_age_s="); out.println((millis() - g_lastCompletedStaticTestFinishedMs) / 1000UL);
+            out.print("last_completed_samples="); out.println(g_lastCompletedStaticTest.samples);
+            out.print("last_completed_temp_mean_c="); out.println(g_lastCompletedStaticTest.tempC.mean(), 3);
+            out.print("last_completed_gyro_mean_dps_norm=");
+            out.println((g_lastCompletedStaticTest.gyroAfterRadS.mean() * MATH_RAD_TO_DEG).norm(), 6);
+        }
+        return;
+    }
     const uint32_t elapsed = millis() - g_staticTest.startMs;
     out.print("elapsed_s="); out.println(elapsed / 1000UL);
     out.print("duration_s="); out.println(g_staticTest.durationMs / 1000UL);
@@ -1988,6 +2115,7 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     Serial.println(quality.flags, HEX);
 
     const uint64_t ts = raw.t_us != 0 ? raw.t_us : lsmFifo.stats().lastAssignedTimestampUs;
+    enterTrackingRecovery(quality.flags, "fifo_recovery", ts);
     lsmFifo.resetFifo();
     lsmFifo.resetTimestampReconstruction(ts);
     g_quality.clearRecoveryRequest();
@@ -2246,6 +2374,17 @@ static void finishStaticTest() {
     Serial.println("STATIC TEST DONE");
     Serial.println("==============================================================================");
 
+    const bool completedOk = g_staticTest.samples > 0 &&
+                             g_staticTest.gyroAfterRadS.count > 0 &&
+                             g_staticTest.tempC.count > 0;
+    if (completedOk) {
+        g_lastCompletedStaticTest = g_staticTest;
+        g_lastCompletedStaticTest.active = false;
+        g_lastCompletedStaticTest.stopRequested = false;
+        g_lastCompletedStaticTestValid = true;
+        g_lastCompletedStaticTestFinishedMs = millis();
+    }
+
     g_staticTest.reset();
 }
 
@@ -2311,14 +2450,17 @@ static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user)
         return false;
     }
 
-    if (g_staticTest.samples < 1000 || g_staticTest.gyroAfterRadS.count < 1000) {
-        out.println("# ERR no usable static test data; run test static first");
+    if (!g_lastCompletedStaticTestValid ||
+        g_lastCompletedStaticTest.samples < 1000 ||
+        g_lastCompletedStaticTest.gyroAfterRadS.count < 1000) {
+        out.println("# ERR no usable completed static test data; run test static first and let it finish");
         return false;
     }
 
-    const float tempMeanC = g_staticTest.tempC.mean();
-    const float tempStartC = g_staticTest.tempStartC;
-    const float tempEndC = g_staticTest.tempEndC;
+    const StaticRuntimeTest& test = g_lastCompletedStaticTest;
+    const float tempMeanC = test.tempC.mean();
+    const float tempStartC = test.tempStartC;
+    const float tempEndC = test.tempEndC;
     const float tempDeltaDuringTestC = tempEndC - tempStartC;
 
     const float refTempC = g_gyroTempComp.referenceTempC();
@@ -2330,7 +2472,7 @@ static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user)
         return false;
     }
 
-    const Vec3 residualRadS = g_staticTest.gyroAfterRadS.mean();
+    const Vec3 residualRadS = test.gyroAfterRadS.mean();
     if (!residualRadS.isFinite()) {
         out.println("# ERR residual gyro mean is non-finite");
         return false;
@@ -2441,17 +2583,32 @@ static void processOneRawSample(const Lsm6dsv::RawSample& raw) {
     const auto& fifoStats = lsmFifo.stats();
     ImuQualityResult quality = g_quality.evaluate(raw, calibrated, fifoStats);
 
-    if (quality.shouldUpdateAhrs) {
+    const bool largeGap = quality.has(imu_quality_flags::TIMESTAMP_LARGE_GAP);
+
+    if (quality.shouldRequestFifoRecovery) {
+        g_runtimeSamples++;
+        g_lastSampleTimestampUs = raw.t_us;
+        g_lastOutputConfidence = quality.overallConfidence;
+        emitStreamIfNeeded(raw, scaled, calibrated, quality);
+        updateStaticTest(raw, calibrated, quality);
+        maybeRecoverFifo(quality, raw);
+        return;
+    }
+
+    if (largeGap) {
+        enterTrackingRecovery(quality.flags, "large_dt_gap", raw.t_us);
+    } else if (quality.shouldUpdateAhrs) {
         const Vec3 accelForAhrs = quality.accelForAhrs(calibrated.accel_g);
         g_ahrs6dof.update(calibrated.gyro_rad_s, accelForAhrs, raw.t_us);
     }
 
     g_runtimeSamples++;
     g_lastSampleTimestampUs = raw.t_us;
+    g_lastOutputConfidence = quality.overallConfidence;
 
     emitStreamIfNeeded(raw, scaled, calibrated, quality);
     updateStaticTest(raw, calibrated, quality);
-    maybeRecoverFifo(quality, raw);
+    updateTrackingRecoveryState(quality);
 }
 
 static void processFifoRuntime() {
@@ -2552,6 +2709,7 @@ void setup() {
     g_quality.reset();
     g_quality.syncFifoStats(lsmFifo.stats());
     g_ahrs6dof.reset();
+    resetOrientationDependentState("startup", 0, false);
 
     if (g_config.data.magCal.driverEnabled) {
         Serial.println("# mag enabled in config; starting QMC6309 FIFO stream");
