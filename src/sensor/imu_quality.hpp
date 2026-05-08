@@ -56,6 +56,7 @@ static constexpr uint32_t ACCEL_NORM_OUTLIER         = 1u << 20;
 static constexpr uint32_t SAMPLE_DROPPED_BEFORE      = 1u << 21;
 static constexpr uint32_t SAMPLE_NOT_AHRS_USABLE     = 1u << 22;
 static constexpr uint32_t ACCEL_NOT_AHRS_USABLE      = 1u << 23;
+static constexpr uint32_t TEMP_COMP_OUT_OF_RANGE       = 1u << 24;
 }
 
 struct ImuQualityConfig {
@@ -108,6 +109,18 @@ struct ImuQualityResult {
 
     bool has(uint32_t f) const {
         return (flags & f) != 0;
+    }
+
+    void markTempCompOutOfRange(float confidenceMultiplier = 0.85f) {
+        flags |= imu_quality_flags::TEMP_COMP_OUT_OF_RANGE;
+        if (!std::isfinite(confidenceMultiplier) || confidenceMultiplier < 0.0f) {
+            confidenceMultiplier = 0.0f;
+        }
+        if (confidenceMultiplier > 1.0f) {
+            confidenceMultiplier = 1.0f;
+        }
+        gyroConfidence *= confidenceMultiplier;
+        overallConfidence *= confidenceMultiplier;
     }
 
     Vec3 accelForAhrs(const Vec3& calibratedAccelG) const {
@@ -171,7 +184,8 @@ public:
 
     void reset() {
         counters_ = ImuQualityCounters{};
-        lastTimestampUs_ = 0;
+        lastSeenTimestampUs_ = 0;
+        lastAcceptedTimestampUs_ = 0;
         lastStatsValid_ = false;
         recoveryRequested_ = false;
         lastRecoveryFlags_ = 0;
@@ -251,45 +265,54 @@ private:
     void evaluateTimestamp(const Lsm6dsv::RawSample& raw,
                            float expectedDt,
                            ImuQualityResult& q) {
+        // Keep the latest observed timestamp separate from the timestamp used
+        // as the baseline for dt quality. A rejected/non-monotonic timestamp
+        // must not poison the next normal sample's dt calculation. This mirrors
+        // the AHRS lastSeenTimestampUs vs lastIntegratedTimestampUs semantics.
+        if (raw.t_us != 0) {
+            lastSeenTimestampUs_ = raw.t_us;
+        }
+
         if (raw.t_us == 0) {
             q.flags |= imu_quality_flags::TIMESTAMP_ZERO;
             q.timestampConfidence = 0.0f;
             return;
         }
 
-        if (lastTimestampUs_ != 0) {
-            if (raw.t_us <= lastTimestampUs_) {
+        if (lastAcceptedTimestampUs_ != 0) {
+            if (raw.t_us <= lastAcceptedTimestampUs_) {
                 q.flags |= imu_quality_flags::TIMESTAMP_NON_MONOTONIC;
                 q.timestampConfidence = 0.0f;
-            } else {
-                const uint64_t dt64 = raw.t_us - lastTimestampUs_;
-                q.dtUs = dt64 > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : static_cast<uint32_t>(dt64);
-
-                if (expectedDt > 0.0f) {
-                    const float gapThreshold = expectedDt * cfg_.largeGapFactor;
-                    if (static_cast<float>(q.dtUs) > gapThreshold) {
-                        q.flags |= imu_quality_flags::TIMESTAMP_LARGE_GAP;
-
-                        const float ratio = static_cast<float>(q.dtUs) / expectedDt;
-                        const int32_t missing = static_cast<int32_t>(std::lround(ratio)) - 1;
-                        q.estimatedDroppedBefore = missing > 0 ? static_cast<uint32_t>(missing) : 1u;
-                        q.flags |= imu_quality_flags::SAMPLE_DROPPED_BEFORE;
-                        q.timestampConfidence *= 0.5f;
-                    }
-                }
-
-                if (counters_.samples == 1 || counters_.minDtUs == 0.0f) {
-                    counters_.minDtUs = static_cast<float>(q.dtUs);
-                    counters_.maxDtUs = static_cast<float>(q.dtUs);
-                } else {
-                    if (static_cast<float>(q.dtUs) < counters_.minDtUs) counters_.minDtUs = static_cast<float>(q.dtUs);
-                    if (static_cast<float>(q.dtUs) > counters_.maxDtUs) counters_.maxDtUs = static_cast<float>(q.dtUs);
-                }
-                counters_.sumDtUs += static_cast<double>(q.dtUs);
+                return;
             }
+
+            const uint64_t dt64 = raw.t_us - lastAcceptedTimestampUs_;
+            q.dtUs = dt64 > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : static_cast<uint32_t>(dt64);
+
+            if (expectedDt > 0.0f) {
+                const float gapThreshold = expectedDt * cfg_.largeGapFactor;
+                if (static_cast<float>(q.dtUs) > gapThreshold) {
+                    q.flags |= imu_quality_flags::TIMESTAMP_LARGE_GAP;
+
+                    const float ratio = static_cast<float>(q.dtUs) / expectedDt;
+                    const int32_t missing = static_cast<int32_t>(std::lround(ratio)) - 1;
+                    q.estimatedDroppedBefore = missing > 0 ? static_cast<uint32_t>(missing) : 1u;
+                    q.flags |= imu_quality_flags::SAMPLE_DROPPED_BEFORE;
+                    q.timestampConfidence *= 0.5f;
+                }
+            }
+
+            if (counters_.samples == 1 || counters_.minDtUs == 0.0f) {
+                counters_.minDtUs = static_cast<float>(q.dtUs);
+                counters_.maxDtUs = static_cast<float>(q.dtUs);
+            } else {
+                if (static_cast<float>(q.dtUs) < counters_.minDtUs) counters_.minDtUs = static_cast<float>(q.dtUs);
+                if (static_cast<float>(q.dtUs) > counters_.maxDtUs) counters_.maxDtUs = static_cast<float>(q.dtUs);
+            }
+            counters_.sumDtUs += static_cast<double>(q.dtUs);
         }
 
-        lastTimestampUs_ = raw.t_us;
+        lastAcceptedTimestampUs_ = raw.t_us;
     }
 
     void evaluateFifoStatsDelta(const Lsm6dsvFifoReader::DrainStats& stats,
@@ -458,7 +481,8 @@ private:
 
     ImuQualityConfig cfg_;
     ImuQualityCounters counters_;
-    uint64_t lastTimestampUs_ = 0;
+    uint64_t lastSeenTimestampUs_ = 0;
+    uint64_t lastAcceptedTimestampUs_ = 0;
 
     bool lastStatsValid_ = false;
     Lsm6dsvFifoReader::DrainStats lastStats_;

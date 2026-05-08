@@ -938,6 +938,16 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print(cfg.data.accelCal.scale.m[0][0], 8); out.print(',');
     out.print(cfg.data.accelCal.scale.m[1][1], 8); out.print(',');
     out.println(cfg.data.accelCal.scale.m[2][2], 8);
+    out.print("accelScaleMatrix=");
+    out.print(cfg.data.accelCal.scale.m[0][0], 8); out.print(',');
+    out.print(cfg.data.accelCal.scale.m[0][1], 8); out.print(',');
+    out.print(cfg.data.accelCal.scale.m[0][2], 8); out.print(';');
+    out.print(cfg.data.accelCal.scale.m[1][0], 8); out.print(',');
+    out.print(cfg.data.accelCal.scale.m[1][1], 8); out.print(',');
+    out.print(cfg.data.accelCal.scale.m[1][2], 8); out.print(';');
+    out.print(cfg.data.accelCal.scale.m[2][0], 8); out.print(',');
+    out.print(cfg.data.accelCal.scale.m[2][1], 8); out.print(',');
+    out.println(cfg.data.accelCal.scale.m[2][2], 8);
 
     out.println("-- magnetometer --");
     out.print("magDriverEnabled="); out.println(cfg.data.magCal.driverEnabled ? "yes" : "no");

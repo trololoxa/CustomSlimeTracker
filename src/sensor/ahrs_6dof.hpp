@@ -101,6 +101,7 @@ struct Ahrs6DofStats {
     uint32_t accelUpdateCount = 0;
     uint32_t accelRejectedCount = 0;
     uint32_t skippedBadDt = 0;
+    uint32_t startupAccelRejectedCount = 0;
     uint32_t clampedLargeDt = 0;
     uint32_t normalizedCount = 0;
 
@@ -152,15 +153,32 @@ public:
     }
 
     bool resetFromAccel(const Vec3& accelG, uint64_t timestampUs = 0) {
-        const Vec3 a = accelG.normalized();
+        if (timestampUs != 0) {
+            stats_.lastSeenTimestampUs = timestampUs;
+        }
+
+        const float n = accelG.norm();
+        if (!accelG.isFinite() || !std::isfinite(n) || n < MATH_EPSILON) {
+            return false;
+        }
+
+        // Do not silently initialize AHRS to identity from a rejected/zero accel
+        // vector. Startup should wait for a plausible gravity vector; otherwise
+        // roll/pitch may start wrong and look like a valid quaternion.
+        if (std::fabs(n - 1.0f) > cfg_.accelNormBadErrorG) {
+            return false;
+        }
+
+        const Vec3 a = accelG / n;
         if (!a.isFinite() || a.normSq() < MATH_EPSILON) {
-            reset(Quat::identity(), timestampUs);
             return false;
         }
 
         // q rotates measured up direction from sensor frame into worldUp.
+        const uint32_t startupRejects = stats_.startupAccelRejectedCount;
         q_ = Quat::fromTwoUnitVectors(a, cfg_.worldUp).withPositiveW();
         stats_ = Ahrs6DofStats{};
+        stats_.startupAccelRejectedCount = startupRejects;
         stats_.lastSeenTimestampUs = timestampUs;
         stats_.lastIntegratedTimestampUs = timestampUs;
         stats_.lastTimestampUs = timestampUs;
@@ -273,9 +291,12 @@ public:
         }
 
         if (!initialized_) {
-            resetFromAccel(accelG, timestampUs);
+            stats_.lastSeenTimestampUs = timestampUs;
             stats_.lastGyroRadS = gyroRadS;
             stats_.lastAccelG = accelG;
+            if (!resetFromAccel(accelG, timestampUs)) {
+                stats_.startupAccelRejectedCount++;
+            }
             return false;
         }
 
@@ -472,6 +493,7 @@ struct Ahrs6DofDebugSnapshot {
     uint32_t accelUpdateCount = 0;
     uint32_t accelRejectedCount = 0;
     uint32_t skippedBadDt = 0;
+    uint32_t startupAccelRejectedCount = 0;
     uint32_t clampedLargeDt = 0;
 
     float accelNormVarianceG2 = 0.0f;
@@ -503,6 +525,7 @@ inline Ahrs6DofDebugSnapshot makeAhrs6DofDebugSnapshot(const Ahrs6Dof& ahrs) {
     s.accelRejectedCount = st.accelRejectedCount;
     s.skippedBadDt = st.skippedBadDt;
     s.clampedLargeDt = st.clampedLargeDt;
+    s.startupAccelRejectedCount = st.startupAccelRejectedCount;
 
     return s;
 }

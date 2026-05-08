@@ -106,6 +106,22 @@ inline bool parseFloat(const char* s, float& out) {
     return true;
 }
 
+
+inline void printU64Dec(Stream& out, uint64_t v) {
+    char buf[21];
+    size_t i = sizeof(buf);
+    buf[--i] = '\0';
+    if (v == 0) {
+        buf[--i] = '0';
+    } else {
+        while (v > 0 && i > 0) {
+            buf[--i] = static_cast<char>('0' + (v % 10));
+            v /= 10;
+        }
+    }
+    out.print(&buf[i]);
+}
+
 inline void printVec3(Stream& out, const char* label, const Vec3& v, uint8_t decimals = 6) {
     out.print(label);
     out.print(" x="); out.print(v.x, decimals);
@@ -461,7 +477,7 @@ private:
         out.println("log off | basic | full | start [basic|full] | stop");
         out.println("log rate <hz> | header | summary | reset");
         out.println();
-        out.println("bias status | on | off | reset");
+        out.println("bias status | on | off | reset   (reset clears runtime trim)");
         out.println();
         out.println("test static <seconds>");
         out.println("test stop");
@@ -1953,9 +1969,10 @@ private:
             out.print("ahrs_updates="); out.println(st.updateCount);
             out.print("accel_updates="); out.println(st.accelUpdateCount);
             out.print("accel_rejects="); out.println(st.accelRejectedCount);
-            out.print("last_seen_t_us="); out.println(static_cast<unsigned long>(st.lastSeenTimestampUs));
-            out.print("last_integrated_t_us="); out.println(static_cast<unsigned long>(st.lastIntegratedTimestampUs));
+            out.print("last_seen_t_us="); tracker_serial_detail::printU64Dec(out, st.lastSeenTimestampUs); out.println();
+            out.print("last_integrated_t_us="); tracker_serial_detail::printU64Dec(out, st.lastIntegratedTimestampUs); out.println();
             out.print("bad_dt_rejects="); out.println(st.skippedBadDt);
+            out.print("startup_accel_rejects="); out.println(st.startupAccelRejectedCount);
             out.print("large_dt_clamps="); out.println(st.clampedLargeDt);
             out.print("last_accel_trust="); out.println(st.lastAccelGate.trust, 6);
             out.print("last_accel_norm_trust="); out.println(st.lastAccelGate.normTrust, 6);
@@ -2283,7 +2300,7 @@ private:
         if (is(argv[1], "reset")) {
             if (ctx.resetRuntimeGyroBiasEstimator) {
                 ctx.resetRuntimeGyroBiasEstimator(ctx.resetRuntimeGyroBiasEstimatorUser);
-                tracker_serial_detail::printOk(out, "runtime gyro bias estimator counters reset");
+                tracker_serial_detail::printOk(out, "runtime gyro bias estimator counters and runtime trim reset");
             } else {
                 tracker_serial_detail::printErr(out, "runtime gyro bias reset hook not available");
             }
@@ -2799,7 +2816,7 @@ inline void trackerSerialEmitQuat(Stream& out,
                                   uint32_t qualityFlags,
                                   float confidence) {
     out.print("Q,");
-    out.print(static_cast<unsigned long>(tUs));
+    tracker_serial_detail::printU64Dec(out, tUs);
     out.print(','); out.print(q.w, 7);
     out.print(','); out.print(q.x, 7);
     out.print(','); out.print(q.y, 7);
@@ -2812,7 +2829,7 @@ inline void trackerSerialEmitRaw(Stream& out,
                                  const Lsm6dsv::RawSample& raw,
                                  uint32_t qualityFlags) {
     out.print("RAW,");
-    out.print(static_cast<unsigned long>(raw.t_us));
+    tracker_serial_detail::printU64Dec(out, raw.t_us);
     out.print(','); out.print(raw.ax);
     out.print(','); out.print(raw.ay);
     out.print(','); out.print(raw.az);
@@ -2827,7 +2844,7 @@ inline void trackerSerialEmitScaled(Stream& out,
                                     const Lsm6dsv::Sample& s,
                                     uint32_t qualityFlags) {
     out.print("S,");
-    out.print(static_cast<unsigned long>(tUs));
+    tracker_serial_detail::printU64Dec(out, tUs);
     out.print(','); out.print(s.accel_g.x, 6);
     out.print(','); out.print(s.accel_g.y, 6);
     out.print(','); out.print(s.accel_g.z, 6);

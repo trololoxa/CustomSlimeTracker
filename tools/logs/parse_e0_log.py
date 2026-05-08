@@ -2,7 +2,7 @@
 """
 Parse E0 machine-readable tracker logs.
 
-Input: Serial log containing LOGVER/LOGFMT/Q/FIFO/CAL/BIAS/MAG/YAW/STATE/LOGSUM/TEMPBIN lines.
+Input: Serial log containing LOGVER/LOGFMT/Q/FIFO/CAL/BIAS/BIASUPD/MAG/YAW/STATE/LOGSUM/TEMPBIN lines.
 Output: compact JSON summary that is small enough to paste into ChatGPT.
 
 Usage:
@@ -20,7 +20,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-PREFIXES = {"LOGVER", "LOGFMT", "Q", "FIFO", "CAL", "BIAS", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"}
+PREFIXES = {"LOGVER", "LOGFMT", "Q", "FIFO", "CAL", "BIAS", "BIASUPD", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"}
 
 
 def to_float(x: str, default: float = 0.0) -> float:
@@ -90,6 +90,7 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     fifo_rows = rows.get("FIFO", [])
     cal_rows = rows.get("CAL", [])
     bias_rows = rows.get("BIAS", [])
+    biasupd_rows = rows.get("BIASUPD", [])
     tempbin_rows = rows.get("TEMPBIN", [])
     mag_rows = rows.get("MAG", [])
     yaw_rows = rows.get("YAW", [])
@@ -142,6 +143,22 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             if r[9] != "0x0":
                 bias_flags[r[9]] += 1
             rt_updates_last = max(rt_updates_last, to_int(r[11]) if len(r) > 11 else 0)
+
+    biasupd_temp = [to_float(r[3]) for r in biasupd_rows if len(r) > 3]
+    biasupd_residual_norm = []
+    biasupd_delta_norm = []
+    biasupd_trim_norm = []
+    biasupd_flags = Counter()
+    for r in biasupd_rows:
+        if len(r) > 16:
+            rx, ry, rz = map(to_float, r[4:7])
+            dx, dy, dz = map(to_float, r[10:13])
+            tx, ty, tz = map(to_float, r[13:16])
+            biasupd_residual_norm.append(math.sqrt(rx * rx + ry * ry + rz * rz))
+            biasupd_delta_norm.append(math.sqrt(dx * dx + dy * dy + dz * dz))
+            biasupd_trim_norm.append(math.sqrt(tx * tx + ty * ty + tz * tz))
+            if r[16] != "0x0":
+                biasupd_flags[r[16]] += 1
 
     tempbin_temps = [to_float(r[4]) for r in tempbin_rows if len(r) > 5]
     tempbin_samples = sum(to_int(r[5]) for r in tempbin_rows if len(r) > 5)
@@ -208,6 +225,14 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             "flags_top": bias_flags.most_common(8),
             "runtime_updates_last": rt_updates_last,
         },
+        "bias_updates": {
+            "rows": len(biasupd_rows),
+            "temp_c": stats(biasupd_temp),
+            "residual_norm_dps": stats(biasupd_residual_norm),
+            "delta_norm_dps": stats(biasupd_delta_norm),
+            "trim_norm_dps": stats(biasupd_trim_norm),
+            "flags_top": biasupd_flags.most_common(8),
+        },
         "tempbins": {
             "rows": len(tempbin_rows),
             "temp_c": stats(tempbin_temps),
@@ -237,7 +262,7 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
 
     if include_samples > 0:
         out["samples"] = {}
-        for key in ["Q", "FIFO", "CAL", "BIAS", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"]:
+        for key in ["Q", "FIFO", "CAL", "BIAS", "BIASUPD", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"]:
             rs = rows.get(key, [])
             if rs:
                 out["samples"][key] = rs[:include_samples] + ([ ["..."] ] if len(rs) > 2 * include_samples else []) + rs[-include_samples:]
