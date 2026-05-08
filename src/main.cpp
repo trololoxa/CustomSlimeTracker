@@ -547,6 +547,10 @@ struct MachineLogCounters {
 };
 
 static MachineLogCounters g_logCounters;
+static uint32_t g_lastBiasLogEmitUs = 0;
+static uint32_t g_lastRecoveryConsolePrintMs = 0;
+static constexpr uint32_t MACHINE_BIAS_LOG_PERIOD_US = 1000000UL; // 1 Hz: enough for temp/bias tracking and safer for FIFO while logging.
+static constexpr uint32_t RECOVERY_CONSOLE_THROTTLE_MS = 1000UL;
 
 // ============================================================
 // Utility
@@ -617,9 +621,19 @@ static bool machineLogMagDue(uint32_t nowUs) {
     return false;
 }
 
+static bool machineLogBiasDue(uint32_t nowUs) {
+    if (!g_logState.enabled()) return false;
+    if (g_lastBiasLogEmitUs == 0 || static_cast<uint32_t>(nowUs - g_lastBiasLogEmitUs) >= MACHINE_BIAS_LOG_PERIOD_US) {
+        g_lastBiasLogEmitUs = nowUs;
+        return true;
+    }
+    return false;
+}
+
 static void resetLogCountersHook(void* user) {
     (void)user;
     g_logCounters = MachineLogCounters{};
+    g_lastBiasLogEmitUs = 0;
 }
 
 static void emitMachineLogHeader(Stream& out, void* user) {
@@ -1214,23 +1228,30 @@ static void resetOrientationDependentState(const char* reason, uint64_t timestam
 }
 
 static void enterTrackingRecovery(uint32_t reasonFlags, const char* reason, uint64_t timestampUs) {
+    const bool wasRecovering = g_trackingRecovering;
+
     g_trackingRecovering = true;
     g_trackingRecoveryStableSamples = 0;
-    g_trackingRecoveryEnterCount++;
     g_trackingRecoveryLastFlags = reasonFlags;
     g_trackingRecoveryLastTimestampUs = timestampUs;
 
-    resetOrientationDependentState(reason, timestampUs, true);
+    // Entering recovery is a state transition. Repeated FIFO-recovery samples while
+    // already recovering must not repeatedly reset mag/AHRS-dependent state or spam
+    // Serial, otherwise diagnostics themselves can starve FIFO service.
+    if (!wasRecovering) {
+        g_trackingRecoveryEnterCount++;
+        resetOrientationDependentState(reason, timestampUs, true);
 
-    Serial.print("# TRACKING state=RECOVERING");
-    if (reason && reason[0] != '\0') {
-        Serial.print(" reason=");
-        Serial.print(reason);
+        Serial.print("# TRACKING state=RECOVERING");
+        if (reason && reason[0] != '\0') {
+            Serial.print(" reason=");
+            Serial.print(reason);
+        }
+        Serial.print(" flags=0x");
+        Serial.println(reasonFlags, HEX);
+
+        emitLogStateEvent("RECOVERING", reason, timestampUs, reasonFlags, g_lastOutputConfidence);
     }
-    Serial.print(" flags=0x");
-    Serial.println(reasonFlags, HEX);
-
-    emitLogStateEvent("RECOVERING", reason, timestampUs, reasonFlags, g_lastOutputConfidence);
 }
 
 static void updateTrackingRecoveryState(const ImuQualityResult& quality) {
@@ -2406,20 +2427,22 @@ static void emitMachineLogFrame(const Lsm6dsv::RawSample& raw,
     Serial.print(",0x"); Serial.println(quality.flags, HEX);
     g_logCounters.fifo++;
 
-    const GyroTempCompSnapshot tempSnap = g_gyroTempComp.snapshot(calibrated.temp_c);
-    const Vec3 biasDps = currentGyroBiasRadS(calibrated.temp_c) * MATH_RAD_TO_DEG;
-    Serial.print("BIAS,"); printU64Dec(Serial, raw.t_us);
-    Serial.print(','); Serial.print(seq);
-    Serial.print(','); Serial.print(calibrated.temp_c, 3);
-    Serial.print(','); Serial.print(biasDps.x, 8);
-    Serial.print(','); Serial.print(biasDps.y, 8);
-    Serial.print(','); Serial.print(biasDps.z, 8);
-    Serial.print(','); Serial.print(g_gyroTempComp.valid() ? "temp" : (g_imuCal.gyroBiasValid ? "bias" : "none"));
-    Serial.print(','); Serial.print(tempSnap.fitQuality, 4);
-    Serial.print(",0x"); Serial.print(gyroBiasRuntimeFlags(calibrated.temp_c), HEX);
-    Serial.print(','); Serial.print(g_runtimeBias.enabled ? 1 : 0);
-    Serial.print(','); Serial.println(g_runtimeBias.updates);
-    g_logCounters.bias++;
+    if (machineLogBiasDue(static_cast<uint32_t>(raw.t_us))) {
+        const GyroTempCompSnapshot tempSnap = g_gyroTempComp.snapshot(calibrated.temp_c);
+        const Vec3 biasDps = currentGyroBiasRadS(calibrated.temp_c) * MATH_RAD_TO_DEG;
+        Serial.print("BIAS,"); printU64Dec(Serial, raw.t_us);
+        Serial.print(','); Serial.print(seq);
+        Serial.print(','); Serial.print(calibrated.temp_c, 3);
+        Serial.print(','); Serial.print(biasDps.x, 8);
+        Serial.print(','); Serial.print(biasDps.y, 8);
+        Serial.print(','); Serial.print(biasDps.z, 8);
+        Serial.print(','); Serial.print(g_gyroTempComp.valid() ? "temp" : (g_imuCal.gyroBiasValid ? "bias" : "none"));
+        Serial.print(','); Serial.print(tempSnap.fitQuality, 4);
+        Serial.print(",0x"); Serial.print(gyroBiasRuntimeFlags(calibrated.temp_c), HEX);
+        Serial.print(','); Serial.print(g_runtimeBias.enabled ? 1 : 0);
+        Serial.print(','); Serial.println(g_runtimeBias.updates);
+        g_logCounters.bias++;
+    }
 
     if (g_logState.mode == TrackerLogMode::Full) {
         Serial.print("CAL,"); printU64Dec(Serial, raw.t_us);
@@ -2653,8 +2676,12 @@ static void setupCommandInterface() {
 static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::RawSample& raw) {
     if (!quality.shouldRequestFifoRecovery) return;
 
-    Serial.print("# WARN FIFO recovery requested quality_flags=0x");
-    Serial.println(quality.flags, HEX);
+    const uint32_t nowMs = millis();
+    if (!g_trackingRecovering || nowMs - g_lastRecoveryConsolePrintMs >= RECOVERY_CONSOLE_THROTTLE_MS) {
+        g_lastRecoveryConsolePrintMs = nowMs;
+        Serial.print("# WARN FIFO recovery requested quality_flags=0x");
+        Serial.println(quality.flags, HEX);
+    }
 
     const uint64_t ts = raw.t_us != 0 ? raw.t_us : lsmFifo.stats().lastAssignedTimestampUs;
     enterTrackingRecovery(quality.flags, "fifo_recovery", ts);
@@ -3204,6 +3231,12 @@ static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user)
         return false;
     }
 
+    if (!persist) {
+        out.println("# OK gyro temperature compensation fit preview only; model was NOT applied");
+        out.println("# TIP run: cal temp fit_static save   to apply and save this model");
+        return true;
+    }
+
     g_gyroTempComp.setModel(newReferenceBiasRadS, fitRefTempC, newSlopeRadSPerC);
     g_gyroTempComp.setEnabled(true);
     g_gyroTempComp.setQualityMetadata(tempMinC, tempMaxC, fitQuality, residualBeforeDps, residualAfterDps);
@@ -3214,17 +3247,13 @@ static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user)
     g_config.sanitize();
     g_config.updateCrc();
 
-    if (persist) {
-        if (!g_configStore.save(g_config)) {
-            out.print("# ERR gyro temp fit save failed: ");
-            out.println(g_configStore.lastErrorName());
-            return false;
-        }
+    if (!g_configStore.save(g_config)) {
+        out.print("# ERR gyro temp fit save failed: ");
+        out.println(g_configStore.lastErrorName());
+        return false;
     }
 
-    out.print("# OK gyro temperature compensation fitted");
-    if (persist) out.print(" and saved");
-    out.println();
+    out.println("# OK gyro temperature compensation fitted and saved");
     return true;
 }
 
