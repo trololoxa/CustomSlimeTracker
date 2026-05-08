@@ -2,7 +2,7 @@
 """
 Parse E0 machine-readable tracker logs.
 
-Input: Serial log containing LOGVER/LOGFMT/Q/FIFO/CAL/MAG/YAW/STATE/LOGSUM lines.
+Input: Serial log containing LOGVER/LOGFMT/Q/FIFO/CAL/BIAS/MAG/YAW/STATE/LOGSUM/TEMPBIN lines.
 Output: compact JSON summary that is small enough to paste into ChatGPT.
 
 Usage:
@@ -20,7 +20,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-PREFIXES = {"LOGVER", "LOGFMT", "Q", "FIFO", "CAL", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT"}
+PREFIXES = {"LOGVER", "LOGFMT", "Q", "FIFO", "CAL", "BIAS", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"}
 
 
 def to_float(x: str, default: float = 0.0) -> float:
@@ -89,6 +89,8 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     q_rows = rows.get("Q", [])
     fifo_rows = rows.get("FIFO", [])
     cal_rows = rows.get("CAL", [])
+    bias_rows = rows.get("BIAS", [])
+    tempbin_rows = rows.get("TEMPBIN", [])
     mag_rows = rows.get("MAG", [])
     yaw_rows = rows.get("YAW", [])
     state_rows = rows.get("STATE", [])
@@ -127,6 +129,23 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             cal_accel_norm.append(math.sqrt(ax * ax + ay * ay + az * az))
             cal_gyro_norm_dps.append(math.degrees(math.sqrt(gx * gx + gy * gy + gz * gz)))
 
+    bias_temp = [to_float(r[3]) for r in bias_rows if len(r) > 3]
+    bias_norm = []
+    bias_flags = Counter()
+    bias_sources = Counter()
+    rt_updates_last = 0
+    for r in bias_rows:
+        if len(r) > 10:
+            bx, by, bz = map(to_float, r[4:7])
+            bias_norm.append(math.sqrt(bx * bx + by * by + bz * bz))
+            bias_sources[r[7]] += 1
+            if r[9] != "0x0":
+                bias_flags[r[9]] += 1
+            rt_updates_last = max(rt_updates_last, to_int(r[11]) if len(r) > 11 else 0)
+
+    tempbin_temps = [to_float(r[4]) for r in tempbin_rows if len(r) > 5]
+    tempbin_samples = sum(to_int(r[5]) for r in tempbin_rows if len(r) > 5)
+
     mag_trusted = sum(to_int(r[11]) for r in mag_rows if len(r) > 11)
     mag_rejected = len(mag_rows) - mag_trusted
     mag_reject_flags = Counter(r[12] for r in mag_rows if len(r) > 12 and r[12] != "0x0")
@@ -153,6 +172,8 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
         warnings.append("accel trust dropped below 0.2")
     if yaw_rows and yaw_applied == 0:
         warnings.append("mag yaw rows present but no yaw correction applied")
+    if any((to_int(flag) & 0x8) != 0 for flag in bias_flags):
+        warnings.append("temperature compensation out of calibrated range")
 
     out: Dict[str, Any] = {
         "counts": {k: len(v) for k, v in sorted(rows.items())},
@@ -179,6 +200,19 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             "accel_norm_g": stats(cal_accel_norm),
             "gyro_norm_dps": stats(cal_gyro_norm_dps),
         },
+        "bias": {
+            "rows": len(bias_rows),
+            "temp_c": stats(bias_temp),
+            "bias_norm_dps": stats(bias_norm),
+            "sources": dict(bias_sources),
+            "flags_top": bias_flags.most_common(8),
+            "runtime_updates_last": rt_updates_last,
+        },
+        "tempbins": {
+            "rows": len(tempbin_rows),
+            "temp_c": stats(tempbin_temps),
+            "samples_sum": tempbin_samples,
+        },
         "mag": {
             "trusted_rows": mag_trusted,
             "rejected_rows": mag_rejected,
@@ -203,7 +237,7 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
 
     if include_samples > 0:
         out["samples"] = {}
-        for key in ["Q", "FIFO", "CAL", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT"]:
+        for key in ["Q", "FIFO", "CAL", "BIAS", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"]:
             rs = rows.get(key, [])
             if rs:
                 out["samples"][key] = rs[:include_samples] + ([ ["..."] ] if len(rs) > 2 * include_samples else []) + rs[-include_samples:]

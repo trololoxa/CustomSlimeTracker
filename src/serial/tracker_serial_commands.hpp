@@ -228,6 +228,15 @@ struct TrackerSerialCommandContext {
     void (*resetLogCounters)(void* user) = nullptr;
     void* resetLogCountersUser = nullptr;
 
+    void (*printRuntimeGyroBiasStatus)(Stream& out, void* user) = nullptr;
+    void* printRuntimeGyroBiasStatusUser = nullptr;
+
+    bool (*setRuntimeGyroBiasEnabled)(bool enabled, void* user) = nullptr;
+    void* setRuntimeGyroBiasEnabledUser = nullptr;
+
+    void (*resetRuntimeGyroBiasEstimator)(void* user) = nullptr;
+    void* resetRuntimeGyroBiasEstimatorUser = nullptr;
+
     bool (*startStaticTest)(uint32_t durationMs, void* user) = nullptr;
     void* startStaticTestUser = nullptr;
 
@@ -370,6 +379,11 @@ public:
             return;
         }
 
+        if (is(argv[0], "bias")) {
+            cmdBias(ctx, argc, argv);
+            return;
+        }
+
         if (is(argv[0], "test")) {
             cmdTest(ctx, argc, argv);
             return;
@@ -446,6 +460,8 @@ private:
         out.println();
         out.println("log off | basic | full | start [basic|full] | stop");
         out.println("log rate <hz> | header | summary | reset");
+        out.println();
+        out.println("bias status | on | off | reset");
         out.println();
         out.println("test static <seconds>");
         out.println("test stop");
@@ -1806,6 +1822,13 @@ private:
             tracker_serial_detail::printVec3Line(out, "reference_bias_dps", s.referenceBiasDps, 6);
             tracker_serial_detail::printVec3Line(out, "slope_dps_per_c", s.slopeDpsPerC, 8);
             tracker_serial_detail::printVec3Line(out, "current_bias_dps", s.currentBiasDps, 6);
+            out.print("calibrated_range_valid="); out.println(s.hasCalibratedRange ? "yes" : "no");
+            out.print("calibrated_temp_min_c="); out.println(s.calibratedTempMinC, 3);
+            out.print("calibrated_temp_max_c="); out.println(s.calibratedTempMaxC, 3);
+            out.print("temp_out_of_range="); out.println(s.tempOutOfRange ? "yes" : "no");
+            out.print("fit_quality="); out.println(s.fitQuality, 6);
+            out.print("fit_residual_before_dps="); out.println(s.fitResidualBeforeDps, 6);
+            out.print("fit_residual_after_dps="); out.println(s.fitResidualAfterDps, 6);
 
             out.print("learn_accepted="); out.println(s.learnAccepted);
             out.print("learn_rejected="); out.println(s.learnRejected);
@@ -1895,6 +1918,7 @@ private:
             if (ctx.config) {
                 ctx.config->data.gyroCal.tempCompValid = false;
                 ctx.config->data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
+                ctx.config->data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
                 ctx.config->sanitize();
                 ctx.config->updateCrc();
 
@@ -2227,6 +2251,46 @@ private:
         if (start && ctx.emitLogHeader) {
             ctx.emitLogHeader(out, ctx.emitLogHeaderUser);
         }
+    }
+
+    static void cmdBias(TrackerSerialCommandContext& ctx, int argc, char** argv) {
+        Stream& out = stream(ctx);
+
+        if (argc < 2 || is(argv[1], "status")) {
+            if (ctx.printRuntimeGyroBiasStatus) ctx.printRuntimeGyroBiasStatus(out, ctx.printRuntimeGyroBiasStatusUser);
+            else tracker_serial_detail::printErr(out, "runtime gyro bias status hook not available");
+            return;
+        }
+
+        if (is(argv[1], "on") || is(argv[1], "enable")) {
+            if (!ctx.setRuntimeGyroBiasEnabled || !ctx.setRuntimeGyroBiasEnabled(true, ctx.setRuntimeGyroBiasEnabledUser)) {
+                tracker_serial_detail::printErr(out, "runtime gyro bias enable failed");
+                return;
+            }
+            tracker_serial_detail::printOk(out, "runtime gyro bias estimator enabled in RAM");
+            return;
+        }
+
+        if (is(argv[1], "off") || is(argv[1], "disable")) {
+            if (!ctx.setRuntimeGyroBiasEnabled || !ctx.setRuntimeGyroBiasEnabled(false, ctx.setRuntimeGyroBiasEnabledUser)) {
+                tracker_serial_detail::printErr(out, "runtime gyro bias disable failed");
+                return;
+            }
+            tracker_serial_detail::printOk(out, "runtime gyro bias estimator disabled");
+            return;
+        }
+
+        if (is(argv[1], "reset")) {
+            if (ctx.resetRuntimeGyroBiasEstimator) {
+                ctx.resetRuntimeGyroBiasEstimator(ctx.resetRuntimeGyroBiasEstimatorUser);
+                tracker_serial_detail::printOk(out, "runtime gyro bias estimator counters reset");
+            } else {
+                tracker_serial_detail::printErr(out, "runtime gyro bias reset hook not available");
+            }
+            return;
+        }
+
+        tracker_serial_detail::printErr(out, "unknown bias command; use status|on|off|reset");
     }
 
     static void cmdTest(TrackerSerialCommandContext& ctx, int argc, char** argv) {

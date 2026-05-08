@@ -191,6 +191,18 @@ struct TrackerGyroCalibrationConfig {
     Vec3 tempSlopeRadSPerC = Vec3::zero();
 };
 
+struct TrackerGyroTempQualityConfigPersisted {
+    // Stored in the old reserved area to keep TrackerConfigBlob size stable.
+    float tempRangeMinC = 0.0f;
+    float tempRangeMaxC = 0.0f;
+    float fitQuality = 0.0f;
+    float residualBeforeDps = 0.0f;
+    float residualAfterDps = 0.0f;
+};
+
+static_assert(sizeof(TrackerGyroTempQualityConfigPersisted) == 20,
+              "TrackerGyroTempQualityConfigPersisted must replace reservedU32[5]");
+
 struct TrackerAccelCalibrationConfig {
     bool valid = false;
     Vec3 biasG = Vec3::zero();
@@ -281,8 +293,7 @@ struct TrackerConfigBlob {
     TrackerOutputConfig output;
     TrackerMagYawCorrectionConfigPersisted magYaw;
     TrackerAhrsRuntimeConfigPersisted ahrsRuntime;
-
-    uint32_t reservedU32[5] = {};
+    TrackerGyroTempQualityConfigPersisted gyroTempQuality;
 };
 
 class TrackerConfig {
@@ -318,6 +329,11 @@ public:
             if (!finiteFloat(data.gyroCal.referenceTempC)) return false;
             if (!finiteVec3(data.gyroCal.tempSlopeRadSPerC)) return false;
         }
+        if (!finiteFloat(data.gyroTempQuality.tempRangeMinC)) return false;
+        if (!finiteFloat(data.gyroTempQuality.tempRangeMaxC)) return false;
+        if (!finiteFloat(data.gyroTempQuality.fitQuality)) return false;
+        if (!finiteFloat(data.gyroTempQuality.residualBeforeDps)) return false;
+        if (!finiteFloat(data.gyroTempQuality.residualAfterDps)) return false;
 
         if (data.accelCal.valid) {
             if (!finiteVec3(data.accelCal.biasG)) return false;
@@ -411,6 +427,16 @@ public:
         if (!finiteVec3(data.gyroCal.tempSlopeRadSPerC)) {
             data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
             data.gyroCal.tempCompValid = false;
+        }
+        if (!finiteFloat(data.gyroTempQuality.tempRangeMinC)) data.gyroTempQuality.tempRangeMinC = 0.0f;
+        if (!finiteFloat(data.gyroTempQuality.tempRangeMaxC)) data.gyroTempQuality.tempRangeMaxC = 0.0f;
+        if (!finiteFloat(data.gyroTempQuality.fitQuality)) data.gyroTempQuality.fitQuality = 0.0f;
+        if (!finiteFloat(data.gyroTempQuality.residualBeforeDps)) data.gyroTempQuality.residualBeforeDps = 0.0f;
+        if (!finiteFloat(data.gyroTempQuality.residualAfterDps)) data.gyroTempQuality.residualAfterDps = 0.0f;
+        data.gyroTempQuality.fitQuality = clampFloat(data.gyroTempQuality.fitQuality, 0.0f, 1.0f);
+        if (data.gyroTempQuality.tempRangeMaxC < data.gyroTempQuality.tempRangeMinC) {
+            data.gyroTempQuality.tempRangeMinC = 0.0f;
+            data.gyroTempQuality.tempRangeMaxC = 0.0f;
         }
 
         if (!finiteVec3(data.accelCal.biasG)) {
@@ -648,6 +674,11 @@ public:
         GyroTempCompConfig cfg;
         cfg.enabled = data.gyroCal.tempCompEnabled;
         cfg.learningEnabled = data.gyroCal.tempLearningEnabled;
+        cfg.calibratedTempMinC = data.gyroTempQuality.tempRangeMinC;
+        cfg.calibratedTempMaxC = data.gyroTempQuality.tempRangeMaxC;
+        cfg.fitQuality = data.gyroTempQuality.fitQuality;
+        cfg.fitResidualBeforeDps = data.gyroTempQuality.residualBeforeDps;
+        cfg.fitResidualAfterDps = data.gyroTempQuality.residualAfterDps;
         tempComp.setConfig(cfg);
 
         if (data.gyroCal.biasValid) {
@@ -668,6 +699,12 @@ public:
         data.gyroCal.tempLearningEnabled = tempComp.config().learningEnabled;
         data.gyroCal.referenceTempC = tempComp.referenceTempC();
         data.gyroCal.tempSlopeRadSPerC = tempComp.slopeRadSPerC();
+        const GyroTempCompConfig& tc = tempComp.config();
+        data.gyroTempQuality.tempRangeMinC = tc.calibratedTempMinC;
+        data.gyroTempQuality.tempRangeMaxC = tc.calibratedTempMaxC;
+        data.gyroTempQuality.fitQuality = tc.fitQuality;
+        data.gyroTempQuality.residualBeforeDps = tc.fitResidualBeforeDps;
+        data.gyroTempQuality.residualAfterDps = tc.fitResidualAfterDps;
         updateCrc();
     }
 };
@@ -880,7 +917,16 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print(gyroBiasDps.y, 5); out.print(',');
     out.println(gyroBiasDps.z, 5);
     out.print("tempCompValid="); out.println(cfg.data.gyroCal.tempCompValid ? "yes" : "no");
+    out.print("tempCompEnabled="); out.println(cfg.data.gyroCal.tempCompEnabled ? "yes" : "no");
     out.print("referenceTempC="); out.println(cfg.data.gyroCal.referenceTempC, 3);
+    const Vec3 tempSlopeDps = cfg.data.gyroCal.tempSlopeRadSPerC * MATH_RAD_TO_DEG;
+    out.print("tempSlopeDpsPerC=");
+    out.print(tempSlopeDps.x, 8); out.print(',');
+    out.print(tempSlopeDps.y, 8); out.print(',');
+    out.println(tempSlopeDps.z, 8);
+    out.print("tempRangeMinMaxC="); out.print(cfg.data.gyroTempQuality.tempRangeMinC, 3); out.print(','); out.println(cfg.data.gyroTempQuality.tempRangeMaxC, 3);
+    out.print("tempFitQuality="); out.println(cfg.data.gyroTempQuality.fitQuality, 6);
+    out.print("tempFitResidualBeforeAfterDps="); out.print(cfg.data.gyroTempQuality.residualBeforeDps, 6); out.print(','); out.println(cfg.data.gyroTempQuality.residualAfterDps, 6);
 
     out.println("-- accel calibration --");
     out.print("accelCalValid="); out.println(cfg.data.accelCal.valid ? "yes" : "no");

@@ -34,6 +34,15 @@ struct GyroTempCompConfig {
     // Stationary rolling mean must be reasonably small after current model.
     // Otherwise the window probably contains motion and should not train temp comp.
     float maxResidualMeanDpsForLearning = 0.30f;
+
+    // Production quality metadata. The compensator can still be valid without
+    // a fitted range, but runtime/status should then treat it as startup-bias
+    // compensation rather than a validated temperature model.
+    float calibratedTempMinC = 0.0f;
+    float calibratedTempMaxC = 0.0f;
+    float fitQuality = 0.0f;
+    float fitResidualBeforeDps = 0.0f;
+    float fitResidualAfterDps = 0.0f;
 };
 
 struct GyroTempCompSnapshot {
@@ -56,6 +65,14 @@ struct GyroTempCompSnapshot {
 
     uint32_t learnAccepted = 0;
     uint32_t learnRejected = 0;
+
+    float calibratedTempMinC = 0.0f;
+    float calibratedTempMaxC = 0.0f;
+    float fitQuality = 0.0f;
+    float fitResidualBeforeDps = 0.0f;
+    float fitResidualAfterDps = 0.0f;
+    bool hasCalibratedRange = false;
+    bool tempOutOfRange = false;
 };
 
 class GyroTempCompensator {
@@ -70,6 +87,33 @@ public:
         valid_ = true;
         learnAccepted_ = 0;
         learnRejected_ = 0;
+    }
+
+    void setModel(const Vec3& referenceBiasRadS,
+                  float referenceTempC,
+                  const Vec3& slopeRadSPerC) {
+        referenceBiasRadS_ = referenceBiasRadS;
+        referenceTempC_ = referenceTempC;
+        slopeRadSPerC_ = slopeRadSPerC;
+        valid_ = referenceBiasRadS.isFinite() && std::isfinite(referenceTempC) && slopeRadSPerC.isFinite();
+    }
+
+    void adjustReferenceBias(const Vec3& deltaRadS) {
+        if (!deltaRadS.isFinite()) return;
+        referenceBiasRadS_ += deltaRadS;
+        valid_ = true;
+    }
+
+    void setQualityMetadata(float tempMinC,
+                            float tempMaxC,
+                            float fitQuality,
+                            float residualBeforeDps,
+                            float residualAfterDps) {
+        cfg_.calibratedTempMinC = tempMinC;
+        cfg_.calibratedTempMaxC = tempMaxC;
+        cfg_.fitQuality = fitQuality;
+        cfg_.fitResidualBeforeDps = residualBeforeDps;
+        cfg_.fitResidualAfterDps = residualAfterDps;
     }
 
     void setConfig(const GyroTempCompConfig& config) {
@@ -191,6 +235,14 @@ public:
         s.currentBiasDps = s.currentBiasRadS * MATH_RAD_TO_DEG;
         s.learnAccepted = learnAccepted_;
         s.learnRejected = learnRejected_;
+        s.calibratedTempMinC = cfg_.calibratedTempMinC;
+        s.calibratedTempMaxC = cfg_.calibratedTempMaxC;
+        s.fitQuality = cfg_.fitQuality;
+        s.fitResidualBeforeDps = cfg_.fitResidualBeforeDps;
+        s.fitResidualAfterDps = cfg_.fitResidualAfterDps;
+        s.hasCalibratedRange = cfg_.calibratedTempMaxC > cfg_.calibratedTempMinC;
+        s.tempOutOfRange = s.hasCalibratedRange &&
+            (currentTempC < cfg_.calibratedTempMinC || currentTempC > cfg_.calibratedTempMaxC);
         return s;
     }
 

@@ -298,6 +298,38 @@ struct Vec3Stats {
     }
 };
 
+static constexpr uint8_t STATIC_TEMP_BIN_COUNT = 48;
+static constexpr float STATIC_TEMP_BIN_MIN_C = 10.0f;
+static constexpr float STATIC_TEMP_BIN_WIDTH_C = 1.0f;
+
+struct StaticTempBinStats {
+    ScalarStats tempC;
+    ScalarStats accelNormG;
+    Vec3Stats gyroAfterRadS;
+    uint32_t badQualitySamples = 0;
+
+    void reset() {
+        tempC.reset();
+        accelNormG.reset();
+        gyroAfterRadS.reset();
+        badQualitySamples = 0;
+    }
+
+    void push(float temp, const Vec3& gyroAfter, float accelNorm, bool goodQuality) {
+        tempC.push(temp);
+        accelNormG.push(accelNorm);
+        gyroAfterRadS.push(gyroAfter);
+        if (!goodQuality) badQualitySamples++;
+    }
+};
+
+static int staticTempBinIndex(float tempC) {
+    if (!std::isfinite(tempC)) return -1;
+    const int idx = static_cast<int>(std::floor((tempC - STATIC_TEMP_BIN_MIN_C) / STATIC_TEMP_BIN_WIDTH_C));
+    if (idx < 0 || idx >= static_cast<int>(STATIC_TEMP_BIN_COUNT)) return -1;
+    return idx;
+}
+
 struct StaticRuntimeTest {
     bool active = false;
     bool stopRequested = false;
@@ -361,6 +393,8 @@ struct StaticRuntimeTest {
     ScalarStats accelTrust;
     ScalarStats tempC;
     Vec3Stats gyroAfterRadS;
+    StaticTempBinStats tempBins[STATIC_TEMP_BIN_COUNT];
+    uint32_t tempBinOutOfRangeSamples = 0;
 
     ScalarStats magHeadingHorizontalNorm;
     ScalarStats magYawCombinedTrust;
@@ -432,6 +466,8 @@ struct StaticRuntimeTest {
         accelTrust.reset();
         tempC.reset();
         gyroAfterRadS.reset();
+        for (uint8_t i = 0; i < STATIC_TEMP_BIN_COUNT; ++i) tempBins[i].reset();
+        tempBinOutOfRangeSamples = 0;
         magHeadingHorizontalNorm.reset();
         magYawCombinedTrust.reset();
         magYawCorrectionRateDegS.reset();
@@ -449,6 +485,57 @@ static StaticRuntimeTest g_lastCompletedStaticTest;
 static bool g_lastCompletedStaticTestValid = false;
 static uint32_t g_lastCompletedStaticTestFinishedMs = 0;
 
+struct RuntimeGyroBiasEstimator {
+    bool enabled = false;
+
+    uint32_t windowSamplesRequired = 2048;
+    float gyroMeanMaxDps = 0.20f;
+    float gyroStdMaxDps = 0.12f;
+    float accelNormMeanMaxErrG = 0.025f;
+    float accelNormStdMaxG = 0.010f;
+    float updateAlpha = 0.02f;
+    float maxUpdateStepDps = 0.003f;
+
+    Vec3Stats rawGyroRadS;
+    Vec3Stats calibratedGyroRadS;
+    ScalarStats accelNormG;
+    ScalarStats tempC;
+
+    uint32_t windows = 0;
+    uint32_t accepted = 0;
+    uint32_t rejected = 0;
+    uint32_t badTimingRejects = 0;
+    uint32_t motionRejects = 0;
+    uint32_t accelRejects = 0;
+    uint32_t saturationRejects = 0;
+    uint32_t updates = 0;
+    Vec3 lastResidualDps = Vec3::zero();
+    Vec3 lastAppliedDeltaDps = Vec3::zero();
+    float lastTempC = 0.0f;
+    uint32_t lastUpdateMs = 0;
+
+    void resetWindow() {
+        rawGyroRadS.reset();
+        calibratedGyroRadS.reset();
+        accelNormG.reset();
+        tempC.reset();
+    }
+
+    void resetAll() {
+        enabled = false;
+        windows = accepted = rejected = 0;
+        badTimingRejects = motionRejects = accelRejects = saturationRejects = 0;
+        updates = 0;
+        lastResidualDps = Vec3::zero();
+        lastAppliedDeltaDps = Vec3::zero();
+        lastTempC = 0.0f;
+        lastUpdateMs = 0;
+        resetWindow();
+    }
+};
+
+static RuntimeGyroBiasEstimator g_runtimeBias;
+
 struct MachineLogCounters {
     uint32_t q = 0;
     uint32_t cal = 0;
@@ -456,6 +543,7 @@ struct MachineLogCounters {
     uint32_t mag = 0;
     uint32_t yaw = 0;
     uint32_t state = 0;
+    uint32_t bias = 0;
 };
 
 static MachineLogCounters g_logCounters;
@@ -536,17 +624,18 @@ static void resetLogCountersHook(void* user) {
 
 static void emitMachineLogHeader(Stream& out, void* user) {
     (void)user;
-    out.print("LOGVER,1,E0,mode,"); out.print(machineLogModeName(g_logState.mode));
+    out.print("LOGVER,2,E0,mode,"); out.print(machineLogModeName(g_logState.mode));
     out.print(",rate_hz,"); out.print(g_logState.rateHz);
     out.print(",config_crc,0x"); out.print(g_config.data.crc32, HEX);
     out.print(",config_version,"); out.println(g_config.data.version);
     out.println("LOGFMT,Q,t_us,seq,dt_us,w,x,y,z,qflags,conf,state,acc_trust,acc_norm_g,acc_var_g2,gyro_trust,gyro_dps,recovery");
     out.println("LOGFMT,FIFO,t_us,seq,dt_us,hw_ts,fb_ts,dropped_before,overrun,full,unknown,quality_flags");
     out.println("LOGFMT,CAL,t_us,seq,ax_g,ay_g,az_g,gx_rads,gy_rads,gz_rads,temp_c,quality_flags");
+    out.println("LOGFMT,BIAS,t_us,seq,temp_c,bx_dps,by_dps,bz_dps,source,quality,flags,rt_enabled,rt_updates");
     out.println("LOGFMT,MAG,t_us,seq,mag_seq,age_ms,raw_norm,body_norm,horiz_norm,heading_valid,heading_yaw_deg,heading_innov_deg,trusted,reject_flags");
     out.println("LOGFMT,YAW,t_us,seq,valid,gate_open,apply_allowed,applied,error_deg,step_deg,trust,reject_flags,cooldown_ms");
     out.println("LOGFMT,STATE,t_us,seq,state,reason,flags,conf");
-    out.println("LOGFMT,LOGSUM,uptime_ms,mode,rate_hz,q,cal,fifo,mag,yaw,state,samples,quality_samples,fifo_overruns,fifo_full,large_gaps,recoveries,mag_trusted,mag_rejected,yaw_applied");
+    out.println("LOGFMT,LOGSUM,uptime_ms,mode,rate_hz,q,cal,fifo,mag,yaw,state,bias,samples,quality_samples,fifo_overruns,fifo_full,large_gaps,recoveries,mag_trusted,mag_rejected,yaw_applied");
 }
 
 static void emitLogStateEvent(const char* state, const char* reason, uint64_t tUs, uint32_t flags, float confidence) {
@@ -633,6 +722,150 @@ static Lsm6dsv::Sample makeCalibratedSample(const Lsm6dsv::Sample& scaled) {
     }
 
     return calibrated;
+}
+
+static Vec3 currentGyroBiasRadS(float tempC) {
+    if (g_gyroTempComp.valid()) return g_gyroTempComp.biasAt(tempC);
+    if (g_imuCal.gyroBiasValid) return g_imuCal.gyroBiasRadS;
+    return Vec3::zero();
+}
+
+static uint32_t gyroBiasRuntimeFlags(float tempC) {
+    const GyroTempCompSnapshot s = g_gyroTempComp.snapshot(tempC);
+    uint32_t flags = 0;
+    if (s.valid) flags |= 1u << 0;
+    if (s.enabled) flags |= 1u << 1;
+    if (s.hasCalibratedRange) flags |= 1u << 2;
+    if (s.tempOutOfRange) flags |= 1u << 3;
+    if (g_runtimeBias.enabled) flags |= 1u << 4;
+    return flags;
+}
+
+static void applyRuntimeGyroBiasDelta(const Vec3& deltaRadS) {
+    if (!deltaRadS.isFinite()) return;
+
+    if (g_gyroTempComp.valid()) {
+        g_gyroTempComp.adjustReferenceBias(deltaRadS);
+        g_imuCal.gyroBiasValid = true;
+        g_imuCal.gyroBiasRadS = g_gyroTempComp.referenceBiasRadS();
+    } else if (g_imuCal.gyroBiasValid) {
+        g_imuCal.gyroBiasRadS += deltaRadS;
+    }
+}
+
+static void updateRuntimeGyroBiasEstimator(const Lsm6dsv::Sample& scaled,
+                                           const Lsm6dsv::Sample& calibrated,
+                                           const ImuQualityResult& quality) {
+    if (!g_runtimeBias.enabled) return;
+    if (!g_imuCal.gyroBiasValid && !g_gyroTempComp.valid()) return;
+
+    const bool badTiming = g_trackingRecovering ||
+        !quality.shouldUpdateAhrs ||
+        quality.shouldRequestFifoRecovery ||
+        quality.has(imu_quality_flags::TIMESTAMP_ZERO) ||
+        quality.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC) ||
+        quality.has(imu_quality_flags::TIMESTAMP_BACKWARDS) ||
+        quality.has(imu_quality_flags::TIMESTAMP_LARGE_GAP) ||
+        quality.has(imu_quality_flags::FIFO_OVERRUN) ||
+        quality.has(imu_quality_flags::FIFO_FULL) ||
+        quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG);
+
+    const bool saturated = quality.has(imu_quality_flags::GYRO_SATURATED) ||
+                           quality.has(imu_quality_flags::ACCEL_SATURATED) ||
+                           quality.has(imu_quality_flags::GYRO_NEAR_SATURATION) ||
+                           quality.has(imu_quality_flags::ACCEL_NEAR_SATURATION);
+
+    if (badTiming || saturated) {
+        if (badTiming) g_runtimeBias.badTimingRejects++;
+        if (saturated) g_runtimeBias.saturationRejects++;
+        g_runtimeBias.rejected++;
+        g_runtimeBias.resetWindow();
+        return;
+    }
+
+    g_runtimeBias.rawGyroRadS.push(scaled.gyro_rad_s);
+    g_runtimeBias.calibratedGyroRadS.push(calibrated.gyro_rad_s);
+    g_runtimeBias.accelNormG.push(calibrated.accel_g.norm());
+    g_runtimeBias.tempC.push(calibrated.temp_c);
+
+    if (g_runtimeBias.rawGyroRadS.count < g_runtimeBias.windowSamplesRequired) return;
+
+    g_runtimeBias.windows++;
+
+    const Vec3 meanGyroDps = g_runtimeBias.calibratedGyroRadS.mean() * MATH_RAD_TO_DEG;
+    const Vec3 stdGyroDps = g_runtimeBias.calibratedGyroRadS.stddev() * MATH_RAD_TO_DEG;
+    const float gyroMeanNormDps = meanGyroDps.norm();
+    const float gyroStdNormDps = stdGyroDps.norm();
+    const float accelMeanErrG = std::fabs(g_runtimeBias.accelNormG.mean() - 1.0f);
+    const float accelStdG = g_runtimeBias.accelNormG.stddev();
+
+    bool stationary = true;
+    if (gyroMeanNormDps > g_runtimeBias.gyroMeanMaxDps || gyroStdNormDps > g_runtimeBias.gyroStdMaxDps) {
+        g_runtimeBias.motionRejects++;
+        stationary = false;
+    }
+    if (accelMeanErrG > g_runtimeBias.accelNormMeanMaxErrG || accelStdG > g_runtimeBias.accelNormStdMaxG) {
+        g_runtimeBias.accelRejects++;
+        stationary = false;
+    }
+
+    if (!stationary) {
+        g_runtimeBias.rejected++;
+        g_runtimeBias.resetWindow();
+        return;
+    }
+
+    Vec3 deltaDps = meanGyroDps * g_runtimeBias.updateAlpha;
+    const float maxStep = g_runtimeBias.maxUpdateStepDps;
+    deltaDps.x = clampf(deltaDps.x, -maxStep, maxStep);
+    deltaDps.y = clampf(deltaDps.y, -maxStep, maxStep);
+    deltaDps.z = clampf(deltaDps.z, -maxStep, maxStep);
+
+    const Vec3 deltaRadS = deltaDps * MATH_DEG_TO_RAD;
+    applyRuntimeGyroBiasDelta(deltaRadS);
+
+    g_runtimeBias.accepted++;
+    g_runtimeBias.updates++;
+    g_runtimeBias.lastResidualDps = meanGyroDps;
+    g_runtimeBias.lastAppliedDeltaDps = deltaDps;
+    g_runtimeBias.lastTempC = g_runtimeBias.tempC.mean();
+    g_runtimeBias.lastUpdateMs = millis();
+    g_runtimeBias.resetWindow();
+}
+
+static void printRuntimeGyroBiasStatus(Stream& out, void* user) {
+    (void)user;
+    out.println("# RUNTIME GYRO BIAS");
+    out.print("enabled="); out.println(g_runtimeBias.enabled ? "yes" : "no");
+    out.print("window_samples_required="); out.println(g_runtimeBias.windowSamplesRequired);
+    out.print("current_window_samples="); out.println(g_runtimeBias.rawGyroRadS.count);
+    out.print("windows="); out.println(g_runtimeBias.windows);
+    out.print("accepted="); out.println(g_runtimeBias.accepted);
+    out.print("rejected="); out.println(g_runtimeBias.rejected);
+    out.print("bad_timing_rejects="); out.println(g_runtimeBias.badTimingRejects);
+    out.print("motion_rejects="); out.println(g_runtimeBias.motionRejects);
+    out.print("accel_rejects="); out.println(g_runtimeBias.accelRejects);
+    out.print("saturation_rejects="); out.println(g_runtimeBias.saturationRejects);
+    out.print("updates="); out.println(g_runtimeBias.updates);
+    tracker_serial_detail::printVec3Line(out, "last_residual_dps", g_runtimeBias.lastResidualDps, 8);
+    tracker_serial_detail::printVec3Line(out, "last_applied_delta_dps", g_runtimeBias.lastAppliedDeltaDps, 8);
+    out.print("last_temp_c="); out.println(g_runtimeBias.lastTempC, 3);
+    out.print("last_update_age_s="); out.println(g_runtimeBias.lastUpdateMs == 0 ? 0UL : (millis() - g_runtimeBias.lastUpdateMs) / 1000UL);
+    tracker_serial_detail::printVec3Line(out, "current_bias_dps", currentGyroBiasRadS(g_latestTempC) * MATH_RAD_TO_DEG, 8);
+}
+
+static bool setRuntimeGyroBiasEnabled(bool enabled, void* user) {
+    (void)user;
+    g_runtimeBias.enabled = enabled;
+    g_runtimeBias.resetWindow();
+    return true;
+}
+
+static void resetRuntimeGyroBiasEstimator(void* user) {
+    (void)user;
+    const bool wasEnabled = g_runtimeBias.enabled;
+    g_runtimeBias.resetAll();
+    g_runtimeBias.enabled = wasEnabled;
 }
 
 // ============================================================
@@ -1952,6 +2185,14 @@ static void printRuntimeStatus(Stream& out, void* user) {
     out.print("mag_runtime_samples="); out.println(g_magState.samples);
     out.print("mag_fifo_armed="); out.println(g_magState.fifoArmed ? "yes" : "no");
     out.print("gyro_bias_valid="); out.println(g_imuCal.gyroBiasValid ? "yes" : "no");
+    const GyroTempCompSnapshot tempSnap = g_gyroTempComp.snapshot(g_latestTempC);
+    out.print("gyro_temp_valid="); out.println(tempSnap.valid ? "yes" : "no");
+    out.print("gyro_temp_enabled="); out.println(tempSnap.enabled ? "yes" : "no");
+    out.print("gyro_temp_range_valid="); out.println(tempSnap.hasCalibratedRange ? "yes" : "no");
+    out.print("gyro_temp_out_of_range="); out.println(tempSnap.tempOutOfRange ? "yes" : "no");
+    out.print("gyro_temp_fit_quality="); out.println(tempSnap.fitQuality, 6);
+    out.print("runtime_bias_enabled="); out.println(g_runtimeBias.enabled ? "yes" : "no");
+    out.print("runtime_bias_updates="); out.println(g_runtimeBias.updates);
     out.print("accel_cal_valid="); out.println(g_imuCal.accelCalValid ? "yes" : "no");
     out.print("tracking_state="); out.println(trackingStateName());
     out.print("tracking_recovery_active="); out.println(g_trackingRecovering ? "yes" : "no");
@@ -2078,6 +2319,7 @@ static void printLogSummary(Stream& out, void* user) {
     out.print(','); out.print(g_logCounters.mag);
     out.print(','); out.print(g_logCounters.yaw);
     out.print(','); out.print(g_logCounters.state);
+    out.print(','); out.print(g_logCounters.bias);
     out.print(','); out.print(g_runtimeSamples);
     out.print(','); out.print(qc.samples);
     out.print(','); out.print(fs.overrunEvents);
@@ -2111,6 +2353,15 @@ static void printLogSummary(Stream& out, void* user) {
     out.print(ms.rejectedSamples); out.print(',');
     out.print(g_lastMagProcessed.rejectFlags, HEX); out.print(',');
     out.println(g_lastMagYawCorrection.rejectFlags, HEX);
+
+    out.print("LOGSTAT,BIAS,");
+    out.print(g_runtimeBias.enabled ? 1 : 0); out.print(',');
+    out.print(g_runtimeBias.windows); out.print(',');
+    out.print(g_runtimeBias.accepted); out.print(',');
+    out.print(g_runtimeBias.rejected); out.print(',');
+    out.print(g_runtimeBias.updates); out.print(',');
+    out.print(g_runtimeBias.lastResidualDps.norm(), 8); out.print(',');
+    out.println(g_runtimeBias.lastAppliedDeltaDps.norm(), 8);
 }
 
 static void emitMachineLogFrame(const Lsm6dsv::RawSample& raw,
@@ -2154,6 +2405,21 @@ static void emitMachineLogFrame(const Lsm6dsv::RawSample& raw,
     Serial.print(','); Serial.print(quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG) ? 1 : 0);
     Serial.print(",0x"); Serial.println(quality.flags, HEX);
     g_logCounters.fifo++;
+
+    const GyroTempCompSnapshot tempSnap = g_gyroTempComp.snapshot(calibrated.temp_c);
+    const Vec3 biasDps = currentGyroBiasRadS(calibrated.temp_c) * MATH_RAD_TO_DEG;
+    Serial.print("BIAS,"); printU64Dec(Serial, raw.t_us);
+    Serial.print(','); Serial.print(seq);
+    Serial.print(','); Serial.print(calibrated.temp_c, 3);
+    Serial.print(','); Serial.print(biasDps.x, 8);
+    Serial.print(','); Serial.print(biasDps.y, 8);
+    Serial.print(','); Serial.print(biasDps.z, 8);
+    Serial.print(','); Serial.print(g_gyroTempComp.valid() ? "temp" : (g_imuCal.gyroBiasValid ? "bias" : "none"));
+    Serial.print(','); Serial.print(tempSnap.fitQuality, 4);
+    Serial.print(",0x"); Serial.print(gyroBiasRuntimeFlags(calibrated.temp_c), HEX);
+    Serial.print(','); Serial.print(g_runtimeBias.enabled ? 1 : 0);
+    Serial.print(','); Serial.println(g_runtimeBias.updates);
+    g_logCounters.bias++;
 
     if (g_logState.mode == TrackerLogMode::Full) {
         Serial.print("CAL,"); printU64Dec(Serial, raw.t_us);
@@ -2332,6 +2598,12 @@ static void setupCommandInterface() {
     g_cmdCtx.printLogSummaryUser = nullptr;
     g_cmdCtx.resetLogCounters = resetLogCountersHook;
     g_cmdCtx.resetLogCountersUser = nullptr;
+    g_cmdCtx.printRuntimeGyroBiasStatus = printRuntimeGyroBiasStatus;
+    g_cmdCtx.printRuntimeGyroBiasStatusUser = nullptr;
+    g_cmdCtx.setRuntimeGyroBiasEnabled = setRuntimeGyroBiasEnabled;
+    g_cmdCtx.setRuntimeGyroBiasEnabledUser = nullptr;
+    g_cmdCtx.resetRuntimeGyroBiasEstimator = resetRuntimeGyroBiasEstimator;
+    g_cmdCtx.resetRuntimeGyroBiasEstimatorUser = nullptr;
     g_cmdCtx.startStaticTest = startStaticTestHook;
     g_cmdCtx.startStaticTestUser = nullptr;
     g_cmdCtx.stopStaticTest = stopStaticTestHook;
@@ -2486,6 +2758,36 @@ static void finishStaticTest() {
 
     Serial.print("temp_max_c: ");
     Serial.println(g_staticTest.tempC.maxValue, 3);
+
+    uint32_t tempBinsUsed = 0;
+    for (uint8_t i = 0; i < STATIC_TEMP_BIN_COUNT; ++i) {
+        if (g_staticTest.tempBins[i].gyroAfterRadS.count >= 512) tempBinsUsed++;
+    }
+    Serial.print("temp_bins_used: ");
+    Serial.println(tempBinsUsed);
+    Serial.print("temp_bin_out_of_range_samples: ");
+    Serial.println(g_staticTest.tempBinOutOfRangeSamples);
+    for (uint8_t i = 0; i < STATIC_TEMP_BIN_COUNT; ++i) {
+        const StaticTempBinStats& b = g_staticTest.tempBins[i];
+        if (b.gyroAfterRadS.count < 512) continue;
+        const Vec3 gm = b.gyroAfterRadS.mean() * MATH_RAD_TO_DEG;
+        const Vec3 gs = b.gyroAfterRadS.stddev() * MATH_RAD_TO_DEG;
+        Serial.print("TEMPBIN,");
+        Serial.print(i);
+        Serial.print(','); Serial.print(b.tempC.minValue, 3);
+        Serial.print(','); Serial.print(b.tempC.maxValue, 3);
+        Serial.print(','); Serial.print(b.tempC.mean(), 3);
+        Serial.print(','); Serial.print(b.gyroAfterRadS.count);
+        Serial.print(','); Serial.print(gm.x, 8);
+        Serial.print(','); Serial.print(gm.y, 8);
+        Serial.print(','); Serial.print(gm.z, 8);
+        Serial.print(','); Serial.print(gs.x, 8);
+        Serial.print(','); Serial.print(gs.y, 8);
+        Serial.print(','); Serial.print(gs.z, 8);
+        Serial.print(','); Serial.print(b.accelNormG.mean(), 6);
+        Serial.print(','); Serial.print(b.accelNormG.stddev(), 6);
+        Serial.print(','); Serial.println(b.badQualitySamples);
+    }
 
     Serial.println("------------------------------------------------------------------------------");
     Serial.println("Orientation");
@@ -2686,6 +2988,27 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
 
     g_staticTest.tempC.push(calibrated.temp_c);
     g_staticTest.gyroAfterRadS.push(calibrated.gyro_rad_s);
+    const int tempBinIdx = staticTempBinIndex(calibrated.temp_c);
+    const bool staticSampleGoodForTempFit = quality.shouldUpdateAhrs &&
+        !quality.shouldRequestFifoRecovery &&
+        !quality.has(imu_quality_flags::TIMESTAMP_ZERO) &&
+        !quality.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC) &&
+        !quality.has(imu_quality_flags::TIMESTAMP_BACKWARDS) &&
+        !quality.has(imu_quality_flags::TIMESTAMP_LARGE_GAP) &&
+        !quality.has(imu_quality_flags::FIFO_OVERRUN) &&
+        !quality.has(imu_quality_flags::FIFO_FULL) &&
+        !quality.has(imu_quality_flags::GYRO_SATURATED) &&
+        !quality.has(imu_quality_flags::ACCEL_SATURATED);
+    if (tempBinIdx >= 0) {
+        g_staticTest.tempBins[tempBinIdx].push(
+            calibrated.temp_c,
+            calibrated.gyro_rad_s,
+            calibrated.accel_g.norm(),
+            staticSampleGoodForTempFit
+        );
+    } else {
+        g_staticTest.tempBinOutOfRangeSamples++;
+    }
     g_staticTest.samples++;
 
     if (!g_staticTest.poseCaptured && g_ahrs6dof.initialized()) {
@@ -2728,48 +3051,164 @@ static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user)
     }
 
     const StaticRuntimeTest& test = g_lastCompletedStaticTest;
-    const float tempMeanC = test.tempC.mean();
-    const float tempStartC = test.tempStartC;
-    const float tempEndC = test.tempEndC;
-    const float tempDeltaDuringTestC = tempEndC - tempStartC;
 
-    const float refTempC = g_gyroTempComp.referenceTempC();
-    const float dT = tempMeanC - refTempC;
+    struct WeightedFit1D {
+        double sw = 0.0;
+        double sx = 0.0;
+        double sy = 0.0;
+        double sxx = 0.0;
+        double sxy = 0.0;
 
-    if (!tracker::isFinite(tempMeanC) || !tracker::isFinite(dT) || std::fabs(dT) < 1.5f) {
-        out.print("# ERR temp delta from reference too small: dT=");
-        out.println(dT, 3);
+        void push(float x, float y, float w) {
+            sw += w;
+            sx += w * x;
+            sy += w * y;
+            sxx += w * x * x;
+            sxy += w * x * y;
+        }
+
+        bool solve(float refX, float& interceptAtRef, float& slope) const {
+            if (sw <= 0.0) return false;
+            const double denom = sw * sxx - sx * sx;
+            if (std::fabs(denom) < 1.0e-9) return false;
+            const double m = (sw * sxy - sx * sy) / denom;
+            const double b = (sy - m * sx) / sw;
+            slope = static_cast<float>(m);
+            interceptAtRef = static_cast<float>(b + m * refX);
+            return std::isfinite(interceptAtRef) && std::isfinite(slope);
+        }
+    } fitX, fitY, fitZ;
+
+    uint32_t usableBins = 0;
+    uint32_t usableSamples = 0;
+    uint32_t badBinSamples = 0;
+    float tempMinC = 0.0f;
+    float tempMaxC = 0.0f;
+    bool haveTemp = false;
+
+    for (uint8_t i = 0; i < STATIC_TEMP_BIN_COUNT; ++i) {
+        const StaticTempBinStats& b = test.tempBins[i];
+        if (b.gyroAfterRadS.count < 512 || b.tempC.count < 512) continue;
+
+        const float tempMean = b.tempC.mean();
+        const Vec3 gyroMeanDps = b.gyroAfterRadS.mean() * MATH_RAD_TO_DEG;
+        const float w = static_cast<float>(b.gyroAfterRadS.count);
+
+        if (!std::isfinite(tempMean) || !gyroMeanDps.isFinite()) continue;
+
+        fitX.push(tempMean, gyroMeanDps.x, w);
+        fitY.push(tempMean, gyroMeanDps.y, w);
+        fitZ.push(tempMean, gyroMeanDps.z, w);
+
+        usableBins++;
+        usableSamples += b.gyroAfterRadS.count;
+        badBinSamples += b.badQualitySamples;
+
+        if (!haveTemp) {
+            tempMinC = tempMaxC = tempMean;
+            haveTemp = true;
+        } else {
+            if (tempMean < tempMinC) tempMinC = tempMean;
+            if (tempMean > tempMaxC) tempMaxC = tempMean;
+        }
+    }
+
+    const float tempRangeC = haveTemp ? (tempMaxC - tempMinC) : 0.0f;
+    const float fitRefTempC = test.tempC.mean();
+
+    out.println("# GYRO TEMP FIT FROM STATIC BINS");
+    out.print("usable_bins="); out.println(usableBins);
+    out.print("usable_samples="); out.println(usableSamples);
+    out.print("bad_bin_samples="); out.println(badBinSamples);
+    out.print("temp_min_c="); out.println(tempMinC, 3);
+    out.print("temp_max_c="); out.println(tempMaxC, 3);
+    out.print("temp_range_c="); out.println(tempRangeC, 3);
+    out.print("fit_reference_temp_c="); out.println(fitRefTempC, 3);
+
+    if (usableBins < 4 || usableSamples < 10000 || tempRangeC < 3.0f || !std::isfinite(fitRefTempC)) {
+        out.println("# ERR insufficient temperature coverage for production temp fit");
         return false;
     }
 
-    const Vec3 residualRadS = test.gyroAfterRadS.mean();
-    if (!residualRadS.isFinite()) {
-        out.println("# ERR residual gyro mean is non-finite");
+    float ix = 0.0f, iy = 0.0f, iz = 0.0f;
+    float sx = 0.0f, sy = 0.0f, sz = 0.0f;
+    if (!fitX.solve(fitRefTempC, ix, sx) ||
+        !fitY.solve(fitRefTempC, iy, sy) ||
+        !fitZ.solve(fitRefTempC, iz, sz)) {
+        out.println("# ERR linear temperature fit failed");
         return false;
     }
 
-    const Vec3 oldSlopeRadSPerC = g_gyroTempComp.slopeRadSPerC();
-    const Vec3 correctionSlopeRadSPerC = residualRadS / dT;
-    const Vec3 newSlopeRadSPerC = oldSlopeRadSPerC + correctionSlopeRadSPerC;
-
-    const Vec3 oldSlopeDpsPerC = oldSlopeRadSPerC * MATH_RAD_TO_DEG;
-    const Vec3 correctionSlopeDpsPerC = correctionSlopeRadSPerC * MATH_RAD_TO_DEG;
-    const Vec3 newSlopeDpsPerC = newSlopeRadSPerC * MATH_RAD_TO_DEG;
-    const Vec3 residualDps = residualRadS * MATH_RAD_TO_DEG;
+    const Vec3 residualAtRefDps(ix, iy, iz);
+    const Vec3 residualSlopeDpsPerC(sx, sy, sz);
 
     const GyroTempCompConfig& cfg = g_gyroTempComp.config();
-    if (std::fabs(newSlopeDpsPerC.x) > cfg.maxAbsSlopeDpsPerC ||
-        std::fabs(newSlopeDpsPerC.y) > cfg.maxAbsSlopeDpsPerC ||
-        std::fabs(newSlopeDpsPerC.z) > cfg.maxAbsSlopeDpsPerC) {
-        out.println("# ERR fitted slope exceeds maxAbsSlopeDpsPerC");
-        out.print("max_abs_slope_dps_per_c=");
-        out.println(cfg.maxAbsSlopeDpsPerC, 6);
-        tracker_serial_detail::printVec3Line(out, "candidate_slope_dps_per_c", newSlopeDpsPerC, 8);
+    if (std::fabs(residualSlopeDpsPerC.x) > cfg.maxAbsSlopeDpsPerC ||
+        std::fabs(residualSlopeDpsPerC.y) > cfg.maxAbsSlopeDpsPerC ||
+        std::fabs(residualSlopeDpsPerC.z) > cfg.maxAbsSlopeDpsPerC) {
+        out.println("# ERR fitted residual slope exceeds maxAbsSlopeDpsPerC");
+        out.print("max_abs_slope_dps_per_c="); out.println(cfg.maxAbsSlopeDpsPerC, 6);
+        tracker_serial_detail::printVec3Line(out, "residual_slope_dps_per_c", residualSlopeDpsPerC, 8);
         return false;
     }
 
-    g_gyroTempComp.setSlopeRadSPerC(newSlopeRadSPerC);
+    double beforeSq = 0.0;
+    double afterSq = 0.0;
+    double weightSum = 0.0;
+
+    for (uint8_t i = 0; i < STATIC_TEMP_BIN_COUNT; ++i) {
+        const StaticTempBinStats& b = test.tempBins[i];
+        if (b.gyroAfterRadS.count < 512 || b.tempC.count < 512) continue;
+        const float tempMean = b.tempC.mean();
+        const Vec3 y = b.gyroAfterRadS.mean() * MATH_RAD_TO_DEG;
+        const Vec3 pred = residualAtRefDps + residualSlopeDpsPerC * (tempMean - fitRefTempC);
+        const Vec3 after = y - pred;
+        const double w = static_cast<double>(b.gyroAfterRadS.count);
+        beforeSq += w * static_cast<double>(y.normSq());
+        afterSq += w * static_cast<double>(after.normSq());
+        weightSum += w;
+    }
+
+    const float residualBeforeDps = weightSum > 0.0 ? static_cast<float>(std::sqrt(beforeSq / weightSum)) : 0.0f;
+    const float residualAfterDps = weightSum > 0.0 ? static_cast<float>(std::sqrt(afterSq / weightSum)) : 0.0f;
+    const float improvement = residualBeforeDps > 1.0e-6f
+        ? clampf((residualBeforeDps - residualAfterDps) / residualBeforeDps, 0.0f, 1.0f)
+        : 0.0f;
+    const float coverageScore = clampf(tempRangeC / 8.0f, 0.0f, 1.0f);
+    const float binScore = clampf(static_cast<float>(usableBins) / 8.0f, 0.0f, 1.0f);
+    const float qualityPenalty = usableSamples > 0 ? clampf(static_cast<float>(badBinSamples) / static_cast<float>(usableSamples), 0.0f, 1.0f) : 1.0f;
+    const float fitQuality = clampf((0.45f * improvement + 0.35f * coverageScore + 0.20f * binScore) * (1.0f - qualityPenalty), 0.0f, 1.0f);
+
+    const Vec3 oldSlopeRadSPerC = g_gyroTempComp.slopeRadSPerC();
+    const Vec3 oldSlopeDpsPerC = oldSlopeRadSPerC * MATH_RAD_TO_DEG;
+    const Vec3 newSlopeDpsPerC = oldSlopeDpsPerC + residualSlopeDpsPerC;
+    const Vec3 newSlopeRadSPerC = newSlopeDpsPerC * MATH_DEG_TO_RAD;
+    const Vec3 oldBiasAtFitRefRadS = g_gyroTempComp.biasAt(fitRefTempC);
+    const Vec3 newReferenceBiasRadS = oldBiasAtFitRefRadS + residualAtRefDps * MATH_DEG_TO_RAD;
+
+    tracker_serial_detail::printVec3Line(out, "residual_at_ref_dps", residualAtRefDps, 8);
+    tracker_serial_detail::printVec3Line(out, "residual_slope_dps_per_c", residualSlopeDpsPerC, 8);
+    tracker_serial_detail::printVec3Line(out, "old_slope_dps_per_c", oldSlopeDpsPerC, 8);
+    tracker_serial_detail::printVec3Line(out, "new_slope_dps_per_c", newSlopeDpsPerC, 8);
+    tracker_serial_detail::printVec3Line(out, "new_reference_bias_dps", newReferenceBiasRadS * MATH_RAD_TO_DEG, 8);
+    out.print("residual_before_rms_dps="); out.println(residualBeforeDps, 8);
+    out.print("residual_after_rms_dps="); out.println(residualAfterDps, 8);
+    out.print("fit_improvement_ratio="); out.println(improvement, 6);
+    out.print("fit_quality="); out.println(fitQuality, 6);
+
+    const bool goodEnoughToApply = fitQuality >= 0.45f && residualAfterDps < residualBeforeDps;
+    out.print("recommended_save="); out.println(goodEnoughToApply ? "yes" : "no");
+
+    if (!goodEnoughToApply) {
+        out.println("# ERR temp fit quality is too low; not applying model");
+        return false;
+    }
+
+    g_gyroTempComp.setModel(newReferenceBiasRadS, fitRefTempC, newSlopeRadSPerC);
     g_gyroTempComp.setEnabled(true);
+    g_gyroTempComp.setQualityMetadata(tempMinC, tempMaxC, fitQuality, residualBeforeDps, residualAfterDps);
+    g_imuCal.gyroBiasValid = true;
+    g_imuCal.gyroBiasRadS = g_gyroTempComp.referenceBiasRadS();
 
     g_config.captureFromGyroTempComp(g_gyroTempComp);
     g_config.sanitize();
@@ -2783,27 +3222,9 @@ static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user)
         }
     }
 
-    out.println("# GYRO TEMP FIT FROM STATIC");
-    out.print("reference_temp_c="); out.println(refTempC, 3);
-    out.print("static_temp_mean_c="); out.println(tempMeanC, 3);
-    out.print("static_temp_start_c="); out.println(tempStartC, 3);
-    out.print("static_temp_end_c="); out.println(tempEndC, 3);
-    out.print("static_temp_delta_during_test_c="); out.println(tempDeltaDuringTestC, 3);
-    out.print("delta_from_reference_c="); out.println(dT, 3);
-
-    if (std::fabs(tempDeltaDuringTestC) > 2.0f) {
-        out.println("# WARN static test temperature changed by >2C; fit is usable but less clean than a stabilized temp point");
-    }
-
-    tracker_serial_detail::printVec3Line(out, "residual_mean_dps", residualDps, 8);
-    tracker_serial_detail::printVec3Line(out, "old_slope_dps_per_c", oldSlopeDpsPerC, 8);
-    tracker_serial_detail::printVec3Line(out, "correction_slope_dps_per_c", correctionSlopeDpsPerC, 8);
-    tracker_serial_detail::printVec3Line(out, "new_slope_dps_per_c", newSlopeDpsPerC, 8);
-
     out.print("# OK gyro temperature compensation fitted");
     if (persist) out.print(" and saved");
     out.println();
-
     return true;
 }
 
@@ -2862,6 +3283,7 @@ static void processOneRawSample(const Lsm6dsv::RawSample& raw) {
         emitStreamIfNeeded(raw, scaled, calibrated, quality);
         emitMachineLogFrame(raw, calibrated, quality);
         updateStaticTest(raw, calibrated, quality);
+        updateRuntimeGyroBiasEstimator(scaled, calibrated, quality);
         maybeRecoverFifo(quality, raw);
         return;
     }
@@ -2880,6 +3302,7 @@ static void processOneRawSample(const Lsm6dsv::RawSample& raw) {
     emitStreamIfNeeded(raw, scaled, calibrated, quality);
     emitMachineLogFrame(raw, calibrated, quality);
     updateStaticTest(raw, calibrated, quality);
+    updateRuntimeGyroBiasEstimator(scaled, calibrated, quality);
     updateTrackingRecoveryState(quality);
 }
 
