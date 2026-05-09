@@ -396,6 +396,15 @@ struct StaticRuntimeTest {
     StaticTempBinStats tempBins[STATIC_TEMP_BIN_COUNT];
     uint32_t tempBinOutOfRangeSamples = 0;
 
+    // Static-test instrumentation runs in the hot FIFO path. Keep counters here
+    // so we can prove whether the test itself is starving FIFO service.
+    uint32_t updateDecimator = 0;
+    uint32_t poseSamples = 0;
+    uint32_t slowUpdateCount = 0;
+    uint32_t maxUpdateUs = 0;
+    uint32_t maxSampleProcessUs = 0;
+    uint32_t maxFifoProcessUs = 0;
+
     ScalarStats magHeadingHorizontalNorm;
     ScalarStats magYawCombinedTrust;
     ScalarStats magYawCorrectionRateDegS;
@@ -468,6 +477,12 @@ struct StaticRuntimeTest {
         gyroAfterRadS.reset();
         for (uint8_t i = 0; i < STATIC_TEMP_BIN_COUNT; ++i) tempBins[i].reset();
         tempBinOutOfRangeSamples = 0;
+        updateDecimator = 0;
+        poseSamples = 0;
+        slowUpdateCount = 0;
+        maxUpdateUs = 0;
+        maxSampleProcessUs = 0;
+        maxFifoProcessUs = 0;
         magHeadingHorizontalNorm.reset();
         magYawCombinedTrust.reset();
         magYawCorrectionRateDegS.reset();
@@ -2811,6 +2826,13 @@ static bool startStaticTestHook(uint32_t durationMs, void* user) {
     g_staticTest.startMs = millis();
     g_staticTest.lastProgressMs = g_staticTest.startMs;
 
+    // Start with a clean quality/FIFO baseline. The user may have issued
+    // `fifo reset` just before the test, but the counters can still contain
+    // stale deltas from the reset/recovery boundary. Syncing here makes the
+    // first test window measure only events that happen during the test.
+    g_quality.clearRecoveryRequest();
+    g_quality.syncFifoStats(lsmFifo.stats());
+
     const auto& fs = lsmFifo.stats();
     g_staticTest.fifoOverrunAtStart = fs.overrunEvents;
     g_staticTest.fifoFullAtStart = fs.fullEvents;
@@ -2991,6 +3013,7 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     lsmFifo.resetFifo();
     lsmFifo.resetTimestampReconstruction(ts);
     g_quality.clearRecoveryRequest();
+    g_quality.syncFifoStats(lsmFifo.stats());
     resetFifoRuntimeCounters();
 }
 
@@ -3006,6 +3029,10 @@ static void finishStaticTest() {
     const Vec3 gyroAfterStdDps = g_staticTest.gyroAfterRadS.stddev() * MATH_RAD_TO_DEG;
     const Vec3 gyroAfterMinDps = g_staticTest.gyroAfterRadS.minValue * MATH_RAD_TO_DEG;
     const Vec3 gyroAfterMaxDps = g_staticTest.gyroAfterRadS.maxValue * MATH_RAD_TO_DEG;
+
+    if (g_staticTest.poseCaptured) {
+        g_staticTest.eulerEndDeg = g_staticTest.qEnd.toEulerXYZ() * MATH_RAD_TO_DEG;
+    }
 
     const float dRoll = angleDiffDeg(g_staticTest.eulerStartDeg.x, g_staticTest.eulerEndDeg.x);
     const float dPitch = angleDiffDeg(g_staticTest.eulerStartDeg.y, g_staticTest.eulerEndDeg.y);
@@ -3029,6 +3056,10 @@ static void finishStaticTest() {
     Serial.print("recovery_requests: "); Serial.println(g_staticTest.recoveryRequests);
     Serial.print("ahrs_skipped_samples: "); Serial.println(g_staticTest.ahrsSkipped);
     Serial.print("accel_correction_disabled_samples: "); Serial.println(g_staticTest.accelDisabled);
+    Serial.print("static_update_max_us: "); Serial.println(g_staticTest.maxUpdateUs);
+    Serial.print("sample_process_max_us: "); Serial.println(g_staticTest.maxSampleProcessUs);
+    Serial.print("fifo_process_max_us: "); Serial.println(g_staticTest.maxFifoProcessUs);
+    Serial.print("static_update_slow_count: "); Serial.println(g_staticTest.slowUpdateCount);
 
     Serial.println("------------------------------------------------------------------------------");
     Serial.println("FIFO delta during test");
@@ -3295,6 +3326,7 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
                              const ImuQualityResult& quality) {
     if (!g_staticTest.active) return;
 
+    const uint32_t updateStartUs = micros();
     const uint32_t nowMs = millis();
     const uint32_t elapsedMs = nowMs - g_staticTest.startMs;
 
@@ -3306,8 +3338,9 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
     if (!quality.shouldUpdateAhrs) g_staticTest.ahrsSkipped++;
     if (!quality.shouldUseAccelCorrection) g_staticTest.accelDisabled++;
 
+    const float accelNormG = calibrated.accel_g.norm();
     if (quality.dtUs > 0) g_staticTest.dtUs.push(static_cast<float>(quality.dtUs));
-    g_staticTest.accelNormG.push(calibrated.accel_g.norm());
+    g_staticTest.accelNormG.push(accelNormG);
     g_staticTest.accelTrust.push(quality.accelConfidence);
     if (!g_staticTest.tempCaptured) {
         g_staticTest.tempCaptured = true;
@@ -3333,7 +3366,7 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
         g_staticTest.tempBins[tempBinIdx].push(
             calibrated.temp_c,
             calibrated.gyro_rad_s,
-            calibrated.accel_g.norm(),
+            accelNormG,
             staticSampleGoodForTempFit
         );
     } else {
@@ -3341,13 +3374,18 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
     }
     g_staticTest.samples++;
 
-    if (!g_staticTest.poseCaptured && g_ahrs6dof.initialized()) {
-        g_staticTest.poseCaptured = true;
-        g_staticTest.eulerStartDeg = g_ahrs6dof.eulerDeg();
-        g_staticTest.qStart = g_ahrs6dof.quaternionPositiveW();
+    if (g_ahrs6dof.initialized()) {
+        const Quat q = g_ahrs6dof.quaternionPositiveW();
+        if (!g_staticTest.poseCaptured) {
+            g_staticTest.poseCaptured = true;
+            g_staticTest.qStart = q;
+            // Euler conversion is expensive on ESP32-C3; do it only once at
+            // start and once in finishStaticTest(), not for every FIFO sample.
+            g_staticTest.eulerStartDeg = q.toEulerXYZ() * MATH_RAD_TO_DEG;
+        }
+        g_staticTest.qEnd = q;
+        g_staticTest.poseSamples++;
     }
-    g_staticTest.eulerEndDeg = g_ahrs6dof.eulerDeg();
-    g_staticTest.qEnd = g_ahrs6dof.quaternionPositiveW();
 
     if (nowMs - g_staticTest.lastProgressMs >= HEARTBEAT_PERIOD_MS) {
         g_staticTest.lastProgressMs = nowMs;
@@ -3357,8 +3395,15 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
         Serial.print(" fb_ts="); Serial.print(g_staticTest.fallbackTs);
         Serial.print(" dropped_est="); Serial.print(g_staticTest.droppedEstimate);
         Serial.print(" accel_norm_mean="); Serial.print(g_staticTest.accelNormG.mean(), 6);
-        Serial.print(" gyro_after_mean_dps_norm="); Serial.println((g_staticTest.gyroAfterRadS.mean() * MATH_RAD_TO_DEG).norm(), 6);
+        Serial.print(" gyro_after_mean_dps_norm="); Serial.print((g_staticTest.gyroAfterRadS.mean() * MATH_RAD_TO_DEG).norm(), 6);
+        Serial.print(" static_update_max_us="); Serial.print(g_staticTest.maxUpdateUs);
+        Serial.print(" sample_process_max_us="); Serial.print(g_staticTest.maxSampleProcessUs);
+        Serial.print(" fifo_process_max_us="); Serial.println(g_staticTest.maxFifoProcessUs);
     }
+
+    const uint32_t updateUs = micros() - updateStartUs;
+    if (updateUs > g_staticTest.maxUpdateUs) g_staticTest.maxUpdateUs = updateUs;
+    if (updateUs > 1000UL) g_staticTest.slowUpdateCount++;
 
     if (g_staticTest.stopRequested || elapsedMs >= g_staticTest.durationMs) {
         finishStaticTest();
@@ -3602,7 +3647,13 @@ static void emitStreamIfNeeded(const Lsm6dsv::RawSample& raw,
     }
 }
 
-static void processOneRawSample(const Lsm6dsv::RawSample& raw) {
+enum class SampleProcessResult : uint8_t {
+    Continue,
+    FifoRecovered,
+};
+
+static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw) {
+    const uint32_t sampleProcessStartUs = micros();
     updateLatestTemperatureFromFifo();
     g_calIo.latestTempC = g_latestTempC;
 
@@ -3625,7 +3676,11 @@ static void processOneRawSample(const Lsm6dsv::RawSample& raw) {
         updateStaticTest(raw, calibrated, quality);
         updateRuntimeGyroBiasEstimator(scaled, calibrated, quality, raw.t_us);
         maybeRecoverFifo(quality, raw);
-        return;
+        if (g_staticTest.active) {
+            const uint32_t processUs = micros() - sampleProcessStartUs;
+            if (processUs > g_staticTest.maxSampleProcessUs) g_staticTest.maxSampleProcessUs = processUs;
+        }
+        return SampleProcessResult::FifoRecovered;
     }
 
     if (largeGap) {
@@ -3644,10 +3699,17 @@ static void processOneRawSample(const Lsm6dsv::RawSample& raw) {
     updateStaticTest(raw, calibrated, quality);
     updateRuntimeGyroBiasEstimator(scaled, calibrated, quality, raw.t_us);
     updateTrackingRecoveryState(quality);
+
+    if (g_staticTest.active) {
+        const uint32_t processUs = micros() - sampleProcessStartUs;
+        if (processUs > g_staticTest.maxSampleProcessUs) g_staticTest.maxSampleProcessUs = processUs;
+    }
+    return SampleProcessResult::Continue;
 }
 
 static void processFifoRuntime() {
     if (!consumeFifoInterruptEvent(0)) return;
+    const uint32_t fifoProcessStartUs = micros();
 
     const uint8_t maxRounds = g_config.data.fifo.maxDrainRoundsPerEvent > 0
         ? g_config.data.fifo.maxDrainRoundsPerEvent
@@ -3675,14 +3737,33 @@ static void processFifoRuntime() {
 
         if (!ok) {
             Serial.println("# ERR FIFO drain failed");
+            if (g_staticTest.active) {
+                const uint32_t processUs = micros() - fifoProcessStartUs;
+                if (processUs > g_staticTest.maxFifoProcessUs) g_staticTest.maxFifoProcessUs = processUs;
+            }
             return;
         }
 
         if (count == 0 && magCount == 0) break;
 
         for (size_t i = 0; i < count; ++i) {
-            processOneRawSample(g_fifoRaw[i]);
+            if (processOneRawSample(g_fifoRaw[i]) == SampleProcessResult::FifoRecovered) {
+                // The FIFO was reset while this local batch was being processed.
+                // Remaining entries were captured before reset and may still carry
+                // latched FIFO_FULL/OVR flags. Drop them instead of causing a
+                // recovery storm from one hardware event.
+                if (g_staticTest.active) {
+                    const uint32_t processUs = micros() - fifoProcessStartUs;
+                    if (processUs > g_staticTest.maxFifoProcessUs) g_staticTest.maxFifoProcessUs = processUs;
+                }
+                return;
+            }
         }
+    }
+
+    if (g_staticTest.active) {
+        const uint32_t processUs = micros() - fifoProcessStartUs;
+        if (processUs > g_staticTest.maxFifoProcessUs) g_staticTest.maxFifoProcessUs = processUs;
     }
 }
 

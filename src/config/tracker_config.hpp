@@ -886,6 +886,10 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print(" spiHz="); out.println(cfg.data.hardware.spiHz);
 
     out.println("-- imu/fifo --");
+    out.print("imuOdrHz="); out.println(Lsm6dsv::odrHz(cfg.data.imu.imuOdr), 3);
+    out.print("fifoAccelBdrHz="); out.println(Lsm6dsv::odrHz(cfg.data.fifo.accelBdr), 3);
+    out.print("fifoGyroBdrHz="); out.println(Lsm6dsv::odrHz(cfg.data.fifo.gyroBdr), 3);
+    out.print("samplePeriodUsOverride="); out.println(cfg.data.fifo.samplePeriodUsOverride, 3);
     out.print("fifoWatermarkWords="); out.println(cfg.data.fifo.watermarkWords);
     out.print("maxWordsPerDrain="); out.println(cfg.data.fifo.maxWordsPerDrain);
     out.print("maxDrainRoundsPerEvent="); out.println(cfg.data.fifo.maxDrainRoundsPerEvent);
