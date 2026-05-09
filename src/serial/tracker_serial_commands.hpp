@@ -235,6 +235,9 @@ struct TrackerSerialCommandContext {
     void (*printRuntimeHealth)(Stream& out, void* user) = nullptr;
     void* printRuntimeHealthUser = nullptr;
 
+    bool (*setSpiFrequency)(uint32_t hz, void* user) = nullptr;
+    void* setSpiFrequencyUser = nullptr;
+
     void (*emitLogHeader)(Stream& out, void* user) = nullptr;
     void* emitLogHeaderUser = nullptr;
 
@@ -434,6 +437,7 @@ private:
         out.println("factory_reset");
         out.println();
         out.println("config print | load | save | defaults | erase | crc");
+        out.println("config spi <hz> [save]          (live SPI clock, e.g. 1000000/4000000/8000000)");
         out.println();
         out.println("imu status | whoami | read");
         out.println("imu rate <120|240|480|960> [save]   (live IMU+FIFO ODR reconfigure)");
@@ -570,7 +574,7 @@ private:
             return;
         }
         if (argc < 2) {
-            tracker_serial_detail::printErr(out, "usage: config print|load|save|defaults|erase|crc");
+            tracker_serial_detail::printErr(out, "usage: config print|load|save|defaults|erase|crc|spi");
             return;
         }
 
@@ -583,6 +587,52 @@ private:
             out.print("# config_valid="); out.println(ctx.config->validate() ? "yes" : "no");
             out.print("# stored_crc=0x"); out.println(ctx.config->data.crc32, HEX);
             out.print("# computed_crc=0x"); out.println(ctx.config->computeCrc(), HEX);
+            return;
+        }
+
+        if (is(argv[1], "spi")) {
+            if (argc < 3) {
+                tracker_serial_detail::printErr(out, "usage: config spi <hz> [save]");
+                return;
+            }
+
+            uint32_t hz = 0;
+            if (!tracker_serial_detail::parseU32(argv[2], hz) ||
+                hz < tracker_config_detail::MIN_SPI_HZ ||
+                hz > tracker_config_detail::MAX_SPI_HZ) {
+                tracker_serial_detail::printErr(out, "invalid SPI Hz; expected 100000..10000000");
+                return;
+            }
+
+            const bool save = argc >= 4 && is(argv[3], "save");
+            if (argc >= 4 && !save) {
+                tracker_serial_detail::printErr(out, "usage: config spi <hz> [save]");
+                return;
+            }
+
+            ctx.config->data.hardware.spiHz = hz;
+            ctx.config->sanitize();
+            ctx.config->updateCrc();
+
+            if (ctx.setSpiFrequency && !ctx.setSpiFrequency(ctx.config->data.hardware.spiHz, ctx.setSpiFrequencyUser)) {
+                tracker_serial_detail::printErr(out, "failed to apply SPI clock");
+                return;
+            }
+
+            if (save) {
+                if (!ctx.configStore) {
+                    tracker_serial_detail::printErr(out, "config store not available; changed in RAM only");
+                    return;
+                }
+                if (!ctx.configStore->save(*ctx.config)) {
+                    out.print("# ERR config save failed: ");
+                    out.println(ctx.configStore->lastErrorName());
+                    return;
+                }
+            }
+
+            tracker_serial_detail::printOk(out, save ? "SPI clock set and saved" : "SPI clock set");
+            out.print("# spi_hz="); out.println(ctx.config->data.hardware.spiHz);
             return;
         }
 
@@ -2639,6 +2689,7 @@ private:
                 ? TrackerStreamMode::Quat
                 : TrackerStreamMode::Off;
         }
+        if (ctx.setSpiFrequency) ctx.setSpiFrequency(ctx.config->data.hardware.spiHz, ctx.setSpiFrequencyUser);
         if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
     }
 

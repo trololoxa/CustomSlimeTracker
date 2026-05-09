@@ -47,6 +47,11 @@ static constexpr uint16_t CONFIG_VERSION = 1;
 static constexpr const char* NVS_NAMESPACE = "tracker";
 static constexpr const char* NVS_KEY_CONFIG = "cfg";
 
+static constexpr uint32_t DEFAULT_SPI_HZ = 4000000UL;
+static constexpr uint32_t LEGACY_SPI_HZ = 1000000UL;
+static constexpr uint32_t MIN_SPI_HZ = 100000UL;
+static constexpr uint32_t MAX_SPI_HZ = 10000000UL;
+
 inline uint32_t fnv1a32(const uint8_t* data, size_t len) {
     uint32_t h = 2166136261UL;
     for (size_t i = 0; i < len; ++i) {
@@ -93,7 +98,7 @@ struct TrackerHardwareConfig {
     int pinLsmInt1 = 10;
 
     uint32_t serialBaud = 921600;
-    uint32_t spiHz = 1000000;
+    uint32_t spiHz = tracker_config_detail::DEFAULT_SPI_HZ;
     uint8_t spiMode = SPI_MODE0;
 };
 
@@ -409,7 +414,9 @@ public:
         using namespace tracker_config_detail;
 
         if (data.hardware.serialBaud == 0) data.hardware.serialBaud = 921600;
-        if (data.hardware.spiHz == 0) data.hardware.spiHz = 1000000;
+        if (data.hardware.spiHz == 0) data.hardware.spiHz = DEFAULT_SPI_HZ;
+        if (data.hardware.spiHz < MIN_SPI_HZ) data.hardware.spiHz = MIN_SPI_HZ;
+        if (data.hardware.spiHz > MAX_SPI_HZ) data.hardware.spiHz = MAX_SPI_HZ;
 
         if (data.fifo.watermarkWords == 0) data.fifo.watermarkWords = 48;
         if (data.fifo.maxWordsPerDrain == 0) data.fifo.maxWordsPerDrain = 384;

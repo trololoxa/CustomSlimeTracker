@@ -52,12 +52,26 @@ public:
                                uint8_t spiMode = SPI_MODE0)
         : spi_(spi),
           csPin_(csPin),
-          settings_(spiHz, MSBFIRST, spiMode) {}
+          spiHz_(spiHz),
+          spiMode_(spiMode),
+          settings_(spiHz_, MSBFIRST, spiMode_) {}
 
     void begin() {
         pinMode(csPin_, OUTPUT);
         digitalWrite(csPin_, HIGH);
     }
+
+    void setSettings(uint32_t spiHz, uint8_t spiMode) {
+        if (spiHz == 0) {
+            return;
+        }
+        spiHz_ = spiHz;
+        spiMode_ = spiMode;
+        settings_ = SPISettings(spiHz_, MSBFIRST, spiMode_);
+    }
+
+    uint32_t spiHz() const { return spiHz_; }
+    uint8_t spiMode() const { return spiMode_; }
 
     bool read(uint8_t reg, uint8_t* dst, size_t len) override {
         if (dst == nullptr || len == 0) {
@@ -68,8 +82,16 @@ public:
         digitalWrite(csPin_, LOW);
 
         spi_.transfer(static_cast<uint8_t>(0x80u | (reg & 0x7Fu)));
-        for (size_t i = 0; i < len; ++i) {
-            dst[i] = spi_.transfer(0x00);
+#if defined(ARDUINO_ARCH_ESP32)
+        static uint8_t zeros[32] = {};
+        if (len <= sizeof(zeros)) {
+            spi_.transferBytes(zeros, dst, len);
+        } else
+#endif
+        {
+            for (size_t i = 0; i < len; ++i) {
+                dst[i] = spi_.transfer(0x00);
+            }
         }
 
         digitalWrite(csPin_, HIGH);
@@ -86,9 +108,13 @@ public:
         digitalWrite(csPin_, LOW);
 
         spi_.transfer(static_cast<uint8_t>(reg & 0x7Fu));
+#if defined(ARDUINO_ARCH_ESP32)
+        spi_.transferBytes(src, nullptr, len);
+#else
         for (size_t i = 0; i < len; ++i) {
             spi_.transfer(src[i]);
         }
+#endif
 
         digitalWrite(csPin_, HIGH);
         spi_.endTransaction();
@@ -102,6 +128,8 @@ public:
 private:
     SPIClass& spi_;
     int csPin_;
+    uint32_t spiHz_;
+    uint8_t spiMode_;
     SPISettings settings_;
 };
 

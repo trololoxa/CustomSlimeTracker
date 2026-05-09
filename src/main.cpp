@@ -51,7 +51,7 @@ static constexpr int PIN_LSM_CS   = 1;
 static constexpr int PIN_LSM_INT1 = 10;
 
 static constexpr uint32_t SERIAL_BAUD_DEFAULT = 921600;
-static constexpr uint32_t SPI_HZ_DEFAULT = 1000000;
+static constexpr uint32_t SPI_HZ_DEFAULT = tracker_config_detail::DEFAULT_SPI_HZ;
 static constexpr uint8_t SPI_MODE_DEFAULT = SPI_MODE0;
 
 static constexpr size_t FIFO_RAW_BUFFER_CAPACITY = 160;
@@ -1300,9 +1300,36 @@ static void enforceProductCalibrationValidityAtBoot() {
     g_config.updateCrc();
 }
 
+static void migrateRuntimeConfigForPerformance() {
+    // Old NVS configs used the original conservative 1 MHz SPI default.
+    // Upgrade that legacy value in RAM so the optimized build benefits
+    // immediately, while still allowing explicit config save/revert commands.
+    if (g_config.data.hardware.spiHz == tracker_config_detail::LEGACY_SPI_HZ) {
+        g_config.data.hardware.spiHz = tracker_config_detail::DEFAULT_SPI_HZ;
+    }
+
+    g_config.sanitize();
+    g_config.updateCrc();
+}
+
+static void applySpiConfigToTransport() {
+    g_config.sanitize();
+    lsmBus.setSettings(g_config.data.hardware.spiHz, g_config.data.hardware.spiMode);
+}
+
+static bool setRuntimeSpiFrequency(uint32_t hz, void* user) {
+    (void)user;
+    g_config.data.hardware.spiHz = hz;
+    g_config.sanitize();
+    g_config.updateCrc();
+    lsmBus.setSettings(g_config.data.hardware.spiHz, g_config.data.hardware.spiMode);
+    return true;
+}
+
 static bool loadConfigAndApplyRuntime() {
     g_configStore.loadOrDefaults(g_config, &g_configLoadedFromNvs);
     g_config.sanitize();
+    migrateRuntimeConfigForPerformance();
     enforceProductCalibrationValidityAtBoot();
 
     g_config.applyToImuCalibration(g_imuCal);
@@ -1320,6 +1347,7 @@ static bool loadConfigAndApplyRuntime() {
 static bool initLsm() {
     SPI.begin(PIN_LSM_SCK, PIN_LSM_MISO, PIN_LSM_MOSI, PIN_LSM_CS);
     lsmBus.begin();
+    applySpiConfigToTransport();
 
     Lsm6dsv::Config cfg = g_config.makeLsmConfig();
 
@@ -1336,6 +1364,7 @@ static bool initLsm() {
 
     Serial.println("# OK LSM6DSV init");
     Serial.print("# WHO_AM_I=0x"); Serial.println(who, HEX);
+    Serial.print("# SPI_Hz="); Serial.println(lsmBus.spiHz());
     Serial.print("# ODR_Hz="); Serial.println(Lsm6dsv::odrHz(g_config.data.imu.imuOdr), 3);
     return true;
 }
@@ -2593,6 +2622,7 @@ static void printRuntimeStatus(Stream& out, void* user) {
     (void)user;
     out.print("uptime_ms="); out.println(millis());
     out.print("config_loaded_from_nvs="); out.println(g_configLoadedFromNvs ? "yes" : "no");
+    out.print("spi_hz="); out.println(lsmBus.spiHz());
     out.print("runtime_samples="); out.println(g_runtimeSamples);
     out.print("fifo_int_count="); out.println(g_fifoIntCount);
     out.print("fifo_int_missed="); out.println(g_fifoIntMissed);
@@ -3052,6 +3082,8 @@ static void setupCommandInterface() {
     g_cmdCtx.printRuntimeStatusUser = nullptr;
     g_cmdCtx.printRuntimeHealth = printRuntimeHealth;
     g_cmdCtx.printRuntimeHealthUser = nullptr;
+    g_cmdCtx.setSpiFrequency = setRuntimeSpiFrequency;
+    g_cmdCtx.setSpiFrequencyUser = nullptr;
     g_cmdCtx.emitLogHeader = emitMachineLogHeader;
     g_cmdCtx.emitLogHeaderUser = nullptr;
     g_cmdCtx.printLogSummary = printLogSummary;
