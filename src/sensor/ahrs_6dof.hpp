@@ -240,7 +240,7 @@ public:
     }
 
     Ahrs6DofAccelGate evaluateAccelGate(const Vec3& accelG) const {
-        return evaluateAccel(accelG).gate;
+        return evaluateAccel(accelG, accelG.norm()).gate;
     }
 
     // Main update function.
@@ -248,6 +248,10 @@ public:
     // accelG may be raw scaled accel or calibrated accel if accel calibration exists.
     // Returns true if gyro prediction was performed.
     bool update(const Vec3& gyroRadS, const Vec3& accelG, uint64_t timestampUs) {
+        return update(gyroRadS, accelG, accelG.norm(), timestampUs);
+    }
+
+    bool update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG, uint64_t timestampUs) {
         if (!gyroRadS.isFinite() || !accelG.isFinite() || timestampUs == 0) {
             stats_.skippedBadDt++;
             return false;
@@ -295,10 +299,10 @@ public:
             if (std::fabs(gyroUsed.z) < cfg_.gyroDeadbandRadS) gyroUsed.z = 0.0f;
         }
 
-        updateAdaptiveAccelTrust(accelG, gyroUsed);
+        const float gyroNormRadS = gyroUsed.norm();
+        updateAdaptiveAccelTrust(accelNormG, gyroNormRadS);
 
         // 1. High-rate gyro prediction.
-        const Vec3 gyroRotationVector = gyroUsed * dtS;
         q_ = integrateBodyRate(q_, gyroUsed, dtS);
 
         stats_.updateCount++;
@@ -308,10 +312,10 @@ public:
         stats_.lastUsedDtS = dtS;
         stats_.lastGyroRadS = gyroUsed;
         stats_.lastAccelG = accelG;
-        stats_.lastGyroAngleRad = gyroRotationVector.norm();
+        stats_.lastGyroAngleRad = gyroNormRadS * dtS;
 
         // 2. Accel gravity correction.
-        applyAccelCorrection(accelG, dtS);
+        applyAccelCorrection(accelG, accelNormG, dtS);
 
         if (cfg_.normalizeEvery > 0 && (stats_.updateCount % cfg_.normalizeEvery) == 0) {
             q_.normalizeInPlace();
@@ -363,7 +367,7 @@ private:
         bool vectorsValid = false;
     };
 
-    AccelEvaluation evaluateAccel(const Vec3& accelG) const {
+    AccelEvaluation evaluateAccel(const Vec3& accelG, float accelNormG) const {
         AccelEvaluation eval;
         Ahrs6DofAccelGate& gate = eval.gate;
 
@@ -371,11 +375,11 @@ private:
             return eval;
         }
 
-        if (!accelG.isFinite()) {
+        if (!accelG.isFinite() || !std::isfinite(accelNormG)) {
             return eval;
         }
 
-        gate.normG = accelG.norm();
+        gate.normG = accelNormG;
         gate.normErrorG = std::fabs(gate.normG - 1.0f);
 
         if (gate.normG < MATH_EPSILON) {
@@ -406,17 +410,12 @@ private:
         return eval;
     }
 
-    void updateAdaptiveAccelTrust(const Vec3& accelG, const Vec3& gyroRadS) {
+    void updateAdaptiveAccelTrust(float accelNormG, float gyroNorm) {
         stats_.lastAccelNormVarianceTrust = 1.0f;
         stats_.lastGyroMotionTrust = 1.0f;
         stats_.lastAdaptiveAccelTrust = 1.0f;
 
-        if (!cfg_.adaptiveAccelCorrection || !accelG.isFinite() || !gyroRadS.isFinite()) {
-            return;
-        }
-
-        const float accelNormG = accelG.norm();
-        if (!std::isfinite(accelNormG)) {
+        if (!cfg_.adaptiveAccelCorrection || !std::isfinite(accelNormG) || !std::isfinite(gyroNorm)) {
             return;
         }
 
@@ -437,15 +436,14 @@ private:
                                                     cfg_.accelNormVarianceGoodG2,
                                                     cfg_.accelNormVarianceBadG2);
 
-        const float gyroNorm = gyroRadS.norm();
         stats_.lastGyroMotionTrust = rampDown(gyroNorm,
                                               cfg_.gyroNormAccelTrustGoodRadS,
                                               cfg_.gyroNormAccelTrustBadRadS);
         stats_.lastAdaptiveAccelTrust = stats_.lastAccelNormVarianceTrust * stats_.lastGyroMotionTrust;
     }
 
-    void applyAccelCorrection(const Vec3& accelG, float dtS) {
-        const AccelEvaluation eval = evaluateAccel(accelG);
+    void applyAccelCorrection(const Vec3& accelG, float accelNormG, float dtS) {
+        const AccelEvaluation eval = evaluateAccel(accelG, accelNormG);
         const Ahrs6DofAccelGate& gate = eval.gate;
         stats_.lastAccelGate = gate;
         stats_.lastAccelCorrectionWorldRad = Vec3::zero();

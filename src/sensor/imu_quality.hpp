@@ -103,6 +103,12 @@ struct ImuQualityResult {
     float accelConfidence = 1.0f;
     float overallConfidence = 1.0f;
 
+    // Cached calibrated accel norm. This is calculated once by the quality
+    // monitor and can be reused by AHRS/static-test hot paths to avoid
+    // duplicate sqrt() calls without changing any decision logic.
+    float accelNormG = 0.0f;
+    bool accelNormValid = false;
+
     bool shouldUpdateAhrs = true;
     bool shouldUseAccelCorrection = true;
     bool shouldRequestFifoRecovery = false;
@@ -216,7 +222,8 @@ public:
 
     ImuQualityResult evaluate(const Lsm6dsv::RawSample& raw,
                               const Lsm6dsv::Sample& calibrated,
-                              const Lsm6dsvFifoReader::DrainStats& fifoStats) {
+                              const Lsm6dsvFifoReader::DrainStats& fifoStats,
+                              bool checkFifoStatsDelta = true) {
         ImuQualityResult q;
         counters_.samples++;
 
@@ -224,7 +231,9 @@ public:
 
         evaluateRawFlags(raw, q);
         evaluateTimestamp(raw, expectedDt, q);
-        evaluateFifoStatsDelta(fifoStats, q);
+        if (checkFifoStatsDelta) {
+            evaluateFifoStatsDelta(fifoStats, q);
+        }
         evaluateSaturation(raw, q);
         evaluateAccelNorm(calibrated, q);
         finalizeDecision(q);
@@ -385,7 +394,9 @@ private:
 
     void evaluateAccelNorm(const Lsm6dsv::Sample& calibrated, ImuQualityResult& q) {
         const float n = calibrated.accel_g.norm();
-        if (!std::isfinite(n) || n < cfg_.accelNormOutlierMinG || n > cfg_.accelNormOutlierMaxG) {
+        q.accelNormG = n;
+        q.accelNormValid = std::isfinite(n);
+        if (!q.accelNormValid || n < cfg_.accelNormOutlierMinG || n > cfg_.accelNormOutlierMaxG) {
             q.flags |= imu_quality_flags::ACCEL_NORM_OUTLIER;
             q.accelConfidence *= 0.0f;
         }

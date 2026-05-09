@@ -3476,7 +3476,7 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
     if (!quality.shouldUpdateAhrs) g_staticTest.ahrsSkipped++;
     if (!quality.shouldUseAccelCorrection) g_staticTest.accelDisabled++;
 
-    const float accelNormG = calibrated.accel_g.norm();
+    const float accelNormG = quality.accelNormValid ? quality.accelNormG : calibrated.accel_g.norm();
     if (quality.dtUs > 0) g_staticTest.dtUs.push(static_cast<float>(quality.dtUs));
     g_staticTest.accelNormG.push(accelNormG);
     g_staticTest.accelTrust.push(quality.accelConfidence);
@@ -3803,7 +3803,7 @@ enum class SampleProcessResult : uint8_t {
     FifoRecovered,
 };
 
-static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw) {
+static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw, bool checkFifoStatsDelta) {
     const uint32_t sampleProcessStartUs = micros();
     updateLatestTemperatureFromFifo();
     g_calIo.latestTempC = g_latestTempC;
@@ -3813,7 +3813,7 @@ static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw) {
     Lsm6dsv::Sample calibrated = makeCalibratedSample(scaled);
 
     const auto& fifoStats = lsmFifo.stats();
-    ImuQualityResult quality = g_quality.evaluate(raw, calibrated, fifoStats);
+    ImuQualityResult quality = g_quality.evaluate(raw, calibrated, fifoStats, checkFifoStatsDelta);
     applyGyroTempQualityFlags(quality, calibrated.temp_c);
 
     const bool largeGap = quality.has(imu_quality_flags::TIMESTAMP_LARGE_GAP);
@@ -3841,7 +3841,8 @@ static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw) {
         enterTrackingRecovery(quality.flags, "large_dt_gap", raw.t_us);
     } else if (quality.shouldUpdateAhrs) {
         const Vec3 accelForAhrs = quality.accelForAhrs(calibrated.accel_g);
-        g_ahrs6dof.update(calibrated.gyro_rad_s, accelForAhrs, raw.t_us);
+        const float accelNormForAhrs = quality.shouldUseAccelCorrection ? quality.accelNormG : 0.0f;
+        g_ahrs6dof.update(calibrated.gyro_rad_s, accelForAhrs, accelNormForAhrs, raw.t_us);
     }
 
     g_runtimeSamples++;
@@ -3904,8 +3905,9 @@ static void processFifoRuntime() {
 
         if (count == 0 && magCount == 0) break;
 
+        bool checkFifoStatsDelta = true;
         for (size_t i = 0; i < count; ++i) {
-            if (processOneRawSample(g_fifoRaw[i]) == SampleProcessResult::FifoRecovered) {
+            if (processOneRawSample(g_fifoRaw[i], checkFifoStatsDelta) == SampleProcessResult::FifoRecovered) {
                 // The FIFO was reset while this local batch was being processed.
                 // Remaining entries were captured before reset and may still carry
                 // latched FIFO_FULL/OVR flags. Drop them instead of causing a
@@ -3917,6 +3919,7 @@ static void processFifoRuntime() {
                 }
                 return;
             }
+            checkFifoStatsDelta = false;
         }
     }
 
