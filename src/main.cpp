@@ -61,6 +61,10 @@ static constexpr float MAG_HUB_PERIOD_US = 1000000.0f / MAG_HUB_ODR_HZ;
 static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN_DEFAULT = 384;
 static constexpr uint8_t MAX_DRAIN_ROUNDS_PER_EVENT_DEFAULT = 6;
 static constexpr uint32_t FIFO_WAIT_TIMEOUT_MS = 1000;
+// Non-blocking runtime loop calls consumeFifoInterruptEvent(0) very often.
+// Keep the fallback FIFO_STATUS SPI poll as a rare safety net only;
+// normal runtime data flow should be driven by INT1.
+static constexpr uint32_t FIFO_NONBLOCKING_STATUS_POLL_INTERVAL_US = 2000;
 static constexpr uint32_t HEARTBEAT_PERIOD_MS = 30000;
 
 // ============================================================
@@ -105,6 +109,39 @@ static float g_latestTempC = 25.0f;
 static bool g_configLoadedFromNvs = false;
 static uint32_t g_lastHeartbeatMs = 0;
 static float g_lastOutputConfidence = 0.0f;
+
+struct TrackerPerfCounters {
+    uint32_t fifoProcessCalls = 0;
+    uint32_t fifoProcessMaxUs = 0;
+    uint64_t fifoProcessSumUs = 0;
+
+    uint32_t sampleProcessCalls = 0;
+    uint32_t sampleProcessMaxUs = 0;
+    uint64_t sampleProcessSumUs = 0;
+
+    uint32_t fifoEmptyPolls = 0;
+    uint32_t fifoIrqEvents = 0;
+    uint32_t fifoFallbackStatusPolls = 0;
+    uint32_t fifoFallbackEvents = 0;
+
+    uint32_t resetMs = 0;
+
+    void reset(uint32_t nowMs) {
+        fifoProcessCalls = 0;
+        fifoProcessMaxUs = 0;
+        fifoProcessSumUs = 0;
+        sampleProcessCalls = 0;
+        sampleProcessMaxUs = 0;
+        sampleProcessSumUs = 0;
+        fifoEmptyPolls = 0;
+        fifoIrqEvents = 0;
+        fifoFallbackStatusPolls = 0;
+        fifoFallbackEvents = 0;
+        resetMs = nowMs;
+    }
+};
+
+static TrackerPerfCounters g_perf;
 
 static constexpr uint32_t TRACKING_RECOVERY_STABLE_SAMPLES = 128;
 static bool g_trackingRecovering = false;
@@ -356,6 +393,17 @@ struct StaticRuntimeTest {
     uint32_t fifoHwTsAtStart = 0;
     uint32_t fifoFbTsAtStart = 0;
 
+    // Perf counter snapshots. These make `test static` useful as a before/after
+    // optimization benchmark without changing AHRS/FIFO behavior.
+    uint32_t perfFifoProcessCallsAtStart = 0;
+    uint64_t perfFifoProcessSumUsAtStart = 0;
+    uint32_t perfSampleProcessCallsAtStart = 0;
+    uint64_t perfSampleProcessSumUsAtStart = 0;
+    uint32_t perfFifoEmptyPollsAtStart = 0;
+    uint32_t perfFifoIrqEventsAtStart = 0;
+    uint32_t perfFifoFallbackStatusPollsAtStart = 0;
+    uint32_t perfFifoFallbackEventsAtStart = 0;
+
     // Magnetometer / yaw correction snapshots.
     bool magEnabledAtStart = false;
     bool magYawApplyEnabledAtStart = false;
@@ -438,6 +486,15 @@ struct StaticRuntimeTest {
         fifoUnknownAtStart = 0;
         fifoHwTsAtStart = 0;
         fifoFbTsAtStart = 0;
+
+        perfFifoProcessCallsAtStart = 0;
+        perfFifoProcessSumUsAtStart = 0;
+        perfSampleProcessCallsAtStart = 0;
+        perfSampleProcessSumUsAtStart = 0;
+        perfFifoEmptyPollsAtStart = 0;
+        perfFifoIrqEventsAtStart = 0;
+        perfFifoFallbackStatusPollsAtStart = 0;
+        perfFifoFallbackEventsAtStart = 0;
 
         magEnabledAtStart = false;
         magYawApplyEnabledAtStart = false;
@@ -666,6 +723,22 @@ static void printU64Dec(Stream& out, uint64_t v) {
     out.print(&buf[i]);
 }
 
+static float avgUs(uint64_t sumUs, uint32_t calls) {
+    return calls > 0 ? static_cast<float>(static_cast<double>(sumUs) / static_cast<double>(calls)) : 0.0f;
+}
+
+static void recordSampleProcessTime(uint32_t dtUs) {
+    g_perf.sampleProcessCalls++;
+    g_perf.sampleProcessSumUs += dtUs;
+    if (dtUs > g_perf.sampleProcessMaxUs) g_perf.sampleProcessMaxUs = dtUs;
+}
+
+static void recordFifoProcessTime(uint32_t dtUs) {
+    g_perf.fifoProcessCalls++;
+    g_perf.fifoProcessSumUs += dtUs;
+    if (dtUs > g_perf.fifoProcessMaxUs) g_perf.fifoProcessMaxUs = dtUs;
+}
+
 static const char* machineLogModeName(TrackerLogMode mode) {
     switch (mode) {
         case TrackerLogMode::Off:   return "off";
@@ -753,6 +826,7 @@ static void resetFifoRuntimeCounters() {
 }
 
 static bool consumeFifoInterruptEvent(uint32_t timeoutMs) {
+    static uint32_t lastNonblockingStatusPollUs = 0;
     const uint32_t startMs = millis();
 
     do {
@@ -764,23 +838,38 @@ static bool consumeFifoInterruptEvent(uint32_t timeoutMs) {
             const uint32_t delta = current - g_lastHandledFifoIntCount;
             if (delta > 1) g_fifoIntMissed += delta - 1;
             g_lastHandledFifoIntCount = current;
+            g_perf.fifoIrqEvents++;
             return true;
         }
 
-        if (timeoutMs == 0) break;
+        if (timeoutMs == 0) {
+            const uint32_t nowUs = micros();
+            if ((uint32_t)(nowUs - lastNonblockingStatusPollUs) < FIFO_NONBLOCKING_STATUS_POLL_INTERVAL_US) {
+                g_perf.fifoEmptyPolls++;
+                return false;
+            }
+            lastNonblockingStatusPollUs = nowUs;
+            break;
+        }
+
         yield();
     } while (millis() - startMs < timeoutMs);
 
-    // Lightweight fallback: only check FIFO_STATUS after timeout or explicit nonblocking call.
+    // Safety fallback: check FIFO_STATUS after a blocking wait timeout, or rarely
+    // during non-blocking runtime polling. This avoids an SPI transaction on every
+    // empty loop iteration while still recovering from a missed INT1 edge.
     Lsm6dsvFifoReader::Status st;
+    g_perf.fifoFallbackStatusPolls++;
     if (lsmFifo.readStatus(st)) {
         if (st.unreadWords >= g_config.data.fifo.watermarkWords || st.overrun || st.full || st.overrunLatched) {
             g_fifoStatusFallbackEvents++;
+            g_perf.fifoFallbackEvents++;
             return true;
         }
     }
 
     if (timeoutMs > 0) g_fifoWaitTimeouts++;
+    else g_perf.fifoEmptyPolls++;
     return false;
 }
 
@@ -2840,6 +2929,15 @@ static bool startStaticTestHook(uint32_t durationMs, void* user) {
     g_staticTest.fifoHwTsAtStart = fs.hwTimestampAssigned;
     g_staticTest.fifoFbTsAtStart = fs.fallbackTimestampAssigned;
 
+    g_staticTest.perfFifoProcessCallsAtStart = g_perf.fifoProcessCalls;
+    g_staticTest.perfFifoProcessSumUsAtStart = g_perf.fifoProcessSumUs;
+    g_staticTest.perfSampleProcessCallsAtStart = g_perf.sampleProcessCalls;
+    g_staticTest.perfSampleProcessSumUsAtStart = g_perf.sampleProcessSumUs;
+    g_staticTest.perfFifoEmptyPollsAtStart = g_perf.fifoEmptyPolls;
+    g_staticTest.perfFifoIrqEventsAtStart = g_perf.fifoIrqEvents;
+    g_staticTest.perfFifoFallbackStatusPollsAtStart = g_perf.fifoFallbackStatusPolls;
+    g_staticTest.perfFifoFallbackEventsAtStart = g_perf.fifoFallbackEvents;
+
     const auto& ms = g_magProcessor.stats();
     const auto& hs = g_magHeading.stats();
     const auto& ys = g_magYawCorrection.stats();
@@ -2912,6 +3010,16 @@ static void printStaticTestStatus(Stream& out, void* user) {
     out.print("estimated_dropped="); out.println(g_staticTest.droppedEstimate);
     out.print("accel_norm_mean="); out.println(g_staticTest.accelNormG.mean(), 6);
     out.print("gyro_after_mean_dps_norm="); out.println((g_staticTest.gyroAfterRadS.mean() * MATH_RAD_TO_DEG).norm(), 6);
+    const uint32_t sampleCalls = g_perf.sampleProcessCalls - g_staticTest.perfSampleProcessCallsAtStart;
+    const uint64_t sampleSumUs = g_perf.sampleProcessSumUs - g_staticTest.perfSampleProcessSumUsAtStart;
+    const uint32_t fifoCalls = g_perf.fifoProcessCalls - g_staticTest.perfFifoProcessCallsAtStart;
+    const uint64_t fifoSumUs = g_perf.fifoProcessSumUs - g_staticTest.perfFifoProcessSumUsAtStart;
+    out.print("sample_process_avg_us="); out.println(avgUs(sampleSumUs, sampleCalls), 3);
+    out.print("sample_process_max_us="); out.println(g_staticTest.maxSampleProcessUs);
+    out.print("fifo_process_avg_us="); out.println(avgUs(fifoSumUs, fifoCalls), 3);
+    out.print("fifo_process_max_us="); out.println(g_staticTest.maxFifoProcessUs);
+    out.print("fifo_empty_polls_delta="); out.println(g_perf.fifoEmptyPolls - g_staticTest.perfFifoEmptyPollsAtStart);
+    out.print("fifo_fallback_status_polls_delta="); out.println(g_perf.fifoFallbackStatusPolls - g_staticTest.perfFifoFallbackStatusPollsAtStart);
 }
 
 static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user);
@@ -3060,6 +3168,32 @@ static void finishStaticTest() {
     Serial.print("sample_process_max_us: "); Serial.println(g_staticTest.maxSampleProcessUs);
     Serial.print("fifo_process_max_us: "); Serial.println(g_staticTest.maxFifoProcessUs);
     Serial.print("static_update_slow_count: "); Serial.println(g_staticTest.slowUpdateCount);
+
+    const uint32_t perfSampleCalls = g_perf.sampleProcessCalls - g_staticTest.perfSampleProcessCallsAtStart;
+    const uint64_t perfSampleSumUs = g_perf.sampleProcessSumUs - g_staticTest.perfSampleProcessSumUsAtStart;
+    const uint32_t perfFifoCalls = g_perf.fifoProcessCalls - g_staticTest.perfFifoProcessCallsAtStart;
+    const uint64_t perfFifoSumUs = g_perf.fifoProcessSumUs - g_staticTest.perfFifoProcessSumUsAtStart;
+    const uint32_t perfEmptyPolls = g_perf.fifoEmptyPolls - g_staticTest.perfFifoEmptyPollsAtStart;
+    const uint32_t perfIrqEvents = g_perf.fifoIrqEvents - g_staticTest.perfFifoIrqEventsAtStart;
+    const uint32_t perfFallbackPolls = g_perf.fifoFallbackStatusPolls - g_staticTest.perfFifoFallbackStatusPollsAtStart;
+    const uint32_t perfFallbackEvents = g_perf.fifoFallbackEvents - g_staticTest.perfFifoFallbackEventsAtStart;
+    const float fallbackPollsPerSec = durationS > 0.0f ? static_cast<float>(perfFallbackPolls) / durationS : 0.0f;
+    const float emptyPollsPerSec = durationS > 0.0f ? static_cast<float>(perfEmptyPolls) / durationS : 0.0f;
+
+    Serial.println("------------------------------------------------------------------------------");
+    Serial.println("PERF delta during test");
+    Serial.print("perf_sample_process_calls: "); Serial.println(perfSampleCalls);
+    Serial.print("perf_sample_process_avg_us: "); Serial.println(avgUs(perfSampleSumUs, perfSampleCalls), 3);
+    Serial.print("perf_sample_process_max_us: "); Serial.println(g_staticTest.maxSampleProcessUs);
+    Serial.print("perf_fifo_process_calls: "); Serial.println(perfFifoCalls);
+    Serial.print("perf_fifo_process_avg_us: "); Serial.println(avgUs(perfFifoSumUs, perfFifoCalls), 3);
+    Serial.print("perf_fifo_process_max_us: "); Serial.println(g_staticTest.maxFifoProcessUs);
+    Serial.print("perf_fifo_empty_polls: "); Serial.println(perfEmptyPolls);
+    Serial.print("perf_fifo_empty_polls_per_s: "); Serial.println(emptyPollsPerSec, 3);
+    Serial.print("perf_fifo_irq_events: "); Serial.println(perfIrqEvents);
+    Serial.print("perf_fifo_fallback_status_polls: "); Serial.println(perfFallbackPolls);
+    Serial.print("perf_fifo_fallback_status_polls_per_s: "); Serial.println(fallbackPollsPerSec, 3);
+    Serial.print("perf_fifo_fallback_events: "); Serial.println(perfFallbackEvents);
 
     Serial.println("------------------------------------------------------------------------------");
     Serial.println("FIFO delta during test");
@@ -3396,8 +3530,14 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
         Serial.print(" dropped_est="); Serial.print(g_staticTest.droppedEstimate);
         Serial.print(" accel_norm_mean="); Serial.print(g_staticTest.accelNormG.mean(), 6);
         Serial.print(" gyro_after_mean_dps_norm="); Serial.print((g_staticTest.gyroAfterRadS.mean() * MATH_RAD_TO_DEG).norm(), 6);
+        const uint32_t sampleCalls = g_perf.sampleProcessCalls - g_staticTest.perfSampleProcessCallsAtStart;
+        const uint64_t sampleSumUs = g_perf.sampleProcessSumUs - g_staticTest.perfSampleProcessSumUsAtStart;
+        const uint32_t fifoCalls = g_perf.fifoProcessCalls - g_staticTest.perfFifoProcessCallsAtStart;
+        const uint64_t fifoSumUs = g_perf.fifoProcessSumUs - g_staticTest.perfFifoProcessSumUsAtStart;
         Serial.print(" static_update_max_us="); Serial.print(g_staticTest.maxUpdateUs);
+        Serial.print(" sample_process_avg_us="); Serial.print(avgUs(sampleSumUs, sampleCalls), 3);
         Serial.print(" sample_process_max_us="); Serial.print(g_staticTest.maxSampleProcessUs);
+        Serial.print(" fifo_process_avg_us="); Serial.print(avgUs(fifoSumUs, fifoCalls), 3);
         Serial.print(" fifo_process_max_us="); Serial.println(g_staticTest.maxFifoProcessUs);
     }
 
@@ -3676,9 +3816,10 @@ static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw) {
         updateStaticTest(raw, calibrated, quality);
         updateRuntimeGyroBiasEstimator(scaled, calibrated, quality, raw.t_us);
         maybeRecoverFifo(quality, raw);
-        if (g_staticTest.active) {
-            const uint32_t processUs = micros() - sampleProcessStartUs;
-            if (processUs > g_staticTest.maxSampleProcessUs) g_staticTest.maxSampleProcessUs = processUs;
+        const uint32_t processUs = micros() - sampleProcessStartUs;
+        recordSampleProcessTime(processUs);
+        if (g_staticTest.active && processUs > g_staticTest.maxSampleProcessUs) {
+            g_staticTest.maxSampleProcessUs = processUs;
         }
         return SampleProcessResult::FifoRecovered;
     }
@@ -3700,9 +3841,10 @@ static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw) {
     updateRuntimeGyroBiasEstimator(scaled, calibrated, quality, raw.t_us);
     updateTrackingRecoveryState(quality);
 
-    if (g_staticTest.active) {
-        const uint32_t processUs = micros() - sampleProcessStartUs;
-        if (processUs > g_staticTest.maxSampleProcessUs) g_staticTest.maxSampleProcessUs = processUs;
+    const uint32_t processUs = micros() - sampleProcessStartUs;
+    recordSampleProcessTime(processUs);
+    if (g_staticTest.active && processUs > g_staticTest.maxSampleProcessUs) {
+        g_staticTest.maxSampleProcessUs = processUs;
     }
     return SampleProcessResult::Continue;
 }
@@ -3737,9 +3879,10 @@ static void processFifoRuntime() {
 
         if (!ok) {
             Serial.println("# ERR FIFO drain failed");
-            if (g_staticTest.active) {
-                const uint32_t processUs = micros() - fifoProcessStartUs;
-                if (processUs > g_staticTest.maxFifoProcessUs) g_staticTest.maxFifoProcessUs = processUs;
+            const uint32_t processUs = micros() - fifoProcessStartUs;
+            recordFifoProcessTime(processUs);
+            if (g_staticTest.active && processUs > g_staticTest.maxFifoProcessUs) {
+                g_staticTest.maxFifoProcessUs = processUs;
             }
             return;
         }
@@ -3752,18 +3895,20 @@ static void processFifoRuntime() {
                 // Remaining entries were captured before reset and may still carry
                 // latched FIFO_FULL/OVR flags. Drop them instead of causing a
                 // recovery storm from one hardware event.
-                if (g_staticTest.active) {
-                    const uint32_t processUs = micros() - fifoProcessStartUs;
-                    if (processUs > g_staticTest.maxFifoProcessUs) g_staticTest.maxFifoProcessUs = processUs;
+                const uint32_t processUs = micros() - fifoProcessStartUs;
+                recordFifoProcessTime(processUs);
+                if (g_staticTest.active && processUs > g_staticTest.maxFifoProcessUs) {
+                    g_staticTest.maxFifoProcessUs = processUs;
                 }
                 return;
             }
         }
     }
 
-    if (g_staticTest.active) {
-        const uint32_t processUs = micros() - fifoProcessStartUs;
-        if (processUs > g_staticTest.maxFifoProcessUs) g_staticTest.maxFifoProcessUs = processUs;
+    const uint32_t processUs = micros() - fifoProcessStartUs;
+    recordFifoProcessTime(processUs);
+    if (g_staticTest.active && processUs > g_staticTest.maxFifoProcessUs) {
+        g_staticTest.maxFifoProcessUs = processUs;
     }
 }
 
@@ -3789,6 +3934,7 @@ static void maybePrintBootHeartbeat() {
 
 void setup() {
     Serial.begin(SERIAL_BAUD_DEFAULT);
+    g_perf.reset(millis());
     sleep(5);
     delay(300);
 
