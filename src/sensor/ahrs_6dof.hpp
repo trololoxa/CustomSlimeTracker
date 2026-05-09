@@ -240,44 +240,7 @@ public:
     }
 
     Ahrs6DofAccelGate evaluateAccelGate(const Vec3& accelG) const {
-        Ahrs6DofAccelGate gate;
-
-        if (!cfg_.accelCorrectionEnabled) {
-            return gate;
-        }
-
-        if (!accelG.isFinite()) {
-            return gate;
-        }
-
-        gate.normG = accelG.norm();
-        gate.normErrorG = std::fabs(gate.normG - 1.0f);
-
-        if (gate.normG < MATH_EPSILON) {
-            return gate;
-        }
-
-        gate.normTrust = rampDown(gate.normErrorG,
-                                  cfg_.accelNormGoodErrorG,
-                                  cfg_.accelNormBadErrorG);
-
-        const Vec3 accelUnitSensor = accelG / gate.normG;
-        const Vec3 accelUnitWorld = q_.rotate(accelUnitSensor).normalized();
-
-        if (!accelUnitWorld.isFinite() || accelUnitWorld.normSq() < MATH_EPSILON) {
-            return gate;
-        }
-
-        gate.innovationRad = angleBetweenUnitVectors(accelUnitWorld, cfg_.worldUp);
-        gate.innovationTrust = rampDown(gate.innovationRad,
-                                        cfg_.accelInnovationGoodRad,
-                                        cfg_.accelInnovationBadRad);
-
-        gate.varianceTrust = cfg_.adaptiveAccelCorrection ? stats_.lastAccelNormVarianceTrust : 1.0f;
-        gate.gyroMotionTrust = cfg_.adaptiveAccelCorrection ? stats_.lastGyroMotionTrust : 1.0f;
-        gate.trust = gate.normTrust * gate.innovationTrust * gate.varianceTrust * gate.gyroMotionTrust;
-        gate.accepted = gate.trust > 0.0f;
-        return gate;
+        return evaluateAccel(accelG).gate;
     }
 
     // Main update function.
@@ -393,6 +356,56 @@ private:
         return 1.0f - ((x - good) / (bad - good));
     }
 
+    struct AccelEvaluation {
+        Ahrs6DofAccelGate gate;
+        Vec3 accelUnitSensor = Vec3::zero();
+        Vec3 accelUnitWorld = Vec3::zero();
+        bool vectorsValid = false;
+    };
+
+    AccelEvaluation evaluateAccel(const Vec3& accelG) const {
+        AccelEvaluation eval;
+        Ahrs6DofAccelGate& gate = eval.gate;
+
+        if (!cfg_.accelCorrectionEnabled) {
+            return eval;
+        }
+
+        if (!accelG.isFinite()) {
+            return eval;
+        }
+
+        gate.normG = accelG.norm();
+        gate.normErrorG = std::fabs(gate.normG - 1.0f);
+
+        if (gate.normG < MATH_EPSILON) {
+            return eval;
+        }
+
+        gate.normTrust = rampDown(gate.normErrorG,
+                                  cfg_.accelNormGoodErrorG,
+                                  cfg_.accelNormBadErrorG);
+
+        eval.accelUnitSensor = accelG / gate.normG;
+        eval.accelUnitWorld = q_.rotate(eval.accelUnitSensor).normalized();
+
+        if (!eval.accelUnitWorld.isFinite() || eval.accelUnitWorld.normSq() < MATH_EPSILON) {
+            return eval;
+        }
+
+        eval.vectorsValid = true;
+        gate.innovationRad = angleBetweenUnitVectors(eval.accelUnitWorld, cfg_.worldUp);
+        gate.innovationTrust = rampDown(gate.innovationRad,
+                                        cfg_.accelInnovationGoodRad,
+                                        cfg_.accelInnovationBadRad);
+
+        gate.varianceTrust = cfg_.adaptiveAccelCorrection ? stats_.lastAccelNormVarianceTrust : 1.0f;
+        gate.gyroMotionTrust = cfg_.adaptiveAccelCorrection ? stats_.lastGyroMotionTrust : 1.0f;
+        gate.trust = gate.normTrust * gate.innovationTrust * gate.varianceTrust * gate.gyroMotionTrust;
+        gate.accepted = gate.trust > 0.0f;
+        return eval;
+    }
+
     void updateAdaptiveAccelTrust(const Vec3& accelG, const Vec3& gyroRadS) {
         stats_.lastAccelNormVarianceTrust = 1.0f;
         stats_.lastGyroMotionTrust = 1.0f;
@@ -432,38 +445,37 @@ private:
     }
 
     void applyAccelCorrection(const Vec3& accelG, float dtS) {
-        Ahrs6DofAccelGate gate = evaluateAccelGate(accelG);
+        const AccelEvaluation eval = evaluateAccel(accelG);
+        const Ahrs6DofAccelGate& gate = eval.gate;
         stats_.lastAccelGate = gate;
         stats_.lastAccelCorrectionWorldRad = Vec3::zero();
         stats_.lastAccelCorrectionAngleRad = 0.0f;
 
-        if (!gate.accepted) {
+        if (!gate.accepted || !eval.vectorsValid) {
             stats_.accelRejectedCount++;
             return;
         }
 
-        const Vec3 accelUnitSensor = accelG / gate.normG;
-        const Vec3 accelUnitWorld = q_.rotate(accelUnitSensor).normalized();
-
         // errorWorld rotates accelUnitWorld toward worldUp.
         // For small angles, correction ~= cross(current, target).
-        const Vec3 errorWorld = cross(accelUnitWorld, cfg_.worldUp);
+        const Vec3 errorWorld = cross(eval.accelUnitWorld, cfg_.worldUp);
 
         Vec3 correctionWorldRad = errorWorld * (cfg_.accelKp * gate.trust * dtS);
 
-        const float corrNorm = correctionWorldRad.norm();
+        float corrNorm = correctionWorldRad.norm();
         if (corrNorm > cfg_.maxAccelCorrectionRadPerUpdate && corrNorm > MATH_EPSILON) {
             correctionWorldRad *= cfg_.maxAccelCorrectionRadPerUpdate / corrNorm;
+            corrNorm = cfg_.maxAccelCorrectionRadPerUpdate;
         }
 
         q_ = applyWorldCorrection(q_, correctionWorldRad).withPositiveW();
 
         stats_.accelUpdateCount++;
-        stats_.lastAccelUnitSensor = accelUnitSensor;
-        stats_.lastAccelUnitWorld = accelUnitWorld;
+        stats_.lastAccelUnitSensor = eval.accelUnitSensor;
+        stats_.lastAccelUnitWorld = eval.accelUnitWorld;
         stats_.lastAccelErrorWorld = errorWorld;
         stats_.lastAccelCorrectionWorldRad = correctionWorldRad;
-        stats_.lastAccelCorrectionAngleRad = correctionWorldRad.norm();
+        stats_.lastAccelCorrectionAngleRad = corrNorm;
     }
 
     Ahrs6DofConfig cfg_;

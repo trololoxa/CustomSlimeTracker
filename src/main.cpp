@@ -2790,6 +2790,9 @@ static void printLogSummary(Stream& out, void* user) {
 static void emitMachineLogFrame(const Lsm6dsv::RawSample& raw,
                                 const Lsm6dsv::Sample& calibrated,
                                 const ImuQualityResult& quality) {
+    // Hot-path fast return: avoid micros() and log-rate bookkeeping when the
+    // machine log is disabled, which is the normal tracking/WiFi path.
+    if (!g_logState.enabled()) return;
     if (!machineLogDue(micros())) return;
 
     const uint32_t seq = g_logState.sequence++;
@@ -2871,6 +2874,7 @@ static void emitMachineLogMagFrame(const MagProcessedSample& mag,
                                    const MagYawCorrectionOutput& yaw,
                                    uint32_t rejectFlagsForUse,
                                    bool trustedForUse) {
+    if (!g_logState.enabled()) return;
     if (!machineLogMagDue(micros())) return;
 
     const uint32_t seq = g_logState.sequence++;
@@ -3756,6 +3760,13 @@ static void emitStreamIfNeeded(const Lsm6dsv::RawSample& raw,
                                const Lsm6dsv::Sample& scaled,
                                const Lsm6dsv::Sample& calibrated,
                                const ImuQualityResult& quality) {
+    // Hot-path fast return: in production/WiFi mode stream is normally off.
+    // Avoid calling micros() on every IMU sample just to discover that.
+    if (g_streamState.mode == TrackerStreamMode::Off ||
+        g_streamState.mode == TrackerStreamMode::Heartbeat) {
+        return;
+    }
+
     if (!trackerSerialStreamDue(g_streamState, micros())) return;
 
     switch (g_streamState.mode) {
@@ -3814,7 +3825,9 @@ static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw) {
         emitStreamIfNeeded(raw, scaled, calibrated, quality);
         emitMachineLogFrame(raw, calibrated, quality);
         updateStaticTest(raw, calibrated, quality);
-        updateRuntimeGyroBiasEstimator(scaled, calibrated, quality, raw.t_us);
+        if (g_runtimeBias.enabled) {
+            updateRuntimeGyroBiasEstimator(scaled, calibrated, quality, raw.t_us);
+        }
         maybeRecoverFifo(quality, raw);
         const uint32_t processUs = micros() - sampleProcessStartUs;
         recordSampleProcessTime(processUs);
@@ -3838,7 +3851,9 @@ static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw) {
     emitStreamIfNeeded(raw, scaled, calibrated, quality);
     emitMachineLogFrame(raw, calibrated, quality);
     updateStaticTest(raw, calibrated, quality);
-    updateRuntimeGyroBiasEstimator(scaled, calibrated, quality, raw.t_us);
+    if (g_runtimeBias.enabled) {
+        updateRuntimeGyroBiasEstimator(scaled, calibrated, quality, raw.t_us);
+    }
     updateTrackingRecoveryState(quality);
 
     const uint32_t processUs = micros() - sampleProcessStartUs;
