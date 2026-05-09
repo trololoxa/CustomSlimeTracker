@@ -37,6 +37,12 @@ public:
     static constexpr uint8_t TAG_TIMESTAMP   = 0x04;
     static constexpr uint8_t TAG_CFG_CHANGE  = 0x05;
 
+    // One FIFO entry is one TAG byte followed by three little-endian 16-bit axis words.
+    // LSM6DSV supports multiple-byte reads from FIFO_DATA_OUT_TAG; after FIFO_DATA_OUT_Z_H
+    // the internal FIFO output pointer wraps back to FIFO_DATA_OUT_TAG for the next entry.
+    static constexpr size_t FIFO_WORD_BYTES = 7;
+    static constexpr uint16_t FIFO_BURST_WORD_CAPACITY = 64;
+
     // External sensor hub FIFO tags. QMC6309 arrives here when SLV0 is
     // configured with BATCH_EXT_SENS_0_EN=1. TAG_SENSORHUB_NACK indicates
     // that the sensor hub saw a NACK during an auxiliary I2C transaction.
@@ -162,6 +168,9 @@ public:
     struct DrainStats {
         uint32_t drainCalls = 0;
         uint32_t fifoWordsRead = 0;
+        uint32_t fifoBurstReads = 0;
+        uint32_t fifoBurstReadWords = 0;
+        uint32_t maxBurstWordsRead = 0;
         uint32_t imuSamplesProduced = 0;
         uint32_t gyroWords = 0;
         uint32_t accelWords = 0;
@@ -347,15 +356,32 @@ public:
     }
 
     bool readWord(FifoWord& w) {
-        uint8_t b[7] = {};
+        uint8_t b[FIFO_WORD_BYTES] = {};
         if (!bus_.read(REG_FIFO_DATA_OUT_TAG, b, sizeof(b))) return false;
+        parseWordBytes(b, w);
+        stats_.fifoWordsRead++;
+        return true;
+    }
 
-        w.rawTag = b[0];
-        w.tagSensor = static_cast<uint8_t>(w.rawTag >> 3);
-        w.tagCounter = static_cast<uint8_t>((w.rawTag >> 1) & 0x03u);
-        w.x = le16(&b[1]);
-        w.y = le16(&b[3]);
-        w.z = le16(&b[5]);
+    bool readWords(FifoWord* out, uint16_t count) {
+        if (out == nullptr || count == 0) return false;
+
+        uint16_t done = 0;
+        while (done < count) {
+            uint16_t chunkWords = static_cast<uint16_t>(count - done);
+            if (chunkWords > FIFO_BURST_WORD_CAPACITY) {
+                chunkWords = FIFO_BURST_WORD_CAPACITY;
+            }
+
+            if (!readWordsToBurstBuffer(chunkWords)) return false;
+
+            for (uint16_t i = 0; i < chunkWords; ++i) {
+                parseWordBytes(&fifoBurstBytes_[static_cast<size_t>(i) * FIFO_WORD_BYTES], out[done + i]);
+            }
+
+            done = static_cast<uint16_t>(done + chunkWords);
+        }
+
         return true;
     }
 
@@ -384,73 +410,22 @@ public:
         if (status.overrun || status.overrunLatched) statusFlags |= FIFO_FLAG_STATUS_OVR;
         if (status.full) statusFlags |= FIFO_FLAG_STATUS_FULL;
 
-        for (uint16_t i = 0; i < wordsToRead; ++i) {
-            FifoWord w;
-            if (!readWord(w)) return false;
-            stats_.fifoWordsRead++;
-            checkTagCounter(w);
-
-            switch (w.tagSensor) {
-                case TAG_GYRO_NC:
-                    stats_.gyroWords++;
-                    pendingGyro_ = w;
-                    pendingGyroValid_ = true;
-                    pendingFlags_ |= statusFlags;
-                    break;
-
-                case TAG_ACCEL_NC:
-                    stats_.accelWords++;
-                    pendingAccel_ = w;
-                    pendingAccelValid_ = true;
-                    pendingFlags_ |= statusFlags;
-                    break;
-
-                case TAG_TEMPERATURE:
-                    stats_.tempWords++;
-                    parseTemperatureWord(w);
-                    break;
-
-                case TAG_TIMESTAMP:
-                    stats_.timestampWords++;
-                    parseTimestampWord(w);
-                    break;
-
-                case TAG_CFG_CHANGE:
-                    stats_.cfgChangeWords++;
-                    break;
-
-                case TAG_SENSORHUB_SLAVE0:
-                    if (cfg_.enableSensorHubSlave0) {
-                        stats_.sensorHubSlave0Words++;
-                        parseSensorHubSlave0Word(w, drainTimestampUs);
-                    } else {
-                        stats_.unknownWords++;
-                        pendingFlags_ |= FIFO_FLAG_UNKNOWN_TAG;
-                    }
-                    break;
-
-                case TAG_SENSORHUB_NACK:
-                    stats_.sensorHubNackWords++;
-                    break;
-
-                case TAG_EMPTY:
-                    stats_.emptyWords++;
-                    break;
-
-                default:
-                    stats_.unknownWords++;
-                    pendingFlags_ |= FIFO_FLAG_UNKNOWN_TAG;
-                    break;
+        uint16_t wordsRead = 0;
+        while (wordsRead < wordsToRead) {
+            uint16_t chunkWords = static_cast<uint16_t>(wordsToRead - wordsRead);
+            if (chunkWords > FIFO_BURST_WORD_CAPACITY) {
+                chunkWords = FIFO_BURST_WORD_CAPACITY;
             }
 
-            if (pendingGyroValid_ && pendingAccelValid_) {
-                Lsm6dsv::RawSample s;
-                buildRawSampleFromPending(s, pendingFlags_);
-                enqueueSampleForTimestamp(s, drainTimestampUs);
-                pendingGyroValid_ = false;
-                pendingAccelValid_ = false;
-                pendingFlags_ = 0;
+            if (!readWordsToBurstBuffer(chunkWords)) return false;
+
+            for (uint16_t i = 0; i < chunkWords; ++i) {
+                FifoWord w;
+                parseWordBytes(&fifoBurstBytes_[static_cast<size_t>(i) * FIFO_WORD_BYTES], w);
+                processWord(w, statusFlags, drainTimestampUs);
             }
+
+            wordsRead = static_cast<uint16_t>(wordsRead + chunkWords);
         }
 
         if (pendingGyroValid_ != pendingAccelValid_) {
@@ -548,6 +523,96 @@ private:
 
     bool writeReg(uint8_t reg, uint8_t value) {
         return bus_.writeReg(reg, value);
+    }
+
+    bool readWordsToBurstBuffer(uint16_t count) {
+        if (count == 0 || count > FIFO_BURST_WORD_CAPACITY) return false;
+
+        const size_t len = static_cast<size_t>(count) * FIFO_WORD_BYTES;
+        if (!bus_.read(REG_FIFO_DATA_OUT_TAG, fifoBurstBytes_, len)) return false;
+
+        stats_.fifoWordsRead += count;
+        stats_.fifoBurstReads++;
+        stats_.fifoBurstReadWords += count;
+        if (count > stats_.maxBurstWordsRead) {
+            stats_.maxBurstWordsRead = count;
+        }
+        return true;
+    }
+
+    static void parseWordBytes(const uint8_t* b, FifoWord& w) {
+        w.rawTag = b[0];
+        w.tagSensor = static_cast<uint8_t>(w.rawTag >> 3);
+        w.tagCounter = static_cast<uint8_t>((w.rawTag >> 1) & 0x03u);
+        w.x = le16(&b[1]);
+        w.y = le16(&b[3]);
+        w.z = le16(&b[5]);
+    }
+
+    void processWord(const FifoWord& w, uint16_t statusFlags, uint64_t drainTimestampUs) {
+        checkTagCounter(w);
+
+        switch (w.tagSensor) {
+            case TAG_GYRO_NC:
+                stats_.gyroWords++;
+                pendingGyro_ = w;
+                pendingGyroValid_ = true;
+                pendingFlags_ |= statusFlags;
+                break;
+
+            case TAG_ACCEL_NC:
+                stats_.accelWords++;
+                pendingAccel_ = w;
+                pendingAccelValid_ = true;
+                pendingFlags_ |= statusFlags;
+                break;
+
+            case TAG_TEMPERATURE:
+                stats_.tempWords++;
+                parseTemperatureWord(w);
+                break;
+
+            case TAG_TIMESTAMP:
+                stats_.timestampWords++;
+                parseTimestampWord(w);
+                break;
+
+            case TAG_CFG_CHANGE:
+                stats_.cfgChangeWords++;
+                break;
+
+            case TAG_SENSORHUB_SLAVE0:
+                if (cfg_.enableSensorHubSlave0) {
+                    stats_.sensorHubSlave0Words++;
+                    parseSensorHubSlave0Word(w, drainTimestampUs);
+                } else {
+                    stats_.unknownWords++;
+                    pendingFlags_ |= FIFO_FLAG_UNKNOWN_TAG;
+                }
+                break;
+
+            case TAG_SENSORHUB_NACK:
+                stats_.sensorHubNackWords++;
+                break;
+
+            case TAG_EMPTY:
+                stats_.emptyWords++;
+                break;
+
+            default:
+                stats_.unknownWords++;
+                pendingFlags_ |= FIFO_FLAG_UNKNOWN_TAG;
+                break;
+        }
+
+        if (pendingGyroValid_ && pendingAccelValid_) {
+            Lsm6dsv::RawSample s;
+            buildRawSampleFromPending(s, pendingFlags_);
+            enqueueSampleForTimestamp(s, drainTimestampUs);
+            pendingGyroValid_ = false;
+            pendingAccelValid_ = false;
+            pendingFlags_ = 0;
+        }
     }
 
     static int16_t le16(const uint8_t* p) {
@@ -888,6 +953,8 @@ private:
     size_t magHead_ = 0;
     size_t magTail_ = 0;
     size_t magCount_ = 0;
+
+    uint8_t fifoBurstBytes_[static_cast<size_t>(FIFO_BURST_WORD_CAPACITY) * FIFO_WORD_BYTES] = {};
 
     DrainStats stats_;
 };

@@ -83,16 +83,21 @@ public:
 
         spi_.transfer(static_cast<uint8_t>(0x80u | (reg & 0x7Fu)));
 #if defined(ARDUINO_ARCH_ESP32)
-        static uint8_t zeros[32] = {};
-        if (len <= sizeof(zeros)) {
-            spi_.transferBytes(zeros, dst, len);
-        } else
-#endif
-        {
-            for (size_t i = 0; i < len; ++i) {
-                dst[i] = spi_.transfer(0x00);
+        static uint8_t zeros[64] = {};
+        size_t offset = 0;
+        while (offset < len) {
+            size_t chunk = len - offset;
+            if (chunk > sizeof(zeros)) {
+                chunk = sizeof(zeros);
             }
+            spi_.transferBytes(zeros, dst + offset, chunk);
+            offset += chunk;
         }
+#else
+        for (size_t i = 0; i < len; ++i) {
+            dst[i] = spi_.transfer(0x00);
+        }
+#endif
 
         digitalWrite(csPin_, HIGH);
         spi_.endTransaction();
