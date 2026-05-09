@@ -26,7 +26,7 @@ namespace tracker {
 // Design goals:
 //   - no heap allocation
 //   - no String
-//   - non-blocking poll()
+//   - non-blocking poll(), optionally limited by bytes per loop
 //   - nearly zero CPU load when Serial has no bytes
 //   - text commands for development/config/calibration
 //   - future binary/quaternion output can coexist separately
@@ -43,7 +43,7 @@ namespace tracker {
 //   }
 //
 //   void loop() {
-//       g_cli.poll();
+//       g_cli.poll(32);
 //       // normal tracker loop
 //   }
 // ============================================================
@@ -2969,14 +2969,18 @@ public:
         overflow_ = false;
     }
 
-    void poll() {
-        if (!ctx_ || !ctx_->io) return;
+    size_t poll(size_t maxBytes = 0) {
+        if (!ctx_ || !ctx_->io) return 0;
 
+        size_t consumed = 0;
         Stream& s = *ctx_->io;
         while (s.available() > 0) {
+            if (maxBytes > 0 && consumed >= maxBytes) break;
             const char c = static_cast<char>(s.read());
             feed(c);
+            consumed++;
         }
+        return consumed;
     }
 
     void feed(char c) {

@@ -2,6 +2,7 @@
 #include <SPI.h>
 #include <cmath>
 
+#include "defines.hpp"
 #include "core/math.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
@@ -142,6 +143,23 @@ struct TrackerPerfCounters {
 };
 
 static TrackerPerfCounters g_perf;
+
+// Latest orientation snapshot for future non-blocking output transports
+// (WiFi/UDP/SlimeVR). The tracking path owns writes; an output scheduler can
+// copy this snapshot and send it at its own rate without touching AHRS/FIFO.
+struct TrackerPreparedOutputSnapshot {
+    bool valid = false;
+    uint32_t sequence = 0;
+    uint32_t runtimeSample = 0;
+    uint32_t ahrsUpdateCount = 0;
+    uint64_t timestampUs = 0;
+    Quat q = Quat::identity();
+    uint32_t qualityFlags = 0;
+    float confidence = 0.0f;
+};
+
+static TrackerPreparedOutputSnapshot g_preparedOutputSnapshot;
+static volatile uint32_t g_preparedOutputSeqLock = 0;
 
 static constexpr uint32_t TRACKING_RECOVERY_STABLE_SAMPLES = 128;
 static bool g_trackingRecovering = false;
@@ -737,6 +755,58 @@ static void recordFifoProcessTime(uint32_t dtUs) {
     g_perf.fifoProcessCalls++;
     g_perf.fifoProcessSumUs += dtUs;
     if (dtUs > g_perf.fifoProcessMaxUs) g_perf.fifoProcessMaxUs = dtUs;
+}
+
+static bool preparedOutputEnabled() {
+#if TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
+    return g_config.data.output.quaternionOutputEnabled;
+#else
+    return false;
+#endif
+}
+
+static void updatePreparedOutputSnapshot(uint64_t timestampUs, const ImuQualityResult& quality) {
+#if TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
+    if (!preparedOutputEnabled()) return;
+
+    uint32_t startSeq = g_preparedOutputSeqLock + 1u;
+    if ((startSeq & 1u) == 0u) startSeq++;
+    g_preparedOutputSeqLock = startSeq;
+
+    const Ahrs6DofStats& ast = g_ahrs6dof.stats();
+    g_preparedOutputSnapshot.valid = g_ahrs6dof.initialized();
+    g_preparedOutputSnapshot.sequence++;
+    g_preparedOutputSnapshot.runtimeSample = g_runtimeSamples;
+    g_preparedOutputSnapshot.ahrsUpdateCount = ast.updateCount;
+    g_preparedOutputSnapshot.timestampUs = timestampUs;
+    g_preparedOutputSnapshot.q = g_ahrs6dof.quaternionPositiveW();
+    g_preparedOutputSnapshot.qualityFlags = quality.flags;
+    g_preparedOutputSnapshot.confidence = quality.overallConfidence;
+
+    g_preparedOutputSeqLock = startSeq + 1u;
+#else
+    (void)timestampUs;
+    (void)quality;
+#endif
+}
+
+static bool copyPreparedOutputSnapshot(TrackerPreparedOutputSnapshot& out) {
+#if TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
+    for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+        const uint32_t seqBefore = g_preparedOutputSeqLock;
+        if ((seqBefore & 1u) != 0u) continue;
+
+        const TrackerPreparedOutputSnapshot tmp = g_preparedOutputSnapshot;
+        const uint32_t seqAfter = g_preparedOutputSeqLock;
+
+        if (seqBefore == seqAfter && (seqAfter & 1u) == 0u) {
+            out = tmp;
+            return tmp.valid;
+        }
+    }
+#endif
+    out = TrackerPreparedOutputSnapshot{};
+    return false;
 }
 
 static const char* machineLogModeName(TrackerLogMode mode) {
@@ -2667,6 +2737,19 @@ static void printRuntimeStatus(Stream& out, void* user) {
                                         g_streamState.mode == TrackerStreamMode::Quat ? "quat" :
                                         g_streamState.mode == TrackerStreamMode::Heartbeat ? "heartbeat" : "debug");
     out.print("stream_rate_hz="); out.println(g_streamState.rateHz);
+    out.print("prepared_output_enabled="); out.println(preparedOutputEnabled() ? "yes" : "no");
+    TrackerPreparedOutputSnapshot ps;
+    const bool preparedValid = copyPreparedOutputSnapshot(ps);
+    out.print("prepared_output_valid="); out.println(preparedValid ? "yes" : "no");
+    out.print("prepared_output_seq="); out.println(ps.sequence);
+    out.print("prepared_output_sample="); out.println(ps.runtimeSample);
+    out.print("prepared_output_quality_flags=0x"); out.println(ps.qualityFlags, HEX);
+    out.print("prepared_output_confidence="); out.println(ps.confidence, 6);
+    if (preparedValid && ps.timestampUs > 0) {
+        const uint64_t nowUs = static_cast<uint64_t>(micros());
+        const uint64_t ageUs = nowUs >= ps.timestampUs ? (nowUs - ps.timestampUs) : 0;
+        out.print("prepared_output_age_ms="); out.println(static_cast<uint32_t>(ageUs / 1000ULL));
+    }
 
     const Vec3 e = g_ahrs6dof.eulerDeg();
     const Quat q = g_ahrs6dof.quaternionPositiveW();
@@ -2820,6 +2903,12 @@ static void printLogSummary(Stream& out, void* user) {
 static void emitMachineLogFrame(const Lsm6dsv::RawSample& raw,
                                 const Lsm6dsv::Sample& calibrated,
                                 const ImuQualityResult& quality) {
+#if !TRACKER_ENABLE_MACHINE_LOG
+    (void)raw;
+    (void)calibrated;
+    (void)quality;
+    return;
+#endif
     // Hot-path fast return: avoid micros() and log-rate bookkeeping when the
     // machine log is disabled, which is the normal tracking/WiFi path.
     if (!g_logState.enabled()) return;
@@ -2904,6 +2993,14 @@ static void emitMachineLogMagFrame(const MagProcessedSample& mag,
                                    const MagYawCorrectionOutput& yaw,
                                    uint32_t rejectFlagsForUse,
                                    bool trustedForUse) {
+#if !TRACKER_ENABLE_MACHINE_LOG
+    (void)mag;
+    (void)heading;
+    (void)yaw;
+    (void)rejectFlagsForUse;
+    (void)trustedForUse;
+    return;
+#endif
     if (!g_logState.enabled()) return;
     if (!machineLogMagDue(micros())) return;
 
@@ -2941,6 +3038,11 @@ static void emitMachineLogMagFrame(const MagProcessedSample& mag,
 
 static bool startStaticTestHook(uint32_t durationMs, void* user) {
     (void)user;
+#if !TRACKER_ENABLE_STATIC_TEST
+    (void)durationMs;
+    Serial.println("# ERR static test disabled in this build");
+    return false;
+#else
     if (g_staticTest.active) return false;
 
     g_staticTest.reset();
@@ -3011,13 +3113,18 @@ static bool startStaticTestHook(uint32_t durationMs, void* user) {
     Serial.print("# duration_s="); Serial.println(durationMs / 1000UL);
     Serial.println("# stop with: test stop");
     return true;
+#endif
 }
 
 static bool stopStaticTestHook(void* user) {
     (void)user;
+#if !TRACKER_ENABLE_STATIC_TEST
+    return false;
+#else
     if (!g_staticTest.active) return false;
     g_staticTest.stopRequested = true;
     return true;
+#endif
 }
 
 static void printStaticTestStatus(Stream& out, void* user) {
@@ -3494,6 +3601,12 @@ static void finishStaticTest() {
 static void updateStaticTest(const Lsm6dsv::RawSample& raw,
                              const Lsm6dsv::Sample& calibrated,
                              const ImuQualityResult& quality) {
+#if !TRACKER_ENABLE_STATIC_TEST
+    (void)raw;
+    (void)calibrated;
+    (void)quality;
+    return;
+#else
     if (!g_staticTest.active) return;
 
     const uint32_t updateStartUs = micros();
@@ -3584,6 +3697,7 @@ static void updateStaticTest(const Lsm6dsv::RawSample& raw,
     if (g_staticTest.stopRequested || elapsedMs >= g_staticTest.durationMs) {
         finishStaticTest();
     }
+#endif
 }
 
 static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user) {
@@ -3792,6 +3906,13 @@ static void emitStreamIfNeeded(const Lsm6dsv::RawSample& raw,
                                const Lsm6dsv::Sample& scaled,
                                const Lsm6dsv::Sample& calibrated,
                                const ImuQualityResult& quality) {
+#if !TRACKER_ENABLE_SERIAL_STREAM
+    (void)raw;
+    (void)scaled;
+    (void)calibrated;
+    (void)quality;
+    return;
+#endif
     // Hot-path fast return: in production/WiFi mode stream is normally off.
     // Avoid calling micros() on every IMU sample just to discover that.
     if (g_streamState.mode == TrackerStreamMode::Off ||
@@ -3854,6 +3975,7 @@ static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw, bo
         g_runtimeSamples++;
         g_lastSampleTimestampUs = raw.t_us;
         g_lastOutputConfidence = quality.overallConfidence;
+        updatePreparedOutputSnapshot(raw.t_us, quality);
         emitStreamIfNeeded(raw, scaled, calibrated, quality);
         emitMachineLogFrame(raw, calibrated, quality);
         updateStaticTest(raw, calibrated, quality);
@@ -3880,6 +4002,7 @@ static SampleProcessResult processOneRawSample(const Lsm6dsv::RawSample& raw, bo
     g_runtimeSamples++;
     g_lastSampleTimestampUs = raw.t_us;
     g_lastOutputConfidence = quality.overallConfidence;
+    updatePreparedOutputSnapshot(raw.t_us, quality);
 
     emitStreamIfNeeded(raw, scaled, calibrated, quality);
     emitMachineLogFrame(raw, calibrated, quality);
@@ -3963,6 +4086,9 @@ static void processFifoRuntime() {
 }
 
 static void maybePrintBootHeartbeat() {
+#if !TRACKER_ENABLE_BOOT_HEARTBEAT
+    return;
+#endif
     if (g_streamState.mode != TrackerStreamMode::Heartbeat) return;
     if (g_staticTest.active) return;
 
@@ -4038,8 +4164,12 @@ void setup() {
 }
 
 void loop() {
-    g_cli.poll();
+#if TRACKER_ENABLE_SERIAL_CLI
+    g_cli.poll(TRACKER_CLI_BYTES_PER_LOOP);
+#endif
     processFifoRuntime();
-    g_cli.poll();
+#if TRACKER_ENABLE_SERIAL_CLI
+    g_cli.poll(TRACKER_CLI_BYTES_PER_LOOP);
+#endif
     maybePrintBootHeartbeat();
 }

@@ -2,6 +2,49 @@
 
 #include <cstdint>
 
+// ============================================================
+// Runtime feature gates
+// ============================================================
+// Edit these project-local defines for production/WiFi builds.
+// Keep them as preprocessor macros: main.cpp uses them in #if blocks, so
+// constexpr values would not disable code at compile time.
+//
+// Suggested WiFi/production profile:
+//   TRACKER_ENABLE_SERIAL_STREAM = 0
+//   TRACKER_ENABLE_MACHINE_LOG = 0
+//   TRACKER_ENABLE_STATIC_TEST = 0
+//   TRACKER_ENABLE_BOOT_HEARTBEAT = 0
+//   TRACKER_CLI_BYTES_PER_LOOP = 16
+
+#ifndef TRACKER_ENABLE_SERIAL_CLI
+#define TRACKER_ENABLE_SERIAL_CLI 1
+#endif
+
+#ifndef TRACKER_CLI_BYTES_PER_LOOP
+#define TRACKER_CLI_BYTES_PER_LOOP 32
+#endif
+
+#ifndef TRACKER_ENABLE_SERIAL_STREAM
+#define TRACKER_ENABLE_SERIAL_STREAM 1
+#endif
+
+#ifndef TRACKER_ENABLE_MACHINE_LOG
+#define TRACKER_ENABLE_MACHINE_LOG 1
+#endif
+
+#ifndef TRACKER_ENABLE_STATIC_TEST
+#define TRACKER_ENABLE_STATIC_TEST 1
+#endif
+
+#ifndef TRACKER_ENABLE_BOOT_HEARTBEAT
+#define TRACKER_ENABLE_BOOT_HEARTBEAT 1
+#endif
+
+#ifndef TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
+#define TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT 1
+#endif
+
+
 namespace tracker::cfg {
 
 static constexpr int PIN_LSM_SCK  = 3;
