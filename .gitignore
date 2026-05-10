@@ -4,7 +4,12 @@
 .vscode/launch.json
 .vscode/ipch
 cache
+
 phase*
-logs
 *.zip
+
+secrets.ini
+platformio.local.ini
+
+logs
 *.log

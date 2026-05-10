@@ -436,7 +436,7 @@ private:
         out.println("reboot");
         out.println("factory_reset");
         out.println();
-        out.println("config print | load | save | defaults | erase | crc");
+        out.println("config print | load | save | defaults | erase | crc | nvs");
         out.println("config spi <hz> [save]          (live SPI clock, e.g. 1000000/4000000/8000000)");
         out.println();
         out.println("imu status | whoami | read");
@@ -489,7 +489,8 @@ private:
         out.println("test stop");
         out.println("test status");
         out.println();
-        out.println("output mode debug|binary|slimevr");
+        out.println("output mode debug");
+        out.println("# output mode binary/slimevr: NOT_IMPLEMENTED in this build");
         out.println("output rate <hz>");
         out.println("output start | stop");
         out.println("==============================================================================");
@@ -574,7 +575,7 @@ private:
             return;
         }
         if (argc < 2) {
-            tracker_serial_detail::printErr(out, "usage: config print|load|save|defaults|erase|crc|spi");
+            tracker_serial_detail::printErr(out, "usage: config print|load|save|defaults|erase|crc|nvs|spi");
             return;
         }
 
@@ -587,6 +588,31 @@ private:
             out.print("# config_valid="); out.println(ctx.config->validate() ? "yes" : "no");
             out.print("# stored_crc=0x"); out.println(ctx.config->data.crc32, HEX);
             out.print("# computed_crc=0x"); out.println(ctx.config->computeCrc(), HEX);
+            out.print("# version="); out.println(ctx.config->data.version);
+            out.print("# size="); out.println(ctx.config->data.size);
+            return;
+        }
+
+        if (is(argv[1], "nvs")) {
+            if (!ctx.configStore) {
+                tracker_serial_detail::printErr(out, "config store not available");
+                return;
+            }
+            TrackerConfigNvsInfo info;
+            ctx.configStore->inspect(info);
+            out.println("# CONFIG NVS");
+            out.print("begin_ok="); out.println(info.beginOk ? "yes" : "no");
+            out.print("exists="); out.println(info.exists ? "yes" : "no");
+            out.print("stored_len="); out.println(static_cast<uint32_t>(info.storedLen));
+            out.print("expected_len="); out.println(static_cast<uint32_t>(info.expectedLen));
+            out.print("header_readable="); out.println(info.headerReadable ? "yes" : "no");
+            out.print("stored_magic=0x"); out.println(info.storedMagic, HEX);
+            out.print("stored_version="); out.println(info.storedVersion);
+            out.print("stored_size="); out.println(info.storedSize);
+            out.print("stored_crc=0x"); out.println(info.storedCrc, HEX);
+            out.print("full_readable="); out.println(info.fullReadable ? "yes" : "no");
+            out.print("valid="); out.println(info.valid ? "yes" : "no");
+            out.print("error="); out.println(TrackerConfigStore::errorName(info.error));
             return;
         }
 
@@ -1872,7 +1898,11 @@ private:
             }
             if (ctx.config) {
                 ctx.config->data.gyroCal = TrackerGyroCalibrationConfig{};
+                ctx.config->data.gyroCalMeta = TrackerGyroCalibrationMetaPersisted{};
                 ctx.config->data.accelCal = TrackerAccelCalibrationConfig{};
+                ctx.config->data.accelCalQuality = TrackerAccelCalibrationQualityPersisted{};
+                ctx.config->data.magCal = TrackerMagCalibrationConfig{};
+                ctx.config->data.magCalQuality = TrackerMagCalibrationQualityPersisted{};
                 ctx.config->updateCrc();
             }
             if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
@@ -1891,6 +1921,7 @@ private:
                 return;
             }
             ctx.config->captureFromImuCalibration(*ctx.imuCal);
+            ctx.config->noteGyroBiasCalibrationCaptured(millis());
             if (ctx.gyroTempComp) ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
             if (ctx.configStore->save(*ctx.config)) tracker_serial_detail::printOk(out, "gyro calibration saved");
             else {
@@ -1907,6 +1938,7 @@ private:
             }
             if (ctx.config) {
                 ctx.config->data.gyroCal = TrackerGyroCalibrationConfig{};
+                ctx.config->data.gyroCalMeta = TrackerGyroCalibrationMetaPersisted{};
                 ctx.config->updateCrc();
             }
             if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
@@ -1946,6 +1978,7 @@ private:
 
         if (ctx.config) {
             ctx.config->captureFromImuCalibration(*ctx.imuCal);
+            ctx.config->noteGyroBiasCalibrationCaptured(millis());
             if (ctx.gyroTempComp) ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
         }
         if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
@@ -2004,7 +2037,10 @@ private:
             }
             printAccelCal(out, ctx.accelCalRunner->calibration());
             if (ctx.imuCal) ctx.accelCalRunner->applyToImuCalibration(*ctx.imuCal);
-            if (ctx.config && ctx.imuCal) ctx.config->captureFromImuCalibration(*ctx.imuCal);
+            if (ctx.config && ctx.imuCal) {
+                ctx.config->captureFromImuCalibration(*ctx.imuCal);
+                ctx.config->captureFromAccelCalibrationQuality(ctx.accelCalRunner->calibration(), millis());
+            }
             if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
             tracker_serial_detail::printOk(out, "accel calibration computed and applied to RAM");
             return;
@@ -2021,6 +2057,9 @@ private:
                 return;
             }
             ctx.config->captureFromImuCalibration(*ctx.imuCal);
+            if (ctx.accelCalRunner->calibration().result().valid) {
+                ctx.config->captureFromAccelCalibrationQuality(ctx.accelCalRunner->calibration(), millis());
+            }
             if (ctx.configStore->save(*ctx.config)) tracker_serial_detail::printOk(out, "accel calibration saved");
             else {
                 out.print("# ERR accel save failed: ");
@@ -2038,6 +2077,7 @@ private:
             }
             if (ctx.config) {
                 ctx.config->data.accelCal = TrackerAccelCalibrationConfig{};
+                ctx.config->data.accelCalQuality = TrackerAccelCalibrationQualityPersisted{};
                 ctx.config->updateCrc();
             }
             if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
@@ -2639,18 +2679,20 @@ private:
 
         if (is(argv[1], "mode")) {
             if (argc < 3) {
-                tracker_serial_detail::printErr(out, "usage: output mode debug|binary|slimevr");
+                tracker_serial_detail::printErr(out, "usage: output mode debug");
                 return;
             }
-            if (is(argv[2], "debug")) ctx.config->data.output.packetFormat = 0;
-            else if (is(argv[2], "binary")) ctx.config->data.output.packetFormat = 1;
-            else if (is(argv[2], "slimevr")) ctx.config->data.output.packetFormat = 2;
-            else {
-                tracker_serial_detail::printErr(out, "unknown output mode");
+            if (is(argv[2], "debug")) {
+                ctx.config->data.output.packetFormat = 0;
+                ctx.config->updateCrc();
+                tracker_serial_detail::printOk(out, "output mode set");
                 return;
             }
-            ctx.config->updateCrc();
-            tracker_serial_detail::printOk(out, "output mode set");
+            if (is(argv[2], "binary") || is(argv[2], "slimevr")) {
+                tracker_serial_detail::printErr(out, "NOT_IMPLEMENTED: output backend is not available in this build");
+                return;
+            }
+            tracker_serial_detail::printErr(out, "unknown output mode");
             return;
         }
 
@@ -2697,6 +2739,9 @@ private:
         if (!ctx.config) return;
         if (ctx.imuCal) ctx.config->captureFromImuCalibration(*ctx.imuCal);
         if (ctx.gyroTempComp) ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
+        if (ctx.accelCalRunner && ctx.accelCalRunner->calibration().result().valid) {
+            ctx.config->captureFromAccelCalibrationQuality(ctx.accelCalRunner->calibration(), millis());
+        }
         if (ctx.streamState) {
             ctx.config->data.output.outputRateHz = ctx.streamState->rateHz;
             ctx.config->data.output.quaternionOutputEnabled = (ctx.streamState->mode == TrackerStreamMode::Quat);

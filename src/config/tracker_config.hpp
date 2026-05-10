@@ -6,13 +6,16 @@
 #include <cstring>
 #include <cmath>
 
+#include "defines.h"
 #include "core/math.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/calibration.hpp"
+#include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/imu_quality.hpp"
+#include "sensor/mag_calibration.hpp"
 
 namespace tracker {
 
@@ -43,14 +46,27 @@ namespace tracker {
 namespace tracker_config_detail {
 
 static constexpr uint32_t CONFIG_MAGIC = 0x54364453UL; // 'T6DS' little-endian-ish
-static constexpr uint16_t CONFIG_VERSION = 1;
+static constexpr uint16_t CONFIG_VERSION = 2;
 static constexpr const char* NVS_NAMESPACE = "tracker";
 static constexpr const char* NVS_KEY_CONFIG = "cfg";
 
-static constexpr uint32_t DEFAULT_SPI_HZ = 4000000UL;
-static constexpr uint32_t LEGACY_SPI_HZ = 1000000UL;
-static constexpr uint32_t MIN_SPI_HZ = 100000UL;
-static constexpr uint32_t MAX_SPI_HZ = 10000000UL;
+static constexpr uint16_t SCHEMA_HARDWARE_VERSION = 1;
+static constexpr uint16_t SCHEMA_IMU_VERSION = 1;
+static constexpr uint16_t SCHEMA_FIFO_VERSION = 1;
+static constexpr uint16_t SCHEMA_AHRS_VERSION = 2;
+static constexpr uint16_t SCHEMA_GYRO_CAL_VERSION = 2;
+static constexpr uint16_t SCHEMA_ACCEL_CAL_VERSION = 2;
+static constexpr uint16_t SCHEMA_MAG_CAL_VERSION = 2;
+static constexpr uint16_t SCHEMA_MAG_YAW_VERSION = 2;
+static constexpr uint16_t SCHEMA_QUALITY_VERSION = 1;
+static constexpr uint16_t SCHEMA_OUTPUT_VERSION = 2;
+static constexpr uint16_t SCHEMA_FRAME_VERSION = 1;
+
+
+static constexpr uint32_t DEFAULT_SPI_HZ = cfg::SPI_HZ;
+static constexpr uint32_t LEGACY_SPI_HZ = cfg::LEGACY_SPI_HZ;
+static constexpr uint32_t MIN_SPI_HZ = cfg::MIN_SPI_HZ;
+static constexpr uint32_t MAX_SPI_HZ = cfg::MAX_SPI_HZ;
 
 inline uint32_t fnv1a32(const uint8_t* data, size_t len) {
     uint32_t h = 2166136261UL;
@@ -90,16 +106,32 @@ inline float clampFloat(float x, float lo, float hi) {
 
 } // namespace tracker_config_detail
 
-struct TrackerHardwareConfig {
-    int pinLsmSck = 3;
-    int pinLsmMiso = 0;
-    int pinLsmMosi = 2;
-    int pinLsmCs = 1;
-    int pinLsmInt1 = 10;
 
-    uint32_t serialBaud = 921600;
+struct TrackerConfigSchemaVersions {
+    uint16_t hardware = tracker_config_detail::SCHEMA_HARDWARE_VERSION;
+    uint16_t imu = tracker_config_detail::SCHEMA_IMU_VERSION;
+    uint16_t fifo = tracker_config_detail::SCHEMA_FIFO_VERSION;
+    uint16_t ahrs = tracker_config_detail::SCHEMA_AHRS_VERSION;
+    uint16_t gyroCal = tracker_config_detail::SCHEMA_GYRO_CAL_VERSION;
+    uint16_t accelCal = tracker_config_detail::SCHEMA_ACCEL_CAL_VERSION;
+    uint16_t magCal = tracker_config_detail::SCHEMA_MAG_CAL_VERSION;
+    uint16_t magYaw = tracker_config_detail::SCHEMA_MAG_YAW_VERSION;
+    uint16_t quality = tracker_config_detail::SCHEMA_QUALITY_VERSION;
+    uint16_t output = tracker_config_detail::SCHEMA_OUTPUT_VERSION;
+    uint16_t frame = tracker_config_detail::SCHEMA_FRAME_VERSION;
+    uint16_t reserved = 0;
+};
+
+struct TrackerHardwareConfig {
+    int pinLsmSck = cfg::PIN_LSM_SCK;
+    int pinLsmMiso = cfg::PIN_LSM_MISO;
+    int pinLsmMosi = cfg::PIN_LSM_MOSI;
+    int pinLsmCs = cfg::PIN_LSM_CS;
+    int pinLsmInt1 = cfg::PIN_LSM_INT1;
+
+    uint32_t serialBaud = cfg::SERIAL_BAUD;
     uint32_t spiHz = tracker_config_detail::DEFAULT_SPI_HZ;
-    uint8_t spiMode = SPI_MODE0;
+    uint8_t spiMode = cfg::SPI_MODE;
 };
 
 struct TrackerImuConfig {
@@ -119,9 +151,9 @@ struct TrackerFifoConfig {
     Lsm6dsv::Odr accelBdr = Lsm6dsv::Odr::Hz960;
     Lsm6dsv::Odr gyroBdr = Lsm6dsv::Odr::Hz960;
 
-    uint8_t watermarkWords = 48;
-    uint16_t maxWordsPerDrain = 384;
-    uint8_t maxDrainRoundsPerEvent = 6;
+    uint8_t watermarkWords = cfg::FIFO_WATERMARK_WORDS;
+    uint16_t maxWordsPerDrain = cfg::FIFO_MAX_WORDS_PER_DRAIN;
+    uint8_t maxDrainRoundsPerEvent = cfg::FIFO_MAX_DRAIN_ROUNDS_PER_EVENT;
 
     Lsm6dsvFifoReader::FifoMode mode = Lsm6dsvFifoReader::FifoMode::Continuous;
     Lsm6dsvFifoReader::TimestampBatch timestampBatch = Lsm6dsvFifoReader::TimestampBatch::Decimation1;
@@ -134,7 +166,7 @@ struct TrackerFifoConfig {
     bool enableTimestampCounter = true;
     bool useHardwareTimestamps = true;
     bool allowTimestampFallback = true;
-    uint8_t maxWaitingSamplesBeforeFallback = 32;
+    uint8_t maxWaitingSamplesBeforeFallback = cfg::FIFO_MAX_WAITING_SAMPLES_BEFORE_FALLBACK;
 
     // 0 => compute from ODR + INTERNAL_FREQ_FINE.
     float samplePeriodUsOverride = 0.0f;
@@ -208,10 +240,29 @@ struct TrackerGyroTempQualityConfigPersisted {
 static_assert(sizeof(TrackerGyroTempQualityConfigPersisted) == 20,
               "TrackerGyroTempQualityConfigPersisted must replace reservedU32[5]");
 
+struct TrackerGyroCalibrationMetaPersisted {
+    uint32_t biasCalibrationUptimeMs = 0;
+    uint32_t tempModelUpdatedUptimeMs = 0;
+    uint32_t tempModelSampleCount = 0;
+    uint16_t biasCalibrationVersion = tracker_config_detail::SCHEMA_GYRO_CAL_VERSION;
+    uint16_t tempModelVersion = tracker_config_detail::SCHEMA_GYRO_CAL_VERSION;
+};
+
 struct TrackerAccelCalibrationConfig {
     bool valid = false;
     Vec3 biasG = Vec3::zero();
     Mat3 scale = Mat3::identity();
+};
+
+struct TrackerAccelCalibrationQualityPersisted {
+    uint32_t calibrationUptimeMs = 0;
+    uint32_t qualityFlags = accel_cal_quality_flags::MISSING_FACE;
+    float qualityScore = 0.0f;
+    float maxFaceNormErrorG = 0.0f;
+    float maxAxisResidualG = 0.0f;
+    uint32_t faceSamples[6] = {};
+    float faceNormErrorG[6] = {};
+    float faceAxisResidualG[6] = {};
 };
 
 struct TrackerMagCalibrationConfig {
@@ -226,6 +277,44 @@ struct TrackerMagCalibrationConfig {
     float expectedFieldNorm = 1.0f;
     float minTrustNorm = 0.25f;
     float maxTrustNorm = 2.50f;
+};
+
+struct TrackerMagCalibrationQualityPersisted {
+    uint32_t calibrationUptimeMs = 0;
+    uint32_t sampleCount = 0;
+    uint32_t rejectedSamples = 0;
+    uint32_t saturatedSamples = 0;
+    uint32_t qualityFlags = 0;
+    float radiusX = 0.0f;
+    float radiusY = 0.0f;
+    float radiusZ = 0.0f;
+    float normMin = 0.0f;
+    float normMean = 0.0f;
+    float normMax = 0.0f;
+    float coverageScore = 0.0f;
+    float residualRms = 0.0f;
+    float expectedHorizontalNorm = 0.0f;
+};
+
+struct TrackerFrameConfigPersisted {
+    // Reserved for explicit sensor/device/output frame conventions. Mounting
+    // and body offsets should normally remain server-side for SlimeVR, but the
+    // physical sensor-to-board/device transform belongs in firmware.
+    bool sensorToDeviceValid = false;
+    bool applyMountingOffsetInFirmware = false;
+    uint8_t outputConvention = 0; // 0 = firmware-native quaternion convention.
+    uint8_t reservedFlags = 0;
+    Mat3 sensorToDevice = Mat3::identity();
+};
+
+struct TrackerDeviceIdentityPersisted {
+    // Stable IDs/names for future network/SlimeVR transport. These are not used
+    // by the current serial/debug output path yet.
+    uint32_t deviceId = 0;
+    uint8_t sensorId = 0;
+    uint8_t reserved0 = 0;
+    uint16_t reserved1 = 0;
+    char deviceName[32] = "c3_6dsv_tracker";
 };
 
 struct TrackerMagYawCorrectionConfigPersisted {
@@ -246,6 +335,10 @@ struct TrackerMagYawCorrectionConfigPersisted {
     float maxCorrectionStepDeg = 0.25f;
 
     uint32_t maxMagAgeMs = 250;
+    uint32_t gyroMovingCooldownMs = 1000;
+    uint32_t accelBadCooldownMs = 750;
+    uint32_t magDisturbanceCooldownMs = 3000;
+    float fallbackDtS = 1.0f / 60.0f;
 };
 
 struct TrackerQualityConfigPersisted {
@@ -274,10 +367,11 @@ struct TrackerQualityConfigPersisted {
 struct TrackerOutputConfig {
     bool serialDebugEnabled = true;
     bool quaternionOutputEnabled = false;
-    uint16_t outputRateHz = 100;
+    uint16_t outputRateHz = cfg::OUTPUT_RATE_HZ;
 
-    // Future packet format enum placeholder:
-    // 0 = debug text, 1 = binary custom, 2 = SlimeVR-compatible.
+    // Output packet format. Only 0 is implemented in this build.
+    // 1 = reserved binary custom, 2 = reserved SlimeVR-compatible UDP.
+    // Reserved formats are sanitized back to 0 until real backends exist.
     uint8_t packetFormat = 0;
 };
 
@@ -286,6 +380,8 @@ struct TrackerConfigBlob {
     uint16_t version = tracker_config_detail::CONFIG_VERSION;
     uint16_t size = sizeof(TrackerConfigBlob);
     uint32_t crc32 = 0;
+
+    TrackerConfigSchemaVersions schemas;
 
     TrackerHardwareConfig hardware;
     TrackerImuConfig imu;
@@ -299,6 +395,12 @@ struct TrackerConfigBlob {
     TrackerMagYawCorrectionConfigPersisted magYaw;
     TrackerAhrsRuntimeConfigPersisted ahrsRuntime;
     TrackerGyroTempQualityConfigPersisted gyroTempQuality;
+
+    TrackerGyroCalibrationMetaPersisted gyroCalMeta;
+    TrackerAccelCalibrationQualityPersisted accelCalQuality;
+    TrackerMagCalibrationQualityPersisted magCalQuality;
+    TrackerFrameConfigPersisted frame;
+    TrackerDeviceIdentityPersisted device;
 };
 
 class TrackerConfig {
@@ -321,6 +423,18 @@ public:
     bool validateContent() const {
         using namespace tracker_config_detail;
 
+        if (data.schemas.hardware != SCHEMA_HARDWARE_VERSION) return false;
+        if (data.schemas.imu != SCHEMA_IMU_VERSION) return false;
+        if (data.schemas.fifo != SCHEMA_FIFO_VERSION) return false;
+        if (data.schemas.ahrs != SCHEMA_AHRS_VERSION) return false;
+        if (data.schemas.gyroCal != SCHEMA_GYRO_CAL_VERSION) return false;
+        if (data.schemas.accelCal != SCHEMA_ACCEL_CAL_VERSION) return false;
+        if (data.schemas.magCal != SCHEMA_MAG_CAL_VERSION) return false;
+        if (data.schemas.magYaw != SCHEMA_MAG_YAW_VERSION) return false;
+        if (data.schemas.quality != SCHEMA_QUALITY_VERSION) return false;
+        if (data.schemas.output != SCHEMA_OUTPUT_VERSION) return false;
+        if (data.schemas.frame != SCHEMA_FRAME_VERSION) return false;
+
         if (data.hardware.spiHz == 0) return false;
         if (data.hardware.serialBaud == 0) return false;
 
@@ -339,6 +453,16 @@ public:
         if (!finiteFloat(data.gyroTempQuality.fitQuality)) return false;
         if (!finiteFloat(data.gyroTempQuality.residualBeforeDps)) return false;
         if (!finiteFloat(data.gyroTempQuality.residualAfterDps)) return false;
+        if (data.gyroCalMeta.biasCalibrationVersion != SCHEMA_GYRO_CAL_VERSION) return false;
+        if (data.gyroCalMeta.tempModelVersion != SCHEMA_GYRO_CAL_VERSION) return false;
+
+        if (!finiteFloat(data.accelCalQuality.qualityScore)) return false;
+        if (!finiteFloat(data.accelCalQuality.maxFaceNormErrorG)) return false;
+        if (!finiteFloat(data.accelCalQuality.maxAxisResidualG)) return false;
+        for (uint8_t i = 0; i < 6; ++i) {
+            if (!finiteFloat(data.accelCalQuality.faceNormErrorG[i])) return false;
+            if (!finiteFloat(data.accelCalQuality.faceAxisResidualG[i])) return false;
+        }
 
         if (data.accelCal.valid) {
             if (!finiteVec3(data.accelCal.biasG)) return false;
@@ -352,6 +476,17 @@ public:
         }
 
         if (data.magCal.axisAlignmentValid && !finiteMat3(data.magCal.magToImu)) return false;
+        if (!finiteFloat(data.magCalQuality.radiusX)) return false;
+        if (!finiteFloat(data.magCalQuality.radiusY)) return false;
+        if (!finiteFloat(data.magCalQuality.radiusZ)) return false;
+        if (!finiteFloat(data.magCalQuality.normMin)) return false;
+        if (!finiteFloat(data.magCalQuality.normMean)) return false;
+        if (!finiteFloat(data.magCalQuality.normMax)) return false;
+        if (!finiteFloat(data.magCalQuality.coverageScore)) return false;
+        if (!finiteFloat(data.magCalQuality.residualRms)) return false;
+        if (!finiteFloat(data.magCalQuality.expectedHorizontalNorm)) return false;
+
+        if (data.frame.sensorToDeviceValid && !finiteMat3(data.frame.sensorToDevice)) return false;
 
         // Keep these checks permissive so configs saved by older firmware, where
         // the magYaw region was reserved/zeroed, can still load and then be
@@ -366,6 +501,7 @@ public:
         if (!finiteFloat(data.magYaw.timeConstantS)) return false;
         if (!finiteFloat(data.magYaw.maxCorrectionRateDegS)) return false;
         if (!finiteFloat(data.magYaw.maxCorrectionStepDeg)) return false;
+        if (!finiteFloat(data.magYaw.fallbackDtS)) return false;
 
         if (data.ahrs.mountingOffsetValid && !finiteQuat(data.ahrs.mountingOffset)) return false;
 
@@ -413,17 +549,19 @@ public:
     void sanitize() {
         using namespace tracker_config_detail;
 
-        if (data.hardware.serialBaud == 0) data.hardware.serialBaud = 921600;
+        data.schemas = TrackerConfigSchemaVersions{};
+
+        if (data.hardware.serialBaud == 0) data.hardware.serialBaud = cfg::SERIAL_BAUD;
         if (data.hardware.spiHz == 0) data.hardware.spiHz = DEFAULT_SPI_HZ;
         if (data.hardware.spiHz < MIN_SPI_HZ) data.hardware.spiHz = MIN_SPI_HZ;
         if (data.hardware.spiHz > MAX_SPI_HZ) data.hardware.spiHz = MAX_SPI_HZ;
 
-        if (data.fifo.watermarkWords == 0) data.fifo.watermarkWords = 48;
-        if (data.fifo.maxWordsPerDrain == 0) data.fifo.maxWordsPerDrain = 384;
-        if (data.fifo.maxDrainRoundsPerEvent == 0) data.fifo.maxDrainRoundsPerEvent = 6;
+        if (data.fifo.watermarkWords == 0) data.fifo.watermarkWords = cfg::FIFO_WATERMARK_WORDS;
+        if (data.fifo.maxWordsPerDrain == 0) data.fifo.maxWordsPerDrain = cfg::FIFO_MAX_WORDS_PER_DRAIN;
+        if (data.fifo.maxDrainRoundsPerEvent == 0) data.fifo.maxDrainRoundsPerEvent = cfg::FIFO_MAX_DRAIN_ROUNDS_PER_EVENT;
         if (!finiteFloat(data.fifo.samplePeriodUsOverride)) data.fifo.samplePeriodUsOverride = 0.0f;
         data.fifo.maxWaitingSamplesBeforeFallback = static_cast<uint8_t>(
-            data.fifo.maxWaitingSamplesBeforeFallback == 0 ? 32 : data.fifo.maxWaitingSamplesBeforeFallback
+            data.fifo.maxWaitingSamplesBeforeFallback == 0 ? cfg::FIFO_MAX_WAITING_SAMPLES_BEFORE_FALLBACK : data.fifo.maxWaitingSamplesBeforeFallback
         );
 
         if (!finiteVec3(data.gyroCal.biasRadS)) {
@@ -445,6 +583,17 @@ public:
             data.gyroTempQuality.tempRangeMinC = 0.0f;
             data.gyroTempQuality.tempRangeMaxC = 0.0f;
         }
+        data.gyroCalMeta.biasCalibrationVersion = SCHEMA_GYRO_CAL_VERSION;
+        data.gyroCalMeta.tempModelVersion = SCHEMA_GYRO_CAL_VERSION;
+
+        if (!finiteFloat(data.accelCalQuality.qualityScore)) data.accelCalQuality.qualityScore = 0.0f;
+        if (!finiteFloat(data.accelCalQuality.maxFaceNormErrorG)) data.accelCalQuality.maxFaceNormErrorG = 0.0f;
+        if (!finiteFloat(data.accelCalQuality.maxAxisResidualG)) data.accelCalQuality.maxAxisResidualG = 0.0f;
+        data.accelCalQuality.qualityScore = clampFloat(data.accelCalQuality.qualityScore, 0.0f, 1.0f);
+        for (uint8_t i = 0; i < 6; ++i) {
+            if (!finiteFloat(data.accelCalQuality.faceNormErrorG[i])) data.accelCalQuality.faceNormErrorG[i] = 0.0f;
+            if (!finiteFloat(data.accelCalQuality.faceAxisResidualG[i])) data.accelCalQuality.faceAxisResidualG[i] = 0.0f;
+        }
 
         if (!finiteVec3(data.accelCal.biasG)) {
             data.accelCal.biasG = Vec3::zero();
@@ -461,6 +610,29 @@ public:
         if (!finiteFloat(data.magCal.expectedFieldNorm)) data.magCal.expectedFieldNorm = 1.0f;
         if (!finiteFloat(data.magCal.minTrustNorm)) data.magCal.minTrustNorm = 0.25f;
         if (!finiteFloat(data.magCal.maxTrustNorm)) data.magCal.maxTrustNorm = 2.50f;
+        if (data.magCal.minTrustNorm <= 0.0f) data.magCal.minTrustNorm = 0.25f;
+        if (data.magCal.maxTrustNorm <= data.magCal.minTrustNorm) data.magCal.maxTrustNorm = data.magCal.minTrustNorm * 2.0f;
+
+        if (!finiteFloat(data.magCalQuality.radiusX)) data.magCalQuality.radiusX = 0.0f;
+        if (!finiteFloat(data.magCalQuality.radiusY)) data.magCalQuality.radiusY = 0.0f;
+        if (!finiteFloat(data.magCalQuality.radiusZ)) data.magCalQuality.radiusZ = 0.0f;
+        if (!finiteFloat(data.magCalQuality.normMin)) data.magCalQuality.normMin = 0.0f;
+        if (!finiteFloat(data.magCalQuality.normMean)) data.magCalQuality.normMean = 0.0f;
+        if (!finiteFloat(data.magCalQuality.normMax)) data.magCalQuality.normMax = 0.0f;
+        if (!finiteFloat(data.magCalQuality.coverageScore)) data.magCalQuality.coverageScore = 0.0f;
+        if (!finiteFloat(data.magCalQuality.residualRms)) data.magCalQuality.residualRms = 0.0f;
+        if (!finiteFloat(data.magCalQuality.expectedHorizontalNorm)) data.magCalQuality.expectedHorizontalNorm = 0.0f;
+        data.magCalQuality.coverageScore = clampFloat(data.magCalQuality.coverageScore, 0.0f, 1.0f);
+
+        if (!finiteMat3(data.frame.sensorToDevice)) {
+            data.frame.sensorToDevice = Mat3::identity();
+            data.frame.sensorToDeviceValid = false;
+        }
+        data.device.deviceName[sizeof(data.device.deviceName) - 1] = '\0';
+        if (data.device.deviceName[0] == '\0') {
+            std::strncpy(data.device.deviceName, "c3_6dsv_tracker", sizeof(data.device.deviceName) - 1);
+            data.device.deviceName[sizeof(data.device.deviceName) - 1] = '\0';
+        }
 
         // If this config was written by older firmware, magYaw fields live in
         // the previously-reserved zeroed region. Treat zero/invalid values as
@@ -513,6 +685,11 @@ public:
 
         if (data.magYaw.maxMagAgeMs == 0) data.magYaw.maxMagAgeMs = 250;
         if (data.magYaw.maxMagAgeMs > 5000) data.magYaw.maxMagAgeMs = 5000;
+        if (data.magYaw.gyroMovingCooldownMs > 60000UL) data.magYaw.gyroMovingCooldownMs = 1000;
+        if (data.magYaw.accelBadCooldownMs > 60000UL) data.magYaw.accelBadCooldownMs = 750;
+        if (data.magYaw.magDisturbanceCooldownMs > 120000UL) data.magYaw.magDisturbanceCooldownMs = 3000;
+        if (!finiteFloat(data.magYaw.fallbackDtS) || data.magYaw.fallbackDtS <= 0.0f) data.magYaw.fallbackDtS = 1.0f / 60.0f;
+        data.magYaw.fallbackDtS = clampFloat(data.magYaw.fallbackDtS, 0.001f, 1.0f);
 
         if (!finiteQuat(data.ahrs.mountingOffset)) {
             data.ahrs.mountingOffset = Quat::identity();
@@ -561,8 +738,9 @@ public:
         data.quality.accelNormOutlierMinG = clampFloat(data.quality.accelNormOutlierMinG, 0.01f, 2.0f);
         data.quality.accelNormOutlierMaxG = clampFloat(data.quality.accelNormOutlierMaxG, data.quality.accelNormOutlierMinG + 0.01f, 20.0f);
 
-        if (data.output.outputRateHz == 0) data.output.outputRateHz = 100;
-        if (data.output.outputRateHz > 1000) data.output.outputRateHz = 1000;
+        if (data.output.outputRateHz == 0) data.output.outputRateHz = cfg::OUTPUT_RATE_HZ;
+        if (data.output.outputRateHz > cfg::OUTPUT_RATE_HZ_MAX) data.output.outputRateHz = cfg::OUTPUT_RATE_HZ_MAX;
+        if (data.output.packetFormat != 0) data.output.packetFormat = 0;
 
         updateCrc();
     }
@@ -677,6 +855,69 @@ public:
         updateCrc();
     }
 
+    void noteGyroBiasCalibrationCaptured(uint32_t uptimeMs) {
+        data.gyroCalMeta.biasCalibrationUptimeMs = uptimeMs;
+        data.gyroCalMeta.biasCalibrationVersion = tracker_config_detail::SCHEMA_GYRO_CAL_VERSION;
+        updateCrc();
+    }
+
+    void captureFromAccelCalibrationQuality(const Accel6PosCalibration& cal, uint32_t uptimeMs) {
+        const Accel6PosCalibration::Result& r = cal.result();
+        data.accelCalQuality.calibrationUptimeMs = uptimeMs;
+        data.accelCalQuality.qualityFlags = r.qualityFlags;
+        data.accelCalQuality.qualityScore = r.qualityScore;
+        data.accelCalQuality.maxFaceNormErrorG = r.maxFaceNormErrorG;
+        data.accelCalQuality.maxAxisResidualG = r.maxAxisResidualG;
+
+        for (uint8_t i = 0; i < 6; ++i) {
+            const auto face = static_cast<Accel6PosCalibration::Face>(i);
+            data.accelCalQuality.faceSamples[i] = cal.faceData(face).samples;
+            data.accelCalQuality.faceNormErrorG[i] = r.faceNormErrorG[i];
+            data.accelCalQuality.faceAxisResidualG[i] = r.faceAxisResidualG[i];
+        }
+        updateCrc();
+    }
+
+    void captureFromMagCalibrationResult(const MagCalibrationResult& result,
+                                         uint32_t sampleCount,
+                                         uint32_t rejectedSamples,
+                                         uint32_t saturatedSamples,
+                                         float normMin,
+                                         float normMean,
+                                         float normMax,
+                                         uint32_t uptimeMs) {
+        data.magCal.calibrationValid = result.valid;
+        if (result.valid) {
+            data.magCal.hardIron = result.hardIron;
+            data.magCal.softIron = result.softIron;
+            data.magCal.expectedFieldNorm = result.expectedNorm;
+            data.magCal.minTrustNorm = result.minTrustNorm;
+            data.magCal.maxTrustNorm = result.maxTrustNorm;
+        }
+
+        data.magCalQuality.calibrationUptimeMs = uptimeMs;
+        data.magCalQuality.sampleCount = sampleCount;
+        data.magCalQuality.rejectedSamples = rejectedSamples;
+        data.magCalQuality.saturatedSamples = saturatedSamples;
+        data.magCalQuality.qualityFlags = result.valid ? 0u : 1u;
+        data.magCalQuality.radiusX = result.radiusX;
+        data.magCalQuality.radiusY = result.radiusY;
+        data.magCalQuality.radiusZ = result.radiusZ;
+        data.magCalQuality.normMin = normMin;
+        data.magCalQuality.normMean = normMean;
+        data.magCalQuality.normMax = normMax;
+        float maxRadius = result.radiusX;
+        if (result.radiusY > maxRadius) maxRadius = result.radiusY;
+        if (result.radiusZ > maxRadius) maxRadius = result.radiusZ;
+        float minRadius = result.radiusX;
+        if (result.radiusY < minRadius) minRadius = result.radiusY;
+        if (result.radiusZ < minRadius) minRadius = result.radiusZ;
+        data.magCalQuality.coverageScore = (result.valid && maxRadius > 0.0f) ? (minRadius / maxRadius) : 0.0f;
+        data.magCalQuality.residualRms = 0.0f;
+        data.magCalQuality.expectedHorizontalNorm = 0.0f;
+        updateCrc();
+    }
+
     void applyToGyroTempComp(GyroTempCompensator& tempComp) const {
         GyroTempCompConfig cfg;
         cfg.enabled = data.gyroCal.tempCompEnabled;
@@ -712,6 +953,8 @@ public:
         data.gyroTempQuality.fitQuality = tc.fitQuality;
         data.gyroTempQuality.residualBeforeDps = tc.fitResidualBeforeDps;
         data.gyroTempQuality.residualAfterDps = tc.fitResidualAfterDps;
+        data.gyroCalMeta.tempModelUpdatedUptimeMs = millis();
+        data.gyroCalMeta.tempModelVersion = tracker_config_detail::SCHEMA_GYRO_CAL_VERSION;
         updateCrc();
     }
 };
@@ -725,6 +968,21 @@ enum class TrackerConfigError : uint8_t {
     WriteFailed,
     RemoveFailed,
     CrcOrValidationFailed,
+};
+
+struct TrackerConfigNvsInfo {
+    bool beginOk = false;
+    bool exists = false;
+    size_t storedLen = 0;
+    size_t expectedLen = sizeof(TrackerConfigBlob);
+    uint32_t storedMagic = 0;
+    uint16_t storedVersion = 0;
+    uint16_t storedSize = 0;
+    uint32_t storedCrc = 0;
+    bool headerReadable = false;
+    bool fullReadable = false;
+    bool valid = false;
+    TrackerConfigError error = TrackerConfigError::None;
 };
 
 class TrackerConfigStore {
@@ -753,6 +1011,68 @@ public:
             case TrackerConfigError::CrcOrValidationFailed: return "CrcOrValidationFailed";
         }
         return "Unknown";
+    }
+
+    bool inspect(TrackerConfigNvsInfo& info) {
+        info = TrackerConfigNvsInfo{};
+        Preferences prefs;
+        if (!prefs.begin(ns_, true)) {
+            info.error = TrackerConfigError::NvsBeginFailed;
+            lastError_ = info.error;
+            return false;
+        }
+
+        info.beginOk = true;
+        info.storedLen = prefs.getBytesLength(key_);
+        info.exists = info.storedLen > 0;
+
+        if (!info.exists) {
+            prefs.end();
+            info.error = TrackerConfigError::NotFound;
+            lastError_ = info.error;
+            return true;
+        }
+
+        struct Header {
+            uint32_t magic;
+            uint16_t version;
+            uint16_t size;
+            uint32_t crc32;
+        } header{};
+
+        if (info.storedLen >= sizeof(header)) {
+            const size_t headerLen = prefs.getBytes(key_, &header, sizeof(header));
+            if (headerLen == sizeof(header)) {
+                info.headerReadable = true;
+                info.storedMagic = header.magic;
+                info.storedVersion = header.version;
+                info.storedSize = header.size;
+                info.storedCrc = header.crc32;
+            }
+        }
+
+        if (info.storedLen != sizeof(TrackerConfigBlob)) {
+            prefs.end();
+            info.error = TrackerConfigError::SizeMismatch;
+            lastError_ = info.error;
+            return true;
+        }
+
+        TrackerConfig tmp;
+        const size_t readLen = prefs.getBytes(key_, &tmp.data, sizeof(tmp.data));
+        prefs.end();
+
+        info.fullReadable = (readLen == sizeof(tmp.data));
+        if (!info.fullReadable) {
+            info.error = TrackerConfigError::ReadFailed;
+            lastError_ = info.error;
+            return true;
+        }
+
+        info.valid = tmp.validate();
+        info.error = info.valid ? TrackerConfigError::None : TrackerConfigError::CrcOrValidationFailed;
+        lastError_ = info.error;
+        return true;
     }
 
     bool load(TrackerConfig& out) {
@@ -870,6 +1190,178 @@ private:
 };
 
 // ============================================================
+// Future network / SlimeVR persistent storage
+// ============================================================
+// Kept in a separate NVS namespace so normal config dumps can stay safe and
+// calibration resets do not have to imply Wi-Fi credential resets. This is not
+// wired to runtime yet; it reserves the schema before the next calibration pass.
+
+namespace tracker_network_detail {
+static constexpr uint32_t CONFIG_MAGIC = 0x544E4554UL; // 'TNET'
+static constexpr uint16_t CONFIG_VERSION = 1;
+static constexpr const char* NVS_NAMESPACE = "tracker_net";
+static constexpr const char* NVS_KEY_CONFIG = "netcfg";
+static constexpr uint16_t DEFAULT_SLIMEVR_PORT = 6969;
+}
+
+struct TrackerNetworkConfigBlob {
+    uint32_t magic = tracker_network_detail::CONFIG_MAGIC;
+    uint16_t version = tracker_network_detail::CONFIG_VERSION;
+    uint16_t size = sizeof(TrackerNetworkConfigBlob);
+    uint32_t crc32 = 0;
+
+    bool wifiEnabled = false;
+    bool credentialsValid = false;
+    bool manualServerEnabled = false;
+    bool discoveryEnabled = true;
+
+    char ssid[33] = "";
+    char password[65] = "";
+    char serverHost[64] = "";
+    uint16_t serverPort = tracker_network_detail::DEFAULT_SLIMEVR_PORT;
+
+    uint32_t deviceId = 0;
+    uint8_t sensorId = 0;
+    uint8_t reserved0 = 0;
+    uint16_t reserved1 = 0;
+    char deviceName[32] = "c3_6dsv_tracker";
+};
+
+class TrackerNetworkConfig {
+public:
+    TrackerNetworkConfigBlob data;
+
+    void resetDefaults() {
+        data = TrackerNetworkConfigBlob{};
+        updateCrc();
+    }
+
+    uint32_t computeCrc() const {
+        TrackerNetworkConfigBlob tmp = data;
+        tmp.crc32 = 0;
+        return tracker_config_detail::fnv1a32(
+            reinterpret_cast<const uint8_t*>(&tmp),
+            sizeof(tmp)
+        );
+    }
+
+    void updateCrc() {
+        data.magic = tracker_network_detail::CONFIG_MAGIC;
+        data.version = tracker_network_detail::CONFIG_VERSION;
+        data.size = sizeof(TrackerNetworkConfigBlob);
+        data.crc32 = 0;
+        data.crc32 = computeCrc();
+    }
+
+    void sanitize() {
+        data.ssid[sizeof(data.ssid) - 1] = '\0';
+        data.password[sizeof(data.password) - 1] = '\0';
+        data.serverHost[sizeof(data.serverHost) - 1] = '\0';
+        data.deviceName[sizeof(data.deviceName) - 1] = '\0';
+        if (data.deviceName[0] == '\0') {
+            std::strncpy(data.deviceName, "c3_6dsv_tracker", sizeof(data.deviceName) - 1);
+            data.deviceName[sizeof(data.deviceName) - 1] = '\0';
+        }
+        if (data.serverPort == 0) data.serverPort = tracker_network_detail::DEFAULT_SLIMEVR_PORT;
+        if (!data.credentialsValid) {
+            data.wifiEnabled = false;
+        }
+        updateCrc();
+    }
+
+    bool validate() const {
+        if (data.magic != tracker_network_detail::CONFIG_MAGIC) return false;
+        if (data.version != tracker_network_detail::CONFIG_VERSION) return false;
+        if (data.size != sizeof(TrackerNetworkConfigBlob)) return false;
+        if (computeCrc() != data.crc32) return false;
+        if (data.serverPort == 0) return false;
+        if (data.credentialsValid && data.ssid[0] == '\0') return false;
+        return true;
+    }
+};
+
+class TrackerNetworkConfigStore {
+public:
+    explicit TrackerNetworkConfigStore(const char* nvsNamespace = tracker_network_detail::NVS_NAMESPACE,
+                                       const char* key = tracker_network_detail::NVS_KEY_CONFIG)
+        : ns_(nvsNamespace), key_(key) {}
+
+    TrackerConfigError lastError() const { return lastError_; }
+    const char* lastErrorName() const { return TrackerConfigStore::errorName(lastError_); }
+
+    bool load(TrackerNetworkConfig& out) {
+        Preferences prefs;
+        if (!prefs.begin(ns_, true)) {
+            lastError_ = TrackerConfigError::NvsBeginFailed;
+            return false;
+        }
+        const size_t storedLen = prefs.getBytesLength(key_);
+        if (storedLen == 0) {
+            prefs.end();
+            lastError_ = TrackerConfigError::NotFound;
+            return false;
+        }
+        if (storedLen != sizeof(TrackerNetworkConfigBlob)) {
+            prefs.end();
+            lastError_ = TrackerConfigError::SizeMismatch;
+            return false;
+        }
+        TrackerNetworkConfig tmp;
+        const size_t readLen = prefs.getBytes(key_, &tmp.data, sizeof(tmp.data));
+        prefs.end();
+        if (readLen != sizeof(tmp.data)) {
+            lastError_ = TrackerConfigError::ReadFailed;
+            return false;
+        }
+        if (!tmp.validate()) {
+            lastError_ = TrackerConfigError::CrcOrValidationFailed;
+            return false;
+        }
+        out = tmp;
+        lastError_ = TrackerConfigError::None;
+        return true;
+    }
+
+    bool save(TrackerNetworkConfig config) {
+        config.sanitize();
+        if (!config.validate()) {
+            lastError_ = TrackerConfigError::CrcOrValidationFailed;
+            return false;
+        }
+        Preferences prefs;
+        if (!prefs.begin(ns_, false)) {
+            lastError_ = TrackerConfigError::NvsBeginFailed;
+            return false;
+        }
+        const size_t written = prefs.putBytes(key_, &config.data, sizeof(config.data));
+        prefs.end();
+        if (written != sizeof(config.data)) {
+            lastError_ = TrackerConfigError::WriteFailed;
+            return false;
+        }
+        lastError_ = TrackerConfigError::None;
+        return true;
+    }
+
+    bool erase() {
+        Preferences prefs;
+        if (!prefs.begin(ns_, false)) {
+            lastError_ = TrackerConfigError::NvsBeginFailed;
+            return false;
+        }
+        const bool ok = prefs.remove(key_);
+        prefs.end();
+        lastError_ = ok ? TrackerConfigError::None : TrackerConfigError::RemoveFailed;
+        return ok;
+    }
+
+private:
+    const char* ns_;
+    const char* key_;
+    TrackerConfigError lastError_ = TrackerConfigError::None;
+};
+
+// ============================================================
 // Serial-friendly summary helpers
 // ============================================================
 
@@ -881,6 +1373,18 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print(" version="); out.print(cfg.data.version);
     out.print(" size="); out.print(cfg.data.size);
     out.print(" crc=0x"); out.println(cfg.data.crc32, HEX);
+    out.print("schema hardware/imu/fifo/ahrs/gyro/accel/mag/magyaw/quality/output/frame=");
+    out.print(cfg.data.schemas.hardware); out.print('/');
+    out.print(cfg.data.schemas.imu); out.print('/');
+    out.print(cfg.data.schemas.fifo); out.print('/');
+    out.print(cfg.data.schemas.ahrs); out.print('/');
+    out.print(cfg.data.schemas.gyroCal); out.print('/');
+    out.print(cfg.data.schemas.accelCal); out.print('/');
+    out.print(cfg.data.schemas.magCal); out.print('/');
+    out.print(cfg.data.schemas.magYaw); out.print('/');
+    out.print(cfg.data.schemas.quality); out.print('/');
+    out.print(cfg.data.schemas.output); out.print('/');
+    out.println(cfg.data.schemas.frame);
 
     out.println("-- hardware --");
     out.print("pins sck/miso/mosi/cs/int1=");
@@ -938,6 +1442,9 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("tempRangeMinMaxC="); out.print(cfg.data.gyroTempQuality.tempRangeMinC, 3); out.print(','); out.println(cfg.data.gyroTempQuality.tempRangeMaxC, 3);
     out.print("tempFitQuality="); out.println(cfg.data.gyroTempQuality.fitQuality, 6);
     out.print("tempFitResidualBeforeAfterDps="); out.print(cfg.data.gyroTempQuality.residualBeforeDps, 6); out.print(','); out.println(cfg.data.gyroTempQuality.residualAfterDps, 6);
+    out.print("gyroBiasCalibrationUptimeMs="); out.println(cfg.data.gyroCalMeta.biasCalibrationUptimeMs);
+    out.print("gyroTempModelUpdatedUptimeMs="); out.println(cfg.data.gyroCalMeta.tempModelUpdatedUptimeMs);
+    out.print("gyroTempModelSampleCount="); out.println(cfg.data.gyroCalMeta.tempModelSampleCount);
 
     out.println("-- accel calibration --");
     out.print("accelCalValid="); out.println(cfg.data.accelCal.valid ? "yes" : "no");
@@ -959,6 +1466,14 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print(cfg.data.accelCal.scale.m[2][0], 8); out.print(',');
     out.print(cfg.data.accelCal.scale.m[2][1], 8); out.print(',');
     out.println(cfg.data.accelCal.scale.m[2][2], 8);
+    out.print("accelCalQualityScore="); out.println(cfg.data.accelCalQuality.qualityScore, 6);
+    out.print("accelCalQualityFlags=0x"); out.println(cfg.data.accelCalQuality.qualityFlags, HEX);
+    out.print("accelCalUptimeMs="); out.println(cfg.data.accelCalQuality.calibrationUptimeMs);
+    out.print("accelCalMaxFaceNormErrorG="); out.println(cfg.data.accelCalQuality.maxFaceNormErrorG, 8);
+    out.print("accelCalMaxAxisResidualG="); out.println(cfg.data.accelCalQuality.maxAxisResidualG, 8);
+    out.print("accelCalFaceSamples=");
+    for (uint8_t i = 0; i < 6; ++i) { if (i) out.print(','); out.print(cfg.data.accelCalQuality.faceSamples[i]); }
+    out.println();
 
     out.println("-- magnetometer --");
     out.print("magDriverEnabled="); out.println(cfg.data.magCal.driverEnabled ? "yes" : "no");
@@ -972,6 +1487,19 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("magTrustNormMinMax=");
     out.print(cfg.data.magCal.minTrustNorm, 6); out.print(',');
     out.println(cfg.data.magCal.maxTrustNorm, 6);
+    out.print("magCalUptimeMs="); out.println(cfg.data.magCalQuality.calibrationUptimeMs);
+    out.print("magCalSamplesRejectedSaturated="); out.print(cfg.data.magCalQuality.sampleCount); out.print(','); out.print(cfg.data.magCalQuality.rejectedSamples); out.print(','); out.println(cfg.data.magCalQuality.saturatedSamples);
+    out.print("magCalRadiusXYZ="); out.print(cfg.data.magCalQuality.radiusX, 3); out.print(','); out.print(cfg.data.magCalQuality.radiusY, 3); out.print(','); out.println(cfg.data.magCalQuality.radiusZ, 3);
+    out.print("magCalNormMinMeanMax="); out.print(cfg.data.magCalQuality.normMin, 3); out.print(','); out.print(cfg.data.magCalQuality.normMean, 3); out.print(','); out.println(cfg.data.magCalQuality.normMax, 3);
+    out.print("magCalCoverageScore="); out.println(cfg.data.magCalQuality.coverageScore, 6);
+
+    out.println("-- frame/device --");
+    out.print("sensorToDeviceValid="); out.println(cfg.data.frame.sensorToDeviceValid ? "yes" : "no");
+    out.print("applyMountingOffsetInFirmware="); out.println(cfg.data.frame.applyMountingOffsetInFirmware ? "yes" : "no");
+    out.print("outputConvention="); out.println(cfg.data.frame.outputConvention);
+    out.print("deviceId="); out.println(cfg.data.device.deviceId);
+    out.print("sensorId="); out.println(cfg.data.device.sensorId);
+    out.print("deviceName="); out.println(cfg.data.device.deviceName);
 
     out.println("-- mag yaw correction --");
     out.print("magYawControllerEnabled="); out.println(cfg.data.magYaw.controllerEnabled ? "yes" : "no");
@@ -996,6 +1524,8 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("magYawTimeConstantS="); out.println(cfg.data.magYaw.timeConstantS, 3);
     out.print("magYawMaxRateDegS="); out.println(cfg.data.magYaw.maxCorrectionRateDegS, 3);
     out.print("magYawMaxStepDeg="); out.println(cfg.data.magYaw.maxCorrectionStepDeg, 3);
+    out.print("magYawCooldownGyroAccelMagMs="); out.print(cfg.data.magYaw.gyroMovingCooldownMs); out.print(','); out.print(cfg.data.magYaw.accelBadCooldownMs); out.print(','); out.println(cfg.data.magYaw.magDisturbanceCooldownMs);
+    out.print("magYawFallbackDtS="); out.println(cfg.data.magYaw.fallbackDtS, 6);
 
     out.println("-- quality --");
     out.print("largeGapFactor="); out.println(cfg.data.quality.largeGapFactor, 3);
@@ -1006,6 +1536,34 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("serialDebugEnabled="); out.println(cfg.data.output.serialDebugEnabled ? "yes" : "no");
     out.print("quaternionOutputEnabled="); out.println(cfg.data.output.quaternionOutputEnabled ? "yes" : "no");
     out.print("outputRateHz="); out.println(cfg.data.output.outputRateHz);
+    out.print("packetFormat="); out.println(cfg.data.output.packetFormat);
+
+    out.println("-- future network storage --");
+    out.print("networkNvsNamespace="); out.println(tracker_network_detail::NVS_NAMESPACE);
+    out.print("networkNvsKey="); out.println(tracker_network_detail::NVS_KEY_CONFIG);
+    out.println("networkRuntimeWired=no");
+    out.println("==============================================================================");
+}
+
+inline void printTrackerNetworkConfigSummary(Stream& out, const TrackerNetworkConfig& cfg, bool revealSecrets = false) {
+    out.println("==============================================================================");
+    out.println("TRACKER NETWORK CONFIG SUMMARY");
+    out.println("==============================================================================");
+    out.print("magic=0x"); out.print(cfg.data.magic, HEX);
+    out.print(" version="); out.print(cfg.data.version);
+    out.print(" size="); out.print(cfg.data.size);
+    out.print(" crc=0x"); out.println(cfg.data.crc32, HEX);
+    out.print("wifiEnabled="); out.println(cfg.data.wifiEnabled ? "yes" : "no");
+    out.print("credentialsValid="); out.println(cfg.data.credentialsValid ? "yes" : "no");
+    out.print("ssid="); out.println(cfg.data.ssid);
+    out.print("password="); out.println(revealSecrets ? cfg.data.password : "<hidden>");
+    out.print("discoveryEnabled="); out.println(cfg.data.discoveryEnabled ? "yes" : "no");
+    out.print("manualServerEnabled="); out.println(cfg.data.manualServerEnabled ? "yes" : "no");
+    out.print("serverHost="); out.println(cfg.data.serverHost);
+    out.print("serverPort="); out.println(cfg.data.serverPort);
+    out.print("deviceId="); out.println(cfg.data.deviceId);
+    out.print("sensorId="); out.println(cfg.data.sensorId);
+    out.print("deviceName="); out.println(cfg.data.deviceName);
     out.println("==============================================================================");
 }
 

@@ -2,7 +2,7 @@
 #include <SPI.h>
 #include <cmath>
 
-#include "defines.hpp"
+#include "defines.h"
 #include "core/math.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
@@ -45,28 +45,27 @@ using namespace tracker;
 // ============================================================
 
 // Hardware constants. Keep pins compile-time for now.
-static constexpr int PIN_LSM_SCK  = 3;
-static constexpr int PIN_LSM_MISO = 0;
-static constexpr int PIN_LSM_MOSI = 2;
-static constexpr int PIN_LSM_CS   = 1;
-static constexpr int PIN_LSM_INT1 = 10;
+static constexpr int PIN_LSM_SCK  = cfg::PIN_LSM_SCK;
+static constexpr int PIN_LSM_MISO = cfg::PIN_LSM_MISO;
+static constexpr int PIN_LSM_MOSI = cfg::PIN_LSM_MOSI;
+static constexpr int PIN_LSM_CS   = cfg::PIN_LSM_CS;
+static constexpr int PIN_LSM_INT1 = cfg::PIN_LSM_INT1;
 
-static constexpr uint32_t SERIAL_BAUD_DEFAULT = 921600;
-static constexpr uint32_t SPI_HZ_DEFAULT = tracker_config_detail::DEFAULT_SPI_HZ;
-static constexpr uint8_t SPI_MODE_DEFAULT = SPI_MODE0;
+static constexpr uint32_t SERIAL_BAUD_DEFAULT = cfg::SERIAL_BAUD;
+static constexpr uint32_t SPI_HZ_DEFAULT = cfg::SPI_HZ;
+static constexpr uint8_t SPI_MODE_DEFAULT = cfg::SPI_MODE;
 
-static constexpr size_t FIFO_RAW_BUFFER_CAPACITY = 160;
-static constexpr size_t MAG_RAW_BUFFER_CAPACITY = 48;
-static constexpr float MAG_HUB_ODR_HZ = 60.0f;
-static constexpr float MAG_HUB_PERIOD_US = 1000000.0f / MAG_HUB_ODR_HZ;
-static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN_DEFAULT = 384;
-static constexpr uint8_t MAX_DRAIN_ROUNDS_PER_EVENT_DEFAULT = 6;
-static constexpr uint32_t FIFO_WAIT_TIMEOUT_MS = 1000;
+static constexpr size_t FIFO_RAW_BUFFER_CAPACITY = cfg::FIFO_RAW_BUFFER_CAPACITY;
+static constexpr size_t MAG_RAW_BUFFER_CAPACITY = cfg::MAG_RAW_BUFFER_CAPACITY;
+static constexpr float MAG_HUB_PERIOD_US = cfg::MAG_HUB_PERIOD_US;
+static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN_DEFAULT = cfg::FIFO_MAX_WORDS_PER_DRAIN;
+static constexpr uint8_t MAX_DRAIN_ROUNDS_PER_EVENT_DEFAULT = cfg::FIFO_MAX_DRAIN_ROUNDS_PER_EVENT;
+static constexpr uint32_t FIFO_WAIT_TIMEOUT_MS = cfg::FIFO_WAIT_TIMEOUT_MS;
 // Non-blocking runtime loop calls consumeFifoInterruptEvent(0) very often.
 // Keep the fallback FIFO_STATUS SPI poll as a rare safety net only;
 // normal runtime data flow should be driven by INT1.
-static constexpr uint32_t FIFO_NONBLOCKING_STATUS_POLL_INTERVAL_US = 2000;
-static constexpr uint32_t HEARTBEAT_PERIOD_MS = 30000;
+static constexpr uint32_t FIFO_NONBLOCKING_STATUS_POLL_INTERVAL_US = cfg::FIFO_NONBLOCKING_STATUS_POLL_INTERVAL_US;
+static constexpr uint32_t HEARTBEAT_PERIOD_MS = cfg::HEARTBEAT_PERIOD_MS;
 
 // ============================================================
 // Global runtime objects
@@ -1642,11 +1641,11 @@ static MagYawCorrectionConfig makeMagYawCorrectionConfig() {
     c.timeConstantS = y.timeConstantS;
     c.maxCorrectionRateDegS = y.maxCorrectionRateDegS;
     c.maxCorrectionStepDeg = y.maxCorrectionStepDeg;
-    c.fallbackDtS = 1.0f / 60.0f;
+    c.fallbackDtS = y.fallbackDtS;
 
-    c.gyroMovingCooldownMs = 1000;
-    c.accelBadCooldownMs = 750;
-    c.magDisturbanceCooldownMs = 3000;
+    c.gyroMovingCooldownMs = y.gyroMovingCooldownMs;
+    c.accelBadCooldownMs = y.accelBadCooldownMs;
+    c.magDisturbanceCooldownMs = y.magDisturbanceCooldownMs;
 
     return c;
 }
@@ -2625,13 +2624,16 @@ static bool applyMagCalibrationHook(bool persist, void* user) {
         return false;
     }
 
-    g_config.data.magCal.calibrationValid = true;
-    g_config.data.magCal.hardIron = result.hardIron;
-    g_config.data.magCal.softIron = result.softIron;
-    g_config.data.magCal.expectedFieldNorm = result.expectedNorm;
-    g_config.data.magCal.minTrustNorm = result.minTrustNorm;
-    g_config.data.magCal.maxTrustNorm = result.maxTrustNorm;
-    g_config.updateCrc();
+    g_config.captureFromMagCalibrationResult(
+        result,
+        g_magCalCollector.samples(),
+        g_magCalCollector.rejected(),
+        g_magCalCollector.saturated(),
+        g_magCalCollector.normMin(),
+        g_magCalCollector.normMean(),
+        g_magCalCollector.normMax(),
+        millis()
+    );
 
     if (persist) {
         if (!g_configStore.save(g_config)) {
@@ -4111,7 +4113,6 @@ static void maybePrintBootHeartbeat() {
 void setup() {
     Serial.begin(SERIAL_BAUD_DEFAULT);
     g_perf.reset(millis());
-    sleep(5);
     delay(300);
 
     Serial.println();
