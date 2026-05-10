@@ -1033,25 +1033,7 @@ public:
             return true;
         }
 
-        struct Header {
-            uint32_t magic;
-            uint16_t version;
-            uint16_t size;
-            uint32_t crc32;
-        } header{};
-
-        if (info.storedLen >= sizeof(header)) {
-            const size_t headerLen = prefs.getBytes(key_, &header, sizeof(header));
-            if (headerLen == sizeof(header)) {
-                info.headerReadable = true;
-                info.storedMagic = header.magic;
-                info.storedVersion = header.version;
-                info.storedSize = header.size;
-                info.storedCrc = header.crc32;
-            }
-        }
-
-        if (info.storedLen != sizeof(TrackerConfigBlob)) {
+        if (info.storedLen > sizeof(TrackerConfigBlob)) {
             prefs.end();
             info.error = TrackerConfigError::SizeMismatch;
             lastError_ = info.error;
@@ -1062,13 +1044,30 @@ public:
         const size_t readLen = prefs.getBytes(key_, &tmp.data, sizeof(tmp.data));
         prefs.end();
 
-        info.fullReadable = (readLen == sizeof(tmp.data));
-        if (!info.fullReadable) {
+        if (readLen != info.storedLen) {
             info.error = TrackerConfigError::ReadFailed;
             lastError_ = info.error;
             return true;
         }
 
+        if (readLen >= sizeof(tmp.data.magic) +
+                       sizeof(tmp.data.version) +
+                       sizeof(tmp.data.size) +
+                       sizeof(tmp.data.crc32)) {
+            info.headerReadable = true;
+            info.storedMagic = tmp.data.magic;
+            info.storedVersion = tmp.data.version;
+            info.storedSize = tmp.data.size;
+            info.storedCrc = tmp.data.crc32;
+        }
+
+        if (info.storedLen != sizeof(TrackerConfigBlob)) {
+            info.error = TrackerConfigError::SizeMismatch;
+            lastError_ = info.error;
+            return true;
+        }
+
+        info.fullReadable = true;
         info.valid = tmp.validate();
         info.error = info.valid ? TrackerConfigError::None : TrackerConfigError::CrcOrValidationFailed;
         lastError_ = info.error;

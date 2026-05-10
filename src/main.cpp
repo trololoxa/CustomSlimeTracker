@@ -4112,6 +4112,7 @@ static void maybePrintBootHeartbeat() {
 
 void setup() {
     Serial.begin(SERIAL_BAUD_DEFAULT);
+    sleep(2);
     g_perf.reset(millis());
     delay(300);
 
