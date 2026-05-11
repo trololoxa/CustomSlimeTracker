@@ -7,7 +7,7 @@
 #include "connection/lsm6dsv_driver.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/imu_quality.hpp"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
 #include "runtime/tracker_runtime_types.hpp"
 #include "serial/tracker_serial_stream.hpp"
 

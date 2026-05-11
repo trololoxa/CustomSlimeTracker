@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <cstdint>
 
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "core/math.hpp"
 #include "runtime/fifo_runtime_processor.hpp"

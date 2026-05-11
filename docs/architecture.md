@@ -503,7 +503,7 @@ runtime -> full tracker_serial_commands.hpp
 config schema -> runtime controllers
 ```
 
-`serial/tracker_serial_context.hpp` is allowed as a small shared context/types file. Do not include `serial/tracker_serial_commands.hpp` from runtime modules.
+`serial/tracker_serial_context.hpp` is allowed as a small shared context/types file. Do not include `serial/tracker_serial_commands.hpp` from runtime modules. Keep `tracker_serial_context.hpp` lightweight: use forward declarations for concrete config/driver/runtime classes, and include concrete headers only in the command domain files that dereference those objects.
 
 ## Performance and hot-path rules
 
@@ -623,7 +623,7 @@ Architecture is now much cleaner, but these areas remain future work:
    Add tests for config validation, timestamp reconstruction, runtime bias acceptance, AHRS invariants, mag yaw gates.
 
 2. **Dependency cleanup.**
-   Remove unnecessary includes and replace heavy includes with forward declarations where practical.
+   Continue replacing umbrella includes with domain-specific includes where practical. The first pass made the shared serial context lightweight; future passes should focus on app/runtime dependency builders without obscuring ownership.
 
 3. **Mag/FIFO performance.**
    Mag-enabled runs increase FIFO processing time. Optimize only after preserving current diagnostics and behavior.

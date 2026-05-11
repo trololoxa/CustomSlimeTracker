@@ -7,18 +7,21 @@
 #include <cmath>
 
 #include "core/math.hpp"
-#include "connection/lsm6dsv_driver.hpp"
-#include "connection/lsm6dsv_fifo.hpp"
-#include "connection/lsm6dsv_sensorhub.hpp"
-#include "sensor/qmc6309.hpp"
-#include "sensor/calibration.hpp"
-#include "sensor/ahrs_6dof.hpp"
-#include "sensor/gyro_temperature_compensation.hpp"
-#include "sensor/imu_quality.hpp"
-#include "sensor/fifo_calibrations.hpp"
-#include "config/tracker_config.hpp"
 
 namespace tracker {
+
+class TrackerConfig;
+class TrackerConfigStore;
+class Lsm6dsv;
+class Lsm6dsvFifoReader;
+class Lsm6dsvSensorHub;
+class Qmc6309;
+struct ImuCalibration;
+class GyroTempCompensator;
+class ImuQualityMonitor;
+class Ahrs6Dof;
+struct FifoCalibrationIo;
+class FifoAccel6PosCalibrationRunner;
 
 // ============================================================
 // Lightweight serial command protocol

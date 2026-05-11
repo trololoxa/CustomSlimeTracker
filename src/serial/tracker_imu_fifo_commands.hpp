@@ -6,7 +6,8 @@
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/imu_quality.hpp"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
+#include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
 #include "serial/tracker_mag_commands.hpp"
 

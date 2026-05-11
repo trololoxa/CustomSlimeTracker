@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <cstdint>
 
+#include "connection/lsm6dsv_driver.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {

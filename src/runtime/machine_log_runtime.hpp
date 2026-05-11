@@ -16,7 +16,7 @@
 #include "sensor/mag_yaw_correction.hpp"
 #include "runtime/runtime_bias_types.hpp"
 #include "runtime/tracker_runtime_types.hpp"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {

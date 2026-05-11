@@ -25,7 +25,8 @@
 #include "runtime/output_runtime.hpp"
 #include "runtime/mag_runtime_controller.hpp"
 #include "app/tracker_app.hpp"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
+#include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_commands.hpp"
 
 using namespace tracker;

@@ -5,7 +5,7 @@
 #include <cstdint>
 
 #include "defines.h"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "core/math.hpp"

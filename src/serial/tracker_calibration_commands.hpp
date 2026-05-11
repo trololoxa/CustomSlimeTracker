@@ -7,7 +7,8 @@
 #include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/fifo_calibrations.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
+#include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
 #include "serial/tracker_config_commands.hpp"
 

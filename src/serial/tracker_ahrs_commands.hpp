@@ -5,7 +5,8 @@
 
 #include "core/math.hpp"
 #include "sensor/ahrs_6dof.hpp"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
+#include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {

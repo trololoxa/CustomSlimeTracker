@@ -4,6 +4,12 @@
 #include <cstdint>
 #include <cmath>
 
+#include "core/math.hpp"
+#include "connection/lsm6dsv_fifo.hpp"
+#include "connection/lsm6dsv_sensorhub.hpp"
+#include "sensor/qmc6309.hpp"
+#include "config/tracker_config_runtime.hpp"
+#include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {

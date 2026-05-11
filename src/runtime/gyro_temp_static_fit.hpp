@@ -8,7 +8,8 @@
 #include "runtime/runtime_bias_types.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
+#include "config/tracker_config_store.hpp"
 
 namespace tracker {
 

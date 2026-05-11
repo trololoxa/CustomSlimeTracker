@@ -4,7 +4,8 @@
 #include <SPI.h>
 
 #include "defines.h"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
+#include "config/tracker_config_store.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/ahrs_6dof.hpp"

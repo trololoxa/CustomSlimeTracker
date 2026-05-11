@@ -11,7 +11,7 @@
 #include "sensor/mag_yaw_correction.hpp"
 #include "runtime/mag_runtime_state.hpp"
 #include "runtime/output_runtime.hpp"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
 
 namespace tracker {
 

@@ -4,7 +4,8 @@
 #include <cmath>
 #include <cstdint>
 
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
+#include "config/tracker_config_store.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "connection/lsm6dsv_sensorhub.hpp"
 #include "core/math.hpp"

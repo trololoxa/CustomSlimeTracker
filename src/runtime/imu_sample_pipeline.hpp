@@ -5,7 +5,7 @@
 
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
-#include "config/tracker_config.hpp"
+#include "config/tracker_config_runtime.hpp"
 #include "runtime/fifo_runtime_processor.hpp"
 #include "runtime/output_runtime.hpp"
 #include "runtime/runtime_bias_types.hpp"

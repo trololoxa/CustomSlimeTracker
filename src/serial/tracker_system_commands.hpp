@@ -2,6 +2,10 @@
 
 #include <Arduino.h>
 
+#include "config/tracker_config_runtime.hpp"
+#include "connection/lsm6dsv_driver.hpp"
+#include "connection/lsm6dsv_fifo.hpp"
+#include "sensor/calibration.hpp"
 #include "serial/tracker_serial_context.hpp"
 #include "serial/tracker_imu_fifo_commands.hpp"
 
