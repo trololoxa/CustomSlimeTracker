@@ -18,7 +18,7 @@
 #include "sensor/mag_heading.hpp"
 #include "sensor/mag_runtime.hpp"
 #include "sensor/mag_yaw_correction.hpp"
-#include "serial/tracker_serial_commands.hpp"
+#include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
 

@@ -9,7 +9,7 @@
 #include "sensor/imu_quality.hpp"
 #include "config/tracker_config.hpp"
 #include "runtime/tracker_runtime_types.hpp"
-#include "serial/tracker_serial_commands.hpp"
+#include "serial/tracker_serial_stream.hpp"
 
 namespace tracker {
 

@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-#include "serial/tracker_serial_commands.hpp"
+#include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
 

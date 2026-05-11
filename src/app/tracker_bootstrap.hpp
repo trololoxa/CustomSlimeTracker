@@ -12,7 +12,7 @@
 #include "sensor/fifo_calibrations.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/imu_quality.hpp"
-#include "serial/tracker_serial_commands.hpp"
+#include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
 

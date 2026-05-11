@@ -17,7 +17,7 @@
 #include "runtime/runtime_bias_types.hpp"
 #include "runtime/tracker_runtime_types.hpp"
 #include "config/tracker_config.hpp"
-#include "serial/tracker_serial_commands.hpp"
+#include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
 
