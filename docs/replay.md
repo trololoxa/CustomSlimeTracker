@@ -17,7 +17,7 @@ log off
 The important lines are CSV-like frames announced by `LOGFMT`:
 
 ```text
-Q,FIFO,CAL,BIAS,BIASUPD,MAG,YAW,STATE,LOGSUM,LOGSTAT,TEMPBIN
+Q,FIFO,CAL,BIAS,BIASUPD,MAG,MAGR,YAW,STATE,LOGSUM,LOGSTAT,TEMPBIN
 ```
 
 Human CLI/status text is intentionally ignored. Replay should depend on stable machine-readable frames only.
@@ -38,6 +38,7 @@ It parses the log and computes deterministic metrics such as:
 - accel trust/norm stats;
 - gyro norm stats;
 - mag trusted/rejected rows and reject flags;
+- full-mode `MAGR` raw/calibrated/body magnetometer vectors for magnetometer replay fixtures;
 - yaw correction gate/apply stats;
 - tracking state events;
 - runtime bias update stats.
@@ -51,6 +52,51 @@ python tools/replay/replay_machine_log.py tracker.log \
   --max-fifo-fault-rows 0 \
   --max-recovering-rows 0
 ```
+
+
+## Magnetometer sweep fixture
+
+For magnetometer calibration and axis-mapping work, capture a dedicated full log
+with raw magnetometer vectors. `log full` now emits `MAGR` frames:
+
+```text
+MAGR,t_us,seq,mag_seq,raw_x,raw_y,raw_z,cal_x,cal_y,cal_z,body_x,body_y,body_z,raw_norm,cal_norm,body_norm,raw_flags,reject_flags,trusted
+```
+
+Recommended capture sequence:
+
+```text
+stream off
+output stop
+mag enable save
+mag heading auto off
+mag yaw disable save
+log reset
+log full
+log rate 20
+log header
+mag cal reset
+mag cal start
+# slowly rotate the tracker through many orientations for 60-120 seconds
+mag cal stop
+mag cal status
+log summary
+log off
+```
+
+Score it with MAGR-specific gates, adjusting the axis-span threshold after the
+first real sweep establishes typical raw units:
+
+```bash
+python tools/replay/replay_machine_log.py logs/mag_sweep.log \
+  --require-magr \
+  --min-magr-rows 500 \
+  --pretty
+```
+
+`MAGR` is intended for host-side magnetometer fitting and regression checks.
+Human `mag status`/`mag cal status` output remains useful for inspection, but
+should not become replay input.
 
 ## Future replay levels
 
@@ -67,8 +113,8 @@ Without replay, tracking changes are judged by feel. With replay, changes can be
 
 The canonical replay fixture should be captured from machine-readable logging,
 not from human `status` output. Use `log full` so the replay parser receives
-`Q`, `FIFO`, `CAL`, `BIAS`, `MAG`, `YAW`, `STATE`, `LOGSUM`, and `LOGSTAT`
-frames when those systems are active.
+`Q`, `FIFO`, `CAL`, `BIAS`, `MAG`, `MAGR`, `YAW`, `STATE`, `LOGSUM`, and `LOGSTAT`
+frames when those systems are active. `MAGR` is emitted only in `log full` mode.
 
 Recommended baseline sequence:
 

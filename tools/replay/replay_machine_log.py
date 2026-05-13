@@ -61,6 +61,18 @@ def evaluate(summary: dict[str, Any], args: argparse.Namespace) -> list[str]:
         if recovering > args.max_recovering_rows:
             failures.append(f"RECOVERING rows/events > {args.max_recovering_rows}: {recovering}")
 
+    magr_rows = int(get_path(summary, "magr.rows", 0))
+    if args.require_magr and magr_rows <= 0:
+        failures.append("MAGR rows required but not present")
+
+    if args.min_magr_rows is not None and magr_rows < args.min_magr_rows:
+        failures.append(f"magr.rows < {args.min_magr_rows}: {magr_rows}")
+
+    if args.min_magr_raw_axis_span is not None:
+        min_axis_span = float(get_path(summary, "magr.raw_axis_span.min_axis", 0.0))
+        if min_axis_span < args.min_magr_raw_axis_span:
+            failures.append(f"magr.raw_axis_span.min_axis < {args.min_magr_raw_axis_span}: {min_axis_span}")
+
     return failures
 
 
@@ -75,6 +87,9 @@ def main() -> int:
     parser.add_argument("--max-fifo-fallback-rows", type=int)
     parser.add_argument("--max-fifo-fault-rows", type=int)
     parser.add_argument("--max-recovering-rows", type=int)
+    parser.add_argument("--require-magr", action="store_true", help="fail unless full raw/calibrated magnetometer MAGR rows are present")
+    parser.add_argument("--min-magr-rows", type=int, help="minimum number of MAGR rows required")
+    parser.add_argument("--min-magr-raw-axis-span", type=float, help="minimum raw X/Y/Z axis span for mag sweep fixtures")
     args = parser.parse_args()
 
     rows = parse_rows(args.log)

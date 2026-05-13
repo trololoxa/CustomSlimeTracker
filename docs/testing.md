@@ -344,7 +344,7 @@ Then run:
 python tools/replay/replay_machine_log.py tracker.log --pretty
 ```
 
-Replay gates should use machine-readable frames only. Human `status`/`health` output is useful for inspection, but should not become a regression input format. `tools/check_all.py` runs a small replay smoke test against `tests/fixtures/e0_static_smoke.log` so the replay parser itself stays usable.
+Replay gates should use machine-readable frames only. Human `status`/`health` output is useful for inspection, but should not become a regression input format. `tools/check_all.py` runs a small replay smoke test against `tests/fixtures/e0_static_smoke.log` so the replay parser itself stays usable. Full magnetometer replay fixtures should include `MAGR` rows, which are emitted only by `log full`.
 
 ## Replay baseline capture smoke sequence
 
@@ -366,3 +366,37 @@ During `test static 600`, keep the tracker still for the first and last two
 minutes. In the middle, gently rotate it through several orientations if you
 want the same file to exercise mag/yaw and accel gating. Do not disconnect or
 change serial baud during capture.
+
+## Magnetometer replay capture smoke sequence
+
+Use this when creating a fixture for magnetometer calibration, axis mapping, or
+magnetic disturbance work:
+
+```text
+stream off
+output stop
+mag enable save
+mag heading auto off
+mag yaw disable save
+log reset
+log full
+log rate 20
+log header
+mag cal reset
+mag cal start
+# rotate slowly through all orientations for 60-120 seconds
+mag cal stop
+mag cal status
+log summary
+log off
+```
+
+Validate the captured file on the host:
+
+```bash
+python tools/replay/replay_machine_log.py logs/mag_sweep_001.log --require-magr --min-magr-rows 500 --pretty
+```
+
+Do not mix `stream raw/scaled/quat/debug` with replay capture; the replay parser
+ignores human output, but cleaner serial captures are easier to inspect and
+archive.

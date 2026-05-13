@@ -35,3 +35,10 @@ This fixture is meant to catch parser/tooling regressions and major firmware log
 format regressions. It is not a golden promise that yaw correction is active.
 A future fixture with mag reference + yaw apply enabled should be added
 separately.
+
+
+## Future magnetometer fixtures
+
+Magnetometer calibration/axis fixtures should be captured with `log full` after
+firmware support for `MAGR` rows. Use `replay_machine_log.py --require-magr`
+for those logs so raw/calibrated/body magnetometer vector coverage is checked.

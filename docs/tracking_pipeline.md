@@ -47,4 +47,4 @@ heartbeat/output maintenance
 
 `TrackingStateController` is the single place that should summarize user-visible tracking state. CLI status and machine logs should not invent separate state models.
 
-Machine-readable logs are the source for replay/metrics. Human CLI output is for inspection and should not become a replay input format.
+Machine-readable logs are the source for replay/metrics. Human CLI output is for inspection and should not become a replay input format. `MAG`/`YAW` frames describe magnetometer trust and yaw correction behavior; full-mode `MAGR` frames carry raw/calibrated/body magnetometer vectors for host-side magnetometer fitting and axis-mapping regression.

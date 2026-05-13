@@ -76,6 +76,7 @@ void machineLogEmitHeader(Stream& out,
     out.println("LOGFMT,BIAS,t_us,seq,temp_c,bx_dps,by_dps,bz_dps,source,quality,flags,rt_enabled,rt_updates");
     out.println("LOGFMT,BIASUPD,t_us,seq,temp_c,rx_dps,ry_dps,rz_dps,sx_dps,sy_dps,sz_dps,dx_dps,dy_dps,dz_dps,trim_x_dps,trim_y_dps,trim_z_dps,flags");
     out.println("LOGFMT,MAG,t_us,seq,mag_seq,age_ms,raw_norm,body_norm,horiz_norm,heading_valid,heading_yaw_deg,heading_innov_deg,trusted,reject_flags");
+    out.println("LOGFMT,MAGR,t_us,seq,mag_seq,raw_x,raw_y,raw_z,cal_x,cal_y,cal_z,body_x,body_y,body_z,raw_norm,cal_norm,body_norm,raw_flags,reject_flags,trusted");
     out.println("LOGFMT,YAW,t_us,seq,valid,gate_open,apply_allowed,applied,error_deg,step_deg,trust,reject_flags,cooldown_ms");
     out.println("LOGFMT,STATE,t_us,seq,state,reason,flags,conf");
     out.println("LOGFMT,LOGSUM,uptime_ms,mode,rate_hz,q,cal,fifo,mag,yaw,state,bias,samples,quality_samples,fifo_overruns,fifo_full,large_gaps,recoveries,mag_trusted,mag_rejected,yaw_applied");
@@ -331,6 +332,27 @@ void machineLogEmitMagFrame(Stream& out,
     out.print(','); out.print(trustedForUse ? 1 : 0);
     out.print(",0x"); out.println(rejectFlagsForUse, HEX);
     counters.mag++;
+
+    if (state.mode == TrackerLogMode::Full) {
+        out.print("MAGR,"); machineLogPrintU64Dec(out, mag.t_us);
+        out.print(','); out.print(seq);
+        out.print(','); out.print(mag.seq);
+        out.print(','); out.print(mag.raw.x, 5);
+        out.print(','); out.print(mag.raw.y, 5);
+        out.print(','); out.print(mag.raw.z, 5);
+        out.print(','); out.print(mag.calibratedMagFrame.x, 5);
+        out.print(','); out.print(mag.calibratedMagFrame.y, 5);
+        out.print(','); out.print(mag.calibratedMagFrame.z, 5);
+        out.print(','); out.print(mag.body.x, 5);
+        out.print(','); out.print(mag.body.y, 5);
+        out.print(','); out.print(mag.body.z, 5);
+        out.print(','); out.print(mag.rawNorm, 5);
+        out.print(','); out.print(mag.calibratedNorm, 5);
+        out.print(','); out.print(mag.bodyNorm, 5);
+        out.print(",0x"); out.print(mag.rawFlags, HEX);
+        out.print(",0x"); out.print(rejectFlagsForUse, HEX);
+        out.print(','); out.println(trustedForUse ? 1 : 0);
+    }
 
     out.print("YAW,"); machineLogPrintU64Dec(out, yaw.magTimestampUs != 0 ? yaw.magTimestampUs : mag.t_us);
     out.print(','); out.print(seq);

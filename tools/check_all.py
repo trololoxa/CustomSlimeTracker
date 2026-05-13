@@ -79,6 +79,16 @@ def run_tool_smokes() -> None:
         ])
         run([
             sys.executable,
+            "tools/replay/replay_machine_log.py",
+            str(fixture),
+            "--output",
+            str(out_dir / "e0_static_smoke_magr.json"),
+            "--require-magr",
+            "--min-magr-rows",
+            "1",
+        ])
+        run([
+            sys.executable,
             "tools/replay/compare_replay_metrics.py",
             str(before),
             str(after),

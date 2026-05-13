@@ -99,7 +99,7 @@ Legend:
 |---|---|---:|---|
 | `stream off|heartbeat|raw|scaled|quat|debug` | Set serial stream mode | Runtime | Also updates config runtime fields where supported. |
 | `stream rate <hz>` | Set stream rate | Runtime | May be saved through config save. |
-| `log off|basic|full|start|stop` | Control machine-readable log | Runtime | Used by host replay/metrics tooling. |
+| `log off|basic|full|start|stop` | Control machine-readable log | Runtime | Used by host replay/metrics tooling. `log full` also emits `MAGR` raw/calibrated/body magnetometer vectors. |
 | `log rate <hz>` | Set machine-log rate | Runtime | Runtime only. |
 | `log header` | Emit LOGVER/LOGFMT header | No | Use before captures intended for replay. |
 | `log summary` | Emit compact runtime summary | No | Human/agent diagnostic helper. |

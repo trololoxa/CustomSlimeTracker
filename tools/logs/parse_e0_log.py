@@ -2,7 +2,7 @@
 """
 Parse E0 machine-readable tracker logs.
 
-Input: Serial log containing LOGVER/LOGFMT/Q/FIFO/CAL/BIAS/BIASUPD/MAG/YAW/STATE/LOGSUM/TEMPBIN lines.
+Input: Serial log containing LOGVER/LOGFMT/Q/FIFO/CAL/BIAS/BIASUPD/MAG/MAGR/YAW/STATE/LOGSUM/TEMPBIN lines.
 Output: compact JSON summary that is small enough to paste into ChatGPT.
 
 Usage:
@@ -20,7 +20,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-PREFIXES = {"LOGVER", "LOGFMT", "Q", "FIFO", "CAL", "BIAS", "BIASUPD", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"}
+PREFIXES = {"LOGVER", "LOGFMT", "Q", "FIFO", "CAL", "BIAS", "BIASUPD", "MAG", "MAGR", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"}
 
 
 def to_float(x: str, default: float = 0.0) -> float:
@@ -65,6 +65,11 @@ def stats(values: Iterable[float]) -> Dict[str, float]:
     }
 
 
+def span(values: Iterable[float]) -> float:
+    xs = [v for v in values if math.isfinite(v)]
+    return max(xs) - min(xs) if xs else 0.0
+
+
 def ratio(numerator: float, denominator: float) -> float:
     return float(numerator) / float(denominator) if denominator else 0.0
 
@@ -106,6 +111,7 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     biasupd_rows = rows.get("BIASUPD", [])
     tempbin_rows = rows.get("TEMPBIN", [])
     mag_rows = rows.get("MAG", [])
+    magr_rows = rows.get("MAGR", [])
     yaw_rows = rows.get("YAW", [])
     state_rows = rows.get("STATE", [])
     logsum_rows = rows.get("LOGSUM", [])
@@ -184,6 +190,26 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     heading_valid = sum(to_int(r[8]) for r in mag_rows if len(r) > 8)
     heading_innov = [abs(to_float(r[10])) for r in mag_rows if len(r) > 10]
 
+    magr_raw_x = [to_float(r[4]) for r in magr_rows if len(r) > 18]
+    magr_raw_y = [to_float(r[5]) for r in magr_rows if len(r) > 18]
+    magr_raw_z = [to_float(r[6]) for r in magr_rows if len(r) > 18]
+    magr_cal_x = [to_float(r[7]) for r in magr_rows if len(r) > 18]
+    magr_cal_y = [to_float(r[8]) for r in magr_rows if len(r) > 18]
+    magr_cal_z = [to_float(r[9]) for r in magr_rows if len(r) > 18]
+    magr_body_x = [to_float(r[10]) for r in magr_rows if len(r) > 18]
+    magr_body_y = [to_float(r[11]) for r in magr_rows if len(r) > 18]
+    magr_body_z = [to_float(r[12]) for r in magr_rows if len(r) > 18]
+    magr_raw_norm = [to_float(r[13]) for r in magr_rows if len(r) > 18]
+    magr_cal_norm = [to_float(r[14]) for r in magr_rows if len(r) > 18]
+    magr_body_norm = [to_float(r[15]) for r in magr_rows if len(r) > 18]
+    magr_raw_flags = Counter(r[16] for r in magr_rows if len(r) > 18 and r[16] != "0x0")
+    magr_reject_flags = Counter(r[17] for r in magr_rows if len(r) > 18 and r[17] != "0x0")
+    magr_trusted = sum(to_int(r[18]) for r in magr_rows if len(r) > 18)
+    magr_span_x = span(magr_raw_x)
+    magr_span_y = span(magr_raw_y)
+    magr_span_z = span(magr_raw_z)
+    magr_min_axis_span = min(magr_span_x, magr_span_y, magr_span_z) if magr_rows else 0.0
+
     yaw_applied = sum(to_int(r[6]) for r in yaw_rows if len(r) > 6)
     yaw_gate_open = sum(to_int(r[4]) for r in yaw_rows if len(r) > 4)
     yaw_trust = [to_float(r[9]) for r in yaw_rows if len(r) > 9]
@@ -219,6 +245,7 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     q_count = len(q_rows)
     fifo_count = len(fifo_rows)
     mag_count = len(mag_rows)
+    magr_count = len(magr_rows)
     yaw_count = len(yaw_rows)
 
     warnings: List[str] = []
@@ -242,6 +269,7 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             "q": round(ratio(q_count, duration_s), 3),
             "fifo": round(ratio(fifo_count, duration_s), 3),
             "mag": round(ratio(mag_count, duration_s), 3),
+            "magr": round(ratio(magr_count, duration_s), 3),
             "yaw": round(ratio(yaw_count, duration_s), 3),
         },
         "coverage": {
@@ -252,6 +280,7 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             "has_bias": len(bias_rows) > 0,
             "has_bias_updates": len(biasupd_rows) > 0,
             "has_mag": mag_count > 0,
+            "has_magr": magr_count > 0,
             "has_yaw": yaw_count > 0,
             "has_state_events": len(state_rows) > 0,
             "has_summary": len(logsum_rows) > 0,
@@ -309,6 +338,37 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             "heading_innovation_abs_deg": stats(heading_innov),
             "reject_flags_top": mag_reject_flags.most_common(8),
         },
+        "magr": {
+            "rows": magr_count,
+            "trusted_rows": magr_trusted,
+            "trusted_ratio": round(ratio(magr_trusted, magr_count), 6),
+            "raw_norm": stats(magr_raw_norm),
+            "calibrated_norm": stats(magr_cal_norm),
+            "body_norm": stats(magr_body_norm),
+            "raw_xyz": {
+                "x": stats(magr_raw_x),
+                "y": stats(magr_raw_y),
+                "z": stats(magr_raw_z),
+            },
+            "calibrated_xyz": {
+                "x": stats(magr_cal_x),
+                "y": stats(magr_cal_y),
+                "z": stats(magr_cal_z),
+            },
+            "body_xyz": {
+                "x": stats(magr_body_x),
+                "y": stats(magr_body_y),
+                "z": stats(magr_body_z),
+            },
+            "raw_axis_span": {
+                "x": round(magr_span_x, 6),
+                "y": round(magr_span_y, 6),
+                "z": round(magr_span_z, 6),
+                "min_axis": round(magr_min_axis_span, 6),
+            },
+            "raw_flags_top": magr_raw_flags.most_common(8),
+            "reject_flags_top": magr_reject_flags.most_common(8),
+        },
         "yaw": {
             "rows": len(yaw_rows),
             "gate_open_rows": yaw_gate_open,
@@ -330,7 +390,7 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
 
     if include_samples > 0:
         out["samples"] = {}
-        for key in ["Q", "FIFO", "CAL", "BIAS", "BIASUPD", "MAG", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"]:
+        for key in ["Q", "FIFO", "CAL", "BIAS", "BIASUPD", "MAG", "MAGR", "YAW", "STATE", "LOGSUM", "LOGSTAT", "TEMPBIN"]:
             rs = rows.get(key, [])
             if rs:
                 out["samples"][key] = rs[:include_samples] + ([ ["..."] ] if len(rs) > 2 * include_samples else []) + rs[-include_samples:]
