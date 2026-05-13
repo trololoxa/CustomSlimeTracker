@@ -325,3 +325,23 @@ runtime bias full window accept/update behavior
 accel/mag calibration residual quality edge cases
 replay-driven AHRS regression tests from saved machine logs
 ```
+
+## Replay/metrics from machine logs
+
+For tracking changes, collect a machine-readable E0 log and score it on the host:
+
+```text
+log full
+log header
+test static 120
+log summary
+log off
+```
+
+Then run:
+
+```bash
+python tools/replay/replay_machine_log.py tracker.log --pretty
+```
+
+Replay gates should use machine-readable frames only. Human `status`/`health` output is useful for inspection, but should not become a regression input format.
