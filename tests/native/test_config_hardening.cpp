@@ -1,0 +1,156 @@
+#include "test_common.hpp"
+
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+
+#include "config/tracker_config_runtime.hpp"
+#include "config/tracker_config_detail.hpp"
+#include "sensor/calibration.hpp"
+
+using namespace tracker;
+
+static void testDefaultRuntimeConfigValidates(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+
+    CHECK(ctx, cfg.validate());
+    CHECK(ctx, cfg.validateContent());
+    CHECK(ctx, cfg.data.magic == tracker_config_detail::CONFIG_MAGIC);
+    CHECK(ctx, cfg.data.version == tracker_config_detail::CONFIG_VERSION);
+    CHECK(ctx, cfg.data.size == sizeof(TrackerConfigBlob));
+    CHECK(ctx, cfg.data.crc32 == cfg.computeCrc());
+}
+
+static void testSanitizeRepairsInvalidRuntimeValues(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+
+    cfg.data.hardware.spiHz = 1;
+    cfg.data.fifo.watermarkWords = 0;
+    cfg.data.fifo.maxWordsPerDrain = 0;
+    cfg.data.fifo.maxDrainRoundsPerEvent = 0;
+    cfg.data.fifo.samplePeriodUsOverride = std::nanf("");
+
+    cfg.data.output.outputRateHz = 0;
+    cfg.data.output.packetFormat = 2;
+
+    cfg.data.quality.largeGapFactor = 0.1f;
+    cfg.data.quality.accelNormOutlierMinG = -10.0f;
+    cfg.data.quality.accelNormOutlierMaxG = -9.0f;
+
+    cfg.data.magYaw.maxInnovationDeg = std::nanf("");
+    cfg.data.magYaw.horizontalNormBad = -1.0f;
+    cfg.data.magYaw.horizontalNormGood = 0.0f;
+    cfg.data.magYaw.accelTrustBad = -5.0f;
+    cfg.data.magYaw.accelTrustGood = -4.0f;
+    cfg.data.magYaw.maxMagAgeMs = 100000U;
+
+    cfg.sanitize();
+
+    CHECK(ctx, cfg.validate());
+    CHECK(ctx, cfg.data.hardware.spiHz >= tracker_config_detail::MIN_SPI_HZ);
+    CHECK(ctx, cfg.data.fifo.watermarkWords != 0);
+    CHECK(ctx, cfg.data.fifo.maxWordsPerDrain != 0);
+    CHECK(ctx, cfg.data.fifo.maxDrainRoundsPerEvent != 0);
+    CHECK_NEAR(ctx, cfg.data.fifo.samplePeriodUsOverride, 0.0f, 1.0e-6f);
+
+    CHECK(ctx, cfg.data.output.outputRateHz != 0);
+    CHECK(ctx, cfg.data.output.packetFormat == 0);
+
+    CHECK(ctx, cfg.data.quality.largeGapFactor > 1.0f);
+    CHECK(ctx, cfg.data.quality.accelNormOutlierMinG > 0.0f);
+    CHECK(ctx, cfg.data.quality.accelNormOutlierMaxG > cfg.data.quality.accelNormOutlierMinG);
+
+    CHECK(ctx, cfg.data.magYaw.maxInnovationDeg > 0.0f);
+    CHECK(ctx, cfg.data.magYaw.horizontalNormBad > 0.0f);
+    CHECK(ctx, cfg.data.magYaw.horizontalNormGood > cfg.data.magYaw.horizontalNormBad);
+    CHECK(ctx, cfg.data.magYaw.accelTrustBad >= 0.0f);
+    CHECK(ctx, cfg.data.magYaw.accelTrustGood > cfg.data.magYaw.accelTrustBad);
+    CHECK(ctx, cfg.data.magYaw.maxMagAgeMs <= 5000U);
+}
+
+static void testSanitizeInvalidatesOnlyCorruptCalibrationBlocks(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+
+    cfg.data.gyroCal.biasValid = true;
+    cfg.data.gyroCal.biasRadS = Vec3(0.01f, -0.02f, 0.03f);
+    cfg.data.accelCal.valid = true;
+    cfg.data.accelCal.biasG = Vec3(1.0f, std::nanf(""), 3.0f);
+    cfg.data.accelCal.scale = Mat3::identity();
+    cfg.data.magCal.calibrationValid = true;
+    cfg.data.magCal.hardIron = Vec3(4.0f, 5.0f, 6.0f);
+    cfg.data.magCal.softIron = Mat3::identity();
+    cfg.data.magCal.expectedFieldNorm = 50.0f;
+
+    cfg.sanitize();
+
+    CHECK(ctx, cfg.validate());
+    CHECK(ctx, cfg.data.gyroCal.biasValid);
+    CHECK_NEAR(ctx, cfg.data.gyroCal.biasRadS.x, 0.01f, 1.0e-6f);
+    CHECK(ctx, !cfg.data.accelCal.valid);
+    CHECK_NEAR(ctx, cfg.data.accelCal.biasG.x, 0.0f, 1.0e-6f);
+    CHECK(ctx, cfg.data.magCal.calibrationValid);
+    CHECK_NEAR(ctx, cfg.data.magCal.hardIron.x, 4.0f, 1.0e-6f);
+}
+
+static void testCrcDeterministicAndDetectsMutation(TestContext& ctx) {
+    TrackerConfig a;
+    TrackerConfig b;
+    a.resetDefaults();
+    b.resetDefaults();
+
+    CHECK(ctx, a.data.crc32 == b.data.crc32);
+    CHECK(ctx, a.computeCrc() == b.computeCrc());
+
+    const uint32_t crc = a.data.crc32;
+    a.data.output.outputRateHz = static_cast<uint16_t>(a.data.output.outputRateHz + 1U);
+    CHECK(ctx, a.computeCrc() != crc);
+    CHECK(ctx, !a.validate());
+
+    a.updateCrc();
+    CHECK(ctx, a.validate());
+}
+
+static void testApplyCaptureDoesNotTouchUnrelatedBlocks(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+
+    cfg.data.magCal.driverEnabled = true;
+    cfg.data.magCal.calibrationValid = true;
+    cfg.data.magCal.hardIron = Vec3(7.0f, 8.0f, 9.0f);
+    const uint8_t packetFormatBefore = cfg.data.output.packetFormat;
+
+    ImuCalibration cal;
+    cal.gyroBiasValid = true;
+    cal.gyroBiasRadS = Vec3(0.001f, 0.002f, -0.003f);
+    cal.accelCalValid = true;
+    cal.accelBiasG = Vec3(0.01f, 0.02f, 0.03f);
+    cal.accelScale = Mat3::diagonal(1.1f, 0.9f, 1.0f);
+
+    cfg.captureFromImuCalibration(cal);
+
+    CHECK(ctx, cfg.validate());
+    CHECK(ctx, cfg.data.magCal.driverEnabled);
+    CHECK(ctx, cfg.data.magCal.calibrationValid);
+    CHECK_NEAR(ctx, cfg.data.magCal.hardIron.y, 8.0f, 1.0e-6f);
+    CHECK(ctx, cfg.data.output.packetFormat == packetFormatBefore);
+
+    ImuCalibration applied;
+    cfg.applyToImuCalibration(applied);
+    CHECK(ctx, applied.gyroBiasValid);
+    CHECK(ctx, applied.accelCalValid);
+    CHECK_NEAR(ctx, applied.gyroBiasRadS.z, -0.003f, 1.0e-6f);
+    CHECK_NEAR(ctx, applied.accelBiasG.y, 0.02f, 1.0e-6f);
+}
+
+int main() {
+    TestContext ctx;
+    testDefaultRuntimeConfigValidates(ctx);
+    testSanitizeRepairsInvalidRuntimeValues(ctx);
+    testSanitizeInvalidatesOnlyCorruptCalibrationBlocks(ctx);
+    testCrcDeterministicAndDetectsMutation(ctx);
+    testApplyCaptureDoesNotTouchUnrelatedBlocks(ctx);
+    return ctx.finish("test_config_hardening");
+}

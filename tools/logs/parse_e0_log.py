@@ -65,6 +65,19 @@ def stats(values: Iterable[float]) -> Dict[str, float]:
     }
 
 
+def ratio(numerator: float, denominator: float) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0
+
+
+def metric(summary: Dict[str, Any], dotted: str, default: Any = 0) -> Any:
+    cur: Any = summary
+    for part in dotted.split('.'):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+
 def parse_rows(path: Path) -> Dict[str, List[List[str]]]:
     rows: Dict[str, List[List[str]]] = defaultdict(list)
     with path.open("r", encoding="utf-8", errors="replace", newline="") as f:
@@ -95,6 +108,8 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     mag_rows = rows.get("MAG", [])
     yaw_rows = rows.get("YAW", [])
     state_rows = rows.get("STATE", [])
+    logsum_rows = rows.get("LOGSUM", [])
+    logstat_rows = rows.get("LOGSTAT", [])
 
     q_t = [to_int(r[1]) for r in q_rows if len(r) > 2]
     duration_s = (max(q_t) - min(q_t)) / 1_000_000.0 if len(q_t) >= 2 else 0.0
@@ -178,6 +193,34 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     state_events = Counter(r[3] for r in state_rows if len(r) > 3)
     state_reasons = Counter(r[4] for r in state_rows if len(r) > 4)
 
+    logsum_last: Dict[str, Any] = {}
+    if logsum_rows:
+        r = logsum_rows[-1]
+        # LOGSUM,uptime_ms,mode,rate_hz,q,cal,fifo,mag,yaw,state,bias,samples,quality_samples,fifo_overruns,fifo_full,large_gaps,recoveries,mag_trusted,mag_rejected,yaw_applied
+        names = [
+            "uptime_ms", "mode", "rate_hz", "q", "cal", "fifo", "mag", "yaw",
+            "state", "bias", "samples", "quality_samples", "fifo_overruns",
+            "fifo_full", "large_gaps", "recoveries", "mag_trusted",
+            "mag_rejected", "yaw_applied",
+        ]
+        for idx, name in enumerate(names, start=1):
+            if idx >= len(r):
+                break
+            logsum_last[name] = r[idx] if name == "mode" else to_int(r[idx])
+
+    logstat: Dict[str, Dict[str, Any]] = {}
+    for r in logstat_rows:
+        if len(r) < 3:
+            continue
+        name = r[1].lower()
+        values = [to_float(x) for x in r[2:]]
+        logstat[name] = {"values": values}
+
+    q_count = len(q_rows)
+    fifo_count = len(fifo_rows)
+    mag_count = len(mag_rows)
+    yaw_count = len(yaw_rows)
+
     warnings: List[str] = []
     if fallback > 0:
         warnings.append(f"fallback timestamps present: {fallback}")
@@ -195,6 +238,24 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     out: Dict[str, Any] = {
         "counts": {k: len(v) for k, v in sorted(rows.items())},
         "duration_s": round(duration_s, 3),
+        "rates_hz": {
+            "q": round(ratio(q_count, duration_s), 3),
+            "fifo": round(ratio(fifo_count, duration_s), 3),
+            "mag": round(ratio(mag_count, duration_s), 3),
+            "yaw": round(ratio(yaw_count, duration_s), 3),
+        },
+        "coverage": {
+            "has_header": bool(rows.get("LOGVER") and rows.get("LOGFMT")),
+            "has_q": q_count > 0,
+            "has_fifo": fifo_count > 0,
+            "has_cal": len(cal_rows) > 0,
+            "has_bias": len(bias_rows) > 0,
+            "has_bias_updates": len(biasupd_rows) > 0,
+            "has_mag": mag_count > 0,
+            "has_yaw": yaw_count > 0,
+            "has_state_events": len(state_rows) > 0,
+            "has_summary": len(logsum_rows) > 0,
+        },
         "q": {
             "states": dict(q_states),
             "confidence": stats(q_conf),
@@ -241,14 +302,19 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
         "mag": {
             "trusted_rows": mag_trusted,
             "rejected_rows": mag_rejected,
+            "trusted_ratio": round(ratio(mag_trusted, mag_count), 6),
+            "rejected_ratio": round(ratio(mag_rejected, mag_count), 6),
             "heading_valid_rows": heading_valid,
+            "heading_valid_ratio": round(ratio(heading_valid, mag_count), 6),
             "heading_innovation_abs_deg": stats(heading_innov),
             "reject_flags_top": mag_reject_flags.most_common(8),
         },
         "yaw": {
             "rows": len(yaw_rows),
             "gate_open_rows": yaw_gate_open,
+            "gate_open_ratio": round(ratio(yaw_gate_open, yaw_count), 6),
             "applied_rows": yaw_applied,
+            "applied_ratio": round(ratio(yaw_applied, yaw_count), 6),
             "trust": stats(yaw_trust),
             "step_abs_deg": stats(yaw_step),
             "reject_flags_top": yaw_reject_flags.most_common(8),
@@ -257,6 +323,8 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             "states": dict(state_events),
             "reasons": dict(state_reasons),
         },
+        "logsum_last": logsum_last,
+        "logstat": logstat,
         "warnings": warnings,
     }
 

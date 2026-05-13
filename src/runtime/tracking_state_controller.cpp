@@ -1,6 +1,24 @@
 #include "runtime/tracking_state_controller.hpp"
 
+#include "sensor/mag_runtime.hpp"
+#include "sensor/mag_yaw_correction.hpp"
+
 namespace tracker {
+
+const char* trackingStateIdName(TrackingStateId state) {
+    switch (state) {
+        case TrackingStateId::CalibrationRequired: return "CALIBRATION_REQUIRED";
+        case TrackingStateId::StartupConvergence: return "STARTUP_CONVERGENCE";
+        case TrackingStateId::Tracking6Dof: return "TRACKING_6DOF";
+        case TrackingStateId::Tracking6DofMagYaw: return "TRACKING_6DOF_MAG_YAW";
+        case TrackingStateId::DegradedTiming: return "DEGRADED_TIMING";
+        case TrackingStateId::DegradedAccel: return "DEGRADED_ACCEL";
+        case TrackingStateId::DegradedMag: return "DEGRADED_MAG";
+        case TrackingStateId::Recovering: return "RECOVERING";
+        case TrackingStateId::SensorFault: return "SENSOR_FAULT";
+    }
+    return "UNKNOWN";
+}
 
 void TrackingStateController::setStableSamplesRequired(uint32_t samples) {
     stableSamplesRequired_ = samples == 0 ? 1 : samples;
@@ -106,18 +124,95 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
     }
 }
 
+bool TrackingStateController::hasTimingFault(uint32_t flags) {
+    constexpr uint32_t mask = imu_quality_flags::TIMESTAMP_ZERO |
+                              imu_quality_flags::TIMESTAMP_NON_MONOTONIC |
+                              imu_quality_flags::TIMESTAMP_LARGE_GAP |
+                              imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW |
+                              imu_quality_flags::TIMESTAMP_META_MISMATCH |
+                              imu_quality_flags::TIMESTAMP_BACKWARDS |
+                              imu_quality_flags::FIFO_OVERRUN |
+                              imu_quality_flags::FIFO_FULL |
+                              imu_quality_flags::FIFO_UNKNOWN_TAG |
+                              imu_quality_flags::FIFO_ORPHAN_WORDS |
+                              imu_quality_flags::FIFO_TAG_COUNTER_JUMP |
+                              imu_quality_flags::FIFO_GYRO_TAG_COUNTER_JUMP |
+                              imu_quality_flags::FIFO_ACCEL_TAG_COUNTER_JUMP |
+                              imu_quality_flags::FIFO_RECOVERY_REQUESTED |
+                              imu_quality_flags::SAMPLE_DROPPED_BEFORE |
+                              imu_quality_flags::SAMPLE_NOT_AHRS_USABLE;
+    return (flags & mask) != 0;
+}
+
+bool TrackingStateController::hasAccelFault(uint32_t flags) {
+    constexpr uint32_t mask = imu_quality_flags::ACCEL_SATURATED |
+                              imu_quality_flags::ACCEL_NEAR_SATURATION |
+                              imu_quality_flags::ACCEL_NORM_OUTLIER |
+                              imu_quality_flags::ACCEL_NOT_AHRS_USABLE;
+    return (flags & mask) != 0;
+}
+
+bool TrackingStateController::hasSensorFault(uint32_t flags) {
+    constexpr uint32_t mask = imu_quality_flags::GYRO_SATURATED |
+                              imu_quality_flags::GYRO_NEAR_SATURATION;
+    return (flags & mask) != 0;
+}
+
+bool TrackingStateController::hasMagDegradation(const TrackingStateInputs& in) {
+    if (!in.magRuntimeEnabled) return false;
+    if (in.magSampleSeen && !in.magTrusted) return true;
+
+    constexpr uint32_t magHardRejects = MAG_REJECT_RAW_SATURATED |
+                                        MAG_REJECT_RAW_NONFINITE |
+                                        MAG_REJECT_NOT_CALIBRATED |
+                                        MAG_REJECT_AXIS_NOT_ALIGNED |
+                                        MAG_REJECT_NORM_TOO_LOW |
+                                        MAG_REJECT_NORM_TOO_HIGH |
+                                        MAG_REJECT_STALE |
+                                        MAG_REJECT_ZERO_NORM;
+    if ((in.magRejectFlags & magHardRejects) != 0) return true;
+
+    constexpr uint32_t yawMagRejects = MAG_YAW_REJECT_HEADING_INVALID |
+                                       MAG_YAW_REJECT_MAG_NOT_TRUSTED |
+                                       MAG_YAW_REJECT_MAG_STALE |
+                                       MAG_YAW_REJECT_HORIZONTAL_BAD |
+                                       MAG_YAW_REJECT_INNOVATION_TOO_LARGE |
+                                       MAG_YAW_REJECT_NONFINITE;
+    if (in.magYawControllerEnabled && (in.magYawRejectFlags & yawMagRejects) != 0) return true;
+
+    return false;
+}
+
+TrackingStateId TrackingStateController::evaluateState(const TrackingStateInputs& in) const {
+    if (!in.accelCalValid || !in.gyroBiasValid) return TrackingStateId::CalibrationRequired;
+    if (recoveryActive_) return TrackingStateId::Recovering;
+    if (in.sensorFault || hasSensorFault(in.qualityFlags)) return TrackingStateId::SensorFault;
+    if (in.qualityRecoveryRequested || hasTimingFault(in.qualityFlags)) return TrackingStateId::DegradedTiming;
+    if (hasAccelFault(in.qualityFlags)) return TrackingStateId::DegradedAccel;
+    if (!in.ahrsInitialized) return TrackingStateId::StartupConvergence;
+    if (hasMagDegradation(in)) return TrackingStateId::DegradedMag;
+    if (in.magHeadingReferenceValid && in.magYawApplied) return TrackingStateId::Tracking6DofMagYaw;
+    return TrackingStateId::Tracking6Dof;
+}
+
+const char* TrackingStateController::stateName(const TrackingStateInputs& in) const {
+    return trackingStateIdName(evaluateState(in));
+}
+
 const char* TrackingStateController::stateName(bool accelCalValid,
                                                bool gyroBiasValid,
                                                bool qualityRecoveryRequested,
                                                bool ahrsInitialized,
                                                bool magHeadingReferenceValid,
                                                bool magYawApplied) const {
-    if (!accelCalValid || !gyroBiasValid) return "CALIBRATION_REQUIRED";
-    if (recoveryActive_) return "RECOVERING";
-    if (qualityRecoveryRequested) return "DEGRADED_TIMING";
-    if (!ahrsInitialized) return "STARTUP_CONVERGENCE";
-    if (magHeadingReferenceValid && magYawApplied) return "TRACKING_6DOF_MAG_YAW";
-    return "TRACKING_6DOF";
+    TrackingStateInputs in;
+    in.accelCalValid = accelCalValid;
+    in.gyroBiasValid = gyroBiasValid;
+    in.qualityRecoveryRequested = qualityRecoveryRequested;
+    in.ahrsInitialized = ahrsInitialized;
+    in.magHeadingReferenceValid = magHeadingReferenceValid;
+    in.magYawApplied = magYawApplied;
+    return stateName(in);
 }
 
 void TrackingStateController::printRecoveryStatus(Stream& out) const {

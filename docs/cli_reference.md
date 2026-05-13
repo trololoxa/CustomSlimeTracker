@@ -119,3 +119,23 @@ Legend:
 | `test static <seconds>` | Start non-blocking static test | Runtime | FIFO/AHRS/CLI continue running. |
 | `test status` | Print static test status | No | Inspection only. |
 | `test stop` | Stop current static test | Runtime | Leaves last completed result if available. |
+
+## Setup status
+
+`setup status` prints a compact readiness checklist for the current firmware
+configuration. It is meant to answer: "can this tracker produce a useful local
+6DoF quaternion, and is mag-yaw ready?"
+
+It reports:
+
+- `config_valid`
+- `gyro_bias_ready`
+- `accel_cal_ready`
+- `mag_driver_enabled`
+- `mag_cal_ready`
+- `mag_axis_ready`
+- `setup_ready_6dof`
+- `setup_ready_mag_yaw`
+
+The command also prints the next low-level commands to run when a block is not
+ready. It does not modify config, NVS, AHRS, FIFO, or calibration state.

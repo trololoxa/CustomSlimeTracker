@@ -345,3 +345,24 @@ python tools/replay/replay_machine_log.py tracker.log --pretty
 ```
 
 Replay gates should use machine-readable frames only. Human `status`/`health` output is useful for inspection, but should not become a regression input format. `tools/check_all.py` runs a small replay smoke test against `tests/fixtures/e0_static_smoke.log` so the replay parser itself stays usable.
+
+## Replay baseline capture smoke sequence
+
+For a log that is useful as a replay fixture, capture machine log output rather
+than human-readable status text:
+
+```text
+setup status
+log reset
+log full
+log rate 20
+log header
+test static 600
+log summary
+log off
+```
+
+During `test static 600`, keep the tracker still for the first and last two
+minutes. In the middle, gently rotate it through several orientations if you
+want the same file to exercise mag/yaw and accel gating. Do not disconnect or
+change serial baud during capture.

@@ -139,13 +139,26 @@ static void updateTrackingRecoveryState(const ImuQualityResult& quality) {
     g_trackingState.updateRecovery(quality, g_lastSampleTimestampUs, makeTrackingEventSink());
 }
 
+static TrackingStateInputs makeTrackingStateInputs() {
+    TrackingStateInputs in;
+    in.accelCalValid = g_imuCal.accelCalValid;
+    in.gyroBiasValid = g_imuCal.gyroBiasValid;
+    in.ahrsInitialized = g_ahrs6dof.initialized();
+    in.qualityRecoveryRequested = g_quality.recoveryRequested();
+    in.qualityFlags = g_quality.lastRecoveryFlags();
+    in.magRuntimeEnabled = g_magState.runtimeEnabled;
+    in.magSampleSeen = g_lastMagProcessed.seq != 0 || g_magProcessor.stats().processedSamples != 0;
+    in.magTrusted = g_lastMagProcessed.trusted;
+    in.magRejectFlags = g_lastMagProcessed.rejectFlags;
+    in.magHeadingReferenceValid = g_magHeadingRef.valid;
+    in.magYawControllerEnabled = g_config.data.magYaw.controllerEnabled;
+    in.magYawApplied = g_lastMagYawCorrection.applied;
+    in.magYawRejectFlags = g_lastMagYawCorrection.rejectFlags;
+    return in;
+}
+
 static const char* trackingStateName() {
-    return g_trackingState.stateName(g_imuCal.accelCalValid,
-                                     g_imuCal.gyroBiasValid,
-                                     g_quality.recoveryRequested(),
-                                     g_ahrs6dof.initialized(),
-                                     g_magHeadingRef.valid,
-                                     g_lastMagYawCorrection.applied);
+    return g_trackingState.stateName(makeTrackingStateInputs());
 }
 
 static bool setMagRuntimeEnabledHook(bool enabled, bool persist, void* user) {

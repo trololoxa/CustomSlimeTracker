@@ -37,10 +37,15 @@ def run_native_tests(clean: bool) -> None:
 def run_tool_smokes() -> None:
     fixture = ROOT / "tests" / "fixtures" / "e0_static_smoke.log"
     if fixture.exists():
+        before = ROOT / "build" / "tool_smoke" / "e0_static_smoke_before.json"
+        after = ROOT / "build" / "tool_smoke" / "e0_static_smoke_after.json"
+        before.parent.mkdir(parents=True, exist_ok=True)
         run([
             sys.executable,
             "tools/replay/replay_machine_log.py",
             str(fixture),
+            "--output",
+            str(before),
             "--min-duration-s",
             "60",
             "--max-fifo-fallback-rows",
@@ -49,6 +54,19 @@ def run_tool_smokes() -> None:
             "0",
             "--max-recovering-rows",
             "0",
+        ])
+        run([
+            sys.executable,
+            "tools/replay/replay_machine_log.py",
+            str(fixture),
+            "--output",
+            str(after),
+        ])
+        run([
+            sys.executable,
+            "tools/replay/compare_replay_metrics.py",
+            str(before),
+            str(after),
         ])
 
 

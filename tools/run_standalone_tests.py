@@ -29,7 +29,11 @@ PROJECT_SOURCES = [
     pathlib.Path("src/sensor/gyro_temperature_compensation.cpp"),
     pathlib.Path("src/sensor/mag_runtime.cpp"),
     pathlib.Path("src/sensor/mag_yaw_correction.cpp"),
+    pathlib.Path("src/sensor/accel_6pos_calibration.cpp"),
+    pathlib.Path("src/sensor/mag_calibration.cpp"),
     pathlib.Path("src/runtime/runtime_gyro_bias_controller.cpp"),
+    pathlib.Path("src/runtime/tracking_state_controller.cpp"),
+    pathlib.Path("src/config/tracker_config_runtime.cpp"),
 ]
 
 
