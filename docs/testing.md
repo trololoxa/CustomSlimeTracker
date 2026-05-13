@@ -42,7 +42,7 @@ On Linux/macOS/WSL/Git Bash you can also use:
 tools/check_all.sh --clean
 ```
 
-The script always runs native tests unless `--skip-native` is passed. It also runs PlatformIO builds when `pio`/`platformio` is available in `PATH`. If PlatformIO is not installed, ESP32 builds are skipped by default so host-only development machines can still run the native gate. To make missing PlatformIO a failure, use:
+The script always runs native tests unless `--skip-native` is passed. It also runs Python tool smoke tests unless `--skip-tool-smoke` is passed. It also runs PlatformIO builds when `pio`/`platformio` is available in `PATH`. If PlatformIO is not installed, ESP32 builds are skipped by default so host-only development machines can still run the native gate. To make missing PlatformIO a failure, use:
 
 ```bash
 python tools/check_all.py --require-pio
@@ -344,4 +344,4 @@ Then run:
 python tools/replay/replay_machine_log.py tracker.log --pretty
 ```
 
-Replay gates should use machine-readable frames only. Human `status`/`health` output is useful for inspection, but should not become a regression input format.
+Replay gates should use machine-readable frames only. Human `status`/`health` output is useful for inspection, but should not become a regression input format. `tools/check_all.py` runs a small replay smoke test against `tests/fixtures/e0_static_smoke.log` so the replay parser itself stays usable.

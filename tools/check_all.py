@@ -34,6 +34,24 @@ def run_native_tests(clean: bool) -> None:
     run(cmd)
 
 
+def run_tool_smokes() -> None:
+    fixture = ROOT / "tests" / "fixtures" / "e0_static_smoke.log"
+    if fixture.exists():
+        run([
+            sys.executable,
+            "tools/replay/replay_machine_log.py",
+            str(fixture),
+            "--min-duration-s",
+            "60",
+            "--max-fifo-fallback-rows",
+            "0",
+            "--max-fifo-fault-rows",
+            "0",
+            "--max-recovering-rows",
+            "0",
+        ])
+
+
 def pio_executable(explicit: str | None = None) -> str | None:
     if explicit:
         return explicit
@@ -62,6 +80,7 @@ def main() -> int:
     parser.add_argument("--clean", action="store_true", help="clean native test build artifacts first")
     parser.add_argument("--skip-native", action="store_true", help="skip standalone native tests")
     parser.add_argument("--skip-pio", action="store_true", help="skip PlatformIO builds")
+    parser.add_argument("--skip-tool-smoke", action="store_true", help="skip Python tool smoke tests")
     parser.add_argument("--require-pio", action="store_true", help="fail if PlatformIO is not installed")
     parser.add_argument("--pio-bin", help="explicit PlatformIO executable path; also available through PIO=...")
     parser.add_argument(
@@ -74,6 +93,9 @@ def main() -> int:
 
     if not args.skip_native:
         run_native_tests(args.clean)
+
+    if not args.skip_tool_smoke:
+        run_tool_smokes()
 
     if not args.skip_pio:
         run_pio_builds(args.pio_envs or DEFAULT_PIO_ENVS, args.require_pio, args.pio_bin)
