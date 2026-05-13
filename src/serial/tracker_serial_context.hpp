@@ -2,11 +2,8 @@
 
 #include <Arduino.h>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
-#include <cmath>
-
-#include "core/math.hpp"
+#include "serial/tracker_serial_parse.hpp"
+#include "serial/tracker_serial_print.hpp"
 
 namespace tracker {
 
@@ -50,116 +47,6 @@ class FifoAccel6PosCalibrationRunner;
 //       // normal tracker loop
 //   }
 // ============================================================
-
-namespace tracker_serial_detail {
-
-inline char upperChar(char c) {
-    if (c >= 'a' && c <= 'z') return static_cast<char>(c - 'a' + 'A');
-    return c;
-}
-
-inline bool eqIgnoreCase(const char* a, const char* b) {
-    if (!a || !b) return false;
-    while (*a && *b) {
-        if (upperChar(*a) != upperChar(*b)) return false;
-        ++a;
-        ++b;
-    }
-    return *a == '\0' && *b == '\0';
-}
-
-inline bool startsWithIgnoreCase(const char* s, const char* prefix) {
-    if (!s || !prefix) return false;
-    while (*prefix) {
-        if (upperChar(*s) != upperChar(*prefix)) return false;
-        ++s;
-        ++prefix;
-    }
-    return true;
-}
-
-inline bool parseBool(const char* s, bool& out) {
-    if (!s) return false;
-    if (eqIgnoreCase(s, "1") || eqIgnoreCase(s, "on") || eqIgnoreCase(s, "true") || eqIgnoreCase(s, "yes")) {
-        out = true;
-        return true;
-    }
-    if (eqIgnoreCase(s, "0") || eqIgnoreCase(s, "off") || eqIgnoreCase(s, "false") || eqIgnoreCase(s, "no")) {
-        out = false;
-        return true;
-    }
-    return false;
-}
-
-inline bool parseU32(const char* s, uint32_t& out) {
-    if (!s || *s == '\0') return false;
-    char* end = nullptr;
-    const unsigned long v = std::strtoul(s, &end, 0);
-    if (!end || *end != '\0') return false;
-    out = static_cast<uint32_t>(v);
-    return true;
-}
-
-inline bool parseFloat(const char* s, float& out) {
-    if (!s || *s == '\0') return false;
-    char* end = nullptr;
-    const float v = std::strtof(s, &end);
-    if (!end || *end != '\0' || !std::isfinite(v)) return false;
-    out = v;
-    return true;
-}
-
-
-inline void printU64Dec(Stream& out, uint64_t v) {
-    char buf[21];
-    size_t i = sizeof(buf);
-    buf[--i] = '\0';
-    if (v == 0) {
-        buf[--i] = '0';
-    } else {
-        while (v > 0 && i > 0) {
-            buf[--i] = static_cast<char>('0' + (v % 10));
-            v /= 10;
-        }
-    }
-    out.print(&buf[i]);
-}
-
-inline void printVec3(Stream& out, const char* label, const Vec3& v, uint8_t decimals = 6) {
-    out.print(label);
-    out.print(" x="); out.print(v.x, decimals);
-    out.print(" y="); out.print(v.y, decimals);
-    out.print(" z="); out.print(v.z, decimals);
-}
-
-inline void printVec3Line(Stream& out, const char* label, const Vec3& v, uint8_t decimals = 6) {
-    printVec3(out, label, v, decimals);
-    out.println();
-}
-
-inline void printQuatLine(Stream& out, const char* label, const Quat& q, uint8_t decimals = 7) {
-    out.print(label);
-    out.print(" w="); out.print(q.w, decimals);
-    out.print(" x="); out.print(q.x, decimals);
-    out.print(" y="); out.print(q.y, decimals);
-    out.print(" z="); out.println(q.z, decimals);
-}
-
-inline void printOk(Stream& out, const char* msg = nullptr) {
-    out.print("# OK");
-    if (msg && *msg) {
-        out.print(' ');
-        out.print(msg);
-    }
-    out.println();
-}
-
-inline void printErr(Stream& out, const char* msg) {
-    out.print("# ERR ");
-    out.println(msg ? msg : "unknown");
-}
-
-} // namespace tracker_serial_detail
 
 enum class TrackerStreamMode : uint8_t {
     Off,

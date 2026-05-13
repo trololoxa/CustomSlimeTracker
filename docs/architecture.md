@@ -523,7 +523,7 @@ runtime -> full tracker_serial_commands.hpp
 config schema -> runtime controllers
 ```
 
-`serial/tracker_serial_context.hpp` is allowed as a small shared context/types file. Do not include `serial/tracker_serial_commands.hpp` from runtime modules. Keep `tracker_serial_context.hpp` lightweight: use forward declarations for concrete config/driver/runtime classes, and include concrete headers only in the command domain files that dereference those objects.
+`serial/tracker_serial_context.hpp` is allowed as a small shared context/types file. Do not include `serial/tracker_serial_commands.hpp` from runtime modules. Keep `tracker_serial_context.hpp` lightweight: use forward declarations for concrete config/driver/runtime classes, and include concrete headers only in the command domain files that dereference those objects. Shared token parsing helpers belong in `serial/tracker_serial_parse.hpp`; shared formatting helpers belong in `serial/tracker_serial_print.hpp`.
 
 ## Performance and hot-path rules
 
