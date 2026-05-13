@@ -48,6 +48,32 @@ The script always runs native tests unless `--skip-native` is passed. It also ru
 python tools/check_all.py --require-pio
 ```
 
+If PlatformIO is installed but not on `PATH`, pass it explicitly:
+
+```bash
+python tools/check_all.py --require-pio --pio-bin "C:\\Users\\you\\.platformio\\penv\\Scripts\\platformio.exe"
+```
+
+Or set `PIO` for the current shell. PowerShell:
+
+```powershell
+$env:PIO = "C:\Users\you\.platformio\penv\Scripts\platformio.exe"
+python tools/check_all.py --require-pio
+```
+
+CMD:
+
+```bat
+set PIO=C:\Users\you\.platformio\penv\Scripts\platformio.exe
+python tools/check_all.py --require-pio
+```
+
+Git Bash/WSL:
+
+```bash
+PIO=/c/Users/you/.platformio/penv/Scripts/platformio.exe python tools/check_all.py --require-pio
+```
+
 On Windows, `tools/check_all.py` is the portable entrypoint for PowerShell/CMD. `tools/check_all.sh` works from Git Bash or WSL.
 
 ## Running standalone tests directly

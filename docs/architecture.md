@@ -31,13 +31,21 @@ src/
   runtime/                         firmware runtime controllers and diagnostics
   sensor/                          sensor math, calibration, fusion, quality models
   serial/                          serial CLI parser and command domains
+  network/                         reserved for future real Wi-Fi/UDP transport
 
 docs/
   architecture.md                  this document
-  code_quality_roadmap_review.md   historical review / execution plan
+  project_status.md                current structural baseline
+  module_inventory.md              ownership map
+  testing.md                       host/firmware test strategy
+  cli_reference.md                 serial command behavior and side effects
+  config_schema.md                 persisted config policy
+  tracking_pipeline.md             runtime data flow
+  replay.md                        machine-log replay/metrics workflow
 
 tools/
   logs/                            host-side log parsing/debug helpers
+  replay/                          replay/metrics helpers for machine logs
 ```
 
 ## Layer responsibilities
@@ -476,14 +484,16 @@ Do not put calibration algorithms into CLI files. CLI files should only parse ar
 
 Current production-safe output is serial/debug-oriented. Fake SlimeVR/binary output modes should not be enabled without a real transport/backend.
 
-Future SlimeVR support should be added as separate modules, for example:
+Future SlimeVR support should be added as real transport/output modules only after the local quaternion/log/replay baseline is stable, for example:
 
 ```text
-net/wifi_manager.hpp
-net/slimevr_protocol.hpp
-net/slimevr_udp_transport.hpp
+network/wifi_manager.hpp
+network/udp_transport.hpp
+output/slimevr_packet_writer.hpp
 runtime/slimevr_output_runtime.hpp
 ```
+
+`src/network/` is reserved for Wi-Fi/UDP transport primitives. Do not place fake packet modes or command-only placeholders there.
 
 The firmware should send local sensor/device orientation and health. It should not bake in server/body/mounting calibration semantics unless there is a clear protocol-level reason.
 

@@ -22,7 +22,7 @@ namespace tracker {
 //     accel_g    : g
 //     temp_c     : deg C
 // - This driver intentionally does not contain AHRS logic.
-// - FIFO parsing is not implemented yet; direct output-register reads first.
+// - FIFO parsing lives in lsm6dsv_fifo.*; this driver keeps direct register/config access separate.
 // ============================================================
 
 class Lsm6dsvTransport {

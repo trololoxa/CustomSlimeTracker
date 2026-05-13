@@ -34,19 +34,21 @@ def run_native_tests(clean: bool) -> None:
     run(cmd)
 
 
-def pio_executable() -> str | None:
+def pio_executable(explicit: str | None = None) -> str | None:
+    if explicit:
+        return explicit
     env_pio = os.environ.get("PIO")
     if env_pio:
         return env_pio
     return shutil.which("pio") or shutil.which("platformio")
 
 
-def run_pio_builds(envs: Iterable[str], require_pio: bool) -> None:
-    pio = pio_executable()
+def run_pio_builds(envs: Iterable[str], require_pio: bool, pio_bin: str | None = None) -> None:
+    pio = pio_executable(pio_bin)
     if not pio:
         msg = "PlatformIO executable not found; skipping ESP32 builds."
         if require_pio:
-            raise SystemExit(msg + " Install PlatformIO or set PIO=path-to-pio.")
+            raise SystemExit(msg + " Install PlatformIO, set PIO=path-to-pio, or pass --pio-bin path-to-pio.")
         print("\n# " + msg)
         print("# Re-run with --require-pio on a machine where ESP32 compilation is expected.")
         return
@@ -61,6 +63,7 @@ def main() -> int:
     parser.add_argument("--skip-native", action="store_true", help="skip standalone native tests")
     parser.add_argument("--skip-pio", action="store_true", help="skip PlatformIO builds")
     parser.add_argument("--require-pio", action="store_true", help="fail if PlatformIO is not installed")
+    parser.add_argument("--pio-bin", help="explicit PlatformIO executable path; also available through PIO=...")
     parser.add_argument(
         "--pio-env",
         action="append",
@@ -73,7 +76,7 @@ def main() -> int:
         run_native_tests(args.clean)
 
     if not args.skip_pio:
-        run_pio_builds(args.pio_envs or DEFAULT_PIO_ENVS, args.require_pio)
+        run_pio_builds(args.pio_envs or DEFAULT_PIO_ENVS, args.require_pio, args.pio_bin)
 
     print("\n# check_all: OK")
     return 0
