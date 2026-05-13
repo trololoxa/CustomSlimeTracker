@@ -96,3 +96,24 @@ python tools/replay/replay_machine_log.py logs/baseline_old.log --output before.
 python tools/replay/replay_machine_log.py logs/baseline_new.log --output after.json
 python tools/replay/compare_replay_metrics.py before.json after.json --pretty
 ```
+
+## Committed replay baseline
+
+`tests/fixtures/replay/baseline_replay_001.log` is the first real firmware
+replay fixture. It is captured as `baseline_no_yaw_apply`: magnetometer and YAW
+frames are present, but yaw reference/apply are intentionally not enabled.
+
+`tools/check_all.py` runs it through `replay_machine_log.py` with these baseline
+gates:
+
+```text
+min duration:            600 s
+max FIFO fallback rows:  0
+max FIFO fault rows:     0
+max RECOVERING rows:     0
+max yaw drift diag:      2.0 deg/min
+```
+
+Warnings about missing yaw application are expected for this fixture. Add a
+separate fixture later when testing mag reference + yaw correction apply.
+

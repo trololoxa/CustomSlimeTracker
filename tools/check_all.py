@@ -34,27 +34,42 @@ def run_native_tests(clean: bool) -> None:
     run(cmd)
 
 
+def run_replay_gate(
+    fixture: Path,
+    output: Path,
+    *,
+    min_duration_s: str,
+    max_yaw_drift_deg_min: str | None = None,
+) -> None:
+    cmd = [
+        sys.executable,
+        "tools/replay/replay_machine_log.py",
+        str(fixture),
+        "--output",
+        str(output),
+        "--min-duration-s",
+        min_duration_s,
+        "--max-fifo-fallback-rows",
+        "0",
+        "--max-fifo-fault-rows",
+        "0",
+        "--max-recovering-rows",
+        "0",
+    ]
+    if max_yaw_drift_deg_min is not None:
+        cmd.extend(["--max-yaw-drift-deg-min", max_yaw_drift_deg_min])
+    run(cmd)
+
+
 def run_tool_smokes() -> None:
+    out_dir = ROOT / "build" / "tool_smoke"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     fixture = ROOT / "tests" / "fixtures" / "e0_static_smoke.log"
     if fixture.exists():
-        before = ROOT / "build" / "tool_smoke" / "e0_static_smoke_before.json"
-        after = ROOT / "build" / "tool_smoke" / "e0_static_smoke_after.json"
-        before.parent.mkdir(parents=True, exist_ok=True)
-        run([
-            sys.executable,
-            "tools/replay/replay_machine_log.py",
-            str(fixture),
-            "--output",
-            str(before),
-            "--min-duration-s",
-            "60",
-            "--max-fifo-fallback-rows",
-            "0",
-            "--max-fifo-fault-rows",
-            "0",
-            "--max-recovering-rows",
-            "0",
-        ])
+        before = out_dir / "e0_static_smoke_before.json"
+        after = out_dir / "e0_static_smoke_after.json"
+        run_replay_gate(fixture, before, min_duration_s="60")
         run([
             sys.executable,
             "tools/replay/replay_machine_log.py",
@@ -68,6 +83,15 @@ def run_tool_smokes() -> None:
             str(before),
             str(after),
         ])
+
+    baseline = ROOT / "tests" / "fixtures" / "replay" / "baseline_replay_001.log"
+    if baseline.exists():
+        run_replay_gate(
+            baseline,
+            out_dir / "baseline_replay_001.json",
+            min_duration_s="600",
+            max_yaw_drift_deg_min="2.0",
+        )
 
 
 def pio_executable(explicit: str | None = None) -> str | None:
