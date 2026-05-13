@@ -1,0 +1,97 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+
+#ifndef HEX
+#define HEX 16
+#endif
+
+inline uint32_t millis() {
+    return 0u;
+}
+
+class Stream {
+public:
+    virtual ~Stream() = default;
+
+    std::size_t print(const char* s) { return s ? std::printf("%s", s) : 0u; }
+    std::size_t print(char c) { return std::printf("%c", c); }
+    std::size_t print(bool v) { return print(v ? "1" : "0"); }
+    std::size_t print(int v) { return std::printf("%d", v); }
+    std::size_t print(unsigned int v) { return std::printf("%u", v); }
+    std::size_t print(long v) { return std::printf("%ld", v); }
+    std::size_t print(unsigned long v) { return std::printf("%lu", v); }
+    std::size_t print(long long v) { return std::printf("%lld", v); }
+    std::size_t print(unsigned long long v) { return std::printf("%llu", v); }
+    std::size_t print(float v) { return std::printf("%f", static_cast<double>(v)); }
+    std::size_t print(double v) { return std::printf("%f", v); }
+
+    std::size_t print(float v, int decimals) { return printFixed(static_cast<double>(v), decimals); }
+    std::size_t print(double v, int decimals) { return printFixed(v, decimals); }
+
+    std::size_t print(unsigned int v, int base) { return printUnsignedBase(v, base); }
+    std::size_t print(unsigned long v, int base) { return printUnsignedBase(v, base); }
+    std::size_t print(unsigned long long v, int base) { return printUnsignedBase(v, base); }
+
+    std::size_t println() { return std::printf("\n"); }
+
+    template <typename T>
+    std::size_t println(const T& v) {
+        const std::size_t n = print(v);
+        return n + println();
+    }
+
+    std::size_t println(float v, int decimals) {
+        const std::size_t n = print(v, decimals);
+        return n + println();
+    }
+
+    std::size_t println(double v, int decimals) {
+        const std::size_t n = print(v, decimals);
+        return n + println();
+    }
+
+    std::size_t println(unsigned int v, int base) {
+        const std::size_t n = print(v, base);
+        return n + println();
+    }
+
+    std::size_t println(unsigned long v, int base) {
+        const std::size_t n = print(v, base);
+        return n + println();
+    }
+
+    std::size_t println(unsigned long long v, int base) {
+        const std::size_t n = print(v, base);
+        return n + println();
+    }
+
+private:
+    static std::size_t printFixed(double v, int decimals) {
+        if (decimals < 0) decimals = 0;
+        if (decimals > 9) decimals = 9;
+        char buf[64];
+        switch (decimals) {
+            case 0: std::snprintf(buf, sizeof(buf), "%.0f", v); break;
+            case 1: std::snprintf(buf, sizeof(buf), "%.1f", v); break;
+            case 2: std::snprintf(buf, sizeof(buf), "%.2f", v); break;
+            case 3: std::snprintf(buf, sizeof(buf), "%.3f", v); break;
+            case 4: std::snprintf(buf, sizeof(buf), "%.4f", v); break;
+            case 5: std::snprintf(buf, sizeof(buf), "%.5f", v); break;
+            case 6: std::snprintf(buf, sizeof(buf), "%.6f", v); break;
+            case 7: std::snprintf(buf, sizeof(buf), "%.7f", v); break;
+            case 8: std::snprintf(buf, sizeof(buf), "%.8f", v); break;
+            default: std::snprintf(buf, sizeof(buf), "%.9f", v); break;
+        }
+        return std::printf("%s", buf);
+    }
+
+    static std::size_t printUnsignedBase(unsigned long long v, int base) {
+        if (base == HEX) {
+            return std::printf("%llX", v);
+        }
+        return std::printf("%llu", v);
+    }
+};

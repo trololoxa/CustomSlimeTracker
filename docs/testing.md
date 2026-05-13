@@ -16,7 +16,10 @@ Native tests are for pure or mostly-pure logic:
 - `core/math.hpp` vector, matrix and quaternion invariants.
 - `sensor/ahrs_6dof.hpp` timestamp and quaternion invariants.
 - `runtime/static_test_types.hpp` statistics helpers.
+- `sensor/imu_quality.hpp` timestamp/FIFO/saturation/accel-gate decisions.
+- `sensor/gyro_temperature_compensation.hpp` bias model, range metadata and learning gates.
 - `runtime/runtime_bias_types.hpp` state reset semantics.
+- `runtime/runtime_gyro_bias_controller.hpp` host-safe decision helpers.
 - `sensor/mag_yaw_correction.hpp` gate/reject/cooldown behavior.
 - `config/tracker_config_detail.hpp` CRC helpers and schema constants.
 - `config/tracker_config_schema.hpp` default schema layout expectations.
@@ -25,7 +28,29 @@ Native tests are intentionally not a replacement for firmware tests. They do
 not verify SPI, GPIO interrupts, LSM6DSV FIFO timing, QMC6309 sensor-hub traffic,
 NVS/Preferences, Serial output, or CPU timing on the ESP32-C3.
 
-## Running standalone tests
+## Running the local quality gate
+
+The convenience entrypoint is:
+
+```bash
+python tools/check_all.py --clean
+```
+
+On Linux/macOS/WSL/Git Bash you can also use:
+
+```bash
+tools/check_all.sh --clean
+```
+
+The script always runs native tests unless `--skip-native` is passed. It also runs PlatformIO builds when `pio`/`platformio` is available in `PATH`. If PlatformIO is not installed, ESP32 builds are skipped by default so host-only development machines can still run the native gate. To make missing PlatformIO a failure, use:
+
+```bash
+python tools/check_all.py --require-pio
+```
+
+On Windows, `tools/check_all.py` is the portable entrypoint for PowerShell/CMD. `tools/check_all.sh` works from Git Bash or WSL.
+
+## Running standalone tests directly
 
 From the project root:
 
@@ -33,14 +58,13 @@ From the project root:
 python tools/run_standalone_tests.py --clean
 ```
 
-The runner compiles every `tests/native/test_*.cpp` as a separate executable
-into:
+The runner compiles host-safe project `.cpp` files once into object files, then compiles and links every `tests/native/test_*.cpp` as a separate executable into:
 
 ```text
 build/native_tests/
 ```
 
-It uses `CXX` when set, otherwise tries `g++`, `clang++`, then `c++`.
+It uses `CXX` when set, otherwise tries `g++`, `clang++`, then `c++`. Keeping project sources as reusable objects avoids recompiling AHRS/quality/mag logic for every single native test executable.
 
 Examples:
 
@@ -62,13 +86,22 @@ warning profile:
 -Wno-unused-parameter
 ```
 
-Do not add Arduino headers or ESP32-only APIs to native tests. If a header needs
-Arduino to compile, it is not a native-test target until that dependency is
-isolated behind an interface or guarded with `#ifdef ARDUINO`.
+Do not add ESP32 hardware APIs to native tests. A tiny `tests/native/Arduino.h`
+stub exists only for host-safe modules that mention `Stream`/`millis()` in a
+print/status helper but do not actually use ESP32 hardware. Do not use that stub
+to test app, SPI, GPIO, Preferences/NVS, Wi-Fi or Serial transport behavior. If a
+module needs real Arduino framework semantics, it remains firmware-test only
+until the pure decision rule is isolated behind a host-safe helper.
 
 ## Running firmware diagnostics
 
-Firmware diagnostics still need PlatformIO and the ESP32-C3:
+Firmware diagnostics still need PlatformIO and the ESP32-C3. You can run them directly or through the quality gate:
+
+```bash
+python tools/check_all.py --require-pio
+```
+
+Direct commands:
 
 ```bash
 pio run -e BOARD_LOLIN_C3_MINI
@@ -80,6 +113,7 @@ pio device monitor
 Recommended smoke-test commands after an architectural change:
 
 ```text
+help
 status
 health
 config nvs
@@ -88,9 +122,38 @@ quality stats
 ahrs status
 bias status
 mag status
+output status
 stream quat
 stream off
+test status
 test static 120
+```
+
+After a CLI-domain refactor, also touch each command domain once. The goal is not
+to validate sensor quality, but to catch missing `.cpp` includes, broken hook
+wiring, and command router regressions on the real firmware build:
+
+```text
+version
+config print
+imu status
+fifo status
+quality stats
+ahrs status
+bias status
+mag status
+output status
+test status
+cal temp print
+```
+
+If IMU/FIFO live reconfiguration was touched, verify that the magnetometer path
+is re-armed correctly after the change:
+
+```text
+imu odr 240 save
+fifo stats
+mag status
 ```
 
 For long-run stability after a risky runtime change:
@@ -131,8 +194,11 @@ Then run a firmware `test static 120`.
 Add native tests for:
 
 - Reset/counter behavior.
+- Base-bias source selection.
+- Temperature range gates and cautious/out-of-range gain scaling.
+- Decision flag packing.
+- Trim clamp rules.
 - Window accept/reject criteria when extracted into pure helpers.
-- Clamp/gain rules when they become host-safe.
 
 Then run:
 
@@ -187,15 +253,16 @@ Native tests must stay independent from the app layer:
 Allowed in native tests:
   core/*
   selected sensor/* pure logic
-  selected runtime/* pure state/types
+  selected runtime/* pure state/types and host-safe decision helpers
   config/* schema/detail headers
+  the minimal tests/native/Arduino.h stub for Stream/millis-only helpers
 
 Avoid in native tests:
   app/*
   serial/* command dispatcher
-  Arduino-dependent runtime modules
   Preferences/NVS
-  SPI/GPIO/Serial
+  SPI/GPIO/Serial/Wi-Fi
+  hardware timing or interrupt behavior
 ```
 
 If a new piece of logic is important but cannot be tested natively because it
@@ -210,9 +277,14 @@ Initial native tests cover:
 ```text
 core math/quaternion basics
 AHRS static/no-gyro invariants
+AHRS startup rejection and dt clamp/reject policy
+AHRS implementation linked from `sensor/ahrs_6dof.cpp`
+IMU quality timestamp/gap/recovery/saturation gates
+IMU quality implementation linked from `sensor/imu_quality.cpp`
+gyro temperature compensation bias/range/learning gates
 static-test scalar/vector stats
 static temp bin indexing
-runtime gyro bias reset state
+runtime gyro bias reset state and controller decision helpers
 mag yaw gate/reject/cooldown behavior
 config detail CRC/schema defaults
 ```
@@ -222,7 +294,8 @@ expansions are:
 
 ```text
 config validate/sanitize helpers once host-safe
-mag runtime processing after decoupling from FIFO raw sample type
-runtime bias decision windows after extracting pure evaluator helpers
+mag runtime processing trust/reject edge cases
+runtime bias full window accept/update behavior
+accel/mag calibration residual quality edge cases
 replay-driven AHRS regression tests from saved machine logs
 ```

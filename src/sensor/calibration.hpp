@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <cmath>
 
 #include "core/math.hpp"
 #include "connection/lsm6dsv_driver.hpp"
@@ -13,16 +12,6 @@ namespace tracker {
 // ============================================================
 // This file intentionally does not contain AHRS logic.
 // It only estimates and applies sensor calibration values.
-//
-// Current implemented calibration:
-//   - startup gyro bias calibration while tracker is stationary
-//   - basic stationary detection
-//   - accel identity calibration placeholder
-//
-// Later planned calibration:
-//   - 6-position accel bias/scale calibration
-//   - temperature model for gyro bias
-//   - persistent NVS config with version + CRC
 // ============================================================
 
 struct ImuCalibration {
@@ -30,44 +19,22 @@ struct ImuCalibration {
     Vec3 gyroBiasRadS = Vec3::zero();
 
     // Accel calibration: accel_calibrated = accelScale * (accel_raw_g - accelBiasG)
-    // For now this defaults to identity.
     Vec3 accelBiasG = Vec3::zero();
     Mat3 accelScale = Mat3::identity();
 
     bool gyroBiasValid = false;
     bool accelCalValid = false;
 
-    Vec3 applyGyro(const Vec3& gyroRadS) const {
-        return gyroRadS - gyroBiasRadS;
-    }
-
-    Vec3 applyAccel(const Vec3& accelG) const {
-        return accelScale * (accelG - accelBiasG);
-    }
-
-    Lsm6dsv::Sample apply(const Lsm6dsv::Sample& s) const {
-        Lsm6dsv::Sample out = s;
-        if (gyroBiasValid) {
-            out.gyro_rad_s = applyGyro(s.gyro_rad_s);
-        }
-        if (accelCalValid) {
-            out.accel_g = applyAccel(s.accel_g);
-        }
-        return out;
-    }
+    Vec3 applyGyro(const Vec3& gyroRadS) const;
+    Vec3 applyAccel(const Vec3& accelG) const;
+    Lsm6dsv::Sample apply(const Lsm6dsv::Sample& s) const;
 };
 
 struct StationaryDetectorParams {
-    // Conservative thresholds for startup calibration.
-    // If calibration often fails even when the board is still, relax slightly.
     float maxGyroNormRadS = 2.0f * MATH_DEG_TO_RAD; // 2 dps
     float maxAccelNormErrorG = 0.08f;                // | |a| - 1g | < 0.08g
-
-    // Additional stability check against slow handling/touching.
     float maxGyroVarianceRadS2 = square(0.35f * MATH_DEG_TO_RAD);
     float maxAccelVarianceG2 = square(0.015f);
-
-    // First samples after power-up / ODR change can be less stable.
     uint32_t warmupSamples = 64;
 };
 
@@ -83,113 +50,25 @@ struct StationaryStats {
     float gyroNormMeanRadS = 0.0f;
     float accelNormMeanG = 0.0f;
 
-    void reset() {
-        count = 0;
-        gyroMeanRadS = Vec3::zero();
-        accelMeanG = Vec3::zero();
-        gyroM2 = Vec3::zero();
-        accelM2 = Vec3::zero();
-        gyroNormMeanRadS = 0.0f;
-        accelNormMeanG = 0.0f;
-    }
+    void reset();
+    void push(const Lsm6dsv::Sample& s);
 
-    void push(const Lsm6dsv::Sample& s) {
-        count++;
-
-        const float n = static_cast<float>(count);
-
-        const Vec3 gyroDelta = s.gyro_rad_s - gyroMeanRadS;
-        gyroMeanRadS += gyroDelta / n;
-        const Vec3 gyroDelta2 = s.gyro_rad_s - gyroMeanRadS;
-        gyroM2 += hadamard(gyroDelta, gyroDelta2);
-
-        const Vec3 accelDelta = s.accel_g - accelMeanG;
-        accelMeanG += accelDelta / n;
-        const Vec3 accelDelta2 = s.accel_g - accelMeanG;
-        accelM2 += hadamard(accelDelta, accelDelta2);
-
-        gyroNormMeanRadS += (s.gyro_rad_s.norm() - gyroNormMeanRadS) / n;
-        accelNormMeanG += (s.accel_g.norm() - accelNormMeanG) / n;
-    }
-
-    Vec3 gyroVarianceRadS2() const {
-        if (count < 2) return Vec3::zero();
-        return gyroM2 / static_cast<float>(count - 1);
-    }
-
-    Vec3 accelVarianceG2() const {
-        if (count < 2) return Vec3::zero();
-        return accelM2 / static_cast<float>(count - 1);
-    }
-
-    float gyroVarianceNormRadS2() const {
-        return gyroVarianceRadS2().norm();
-    }
-
-    float accelVarianceNormG2() const {
-        return accelVarianceG2().norm();
-    }
+    Vec3 gyroVarianceRadS2() const;
+    Vec3 accelVarianceG2() const;
+    float gyroVarianceNormRadS2() const;
+    float accelVarianceNormG2() const;
 };
 
 class StationaryDetector {
 public:
-    explicit StationaryDetector(const StationaryDetectorParams& params = StationaryDetectorParams{})
-        : params_(params) {}
+    explicit StationaryDetector(const StationaryDetectorParams& params = StationaryDetectorParams{});
 
-    void reset() {
-        samplesSeen_ = 0;
-        stats_.reset();
-    }
+    void reset();
+    bool pushAndCheckInstant(const Lsm6dsv::Sample& s);
+    bool windowLooksStationary(uint32_t minSamples) const;
 
-    bool pushAndCheckInstant(const Lsm6dsv::Sample& s) {
-        samplesSeen_++;
-
-        if (samplesSeen_ <= params_.warmupSamples) {
-            return false;
-        }
-
-        if (!s.gyro_rad_s.isFinite() || !s.accel_g.isFinite()) {
-            stats_.reset();
-            return false;
-        }
-
-        const float gyroNorm = s.gyro_rad_s.norm();
-        const float accelNorm = s.accel_g.norm();
-        const float accelNormError = std::fabs(accelNorm - 1.0f);
-
-        const bool instantStill =
-            gyroNorm <= params_.maxGyroNormRadS &&
-            accelNormError <= params_.maxAccelNormErrorG;
-
-        if (!instantStill) {
-            stats_.reset();
-            return false;
-        }
-
-        stats_.push(s);
-        return true;
-    }
-
-    bool windowLooksStationary(uint32_t minSamples) const {
-        if (stats_.count < minSamples) {
-            return false;
-        }
-
-        const float accelNormError = std::fabs(stats_.accelNormMeanG - 1.0f);
-
-        return stats_.gyroMeanRadS.norm() <= params_.maxGyroNormRadS &&
-               accelNormError <= params_.maxAccelNormErrorG &&
-               stats_.gyroVarianceNormRadS2() <= params_.maxGyroVarianceRadS2 &&
-               stats_.accelVarianceNormG2() <= params_.maxAccelVarianceG2;
-    }
-
-    const StationaryStats& stats() const {
-        return stats_;
-    }
-
-    const StationaryDetectorParams& params() const {
-        return params_;
-    }
+    const StationaryStats& stats() const;
+    const StationaryDetectorParams& params() const;
 
 private:
     StationaryDetectorParams params_;
@@ -198,14 +77,8 @@ private:
 };
 
 struct GyroStartupCalibrationParams {
-    // At 960 Hz: 1536 samples ~= 1.6 seconds.
-    // At 480 Hz: 1536 samples ~= 3.2 seconds.
     uint32_t requiredStationarySamples = 1536;
-
-    // Safety cap. If board is being moved, calibration should fail instead of
-    // silently producing a bad bias.
     uint32_t maxTotalSamples = 9600;
-
     StationaryDetectorParams stationary;
 };
 
@@ -223,56 +96,15 @@ struct GyroStartupCalibrationResult {
 
 class GyroStartupCalibrator {
 public:
-    explicit GyroStartupCalibrator(const GyroStartupCalibrationParams& params = GyroStartupCalibrationParams{})
-        : params_(params), detector_(params.stationary) {}
+    explicit GyroStartupCalibrator(const GyroStartupCalibrationParams& params = GyroStartupCalibrationParams{});
 
-    void reset() {
-        result_ = GyroStartupCalibrationResult{};
-        detector_.reset();
-    }
+    void reset();
+    bool push(const Lsm6dsv::Sample& s);
 
-    // Push one already-scaled LSM6DSV sample.
-    // Returns true when calibration finished successfully.
-    bool push(const Lsm6dsv::Sample& s) {
-        result_.totalSamples++;
-
-        const bool instantStill = detector_.pushAndCheckInstant(s);
-        if (!instantStill) {
-            return false;
-        }
-
-        const StationaryStats& st = detector_.stats();
-        result_.stationarySamples = st.count;
-
-        if (!detector_.windowLooksStationary(params_.requiredStationarySamples)) {
-            return false;
-        }
-
-        result_.success = true;
-        result_.gyroBiasRadS = st.gyroMeanRadS;
-        result_.gyroBiasDps = st.gyroMeanRadS * MATH_RAD_TO_DEG;
-        result_.accelMeanG = st.accelMeanG;
-        result_.accelNormMeanG = st.accelNormMeanG;
-        result_.gyroNoiseNormRadS2 = st.gyroVarianceNormRadS2();
-        result_.accelNoiseNormG2 = st.accelVarianceNormG2();
-        return true;
-    }
-
-    bool failedByTimeout() const {
-        return !result_.success && result_.totalSamples >= params_.maxTotalSamples;
-    }
-
-    bool done() const {
-        return result_.success;
-    }
-
-    const GyroStartupCalibrationResult& result() const {
-        return result_;
-    }
-
-    const GyroStartupCalibrationParams& params() const {
-        return params_;
-    }
+    bool failedByTimeout() const;
+    bool done() const;
+    const GyroStartupCalibrationResult& result() const;
+    const GyroStartupCalibrationParams& params() const;
 
 private:
     GyroStartupCalibrationParams params_;
@@ -284,38 +116,14 @@ private:
 // It can slowly update gyro bias only when an external gate says the tracker is stationary.
 class OnlineGyroBiasEstimator {
 public:
-    explicit OnlineGyroBiasEstimator(float alpha = 0.002f) : alpha_(alpha) {}
+    explicit OnlineGyroBiasEstimator(float alpha = 0.002f);
 
-    void reset(const Vec3& initialBias = Vec3::zero()) {
-        biasRadS_ = initialBias;
-        initialized_ = true;
-    }
+    void reset(const Vec3& initialBias = Vec3::zero());
+    void updateIfStationary(const Vec3& gyroRadS, bool stationary);
 
-    void updateIfStationary(const Vec3& gyroRadS, bool stationary) {
-        if (!stationary || !gyroRadS.isFinite()) {
-            return;
-        }
-
-        if (!initialized_) {
-            biasRadS_ = gyroRadS;
-            initialized_ = true;
-            return;
-        }
-
-        biasRadS_ = lerp(biasRadS_, gyroRadS, alpha_);
-    }
-
-    Vec3 biasRadS() const {
-        return biasRadS_;
-    }
-
-    Vec3 biasDps() const {
-        return biasRadS_ * MATH_RAD_TO_DEG;
-    }
-
-    bool initialized() const {
-        return initialized_;
-    }
+    Vec3 biasRadS() const;
+    Vec3 biasDps() const;
+    bool initialized() const;
 
 private:
     float alpha_ = 0.002f;

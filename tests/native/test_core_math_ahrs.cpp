@@ -73,9 +73,44 @@ static void testAhrsStaticInvariants(TestContext& ctx) {
     CHECK(ctx, ahrs.stats().accelUpdateCount > 0);
 }
 
+
+static void testAhrsStartupAndDtPolicy(TestContext& ctx) {
+    Ahrs6DofConfig cfg;
+    cfg.maxDtS = 0.010f;
+    cfg.clampLargeDt = true;
+    cfg.normalizeEvery = 1;
+
+    Ahrs6Dof ahrs(cfg);
+    CHECK(ctx, !ahrs.resetFromAccel(Vec3(0.0f, 0.0f, 2.0f), 1000));
+    CHECK(ctx, !ahrs.initialized());
+
+    // update() with impossible accel should count a startup rejection and stay uninitialized.
+    CHECK(ctx, !ahrs.update(Vec3::zero(), Vec3(0.0f, 0.0f, 2.0f), 1000));
+    CHECK(ctx, !ahrs.initialized());
+    CHECK(ctx, ahrs.stats().startupAccelRejectedCount == 1);
+
+    CHECK(ctx, !ahrs.update(Vec3::zero(), Vec3::unitZ(), 2000));
+    CHECK(ctx, ahrs.initialized());
+
+    CHECK(ctx, ahrs.update(Vec3(0.0f, 0.0f, 1.0f), Vec3::unitZ(), 102000));
+    CHECK(ctx, ahrs.stats().clampedLargeDt == 1);
+    CHECK_NEAR(ctx, ahrs.stats().lastDtS, 0.100f, 1.0e-6f);
+    CHECK_NEAR(ctx, ahrs.stats().lastUsedDtS, 0.010f, 1.0e-6f);
+
+    Ahrs6Dof rejectLargeDt(cfg);
+    Ahrs6DofConfig rejectCfg = cfg;
+    rejectCfg.clampLargeDt = false;
+    rejectLargeDt.setConfig(rejectCfg);
+    CHECK(ctx, !rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 1000));
+    CHECK(ctx, !rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 101000));
+    CHECK(ctx, rejectLargeDt.stats().skippedBadDt == 1);
+    CHECK(ctx, rejectLargeDt.stats().lastIntegratedTimestampUs == 1000);
+}
+
 int main() {
     TestContext ctx;
     testVecMatQuat(ctx);
     testAhrsStaticInvariants(ctx);
+    testAhrsStartupAndDtPolicy(ctx);
     return ctx.finish("test_core_math_ahrs");
 }

@@ -1,7 +1,7 @@
 # Code quality roadmap review and execution plan
 
 Дата ревью: 2026-05-09
-Область ревью: `src/Code_Roadmap.md`, `src/main.cpp`, `src/serial/tracker_serial_commands.hpp`, `src/config/tracker_config.hpp`, `src/defines.hpp`, `platformio.ini`.
+Область ревью: `src/Code_Roadmap.md`, `src/main.cpp`, `src/serial/tracker_serial_commands.hpp`, `src/config/tracker_config.hpp`, `src/defines.h`, `platformio.ini`.
 
 ## Executive summary
 
@@ -33,8 +33,8 @@
 - Убрать реальные Wi-Fi credentials и локальный IP из `platformio.ini`.
 - Сделать один canonical defaults header и начать перевод `main.cpp`/`TrackerConfig` на него.
 - Запретить выбор `output mode binary/slimevr`, пока нет backend implementation.
-- Убрать boot-time `sleep()` и заменить на явный короткий `delay()`.
-- Сохранить compatibility include для старого `defines.hpp`, но считать новым API `defines.h`.
+- Boot-time `sleep(2)` оставлен намеренно как developer convenience: он дает время открыть Serial Monitor. Удалить его можно в финальной production-cleanup фазе.
+- `defines.h` остается canonical defaults header. `defines.hpp` не нужен, пока проект не принимает решение переименовать header целиком.
 
 Acceptance:
 
@@ -117,15 +117,22 @@ Acceptance:
 
 Цель: избавиться от 3000+ line header-only dispatcher.
 
-- Создать `serial/command_context.hpp`, `command_parser.hpp`, `command_router.hpp`.
-- Разделить команды по доменам: config, imu, fifo, calibration, ahrs, mag, static_test, output, log.
+Статус: в текущем коде доменные CLI-модули разделены на `.hpp/.cpp` пары. `tracker_serial_commands.hpp` оставляет fixed-buffer parser/template glue и declaration router-а, а routing implementation живёт в `tracker_serial_commands.cpp`. Domain behavior живёт в соответствующих `tracker_*_commands.cpp`.
+
+Правила после split:
+
+- `serial/tracker_serial_context.hpp` остаётся lightweight context/types file.
+- Parser остаётся fixed-buffer/no-heap.
 - Команды с side effects должны печатать explicit result и persist behavior.
+- Новую команду добавлять в `.cpp`; в `.hpp` выносить только API, который нужен другим translation units.
+- Command `.cpp` должен явно include-ить полный тип, если обращается к полям/методам объекта из `TrackerSerialCommandContext`.
+- Shared helpers между command domains объявляются только осознанно, в header домена-владельца.
 
 Acceptance:
 
 - Parser остается fixed-buffer/no-heap.
 - Placeholder commands отсутствуют или возвращают `NOT_IMPLEMENTED`.
-- CLI reference генерируется/поддерживается из одного места.
+- CLI reference поддерживается в `tracker_system_commands.cpp`.
 
 ### P7 — config schema hardening
 
@@ -158,10 +165,10 @@ Acceptance:
 
 Этот patch set покрывает только P0:
 
-1. `defines.h` становится canonical defaults header; `defines.hpp` оставлен как compatibility shim.
-2. `main.cpp` и `TrackerConfig` начинают использовать эти defaults.
+1. `defines.h` остается canonical defaults header; `defines.hpp` не добавляется.
+2. `main.cpp` остается минимальным entrypoint.
 3. `platformio.ini` больше не содержит реальных credentials.
 4. `output mode binary/slimevr` возвращает `NOT_IMPLEMENTED` до появления backend.
-5. Boot delay становится явным и коротким.
+5. Boot `sleep(2)` оставлен как временный developer convenience до финальной cleanup-фазы.
 
-Следующий безопасный batch после проверки сборки: включить warnings и начать extract `runtime/static_test` без изменения output format.
+Текущий безопасный batch после крупного refactor: split `app/tracker_app_hooks.hpp` на маленькие include-only hook sections, добавить host/PlatformIO quality gate, и добавить native config layout guards без runtime-cost.

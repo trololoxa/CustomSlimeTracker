@@ -1,6 +1,7 @@
 #include "test_common.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 
 #include "config/tracker_config_detail.hpp"
@@ -26,6 +27,18 @@ static void testDefaultSchemaHeader(TestContext& ctx) {
     CHECK(ctx, std::strlen(blob.device.deviceName) > 0);
 }
 
+static void testConfigBlobLayoutGuards(TestContext& ctx) {
+    // Persistent config is stored as one binary blob in NVS. These guards do
+    // not add firmware runtime cost; they only make host tests fail when the
+    // layout changes accidentally instead of through an intentional migration.
+    CHECK(ctx, sizeof(TrackerConfigBlob) == 756);
+    CHECK(ctx, offsetof(TrackerConfigBlob, magic) == 0);
+    CHECK(ctx, offsetof(TrackerConfigBlob, crc32) == 8);
+    CHECK(ctx, offsetof(TrackerConfigBlob, schemas) == 12);
+    CHECK(ctx, offsetof(TrackerConfigBlob, device) == 716);
+    CHECK(ctx, sizeof(TrackerConfigSchemaVersions) == 24);
+}
+
 static void testFiniteHelpers(TestContext& ctx) {
     CHECK(ctx, tracker_config_detail::finiteVec3(Vec3(1.0f, 2.0f, 3.0f)));
     CHECK(ctx, !tracker_config_detail::finiteVec3(Vec3(1.0f, std::nanf(""), 3.0f)));
@@ -38,6 +51,7 @@ int main() {
     TestContext ctx;
     testFnvCrcKnownVector(ctx);
     testDefaultSchemaHeader(ctx);
+    testConfigBlobLayoutGuards(ctx);
     testFiniteHelpers(ctx);
     return ctx.finish("test_config_schema_detail");
 }

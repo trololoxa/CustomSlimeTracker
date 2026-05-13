@@ -86,6 +86,10 @@ app/tracker_app_context.hpp
 app/tracker_hardware_context.hpp
 app/tracker_runtime_context.hpp
 app/tracker_app_hooks.hpp
+app/hooks/tracker_app_common_hooks.hpp
+app/hooks/tracker_app_mag_hooks.hpp
+app/hooks/tracker_app_command_hooks.hpp
+app/hooks/tracker_app_runtime_hooks.hpp
 app/tracker_bootstrap.hpp
 app/tracker_command_wiring.hpp
 ```
@@ -151,20 +155,22 @@ Owns logical runtime singletons:
 
 Hardware objects do not belong here. Runtime logic can reference hardware only through dependency structs built in `tracker_app_hooks.hpp`.
 
-#### `tracker_app_hooks.hpp`
+#### `tracker_app_hooks.hpp` and `app/hooks/`
 
 This is the glue edge between app-owned objects and domain modules.
 
-It contains:
+`tracker_app_hooks.hpp` is now a small umbrella that includes focused hook sections:
 
-- dependency builders;
-- command hooks;
-- FIFO/sample pipeline callbacks;
-- mag runtime callbacks;
-- status/log callbacks;
-- `TrackerAppDeps` builder.
+```text
+app/hooks/tracker_app_common_hooks.hpp   counters, log glue, FIFO wait glue, bootstrap deps, runtime-bias hooks
+app/hooks/tracker_app_mag_hooks.hpp      mag runtime callbacks, mag status hooks, tracking-state glue
+app/hooks/tracker_app_command_hooks.hpp  command/status/static-test hook wiring
+app/hooks/tracker_app_runtime_hooks.hpp  sample-pipeline callbacks and final TrackerAppDeps builder
+```
 
-This file may be relatively large, because it is the explicit boundary where modules are connected. Keep it as wiring, not domain logic. If a hook grows into an algorithm, move the algorithm into `runtime/`, `sensor/`, `connection/`, or `serial/`.
+These hook files are intentionally still include-only because they bind together app-level static singletons owned by `tracker_hardware_context.hpp` and `tracker_runtime_context.hpp`. The split is for readability and ownership clarity; it must not introduce runtime allocation, virtual dispatch, or new module ownership.
+
+Keep these files as wiring, not domain logic. If a hook grows into an algorithm, move the algorithm into `runtime/`, `sensor/`, `connection/`, or `serial/`.
 
 #### `tracker_bootstrap.hpp`
 
@@ -261,16 +267,16 @@ This layer may depend on Arduino/SPI/Stream only where necessary for hardware ac
 Examples:
 
 ```text
-sensor/ahrs_6dof.hpp
+sensor/ahrs_6dof.hpp / sensor/ahrs_6dof.cpp
 sensor/calibration.hpp
 sensor/accel_6pos_calibration.hpp
 sensor/fifo_calibrations.hpp
 sensor/gyro_temperature_compensation.hpp
-sensor/imu_quality.hpp
+sensor/imu_quality.hpp / sensor/imu_quality.cpp
 sensor/mag_calibration.hpp
 sensor/mag_heading.hpp
-sensor/mag_runtime.hpp
-sensor/mag_yaw_correction.hpp
+sensor/mag_runtime.hpp / sensor/mag_runtime.cpp
+sensor/mag_yaw_correction.hpp / sensor/mag_yaw_correction.cpp
 sensor/qmc6309.hpp
 ```
 
@@ -329,35 +335,39 @@ Changes to these files require `test static` regression checks.
 Current domain split:
 
 ```text
-serial/tracker_serial_commands.hpp          dispatcher + line parser
+serial/tracker_serial_commands.hpp          line parser template + dispatcher declaration
+serial/tracker_serial_commands.cpp          command router implementation
 serial/tracker_serial_context.hpp           context/types
 serial/tracker_serial_stream.hpp            stream emit helpers
-serial/tracker_system_commands.hpp          help/status/health/system
-serial/tracker_output_commands.hpp          stream/log/output
-serial/tracker_bias_commands.hpp            runtime bias
-serial/tracker_test_commands.hpp            static test
-serial/tracker_config_commands.hpp          config/NVS
-serial/tracker_imu_fifo_commands.hpp        IMU/FIFO/quality
-serial/tracker_ahrs_commands.hpp            AHRS
-serial/tracker_calibration_commands.hpp     gyro/accel/temp calibration
-serial/tracker_mag_commands.hpp             mag/yaw
+serial/tracker_system_commands.hpp/.cpp      help/status/health/system
+serial/tracker_output_commands.hpp/.cpp      stream/log/output
+serial/tracker_bias_commands.hpp/.cpp        runtime bias
+serial/tracker_test_commands.hpp/.cpp        static test
+serial/tracker_config_commands.hpp/.cpp      config/NVS
+serial/tracker_imu_fifo_commands.hpp/.cpp    IMU/FIFO/quality
+serial/tracker_ahrs_commands.hpp/.cpp        AHRS
+serial/tracker_calibration_commands.hpp/.cpp gyro/accel/temp calibration
+serial/tracker_mag_commands.hpp/.cpp         mag/yaw
 ```
 
 Rules:
 
-- new commands go into the matching domain file;
-- `tracker_serial_commands.hpp` should stay a dispatcher and parser;
+- new commands go into the matching domain pair; put declarations in `*.hpp` and implementation in `*.cpp`;
+- `tracker_serial_commands.hpp` should stay fixed-buffer parser/template glue only; routing lives in `tracker_serial_commands.cpp`;
+- command `.cpp` files must include the concrete headers for every forwarded type they dereference; do not rely on transitive includes from the old header-only layout;
+- helpers shared between command domains should be declared intentionally in the owning domain header, for example mag re-arm helpers used by IMU/FIFO reconfiguration;
 - command handlers should call hooks or domain APIs, not implement long algorithms inline;
 - avoid `String` and heap allocation;
 - keep command output stable unless intentionally changing the CLI contract.
 
 When adding a new command:
 
-1. Add the handler to the correct `tracker_*_commands.hpp` domain.
-2. Add a hook to `TrackerSerialCommandContext` only if the command needs app/runtime behavior that does not already exist.
-3. Wire that hook in `app/tracker_command_wiring.hpp` / `app/tracker_app_hooks.hpp`.
-4. Add the command to `help` in `tracker_system_commands.hpp`.
-5. Smoke-test with Serial Monitor.
+1. Declare the handler/helper in the correct `tracker_*_commands.hpp` domain only if other translation units need it.
+2. Implement command behavior in the matching `tracker_*_commands.cpp`.
+3. Add a hook to `TrackerSerialCommandContext` only if the command needs app/runtime behavior that does not already exist.
+4. Wire that hook in `app/tracker_command_wiring.hpp` / `app/tracker_app_hooks.hpp`.
+5. Add the command to `help` in `tracker_system_commands.cpp`.
+6. Smoke-test with Serial Monitor.
 
 ## Runtime data flow
 
@@ -567,7 +577,7 @@ These are soft limits, not hard rules, but they capture the intended architectur
 
 ```text
 main.cpp                         tiny entrypoint
-serial/tracker_serial_commands   dispatcher/parser only
+serial/tracker_serial_commands   parser/template glue only; router in .cpp
 config/tracker_config.hpp        umbrella include only
 app/tracker_app_context.hpp      top-level context entrypoints only
 ```
@@ -587,10 +597,11 @@ If a file contains multiple unrelated domains, split it before adding more logic
 
 ### Add a new CLI command
 
-- Domain command logic: `serial/tracker_*_commands.hpp`.
+- Domain command declarations: `serial/tracker_*_commands.hpp`.
+- Domain command behavior: `serial/tracker_*_commands.cpp`.
 - Context fields/hooks: `serial/tracker_serial_context.hpp`.
 - Wiring: `app/tracker_command_wiring.hpp` and/or `app/tracker_app_hooks.hpp`.
-- Help text: `serial/tracker_system_commands.hpp`.
+- Help text: `serial/tracker_system_commands.cpp`.
 
 ### Add a new persisted setting
 
@@ -614,6 +625,74 @@ If a file contains multiple unrelated domains, split it before adding more logic
 - Use `TrackerNetworkConfig` or a future `net/` layer.
 - Keep protocol encoding separate from transport.
 - Keep output runtime separate from sensor fusion.
+
+## Header and implementation split policy
+
+The project started as mostly header-only firmware code. That made early refactors easy, but large runtime/domain modules should not stay header-only forever. Use this rule:
+
+- Keep small type-only files header-only: `*_types.hpp`, `tracker_config_schema.hpp`, `tracker_config_detail.hpp`, tiny math helpers.
+- Move large behavior/reporting/controller implementations to `.cpp` once their public API is stable.
+- Do not split a file only to chase line counts; split when it reduces compile dependencies or hides implementation details.
+- `.hpp` files should expose domain APIs and data needed by callers. `.cpp` files should own printing, formatting, state-machine internals, and heavy includes.
+- Arduino/PlatformIO automatically compiles `.cpp` files under `src/`; no separate build registration is needed.
+
+Current split status:
+
+```text
+runtime/static_test_runner.hpp        -> static_test_runner.cpp       done
+runtime/machine_log_runtime.hpp       -> machine_log_runtime.cpp      done
+runtime/runtime_status_reporter.hpp   -> runtime_status_reporter.cpp  done
+runtime/mag_status_reporter.hpp       -> mag_status_reporter.cpp      done
+runtime/output_runtime.hpp            -> output_runtime.cpp           done
+runtime/gyro_temp_static_fit.hpp      -> gyro_temp_static_fit.cpp     done
+runtime/runtime_gyro_bias_controller.hpp -> runtime_gyro_bias_controller.cpp done
+runtime/fifo_runtime_processor.hpp       -> fifo_runtime_processor.cpp       done
+runtime/imu_sample_pipeline.hpp          -> imu_sample_pipeline.cpp          done
+runtime/tracking_state_controller.hpp    -> tracking_state_controller.cpp    done
+runtime/mag_runtime_controller.hpp       -> mag_runtime_controller.cpp       done
+config/tracker_config_runtime.hpp        -> tracker_config_runtime.cpp        done
+config/tracker_config_store.hpp          -> tracker_config_store.cpp          done
+config/tracker_config_print.hpp          -> tracker_config_print.cpp          done
+config/tracker_network_config.hpp        -> tracker_network_config.cpp        done
+app/tracker_app.hpp                      -> tracker_app.cpp                     done
+app/tracker_bootstrap.hpp                -> tracker_bootstrap.cpp               done
+app/tracker_command_wiring.hpp           -> tracker_command_wiring.cpp          done
+sensor/gyro_temperature_compensation.hpp -> gyro_temperature_compensation.cpp done
+sensor/mag_yaw_correction.hpp            -> mag_yaw_correction.cpp            done
+sensor/accel_6pos_calibration.hpp        -> accel_6pos_calibration.cpp        done
+sensor/mag_calibration.hpp               -> mag_calibration.cpp               done
+sensor/mag_heading.hpp                   -> mag_heading.cpp                   done
+sensor/mag_runtime.hpp                   -> mag_runtime.cpp                   done
+sensor/ahrs_6dof.hpp                     -> ahrs_6dof.cpp                    done
+sensor/imu_quality.hpp                   -> imu_quality.cpp                  done
+connection/lsm6dsv_driver.hpp            -> lsm6dsv_driver.cpp             done
+connection/lsm6dsv_fifo.hpp              -> lsm6dsv_fifo.cpp               done
+connection/lsm6dsv_sensorhub.hpp         -> lsm6dsv_sensorhub.cpp          done
+sensor/qmc6309.hpp                       -> qmc6309.cpp                    done
+```
+
+Command-domain modules are now split into `.hpp/.cpp` pairs. Keep only declarations and tiny parser/template glue in headers. The app hook glue has been split into smaller include-only files, but should not move to `.cpp` until app globals are represented by an explicit owned context object.
+
+```text
+serial/*_commands.hpp                    -> command .cpp files             done
+serial/tracker_serial_commands.hpp       -> parser template glue only       done
+sensor/fifo_calibrations.hpp             -> calibration I/O .cpp, optional after more tests
+sensor/calibration.hpp                   -> partial .cpp, optional after more tests
+```
+
+Hardware-facing connection drivers are split into `.cpp` files now. Keep their headers as public driver APIs only; avoid adding high-level tracking, calibration, or CLI logic to `connection/`.
+
+Keep these app ownership/context headers header-only for now:
+
+```text
+app/tracker_app_context.hpp
+app/tracker_hardware_context.hpp
+app/tracker_runtime_context.hpp
+```
+
+They define the firmware composition layer and currently own static singletons for the single Arduino translation unit that includes `main.cpp`. Moving `tracker_app_hooks.hpp` or `app/hooks/*` to `.cpp` should wait until those globals are represented by an explicit `TrackerAppContext` object instead of header-level static ownership.
+
+Avoid moving tiny structs or schema definitions to `.cpp`; they are useful as lightweight shared declarations and native-test inputs.
 
 ## Current known follow-up areas
 
@@ -647,3 +726,14 @@ connection code talks to hardware
 app code wires
 main.cpp enters
 ```
+
+
+## Sensor calibration implementation split status
+
+The sensor calibration layer now follows the public-header/private-implementation rule:
+
+- `sensor/calibration.hpp` declares IMU calibration, stationary detection, startup gyro calibration, and online gyro bias APIs.
+- `sensor/calibration.cpp` implements those algorithms.
+- `sensor/fifo_calibrations.hpp` keeps the FIFO drain template in the header but moves the non-template calibration runners to `sensor/fifo_calibrations.cpp`.
+
+This keeps command/config/app code from recompiling the calibration implementation in every translation unit while preserving the templated FIFO drain helper where it belongs.
