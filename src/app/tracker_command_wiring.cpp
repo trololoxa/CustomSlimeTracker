@@ -10,6 +10,10 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.io = objects.io;
     ctx.config = objects.config;
     ctx.configStore = objects.configStore;
+    ctx.networkConfig = objects.networkConfig;
+    ctx.networkConfigStore = objects.networkConfigStore;
+    ctx.networkConfigLoadedFromNvs = objects.networkConfigLoadedFromNvs;
+    ctx.wifiManager = objects.wifiManager;
     ctx.lsm = objects.lsm;
     ctx.fifo = objects.fifo;
     ctx.sensorHub = objects.sensorHub;

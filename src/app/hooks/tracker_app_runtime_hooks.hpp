@@ -130,6 +130,47 @@ static bool appSetMagRuntimeEnabledCallback(bool enabled, bool persist) {
     return setMagRuntimeEnabledHook(enabled, persist, nullptr);
 }
 
+
+static TrackerWifiManagerConfig makeAppWifiManagerConfig() {
+    TrackerWifiManagerConfig cfg;
+    cfg.enabled = g_networkConfig.data.wifiEnabled;
+    cfg.credentialsValid = g_networkConfig.data.credentialsValid;
+    cfg.ssid = g_networkConfig.data.ssid;
+    cfg.password = g_networkConfig.data.password;
+    cfg.hostname = g_networkConfig.data.deviceName;
+    cfg.connectTimeoutMs = 15000;
+    cfg.reconnectBackoffMs = 5000;
+    cfg.statusPollIntervalMs = 250;
+    return cfg;
+}
+
+static void setupNetworkRuntime() {
+    TrackerNetworkConfig loaded;
+    if (g_networkConfigStore.load(loaded)) {
+        g_networkConfig = loaded;
+        g_networkConfigLoadedFromNvs = true;
+    } else {
+        g_networkConfig.resetDefaults();
+        g_networkConfigLoadedFromNvs = false;
+    }
+    g_networkConfig.sanitize();
+
+    g_wifiManager.begin(g_wifiStation);
+    g_wifiManager.configure(makeAppWifiManagerConfig());
+
+    Serial.print("# network_config_loaded_from_nvs=");
+    Serial.println(g_networkConfigLoadedFromNvs ? "yes" : "no");
+    Serial.print("# wifi_enabled=");
+    Serial.println(g_networkConfig.data.wifiEnabled ? "yes" : "no");
+    if (g_networkConfig.data.wifiEnabled) {
+        Serial.println("# wifi connection is non-blocking; use: net status");
+    }
+}
+
+static void updateNetworkRuntime() {
+    g_wifiManager.update(millis());
+}
+
 static TrackerAppDeps makeTrackerAppDeps() {
     TrackerAppDeps deps;
 
@@ -155,6 +196,8 @@ static TrackerAppDeps makeTrackerAppDeps() {
 
     deps.callbacks.setupMagRuntimeController = setupMagRuntimeController;
     deps.callbacks.setupCommandInterface = setupCommandInterface;
+    deps.callbacks.setupNetworkRuntime = setupNetworkRuntime;
+    deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
     deps.callbacks.resetFifoRuntimeCounters = resetFifoRuntimeCounters;
     deps.callbacks.attachFifoInterrupt = appAttachFifoInterruptCallback;
     deps.callbacks.resetOrientationState = resetOrientationDependentState;

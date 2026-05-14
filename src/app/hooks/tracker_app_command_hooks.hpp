@@ -157,6 +157,10 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.io = &Serial;
     objects.config = &g_config;
     objects.configStore = &g_configStore;
+    objects.networkConfig = &g_networkConfig;
+    objects.networkConfigStore = &g_networkConfigStore;
+    objects.networkConfigLoadedFromNvs = &g_networkConfigLoadedFromNvs;
+    objects.wifiManager = &g_wifiManager;
     objects.lsm = &lsm;
     objects.fifo = &lsmFifo;
     objects.sensorHub = &lsmHub;

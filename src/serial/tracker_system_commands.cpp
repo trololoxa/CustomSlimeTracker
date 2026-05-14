@@ -83,6 +83,13 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  mag axis identity [save] | clear [save]");
     out.println("  mag cal start | stop | reset | status | print | apply [save]");
     out.println();
+    out.println("[network]");
+    out.println("  net status | print | help");
+    out.println("  net set ssid <ssid> [save] | set pass <password> [save] | clear pass [save]");
+    out.println("  net set name <deviceName> [save] | set server <host> [port] [save]");
+    out.println("  net discovery on|off [save] | enable [save] | disable [save]");
+    out.println("  net save | load | defaults | erase | reconnect | counters reset");
+    out.println();
     out.println("[output/log/test]");
     out.println("  stream off | heartbeat | raw | scaled | quat | debug");
     out.println("  stream rate <hz>");

@@ -9,6 +9,9 @@ namespace tracker {
 
 class TrackerConfig;
 class TrackerConfigStore;
+class TrackerNetworkConfig;
+class TrackerNetworkConfigStore;
+class TrackerWifiManager;
 class Lsm6dsv;
 class Lsm6dsvFifoReader;
 class Lsm6dsvSensorHub;
@@ -96,6 +99,11 @@ struct TrackerSerialCommandContext {
 
     TrackerConfig* config = nullptr;
     TrackerConfigStore* configStore = nullptr;
+
+    TrackerNetworkConfig* networkConfig = nullptr;
+    TrackerNetworkConfigStore* networkConfigStore = nullptr;
+    bool* networkConfigLoadedFromNvs = nullptr;
+    TrackerWifiManager* wifiManager = nullptr;
 
     Lsm6dsv* lsm = nullptr;
     Lsm6dsvFifoReader* fifo = nullptr;

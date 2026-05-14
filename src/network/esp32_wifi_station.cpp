@@ -2,14 +2,52 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <cstring>
 
 namespace tracker {
+
+namespace {
+
+void copyBounded(char* dst, size_t dstSize, const char* src) {
+    if (!dst || dstSize == 0) return;
+    if (!src) src = "";
+    std::strncpy(dst, src, dstSize - 1);
+    dst[dstSize - 1] = '\0';
+}
+
+WifiAuthType mapAuthType(int auth) {
+    switch (auth) {
+        case WIFI_AUTH_OPEN: return WifiAuthType::Open;
+        case WIFI_AUTH_WEP: return WifiAuthType::Wep;
+        case WIFI_AUTH_WPA_PSK: return WifiAuthType::WpaPsk;
+        case WIFI_AUTH_WPA2_PSK: return WifiAuthType::Wpa2Psk;
+        case WIFI_AUTH_WPA_WPA2_PSK: return WifiAuthType::WpaWpa2Psk;
+        case WIFI_AUTH_WPA2_ENTERPRISE: return WifiAuthType::Wpa2Enterprise;
+#if defined(WIFI_AUTH_WPA3_PSK)
+        case WIFI_AUTH_WPA3_PSK: return WifiAuthType::Wpa3Psk;
+#endif
+#if defined(WIFI_AUTH_WPA2_WPA3_PSK)
+        case WIFI_AUTH_WPA2_WPA3_PSK: return WifiAuthType::Wpa2Wpa3Psk;
+#endif
+#if defined(WIFI_AUTH_WAPI_PSK)
+        case WIFI_AUTH_WAPI_PSK: return WifiAuthType::WapiPsk;
+#endif
+        default: return WifiAuthType::Unknown;
+    }
+}
+
+} // namespace
 
 bool Esp32WifiStationAdapter::begin(const char* ssid, const char* password, const char* hostname) {
     if (!ssid || ssid[0] == '\0') return false;
 
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
+
+    // Match the reference client's behavior of resetting the station before a
+    // new connection attempt. Avoid delay() here; TrackerWifiManager provides
+    // the non-blocking timeout/backoff window around this call.
+    WiFi.disconnect(false, false);
 
     if (hostname && hostname[0] != '\0') {
         WiFi.setHostname(hostname);
@@ -63,6 +101,45 @@ WifiStationInfo Esp32WifiStationAdapter::info() const {
 
     WiFi.macAddress(out.mac);
     return out;
+}
+
+int16_t Esp32WifiStationAdapter::scanNetworks(WifiScanResult* results, uint8_t maxResults, bool showHidden) {
+    if (!results || maxResults == 0) return -1;
+
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+
+    WiFi.scanDelete();
+
+    int16_t count = WiFi.scanNetworks(false, showHidden);
+    if (count == -2) {
+        // WIFI_SCAN_FAILED can happen when the radio is still settling after a
+        // previous connection/scan operation. Retry once for CLI diagnostics.
+        delay(250);
+        WiFi.scanDelete();
+        count = WiFi.scanNetworks(false, showHidden);
+    }
+    if (count <= 0) return count;
+
+    const uint8_t copied = static_cast<uint8_t>(count < maxResults ? count : maxResults);
+    for (uint8_t i = 0; i < copied; ++i) {
+        WifiScanResult& r = results[i];
+        r = WifiScanResult{};
+        const String ssid = WiFi.SSID(i);
+        copyBounded(r.ssid, sizeof(r.ssid), ssid.c_str());
+        const String bssid = WiFi.BSSIDstr(i);
+        copyBounded(r.bssid, sizeof(r.bssid), bssid.c_str());
+        r.rssiDbm = WiFi.RSSI(i);
+        r.channel = static_cast<uint8_t>(WiFi.channel(i));
+        r.authType = mapAuthType(WiFi.encryptionType(i));
+        r.hidden = r.ssid[0] == '\0';
+    }
+
+    return count;
+}
+
+void Esp32WifiStationAdapter::clearScanResults() {
+    WiFi.scanDelete();
 }
 
 } // namespace tracker

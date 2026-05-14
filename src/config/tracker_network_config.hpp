@@ -42,7 +42,7 @@ struct TrackerNetworkConfigBlob {
     uint8_t sensorId = 0;
     uint8_t reserved0 = 0;
     uint16_t reserved1 = 0;
-    char deviceName[32] = "c3_6dsv_tracker";
+    char deviceName[32] = "c3-6dsv-tracker";
 };
 
 class TrackerNetworkConfig {

@@ -61,6 +61,7 @@ void TrackerApp::setup() {
 
     trackerBootstrapSetupCalibrationIo(deps_.bootstrap);
     call(deps_.callbacks.setupMagRuntimeController);
+    call(deps_.callbacks.setupNetworkRuntime);
     call(deps_.callbacks.setupCommandInterface);
     call(deps_.callbacks.resetFifoRuntimeCounters);
     call(deps_.callbacks.attachFifoInterrupt);
@@ -88,6 +89,7 @@ void TrackerApp::loop() {
     deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
 #endif
     processFifoRuntime();
+    call(deps_.callbacks.updateNetworkRuntime);
 #if TRACKER_ENABLE_SERIAL_CLI
     deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
 #endif

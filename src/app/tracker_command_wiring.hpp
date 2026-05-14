@@ -12,6 +12,11 @@ struct TrackerCommandRuntimeObjects {
     TrackerConfig* config = nullptr;
     TrackerConfigStore* configStore = nullptr;
 
+    TrackerNetworkConfig* networkConfig = nullptr;
+    TrackerNetworkConfigStore* networkConfigStore = nullptr;
+    bool* networkConfigLoadedFromNvs = nullptr;
+    TrackerWifiManager* wifiManager = nullptr;
+
     Lsm6dsv* lsm = nullptr;
     Lsm6dsvFifoReader* fifo = nullptr;
     Lsm6dsvSensorHub* sensorHub = nullptr;

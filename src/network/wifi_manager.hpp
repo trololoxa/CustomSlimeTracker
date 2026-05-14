@@ -18,6 +18,19 @@ enum class WifiLinkStatus : uint8_t {
     ConnectFailed,
 };
 
+enum class WifiAuthType : uint8_t {
+    Open,
+    Wep,
+    WpaPsk,
+    Wpa2Psk,
+    WpaWpa2Psk,
+    Wpa2Enterprise,
+    Wpa3Psk,
+    Wpa2Wpa3Psk,
+    WapiPsk,
+    Unknown,
+};
+
 enum class TrackerWifiState : uint8_t {
     Disabled,
     Idle,
@@ -27,6 +40,7 @@ enum class TrackerWifiState : uint8_t {
 };
 
 const char* wifiLinkStatusName(WifiLinkStatus status);
+const char* wifiAuthTypeName(WifiAuthType auth);
 const char* trackerWifiStateName(TrackerWifiState state);
 
 struct WifiStationInfo {
@@ -36,6 +50,15 @@ struct WifiStationInfo {
     uint8_t mac[6] = {0, 0, 0, 0, 0, 0};
 };
 
+struct WifiScanResult {
+    char ssid[33] = "";
+    char bssid[18] = "";
+    int32_t rssiDbm = 0;
+    uint8_t channel = 0;
+    WifiAuthType authType = WifiAuthType::Unknown;
+    bool hidden = false;
+};
+
 class IWifiStationAdapter {
 public:
     virtual ~IWifiStationAdapter() = default;
@@ -43,6 +66,13 @@ public:
     virtual bool begin(const char* ssid, const char* password, const char* hostname) = 0;
     virtual void disconnect() = 0;
     virtual WifiStationInfo info() const = 0;
+
+    // Blocking diagnostic scan. Intended for explicit CLI commands, not the
+    // normal runtime loop. Returns the number of networks seen by the Wi-Fi
+    // stack, or a negative value on failure. At most maxResults entries are
+    // copied into results.
+    virtual int16_t scanNetworks(WifiScanResult* results, uint8_t maxResults, bool showHidden) = 0;
+    virtual void clearScanResults() = 0;
 };
 
 struct TrackerWifiManagerConfig {
@@ -93,6 +123,9 @@ public:
     TrackerWifiState state() const;
     WifiLinkStatus linkStatus() const;
     TrackerWifiManagerStatus status() const;
+
+    int16_t scanNetworks(WifiScanResult* results, uint8_t maxResults, bool showHidden);
+    void clearScanResults();
 
 private:
     void forceDisable(uint32_t nowMs);

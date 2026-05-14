@@ -69,6 +69,11 @@ void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int ar
         return;
     }
 
+    if (tracker_serial_detail::eqIgnoreCase(argv[0], "net")) {
+        trackerSerialDispatchNetworkCommand(ctx, argc, argv);
+        return;
+    }
+
     Stream& out = ctx.io ? *ctx.io : Serial;
     tracker_serial_detail::printErr(out, "unknown command; type help");
 }

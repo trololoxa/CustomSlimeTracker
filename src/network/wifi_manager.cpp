@@ -15,6 +15,22 @@ const char* wifiLinkStatusName(WifiLinkStatus status) {
     return "unknown";
 }
 
+const char* wifiAuthTypeName(WifiAuthType auth) {
+    switch (auth) {
+        case WifiAuthType::Open: return "open";
+        case WifiAuthType::Wep: return "WEP";
+        case WifiAuthType::WpaPsk: return "WPA-PSK";
+        case WifiAuthType::Wpa2Psk: return "WPA2-PSK";
+        case WifiAuthType::WpaWpa2Psk: return "WPA/WPA2-PSK";
+        case WifiAuthType::Wpa2Enterprise: return "WPA2-Enterprise";
+        case WifiAuthType::Wpa3Psk: return "WPA3-PSK";
+        case WifiAuthType::Wpa2Wpa3Psk: return "WPA2/WPA3-PSK";
+        case WifiAuthType::WapiPsk: return "WAPI-PSK";
+        case WifiAuthType::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
 const char* trackerWifiStateName(TrackerWifiState state) {
     switch (state) {
         case TrackerWifiState::Disabled: return "disabled";
@@ -129,10 +145,12 @@ void TrackerWifiManager::update(uint32_t nowMs) {
             if (linkStatus_ == WifiLinkStatus::Connected) {
                 connectedSinceMs_ = nowMs;
                 transitionTo(TrackerWifiState::Connected, nowMs);
-            } else if (linkStatus_ == WifiLinkStatus::NoSsid ||
-                       linkStatus_ == WifiLinkStatus::ConnectFailed) {
-                enterBackoff(nowMs);
             } else if (static_cast<uint32_t>(nowMs - connectStartedMs_) >= connectTimeoutMs_) {
+                // ESP32 Arduino may report WL_CONNECT_FAILED / WL_NO_SSID_AVAIL
+                // transiently while association is still in progress. The old
+                // blocking reference client simply waited up to its full
+                // timeout for WL_CONNECTED, so mirror that behavior here: do
+                // not abort a connection attempt before connectTimeoutMs.
                 ++connectTimeouts_;
                 enterBackoff(nowMs);
             }
@@ -179,6 +197,16 @@ TrackerWifiManagerStatus TrackerWifiManager::status() const {
     copyCString(s.ssid, sizeof(s.ssid), ssid_);
     copyCString(s.hostname, sizeof(s.hostname), hostname_);
     return s;
+}
+
+
+int16_t TrackerWifiManager::scanNetworks(WifiScanResult* results, uint8_t maxResults, bool showHidden) {
+    if (!adapter_ || !results || maxResults == 0) return -1;
+    return adapter_->scanNetworks(results, maxResults, showHidden);
+}
+
+void TrackerWifiManager::clearScanResults() {
+    if (adapter_) adapter_->clearScanResults();
 }
 
 void TrackerWifiManager::forceDisable(uint32_t nowMs) {

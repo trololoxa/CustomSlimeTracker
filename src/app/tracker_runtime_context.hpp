@@ -27,12 +27,21 @@
 #include "app/tracker_app.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
+#include "config/tracker_network_config.hpp"
+#include "network/wifi_manager.hpp"
+#include "network/esp32_wifi_station.hpp"
 #include "serial/tracker_serial_commands.hpp"
 
 using namespace tracker;
 
 static TrackerConfig g_config;
 static TrackerConfigStore g_configStore;
+
+static TrackerNetworkConfig g_networkConfig;
+static TrackerNetworkConfigStore g_networkConfigStore;
+static bool g_networkConfigLoadedFromNvs = false;
+static Esp32WifiStationAdapter g_wifiStation;
+static TrackerWifiManager g_wifiManager;
 
 static ImuCalibration g_imuCal;
 static GyroTempCompensator g_gyroTempComp;

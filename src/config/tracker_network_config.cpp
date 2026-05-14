@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <cstring>
 
+
 namespace tracker {
 
 void TrackerNetworkConfig::resetDefaults() {
@@ -32,10 +33,22 @@ void TrackerNetworkConfig::sanitize() {
     data.password[sizeof(data.password) - 1] = '\0';
     data.serverHost[sizeof(data.serverHost) - 1] = '\0';
     data.deviceName[sizeof(data.deviceName) - 1] = '\0';
-    if (data.deviceName[0] == '\0') {
-        std::strncpy(data.deviceName, "c3_6dsv_tracker", sizeof(data.deviceName) - 1);
+    if (data.deviceName[0] == '\0' || std::strcmp(data.deviceName, "c3_6dsv_tracker") == 0) {
+        std::strncpy(data.deviceName, "c3-6dsv-tracker", sizeof(data.deviceName) - 1);
         data.deviceName[sizeof(data.deviceName) - 1] = '\0';
     }
+
+    // DHCP hostnames should be simple LDH labels. Some routers tolerate
+    // underscores/spaces, some do not. Keep the stored name safe before it is
+    // passed to WiFi.setHostname().
+    for (char* p = data.deviceName; *p; ++p) {
+        const bool alpha = (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z');
+        const bool digit = (*p >= '0' && *p <= '9');
+        if (!alpha && !digit && *p != '-') *p = '-';
+    }
+    if (data.deviceName[0] == '-') data.deviceName[0] = 't';
+    const size_t nameLen = std::strlen(data.deviceName);
+    if (nameLen > 0 && data.deviceName[nameLen - 1] == '-') data.deviceName[nameLen - 1] = 'r';
     if (data.serverPort == 0) data.serverPort = tracker_network_detail::DEFAULT_SLIMEVR_PORT;
     if (!data.credentialsValid) {
         data.wifiEnabled = false;
