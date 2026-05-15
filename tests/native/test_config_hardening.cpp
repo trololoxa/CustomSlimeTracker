@@ -33,7 +33,7 @@ static void testSanitizeRepairsInvalidRuntimeValues(TestContext& ctx) {
     cfg.data.fifo.samplePeriodUsOverride = std::nanf("");
 
     cfg.data.output.outputRateHz = 0;
-    cfg.data.output.packetFormat = 2;
+    cfg.data.output.packetFormat = 9;
 
     cfg.data.quality.largeGapFactor = 0.1f;
     cfg.data.quality.accelNormOutlierMinG = -10.0f;

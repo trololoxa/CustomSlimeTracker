@@ -144,6 +144,20 @@ static TrackerWifiManagerConfig makeAppWifiManagerConfig() {
     return cfg;
 }
 
+static bool slimevrMagSupportEnabledFromConfig() {
+    return g_config.data.magCal.driverEnabled ||
+           g_config.data.magCal.calibrationValid ||
+           g_config.data.magCal.axisAlignmentValid ||
+           g_config.data.magYaw.applyEnabled;
+}
+
+static bool slimevrAutostartEnabledFromConfig() {
+    return g_networkConfig.data.wifiEnabled &&
+           g_networkConfig.data.credentialsValid &&
+           g_config.data.output.packetFormat == 2 &&
+           g_config.data.output.quaternionOutputEnabled;
+}
+
 static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     SlimeVROutputRuntimeConfig cfg;
     cfg.enabled = enabled;
@@ -156,6 +170,9 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     cfg.discoveryIntervalMs = 1000;
     cfg.rotationRateHz = g_config.data.output.outputRateHz;
     cfg.incomingPacketsPerUpdate = 4;
+    cfg.magSupportEnabled = slimevrMagSupportEnabledFromConfig();
+    cfg.latestTemperatureValid = true;
+    cfg.latestTemperatureC = g_latestTempC;
     return cfg;
 }
 
@@ -178,7 +195,8 @@ static void setupNetworkRuntime() {
     g_wifiManager.begin(g_wifiStation);
     g_wifiManager.configure(makeAppWifiManagerConfig());
     g_slimevrRuntime.begin(g_udpTransport, g_wifiManager, copyPreparedOutputSnapshotForSlimeVR, nullptr);
-    g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(false));
+    const bool slimeAutostart = slimevrAutostartEnabledFromConfig();
+    g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(slimeAutostart));
 
     Serial.print("# network_config_loaded_from_nvs=");
     Serial.println(g_networkConfigLoadedFromNvs ? "yes" : "no");
@@ -186,6 +204,9 @@ static void setupNetworkRuntime() {
     Serial.println(g_networkConfig.data.wifiEnabled ? "yes" : "no");
     if (g_networkConfig.data.wifiEnabled) {
         Serial.println("# wifi connection is non-blocking; use: net status");
+    }
+    if (slimeAutostart) {
+        Serial.println("# slimevr_autostart=yes; use: slime status");
     }
 }
 

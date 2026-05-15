@@ -245,6 +245,8 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
             }
             ctx.networkConfig->sanitize();
             ctx.config->data.output.quaternionOutputEnabled = true;
+            ctx.config->data.output.packetFormat = 2;
+            if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
             ctx.config->updateCrc();
 
             SlimeVROutputRuntimeConfig cfg;
@@ -258,6 +260,10 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
             cfg.discoveryIntervalMs = 1000;
             cfg.rotationRateHz = ctx.config->data.output.outputRateHz;
             cfg.incomingPacketsPerUpdate = 4;
+            cfg.magSupportEnabled = ctx.config->data.magCal.driverEnabled ||
+                                    ctx.config->data.magCal.calibrationValid ||
+                                    ctx.config->data.magCal.axisAlignmentValid ||
+                                    ctx.config->data.magYaw.applyEnabled;
             ctx.slimevrRuntime->configure(cfg);
             tracker_serial_detail::printOk(out, "output mode slimevr");
             return;
@@ -272,7 +278,29 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
 
     if (trackerSerialOutputIs(argv[1], "start")) {
         ctx.config->data.output.quaternionOutputEnabled = true;
-        if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Quat;
+        if (ctx.streamState && ctx.config->data.output.packetFormat != 2) {
+            ctx.streamState->mode = TrackerStreamMode::Quat;
+        }
+        if (ctx.config->data.output.packetFormat == 2 && ctx.slimevrRuntime && ctx.networkConfig) {
+            if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
+            ctx.networkConfig->sanitize();
+            SlimeVROutputRuntimeConfig cfg;
+            cfg.enabled = true;
+            cfg.discoveryEnabled = ctx.networkConfig->data.discoveryEnabled;
+            cfg.manualServerEnabled = ctx.networkConfig->data.manualServerEnabled;
+            cfg.deviceName = ctx.networkConfig->data.deviceName;
+            cfg.sensorId = ctx.networkConfig->data.sensorId;
+            cfg.serverPort = ctx.networkConfig->data.serverPort;
+            cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
+            cfg.discoveryIntervalMs = 1000;
+            cfg.rotationRateHz = ctx.config->data.output.outputRateHz;
+            cfg.incomingPacketsPerUpdate = 4;
+            cfg.magSupportEnabled = ctx.config->data.magCal.driverEnabled ||
+                                    ctx.config->data.magCal.calibrationValid ||
+                                    ctx.config->data.magCal.axisAlignmentValid ||
+                                    ctx.config->data.magYaw.applyEnabled;
+            ctx.slimevrRuntime->configure(cfg);
+        }
         ctx.config->updateCrc();
         tracker_serial_detail::printOk(out, "output started");
         return;
@@ -280,6 +308,8 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
 
     if (trackerSerialOutputIs(argv[1], "stop")) {
         ctx.config->data.output.quaternionOutputEnabled = false;
+        ctx.config->data.output.packetFormat = 0;
+        if (ctx.slimevrRuntime) ctx.slimevrRuntime->stop();
         if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
         ctx.config->updateCrc();
         tracker_serial_detail::printOk(out, "output stopped");

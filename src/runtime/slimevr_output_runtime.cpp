@@ -1,6 +1,7 @@
 #include "runtime/slimevr_output_runtime.hpp"
 
 #include <cstring>
+#include <cmath>
 
 namespace tracker {
 
@@ -9,6 +10,7 @@ namespace {
 constexpr uint32_t UDP_BEGIN_RETRY_MS = 1000;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 5000;
 constexpr uint32_t SENSOR_INFO_INTERVAL_MS = 1000;
+constexpr uint32_t SERVER_SILENCE_TIMEOUT_MS = 15000;
 constexpr uint16_t ROTATION_RATE_HZ_DEFAULT = 100;
 constexpr uint16_t ROTATION_RATE_HZ_MAX = 1000;
 
@@ -51,6 +53,7 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
                                serverPort_ != config.serverPort ||
                                localPort_ != config.localPort ||
                                sensorId_ != config.sensorId ||
+                               magSupportEnabled_ != config.magSupportEnabled ||
                                std::strncmp(deviceName_, config.deviceName ? config.deviceName : "", sizeof(deviceName_)) != 0;
 
     const bool rotationRateChanged = rotationRateHz_ != config.rotationRateHz;
@@ -65,6 +68,12 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
     rotationRateHz_ = config.rotationRateHz == 0 ? ROTATION_RATE_HZ_DEFAULT : config.rotationRateHz;
     if (rotationRateHz_ > ROTATION_RATE_HZ_MAX) rotationRateHz_ = ROTATION_RATE_HZ_MAX;
     incomingPacketsPerUpdate_ = config.incomingPacketsPerUpdate == 0 ? 1u : config.incomingPacketsPerUpdate;
+    magSupportEnabled_ = config.magSupportEnabled;
+    signalTelemetryEnabled_ = config.signalTelemetryEnabled;
+    temperatureTelemetryEnabled_ = config.temperatureTelemetryEnabled;
+    telemetryIntervalMs_ = config.telemetryIntervalMs == 0 ? TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS : config.telemetryIntervalMs;
+    latestTemperatureValid_ = config.latestTemperatureValid && std::isfinite(config.latestTemperatureC);
+    latestTemperatureC_ = latestTemperatureValid_ ? config.latestTemperatureC : 0.0f;
     copyCString(deviceName_, sizeof(deviceName_), config.deviceName && config.deviceName[0] ? config.deviceName : "c3-6dsv-tracker");
 
     if (!enabled_) {
@@ -84,6 +93,9 @@ void SlimeVROutputRuntime::resetCounters() {
     heartbeatSent_ = 0;
     sensorInfoSent_ = 0;
     rotationSent_ = 0;
+    signalStrengthSent_ = 0;
+    temperatureSent_ = 0;
+    magnetometerAccuracySent_ = 0;
     rotationNoSnapshot_ = 0;
     rotationDuplicateSnapshot_ = 0;
     packetsReceived_ = 0;
@@ -129,8 +141,22 @@ void SlimeVROutputRuntime::update(uint32_t nowMs) {
 
     if (serverFound_) {
         transitionTo(SlimeVROutputState::ServerFound, nowMs);
+        if (lastIncomingPacketMs_ != 0 && nowMs - lastIncomingPacketMs_ >= SERVER_SILENCE_TIMEOUT_MS) {
+            // UDP sends can continue to succeed while the server process was
+            // restarted or the old association disappeared. Drop back to
+            // discovery when the server has been silent long enough.
+            serverFound_ = false;
+            serverEndpoint_ = UdpEndpoint{};
+            lastSensorInfoMs_ = 0;
+            lastHeartbeatMs_ = 0;
+            lastTelemetryMs_ = 0;
+            transitionTo(SlimeVROutputState::Discovering, nowMs);
+            maybeSendDiscovery(nowMs);
+            return;
+        }
         if (nowMs - lastHeartbeatMs_ >= HEARTBEAT_INTERVAL_MS) sendHeartbeat(nowMs);
         if (nowMs - lastSensorInfoMs_ >= SENSOR_INFO_INTERVAL_MS) sendSensorInfo(nowMs);
+        maybeSendTelemetry(nowMs);
         maybeSendRotation(nowMs);
         return;
     }
@@ -164,6 +190,9 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.heartbeatSent = heartbeatSent_;
     s.sensorInfoSent = sensorInfoSent_;
     s.rotationSent = rotationSent_;
+    s.signalStrengthSent = signalStrengthSent_;
+    s.temperatureSent = temperatureSent_;
+    s.magnetometerAccuracySent = magnetometerAccuracySent_;
     s.rotationNoSnapshot = rotationNoSnapshot_;
     s.rotationDuplicateSnapshot = rotationDuplicateSnapshot_;
     s.packetsReceived = packetsReceived_;
@@ -173,6 +202,15 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.nextPacketNumber = static_cast<uint32_t>(writer_.packetNumber());
     s.rotationRateHz = rotationRateHz_;
     s.preparedOutputAvailable = copyOutputSnapshot_ != nullptr;
+    s.magSupportEnabled = magSupportEnabled_;
+    s.sensorConfig = sensorConfigFlags();
+    s.signalTelemetryEnabled = signalTelemetryEnabled_;
+    s.temperatureTelemetryEnabled = temperatureTelemetryEnabled_;
+    s.telemetryIntervalMs = telemetryIntervalMs_;
+    s.lastSignalStrength = lastSignalStrength_;
+    s.lastRssiDbm = lastRssiDbm_;
+    s.lastTemperatureC = latestTemperatureC_;
+    s.lastTemperatureValid = latestTemperatureValid_;
     s.lastHandshakeMs = lastHandshakeMs_;
     s.lastIncomingPacketMs = lastIncomingPacketMs_;
     s.lastStateChangeMs = lastStateChangeMs_;
@@ -201,6 +239,9 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastSensorInfoMs_ = 0;
     lastRotationAttemptMs_ = 0;
     lastRotationMs_ = 0;
+    lastTelemetryMs_ = 0;
+    lastSignalStrength_ = 0;
+    lastRssiDbm_ = 0;
     lastRotationSnapshotSequence_ = 0;
     lastRotationRuntimeSample_ = 0;
     lastRotationTimestampUs_ = 0;
@@ -283,6 +324,7 @@ void SlimeVROutputRuntime::sendSensorInfo(uint32_t nowMs) {
     if (!serverEndpoint_.valid()) return;
     SlimeVRSensorInfo info;
     info.sensorId = sensorId_;
+    info.sensorConfig = sensorConfigFlags();
     const SlimeVRPacketWriteResult packet = writer_.writeSensorInfo(packetBuffer_, sizeof(packetBuffer_), info);
     if (sendPacket(packet, serverEndpoint_)) {
         ++sensorInfoSent_;
@@ -299,10 +341,73 @@ void SlimeVROutputRuntime::sendHeartbeat(uint32_t nowMs) {
     }
 }
 
+void SlimeVROutputRuntime::maybeSendTelemetry(uint32_t nowMs) {
+    if (!serverEndpoint_.valid()) return;
+    if (telemetryIntervalMs_ == 0) return;
+    if (lastTelemetryMs_ != 0 && nowMs - lastTelemetryMs_ < telemetryIntervalMs_) return;
+    lastTelemetryMs_ = nowMs;
+
+    if (signalTelemetryEnabled_) sendSignalStrength(nowMs);
+    if (temperatureTelemetryEnabled_) sendTemperature(nowMs);
+    if (magSupportEnabled_) sendMagnetometerAccuracy(nowMs);
+}
+
+void SlimeVROutputRuntime::sendSignalStrength(uint32_t nowMs) {
+    (void)nowMs;
+    if (!serverEndpoint_.valid() || !wifi_) return;
+    const TrackerWifiManagerStatus ws = wifi_->status();
+    const uint8_t signal = signalStrengthFromRssi(ws.rssiDbm);
+    const SlimeVRPacketWriteResult packet = writer_.writeSignalStrength(
+        packetBuffer_,
+        sizeof(packetBuffer_),
+        sensorId_,
+        signal
+    );
+    if (sendPacket(packet, serverEndpoint_)) {
+        ++signalStrengthSent_;
+        lastSignalStrength_ = signal;
+        lastRssiDbm_ = ws.rssiDbm;
+    }
+}
+
+void SlimeVROutputRuntime::sendTemperature(uint32_t nowMs) {
+    (void)nowMs;
+    if (!serverEndpoint_.valid() || !latestTemperatureValid_) return;
+    const SlimeVRPacketWriteResult packet = writer_.writeTemperature(
+        packetBuffer_,
+        sizeof(packetBuffer_),
+        sensorId_,
+        latestTemperatureC_
+    );
+    if (sendPacket(packet, serverEndpoint_)) {
+        ++temperatureSent_;
+    }
+}
+
+void SlimeVROutputRuntime::sendMagnetometerAccuracy(uint32_t nowMs) {
+    (void)nowMs;
+    if (!serverEndpoint_.valid()) return;
+    const SlimeVRPacketWriteResult packet = writer_.writeMagnetometerAccuracy(
+        packetBuffer_,
+        sizeof(packetBuffer_),
+        sensorId_,
+        0.0f
+    );
+    if (sendPacket(packet, serverEndpoint_)) {
+        ++magnetometerAccuracySent_;
+    }
+}
+
 uint32_t SlimeVROutputRuntime::rotationPeriodMs() const {
     const uint16_t hz = rotationRateHz_ == 0 ? ROTATION_RATE_HZ_DEFAULT : rotationRateHz_;
     const uint32_t period = 1000UL / hz;
     return period == 0 ? 1UL : period;
+}
+
+uint16_t SlimeVROutputRuntime::sensorConfigFlags() const {
+    uint16_t flags = 0;
+    if (magSupportEnabled_) flags |= SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED;
+    return flags;
 }
 
 uint8_t SlimeVROutputRuntime::accuracyFromConfidence(float confidence) {
@@ -310,6 +415,12 @@ uint8_t SlimeVROutputRuntime::accuracyFromConfidence(float confidence) {
     if (confidence >= 0.65f) return 2;
     if (confidence >= 0.35f) return 1;
     return 0;
+}
+
+uint8_t SlimeVROutputRuntime::signalStrengthFromRssi(int32_t rssiDbm) {
+    if (rssiDbm <= -100) return 0;
+    if (rssiDbm >= -50) return 100;
+    return static_cast<uint8_t>((rssiDbm + 100) * 2);
 }
 
 void SlimeVROutputRuntime::maybeSendRotation(uint32_t nowMs) {

@@ -98,6 +98,7 @@ int main() {
     wifiAdapter.current.linkStatus = WifiLinkStatus::Connected;
     wifiAdapter.current.ipv4 = 0xC0A80073UL;
     wifiAdapter.current.mac[0] = 0xE8;
+    wifiAdapter.current.rssiDbm = -68;
     TrackerWifiManager wifi;
     wifi.begin(wifiAdapter);
     wifi.configure(wifiConfig());
@@ -129,6 +130,9 @@ int main() {
     cfg.localPort = 6969;
     cfg.discoveryIntervalMs = 1000;
     cfg.rotationRateHz = 100;
+    cfg.magSupportEnabled = true;
+    cfg.latestTemperatureValid = true;
+    cfg.latestTemperatureC = 42.5f;
     rt.configure(cfg);
 
     rt.update(1000);
@@ -156,6 +160,15 @@ int main() {
     CHECK(ctx, st.discoveryResponses == 1);
     CHECK(ctx, st.sensorInfoSent == 1);
     CHECK(ctx, st.rotationSent == 1);
+    CHECK(ctx, st.signalStrengthSent == 1);
+    CHECK(ctx, st.temperatureSent == 1);
+    CHECK(ctx, st.magnetometerAccuracySent == 1);
+    CHECK(ctx, st.magSupportEnabled);
+    CHECK(ctx, st.sensorConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED);
+    CHECK(ctx, st.lastSignalStrength == 64);
+    CHECK(ctx, st.lastRssiDbm == -68);
+    CHECK(ctx, st.lastTemperatureValid);
+    CHECK_NEAR(ctx, st.lastTemperatureC, 42.5f, 1.0e-6f);
     CHECK(ctx, st.rotationNoSnapshot == 0);
     CHECK(ctx, st.rotationDuplicateSnapshot == 0);
     CHECK(ctx, st.lastRotationSnapshotSequence == 1);

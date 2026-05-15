@@ -1,18 +1,20 @@
 # Network layer
 
-This directory contains the first real transport primitive: a non-blocking Wi-Fi station manager.
+This directory owns low-level transport primitives only. Higher-level packet formats and output policy live outside `network/`.
 
 Current state:
 
-- `TrackerWifiManager` owns connection/reconnect/backoff state and is host-testable through `IWifiStationAdapter`.
-- `Esp32WifiStationAdapter` is the thin ESP32 wrapper around `WiFi.h`.
-- `TrackerNetworkConfig` stores Wi-Fi credentials and future SlimeVR server settings in a separate NVS namespace.
-- Serial CLI commands under `net ...` can configure, persist and inspect Wi-Fi state.
+- `TrackerWifiManager` owns non-blocking Wi-Fi connection/reconnect/backoff state and is host-testable through `IWifiStationAdapter`.
+- `Esp32WifiStationAdapter` is the thin ESP32 wrapper around `WiFi.h`. It applies the board-specific TX power workaround after `WiFi.begin()`.
+- `UdpTransport` / `Esp32UdpTransport` provide UDP socket send/receive primitives.
+- `TrackerNetworkConfig` stores Wi-Fi credentials and SlimeVR server settings in a separate NVS namespace.
+- Serial CLI commands under `net ...` configure, persist and inspect Wi-Fi state.
 
-Do not add placeholder SlimeVR output here. The expected split is:
+Split by responsibility:
 
 - `network/`: Wi-Fi connection and UDP transport primitives.
-- `output/` or `runtime/`: packet formatting/output runtime that consumes a prepared quaternion/status snapshot.
-- `serial/`: CLI commands that enable/configure the backend and expose status.
+- `output/`: SlimeVR packet writer and protocol constants.
+- `runtime/`: SlimeVR output runtime that consumes prepared quaternion/status snapshots.
+- `serial/`: CLI commands that configure and expose status.
 
-UDP and SlimeVR runtime are still not wired yet, so `output mode binary` and `output mode slimevr` must remain `NOT_IMPLEMENTED`.
+Do not place AHRS/FIFO logic in this directory. Network code must not read sensors directly.

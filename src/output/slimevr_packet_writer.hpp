@@ -24,6 +24,11 @@ constexpr size_t SLIMEVR_PACKET_HEADER_SIZE = 12;
 constexpr size_t SLIMEVR_DISCOVERY_RESPONSE_SIZE = 13;
 constexpr const char* SLIMEVR_DISCOVERY_RESPONSE = "Hey OVR =D 5";
 
+// Current server SensorInfo uses a u16 SensorConfig. The sender example labels
+// this field as "Mag support"; keep only bit 0 for now and leave all other
+// capability/config flags for the later server-command pass.
+constexpr uint16_t SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED = 0x0001u;
+
 enum class SlimeVRSendPacketType : uint8_t {
     HeartBeat = 0,
     Handshake = 3,
@@ -114,8 +119,8 @@ struct SlimeVRSensorInfo {
     uint8_t sensorId = 0;
     SlimeVRSensorState sensorState = SlimeVRSensorState::Online;
     SlimeVRImuType imuType = SlimeVRImuType::LSM6DSV;
-    // SensorConfig is a u16 in the current server packet parser. Keep it zero
-    // until mag/config flags are implemented and acknowledged correctly.
+    // SensorConfig is a u16 in the current server packet parser. Bit 0 is
+    // used here as the local mag-support capability/debug toggle.
     uint16_t sensorConfig = 0;
     bool hasCompletedRestCalibration = true;
     uint8_t sensorPosition = 0;
@@ -140,6 +145,9 @@ public:
     SlimeVRPacketWriteResult writeBatteryLevel(uint8_t* out, size_t capacity,
                                                float voltage,
                                                float percentage);
+    SlimeVRPacketWriteResult writeMagnetometerAccuracy(uint8_t* out, size_t capacity,
+                                                       uint8_t sensorId,
+                                                       float accuracyInfo);
     SlimeVRPacketWriteResult writeSignalStrength(uint8_t* out, size_t capacity,
                                                  uint8_t sensorId,
                                                  uint8_t signalStrength);

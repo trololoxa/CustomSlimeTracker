@@ -4,18 +4,19 @@
 #include <WiFi.h>
 #include <cstring>
 
+#include "defines.h"
+
 namespace tracker {
 
 namespace {
 
-constexpr wifi_power_t kTrackerWifiTxPower = WIFI_POWER_8_5dBm;
-
 void applyTrackerWifiTxPower() {
+#if TRACKER_WIFI_APPLY_TX_POWER_AFTER_BEGIN
     // Some ESP32-C3 board revisions have RF problems at maximum TX power
-    // because the antenna is too close to the crystal. Match the known
-    // workaround used by SlimeVR builds: lower station TX power immediately
-    // after WiFi.begin().
-    WiFi.setTxPower(kTrackerWifiTxPower);
+    // because the antenna is too close to the crystal. Keep this board policy
+    // in defines.h so other revisions can override or disable it cleanly.
+    WiFi.setTxPower(static_cast<wifi_power_t>(TRACKER_WIFI_TX_POWER));
+#endif
 }
 
 void copyBounded(char* dst, size_t dstSize, const char* src) {

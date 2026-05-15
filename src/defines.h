@@ -45,6 +45,33 @@
 #define TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT 1
 #endif
 
+// ============================================================
+// Network / SlimeVR transport defaults
+// ============================================================
+// TRACKER_WIFI_TX_POWER intentionally references the ESP32 Arduino WiFi enum
+// token, but is kept as a macro so board profiles can override it from
+// platformio build_flags or by editing defines.h. It is only consumed by the
+// ESP32 Wi-Fi adapter implementation after including WiFi.h.
+#ifndef TRACKER_WIFI_APPLY_TX_POWER_AFTER_BEGIN
+#define TRACKER_WIFI_APPLY_TX_POWER_AFTER_BEGIN 1
+#endif
+
+#ifndef TRACKER_WIFI_TX_POWER
+#define TRACKER_WIFI_TX_POWER WIFI_POWER_8_5dBm
+#endif
+
+#ifndef TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS
+#define TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS 5000UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY
+#define TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY 1
+#endif
+
+#ifndef TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY
+#define TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY 1
+#endif
+
 namespace tracker::cfg {
 
 // ============================================================

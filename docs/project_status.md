@@ -12,7 +12,7 @@ This document replaces the completed code-quality roadmap notes. It records the 
 - `serial/` command domains are split into `.hpp/.cpp` pairs; parser glue remains fixed-buffer/no-heap.
 - `config/` owns persisted schema, runtime apply/capture/sanitize, NVS store, and printing.
 - `connection/` owns low-level hardware/protocol drivers.
-- `src/network/` is reserved for future real Wi-Fi/UDP transport only.
+- `src/network/` owns real Wi-Fi station management and UDP transport; SlimeVR packet formatting/output runtime lives outside low-level network primitives.
 
 ## Deliberate developer conveniences
 
@@ -42,4 +42,4 @@ python tools/check_all.py --clean --skip-pio
 2. Maintain `docs/cli_reference.md` when commands or side effects change.
 3. Maintain `docs/config_schema.md` when persisted schema changes.
 4. Build replay/log tooling before major tracking-filter changes.
-5. Do not add SlimeVR UDP output until local quaternion, diagnostics, and replay metrics are stable.
+5. Keep SlimeVR UDP output decoupled from AHRS/FIFO: it must consume prepared output snapshots only, never low-level sensor state directly.

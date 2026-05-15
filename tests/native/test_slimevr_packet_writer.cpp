@@ -65,6 +65,7 @@ int main() {
     sensor.sensorId = 3;
     sensor.sensorConfig = 0x1234;
     sensor.sensorPosition = 5;
+    CHECK(ctx, SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED == 0x0001u);
     const SlimeVRPacketWriteResult sensorInfo = writer.writeSensorInfo(packet, sizeof(packet), sensor);
     CHECK(ctx, sensorInfo.ok);
     CHECK(ctx, sensorInfo.size == SLIMEVR_PACKET_HEADER_SIZE + 8u);
@@ -100,6 +101,12 @@ int main() {
     CHECK(ctx, packet[42] == 'w');
     CHECK(ctx, packet[43] == 0xaa);
     CHECK(ctx, packet[48] == 0x55);
+
+    const SlimeVRPacketWriteResult magAcc = writer.writeMagnetometerAccuracy(packet, sizeof(packet), 9, 0.5f);
+    CHECK(ctx, magAcc.ok);
+    CHECK(ctx, magAcc.size == SLIMEVR_PACKET_HEADER_SIZE + 5u);
+    CHECK(ctx, packet[12] == 9);
+    CHECK_NEAR(ctx, readF32Be(packet + 13), 0.5f, 1.0e-6f);
 
     const uint8_t discovery[] = {
         static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),

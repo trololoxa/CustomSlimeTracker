@@ -104,10 +104,45 @@ Legend:
 | `log header` | Emit LOGVER/LOGFMT header | No | Use before captures intended for replay. |
 | `log summary` | Emit compact runtime summary | No | Human/agent diagnostic helper. |
 | `log reset` | Reset log counters | Runtime | Does not reset firmware runtime. |
-| `output mode debug` | Select supported debug output | Runtime | Current safe mode. |
-| `output mode binary|slimevr` | Return `NOT_IMPLEMENTED` | No | Must stay disabled until real backend exists. |
-| `output rate <hz>` | Set output rate | Runtime/config | Used by current output policy. |
-| `output start|stop` | Start/stop quaternion output flag | Runtime/config | Serial/debug-oriented until backend exists. |
+| `output mode debug` | Select local/debug output | Runtime/config | Stops SlimeVR packet mode selection. |
+| `output mode slimevr` | Select and start SlimeVR UDP output | Runtime/config | Enables prepared quaternion output and starts discovery/UDP backend; use `config save` to persist autostart. |
+| `output mode binary` | Return `NOT_IMPLEMENTED` | No | Custom binary backend is still reserved. |
+| `output rate <hz>` | Set output/rotation rate | Runtime/config | SlimeVR `RotationData` uses this rate. |
+| `output start|stop` | Start/stop selected output | Runtime/config | In SlimeVR mode this starts/stops UDP output; it does not enable serial quaternion spam. |
+
+
+## Network / SlimeVR
+
+| Command | Effect | Persisted | Notes |
+|---|---|---:|---|
+| `net status` | Print Wi-Fi config/runtime status | No | Shows NVS load state, IP, RSSI, MAC, reconnect counters. |
+| `net print` | Print network config | No | Password is not revealed. |
+| `net set ssid <ssid> [save]` | Set Wi-Fi SSID | Optional | Use 2.4 GHz SSID for ESP32-C3. |
+| `net set pass <password> [save]` | Set Wi-Fi password | Optional | Do not wrap the password in quotes unless quotes are part of the password. |
+| `net clear pass [save]` | Clear Wi-Fi password | Optional | For open networks/testing. |
+| `net set name <name> [save]` | Set tracker/device name | Optional | Hostname is sanitized for Wi-Fi/DHCP. |
+| `net set server <host> [port] [save]` | Configure manual SlimeVR server endpoint | Optional | Discovery remains available when manual server is disabled. |
+| `net discovery on|off [save]` | Enable/disable UDP discovery | Optional | Default is on. |
+| `net enable|disable [save]` | Enable/disable Wi-Fi manager | Optional | Runtime change; `save` persists. |
+| `net reconnect` | Restart Wi-Fi connection attempt | No | Non-blocking reconnect. |
+| `net scan [visible|hidden] [limit N]` | Blocking Wi-Fi environment scan | No | Developer diagnostic; pauses sensor processing while scan runs. |
+| `net save|load|defaults|erase` | Manage network NVS config | Yes/Runtime | Network config is stored separately from main tracker config. |
+| `slime status` | Print SlimeVR UDP runtime status | No | Includes server endpoint, packet counters, telemetry, protocol metadata. |
+| `slime start` | Start SlimeVR output runtime | Runtime/config | Enables prepared quaternion output and packet format 2. |
+| `slime stop` | Stop SlimeVR output runtime | Runtime | Does not erase saved Wi-Fi/config. |
+| `slime reconnect` | Restart SlimeVR discovery/session | Runtime/config | Useful after server restart or network changes. |
+| `slime counters reset` | Reset SlimeVR counters | Runtime | Does not restart Wi-Fi. |
+
+Autostart requires both configs: network config must have `wifi_enabled=yes` and valid credentials, and the main config must have `output.packetFormat=2` plus quaternion output enabled. A typical setup is:
+
+```text
+net set ssid <2.4GHz SSID> save
+net set pass <password> save
+net enable save
+output mode slimevr
+config save
+reboot
+```
 
 ## Bias and tests
 

@@ -343,7 +343,8 @@ void TrackerConfig::sanitize() {
 
     if (data.output.outputRateHz == 0) data.output.outputRateHz = cfg::OUTPUT_RATE_HZ;
     if (data.output.outputRateHz > cfg::OUTPUT_RATE_HZ_MAX) data.output.outputRateHz = cfg::OUTPUT_RATE_HZ_MAX;
-    if (data.output.packetFormat != 0) data.output.packetFormat = 0;
+    if (data.output.packetFormat != 0 && data.output.packetFormat != 2) data.output.packetFormat = 0;
+    if (data.output.packetFormat == 2) data.output.quaternionOutputEnabled = true;
 
     updateCrc();
 }

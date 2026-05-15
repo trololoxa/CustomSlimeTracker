@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "defines.h"
 #include "network/udp_transport.hpp"
 #include "network/wifi_manager.hpp"
 #include "output/slimevr_packet_writer.hpp"
@@ -41,6 +42,13 @@ struct SlimeVROutputRuntimeConfig {
     uint32_t discoveryIntervalMs = 1000;
     uint16_t rotationRateHz = 100;
     uint8_t incomingPacketsPerUpdate = 4;
+
+    bool magSupportEnabled = false;
+    bool signalTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0;
+    bool temperatureTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0;
+    uint32_t telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
+    bool latestTemperatureValid = false;
+    float latestTemperatureC = 0.0f;
 };
 
 struct SlimeVROutputRuntimeStatus {
@@ -65,6 +73,9 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t heartbeatSent = 0;
     uint32_t sensorInfoSent = 0;
     uint32_t rotationSent = 0;
+    uint32_t signalStrengthSent = 0;
+    uint32_t temperatureSent = 0;
+    uint32_t magnetometerAccuracySent = 0;
     uint32_t rotationNoSnapshot = 0;
     uint32_t rotationDuplicateSnapshot = 0;
     uint32_t packetsReceived = 0;
@@ -75,6 +86,15 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t nextPacketNumber = 0;
     uint16_t rotationRateHz = 0;
     bool preparedOutputAvailable = false;
+    bool magSupportEnabled = false;
+    uint16_t sensorConfig = 0;
+    bool signalTelemetryEnabled = false;
+    bool temperatureTelemetryEnabled = false;
+    uint32_t telemetryIntervalMs = 0;
+    uint8_t lastSignalStrength = 0;
+    int32_t lastRssiDbm = 0;
+    float lastTemperatureC = 0.0f;
+    bool lastTemperatureValid = false;
     uint32_t lastHandshakeMs = 0;
     uint32_t lastIncomingPacketMs = 0;
     uint32_t lastStateChangeMs = 0;
@@ -113,12 +133,18 @@ private:
     void sendHandshakeTo(const UdpEndpoint& endpoint, uint32_t nowMs);
     void sendSensorInfo(uint32_t nowMs);
     void sendHeartbeat(uint32_t nowMs);
+    void maybeSendTelemetry(uint32_t nowMs);
+    void sendSignalStrength(uint32_t nowMs);
+    void sendTemperature(uint32_t nowMs);
+    void sendMagnetometerAccuracy(uint32_t nowMs);
     void maybeSendRotation(uint32_t nowMs);
     void sendRotation(const TrackerPreparedOutputSnapshot& snapshot, uint32_t nowMs);
     void makeHandshakeInfo(SlimeVRHandshakeInfo& info) const;
     bool sendPacket(const SlimeVRPacketWriteResult& packet, const UdpEndpoint& endpoint);
     uint32_t rotationPeriodMs() const;
+    uint16_t sensorConfigFlags() const;
     static uint8_t accuracyFromConfidence(float confidence);
+    static uint8_t signalStrengthFromRssi(int32_t rssiDbm);
 
     IUdpTransport* udp_ = nullptr;
     const TrackerWifiManager* wifi_ = nullptr;
@@ -143,12 +169,22 @@ private:
     uint16_t rotationRateHz_ = 100;
     uint8_t incomingPacketsPerUpdate_ = 4;
 
+    bool magSupportEnabled_ = false;
+    bool signalTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0;
+    bool temperatureTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0;
+    uint32_t telemetryIntervalMs_ = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
+    bool latestTemperatureValid_ = false;
+    float latestTemperatureC_ = 0.0f;
+
     UdpEndpoint serverEndpoint_;
 
     uint32_t handshakesSent_ = 0;
     uint32_t heartbeatSent_ = 0;
     uint32_t sensorInfoSent_ = 0;
     uint32_t rotationSent_ = 0;
+    uint32_t signalStrengthSent_ = 0;
+    uint32_t temperatureSent_ = 0;
+    uint32_t magnetometerAccuracySent_ = 0;
     uint32_t rotationNoSnapshot_ = 0;
     uint32_t rotationDuplicateSnapshot_ = 0;
     uint32_t packetsReceived_ = 0;
@@ -163,6 +199,9 @@ private:
     uint32_t lastSensorInfoMs_ = 0;
     uint32_t lastRotationAttemptMs_ = 0;
     uint32_t lastRotationMs_ = 0;
+    uint32_t lastTelemetryMs_ = 0;
+    uint8_t lastSignalStrength_ = 0;
+    int32_t lastRssiDbm_ = 0;
     uint32_t lastRotationSnapshotSequence_ = 0;
     uint32_t lastRotationRuntimeSample_ = 0;
     uint64_t lastRotationTimestampUs_ = 0;

@@ -18,7 +18,7 @@ Stream& outFor(TrackerSerialCommandContext& ctx) {
 
 const char* yn(bool v) { return v ? "yes" : "no"; }
 
-SlimeVROutputRuntimeConfig makeConfigFromNetwork(const TrackerNetworkConfig& net, uint16_t rotationRateHz) {
+SlimeVROutputRuntimeConfig makeConfigFromNetwork(TrackerSerialCommandContext& ctx, const TrackerNetworkConfig& net, uint16_t rotationRateHz) {
     SlimeVROutputRuntimeConfig cfg;
     cfg.enabled = true;
     cfg.discoveryEnabled = net.data.discoveryEnabled;
@@ -30,6 +30,12 @@ SlimeVROutputRuntimeConfig makeConfigFromNetwork(const TrackerNetworkConfig& net
     cfg.discoveryIntervalMs = 1000;
     cfg.rotationRateHz = rotationRateHz == 0 ? 100 : rotationRateHz;
     cfg.incomingPacketsPerUpdate = 4;
+    if (ctx.config) {
+        cfg.magSupportEnabled = ctx.config->data.magCal.driverEnabled ||
+                                ctx.config->data.magCal.calibrationValid ||
+                                ctx.config->data.magCal.axisAlignmentValid ||
+                                ctx.config->data.magYaw.applyEnabled;
+    }
     return cfg;
 }
 
@@ -40,6 +46,7 @@ uint16_t slimeRotationRateHzFromConfig(const TrackerSerialCommandContext& ctx) {
 void enablePreparedQuaternionOutput(TrackerSerialCommandContext& ctx) {
     if (!ctx.config) return;
     ctx.config->data.output.quaternionOutputEnabled = true;
+    ctx.config->data.output.packetFormat = 2;
     ctx.config->updateCrc();
 }
 
@@ -65,6 +72,18 @@ void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("sensor_info_sent="); out.println(s.sensorInfoSent);
     out.print("heartbeat_sent="); out.println(s.heartbeatSent);
     out.print("rotation_sent="); out.println(s.rotationSent);
+    out.print("signal_strength_sent="); out.println(s.signalStrengthSent);
+    out.print("temperature_sent="); out.println(s.temperatureSent);
+    out.print("magnetometer_accuracy_sent="); out.println(s.magnetometerAccuracySent);
+    out.print("mag_support_enabled="); out.println(yn(s.magSupportEnabled));
+    out.print("sensor_config=0x"); out.println(s.sensorConfig, HEX);
+    out.print("signal_telemetry_enabled="); out.println(yn(s.signalTelemetryEnabled));
+    out.print("temperature_telemetry_enabled="); out.println(yn(s.temperatureTelemetryEnabled));
+    out.print("telemetry_interval_ms="); out.println(s.telemetryIntervalMs);
+    out.print("last_signal_strength="); out.println(s.lastSignalStrength);
+    out.print("last_rssi_dbm="); out.println(s.lastRssiDbm);
+    out.print("last_temperature_valid="); out.println(yn(s.lastTemperatureValid));
+    out.print("last_temperature_c="); out.println(s.lastTemperatureC, 2);
     out.print("rotation_no_snapshot="); out.println(s.rotationNoSnapshot);
     out.print("rotation_duplicate_snapshot="); out.println(s.rotationDuplicateSnapshot);
     out.print("rotation_rate_hz="); out.println(s.rotationRateHz);
@@ -125,7 +144,8 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
         }
         ctx.networkConfig->sanitize();
         enablePreparedQuaternionOutput(ctx);
-        ctx.slimevrRuntime->configure(makeConfigFromNetwork(*ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
+        if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
+        ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
         tracker_serial_detail::printOk(out, "SlimeVR output started");
         out.println("# use: slime status");
         return true;
@@ -144,7 +164,8 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
         }
         ctx.networkConfig->sanitize();
         enablePreparedQuaternionOutput(ctx);
-        ctx.slimevrRuntime->configure(makeConfigFromNetwork(*ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
+        if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
+        ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
         ctx.slimevrRuntime->restart();
         tracker_serial_detail::printOk(out, "SlimeVR output restarted");
         return true;
