@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "config/tracker_config_runtime.hpp"
 #include "config/tracker_network_config.hpp"
 #include "network/udp_transport.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
@@ -17,7 +18,7 @@ Stream& outFor(TrackerSerialCommandContext& ctx) {
 
 const char* yn(bool v) { return v ? "yes" : "no"; }
 
-SlimeVROutputRuntimeConfig makeConfigFromNetwork(const TrackerNetworkConfig& net) {
+SlimeVROutputRuntimeConfig makeConfigFromNetwork(const TrackerNetworkConfig& net, uint16_t rotationRateHz) {
     SlimeVROutputRuntimeConfig cfg;
     cfg.enabled = true;
     cfg.discoveryEnabled = net.data.discoveryEnabled;
@@ -27,8 +28,19 @@ SlimeVROutputRuntimeConfig makeConfigFromNetwork(const TrackerNetworkConfig& net
     cfg.serverPort = net.data.serverPort;
     cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
     cfg.discoveryIntervalMs = 1000;
+    cfg.rotationRateHz = rotationRateHz == 0 ? 100 : rotationRateHz;
     cfg.incomingPacketsPerUpdate = 4;
     return cfg;
+}
+
+uint16_t slimeRotationRateHzFromConfig(const TrackerSerialCommandContext& ctx) {
+    return ctx.config ? ctx.config->data.output.outputRateHz : 100;
+}
+
+void enablePreparedQuaternionOutput(TrackerSerialCommandContext& ctx) {
+    if (!ctx.config) return;
+    ctx.config->data.output.quaternionOutputEnabled = true;
+    ctx.config->updateCrc();
 }
 
 void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
@@ -52,6 +64,12 @@ void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("handshakes_sent="); out.println(s.handshakesSent);
     out.print("sensor_info_sent="); out.println(s.sensorInfoSent);
     out.print("heartbeat_sent="); out.println(s.heartbeatSent);
+    out.print("rotation_sent="); out.println(s.rotationSent);
+    out.print("rotation_no_snapshot="); out.println(s.rotationNoSnapshot);
+    out.print("rotation_duplicate_snapshot="); out.println(s.rotationDuplicateSnapshot);
+    out.print("rotation_rate_hz="); out.println(s.rotationRateHz);
+    out.print("prepared_output_available="); out.println(yn(s.preparedOutputAvailable));
+    out.print("next_packet_number="); out.println(s.nextPacketNumber);
     out.print("packets_received="); out.println(s.packetsReceived);
     out.print("discovery_responses="); out.println(s.discoveryResponses);
     out.print("send_failures="); out.println(s.sendFailures);
@@ -59,6 +77,12 @@ void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("last_handshake_ms="); out.println(s.lastHandshakeMs);
     out.print("last_incoming_packet_ms="); out.println(s.lastIncomingPacketMs);
     out.print("last_state_change_ms="); out.println(s.lastStateChangeMs);
+    out.print("last_rotation_ms="); out.println(s.lastRotationMs);
+    out.print("last_rotation_snapshot_sequence="); out.println(s.lastRotationSnapshotSequence);
+    out.print("last_rotation_runtime_sample="); out.println(s.lastRotationRuntimeSample);
+    out.print("last_rotation_timestamp_us="); tracker_serial_detail::printU64Dec(out, s.lastRotationTimestampUs); out.println();
+    out.print("last_rotation_quality_flags=0x"); out.println(s.lastRotationQualityFlags, HEX);
+    out.print("last_rotation_confidence="); out.println(s.lastRotationConfidence, 4);
 }
 
 void printHelp(Stream& out) {
@@ -100,15 +124,16 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             return true;
         }
         ctx.networkConfig->sanitize();
-        ctx.slimevrRuntime->configure(makeConfigFromNetwork(*ctx.networkConfig));
-        tracker_serial_detail::printOk(out, "SlimeVR discovery started");
+        enablePreparedQuaternionOutput(ctx);
+        ctx.slimevrRuntime->configure(makeConfigFromNetwork(*ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
+        tracker_serial_detail::printOk(out, "SlimeVR output started");
         out.println("# use: slime status");
         return true;
     }
 
     if (tracker_serial_detail::eqIgnoreCase(argv[1], "stop")) {
         ctx.slimevrRuntime->stop();
-        tracker_serial_detail::printOk(out, "SlimeVR discovery stopped");
+        tracker_serial_detail::printOk(out, "SlimeVR output stopped");
         return true;
     }
 
@@ -118,9 +143,10 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             return true;
         }
         ctx.networkConfig->sanitize();
-        ctx.slimevrRuntime->configure(makeConfigFromNetwork(*ctx.networkConfig));
+        enablePreparedQuaternionOutput(ctx);
+        ctx.slimevrRuntime->configure(makeConfigFromNetwork(*ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
         ctx.slimevrRuntime->restart();
-        tracker_serial_detail::printOk(out, "SlimeVR discovery restarted");
+        tracker_serial_detail::printOk(out, "SlimeVR output restarted");
         return true;
     }
 

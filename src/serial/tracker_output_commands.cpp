@@ -3,6 +3,8 @@
 #include <Arduino.h>
 
 #include "config/tracker_config_runtime.hpp"
+#include "config/tracker_network_config.hpp"
+#include "runtime/slimevr_output_runtime.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
@@ -236,8 +238,32 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
             tracker_serial_detail::printOk(out, "output mode set");
             return;
         }
-        if (trackerSerialOutputIs(argv[2], "binary") || trackerSerialOutputIs(argv[2], "slimevr")) {
-            tracker_serial_detail::printErr(out, "NOT_IMPLEMENTED: output backend is not available in this build");
+        if (trackerSerialOutputIs(argv[2], "slimevr")) {
+            if (!ctx.slimevrRuntime || !ctx.networkConfig) {
+                tracker_serial_detail::printErr(out, "SlimeVR backend is not available");
+                return;
+            }
+            ctx.networkConfig->sanitize();
+            ctx.config->data.output.quaternionOutputEnabled = true;
+            ctx.config->updateCrc();
+
+            SlimeVROutputRuntimeConfig cfg;
+            cfg.enabled = true;
+            cfg.discoveryEnabled = ctx.networkConfig->data.discoveryEnabled;
+            cfg.manualServerEnabled = ctx.networkConfig->data.manualServerEnabled;
+            cfg.deviceName = ctx.networkConfig->data.deviceName;
+            cfg.sensorId = ctx.networkConfig->data.sensorId;
+            cfg.serverPort = ctx.networkConfig->data.serverPort;
+            cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
+            cfg.discoveryIntervalMs = 1000;
+            cfg.rotationRateHz = ctx.config->data.output.outputRateHz;
+            cfg.incomingPacketsPerUpdate = 4;
+            ctx.slimevrRuntime->configure(cfg);
+            tracker_serial_detail::printOk(out, "output mode slimevr");
+            return;
+        }
+        if (trackerSerialOutputIs(argv[2], "binary")) {
+            tracker_serial_detail::printErr(out, "NOT_IMPLEMENTED: binary output backend is not available in this build");
             return;
         }
         tracker_serial_detail::printErr(out, "unknown output mode");

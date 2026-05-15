@@ -154,8 +154,14 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     cfg.serverPort = g_networkConfig.data.serverPort;
     cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
     cfg.discoveryIntervalMs = 1000;
+    cfg.rotationRateHz = g_config.data.output.outputRateHz;
     cfg.incomingPacketsPerUpdate = 4;
     return cfg;
+}
+
+static bool copyPreparedOutputSnapshotForSlimeVR(TrackerPreparedOutputSnapshot& out, void* user) {
+    (void)user;
+    return g_preparedOutput.copy(out);
 }
 
 static void setupNetworkRuntime() {
@@ -171,7 +177,7 @@ static void setupNetworkRuntime() {
 
     g_wifiManager.begin(g_wifiStation);
     g_wifiManager.configure(makeAppWifiManagerConfig());
-    g_slimevrRuntime.begin(g_udpTransport, g_wifiManager);
+    g_slimevrRuntime.begin(g_udpTransport, g_wifiManager, copyPreparedOutputSnapshotForSlimeVR, nullptr);
     g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(false));
 
     Serial.print("# network_config_loaded_from_nvs=");
@@ -186,6 +192,9 @@ static void setupNetworkRuntime() {
 static void updateNetworkRuntime() {
     const uint32_t nowMs = millis();
     g_wifiManager.update(nowMs);
+    if (g_slimevrRuntime.enabled()) {
+        g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(true));
+    }
     g_slimevrRuntime.update(nowMs);
 }
 

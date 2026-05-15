@@ -6,6 +6,7 @@
 #include "network/udp_transport.hpp"
 #include "network/wifi_manager.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
+#include "runtime/tracker_runtime_types.hpp"
 
 using namespace tracker;
 
@@ -64,6 +65,16 @@ public:
     UdpEndpoint remoteEndpoint() const override { return incomingRemote; }
 };
 
+struct FakeSnapshotSource {
+    TrackerPreparedOutputSnapshot snapshot;
+
+    static bool copy(TrackerPreparedOutputSnapshot& out, void* user) {
+        auto* self = static_cast<FakeSnapshotSource*>(user);
+        out = self->snapshot;
+        return out.valid;
+    }
+};
+
 static TrackerWifiManagerConfig wifiConfig() {
     TrackerWifiManagerConfig cfg;
     cfg.enabled = true;
@@ -98,8 +109,17 @@ int main() {
     CHECK(ctx, wifi.connected());
 
     FakeUdp udp;
+    FakeSnapshotSource snapshots;
+    snapshots.snapshot.valid = true;
+    snapshots.snapshot.sequence = 1;
+    snapshots.snapshot.runtimeSample = 123;
+    snapshots.snapshot.timestampUs = 456789;
+    snapshots.snapshot.q = Quat::identity();
+    snapshots.snapshot.qualityFlags = 0x1234;
+    snapshots.snapshot.confidence = 0.99f;
+
     SlimeVROutputRuntime rt;
-    rt.begin(udp, wifi);
+    rt.begin(udp, wifi, FakeSnapshotSource::copy, &snapshots);
 
     SlimeVROutputRuntimeConfig cfg;
     cfg.enabled = true;
@@ -108,6 +128,7 @@ int main() {
     cfg.serverPort = 6969;
     cfg.localPort = 6969;
     cfg.discoveryIntervalMs = 1000;
+    cfg.rotationRateHz = 100;
     rt.configure(cfg);
 
     rt.update(1000);
@@ -134,9 +155,28 @@ int main() {
     CHECK(ctx, st.serverIpv4 == 0xC0A80001UL);
     CHECK(ctx, st.discoveryResponses == 1);
     CHECK(ctx, st.sensorInfoSent == 1);
-    CHECK(ctx, udp.sent.size() >= 2u);
+    CHECK(ctx, st.rotationSent == 1);
+    CHECK(ctx, st.rotationNoSnapshot == 0);
+    CHECK(ctx, st.rotationDuplicateSnapshot == 0);
+    CHECK(ctx, st.lastRotationSnapshotSequence == 1);
+    CHECK(ctx, st.lastRotationRuntimeSample == 123);
+    CHECK(ctx, st.lastRotationTimestampUs == 456789ULL);
+    CHECK(ctx, st.lastRotationQualityFlags == 0x1234u);
+    CHECK_NEAR(ctx, st.lastRotationConfidence, 0.99f, 1.0e-6f);
+    CHECK(ctx, udp.sent.size() >= 3u);
+    CHECK(ctx, udp.sent[1].endpoint.ipv4 == 0xC0A80001UL);
+    CHECK(ctx, udp.sent[1].data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo));
     CHECK(ctx, udp.sent.back().endpoint.ipv4 == 0xC0A80001UL);
-    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo));
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
+
+    rt.update(1105);
+    CHECK(ctx, rt.status().rotationSent == 1);
+
+    snapshots.snapshot.sequence = 2;
+    snapshots.snapshot.runtimeSample = 124;
+    rt.update(1110);
+    CHECK(ctx, rt.status().rotationSent == 2);
+    CHECK(ctx, rt.status().lastRotationSnapshotSequence == 2);
 
     rt.update(6100);
     CHECK(ctx, rt.status().heartbeatSent >= 1);

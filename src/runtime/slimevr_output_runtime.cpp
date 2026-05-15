@@ -9,6 +9,8 @@ namespace {
 constexpr uint32_t UDP_BEGIN_RETRY_MS = 1000;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 5000;
 constexpr uint32_t SENSOR_INFO_INTERVAL_MS = 1000;
+constexpr uint16_t ROTATION_RATE_HZ_DEFAULT = 100;
+constexpr uint16_t ROTATION_RATE_HZ_MAX = 1000;
 
 void copyCString(char* dst, size_t dstSize, const char* src) {
     if (!dst || dstSize == 0) return;
@@ -31,9 +33,14 @@ const char* slimevrOutputStateName(SlimeVROutputState state) {
     return "unknown";
 }
 
-void SlimeVROutputRuntime::begin(IUdpTransport& udp, const TrackerWifiManager& wifi) {
+void SlimeVROutputRuntime::begin(IUdpTransport& udp,
+                                    const TrackerWifiManager& wifi,
+                                    SlimeVRCopyOutputSnapshotFn copyOutputSnapshot,
+                                    void* copyOutputSnapshotUser) {
     udp_ = &udp;
     wifi_ = &wifi;
+    copyOutputSnapshot_ = copyOutputSnapshot;
+    copyOutputSnapshotUser_ = copyOutputSnapshotUser;
     resetConnectionState(true);
 }
 
@@ -46,6 +53,8 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
                                sensorId_ != config.sensorId ||
                                std::strncmp(deviceName_, config.deviceName ? config.deviceName : "", sizeof(deviceName_)) != 0;
 
+    const bool rotationRateChanged = rotationRateHz_ != config.rotationRateHz;
+
     enabled_ = config.enabled;
     discoveryEnabled_ = config.discoveryEnabled;
     manualServerEnabled_ = config.manualServerEnabled;
@@ -53,6 +62,8 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
     serverPort_ = config.serverPort == 0 ? SLIMEVR_DEFAULT_SERVER_PORT : config.serverPort;
     localPort_ = config.localPort == 0 ? SLIMEVR_DISCOVERY_LOCAL_PORT : config.localPort;
     discoveryIntervalMs_ = config.discoveryIntervalMs == 0 ? 1u : config.discoveryIntervalMs;
+    rotationRateHz_ = config.rotationRateHz == 0 ? ROTATION_RATE_HZ_DEFAULT : config.rotationRateHz;
+    if (rotationRateHz_ > ROTATION_RATE_HZ_MAX) rotationRateHz_ = ROTATION_RATE_HZ_MAX;
     incomingPacketsPerUpdate_ = config.incomingPacketsPerUpdate == 0 ? 1u : config.incomingPacketsPerUpdate;
     copyCString(deviceName_, sizeof(deviceName_), config.deviceName && config.deviceName[0] ? config.deviceName : "c3-6dsv-tracker");
 
@@ -63,6 +74,8 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
 
     if (configChanged) {
         resetConnectionState(true);
+    } else if (rotationRateChanged) {
+        lastRotationAttemptMs_ = 0;
     }
 }
 
@@ -70,6 +83,9 @@ void SlimeVROutputRuntime::resetCounters() {
     handshakesSent_ = 0;
     heartbeatSent_ = 0;
     sensorInfoSent_ = 0;
+    rotationSent_ = 0;
+    rotationNoSnapshot_ = 0;
+    rotationDuplicateSnapshot_ = 0;
     packetsReceived_ = 0;
     discoveryResponses_ = 0;
     sendFailures_ = 0;
@@ -115,6 +131,7 @@ void SlimeVROutputRuntime::update(uint32_t nowMs) {
         transitionTo(SlimeVROutputState::ServerFound, nowMs);
         if (nowMs - lastHeartbeatMs_ >= HEARTBEAT_INTERVAL_MS) sendHeartbeat(nowMs);
         if (nowMs - lastSensorInfoMs_ >= SENSOR_INFO_INTERVAL_MS) sendSensorInfo(nowMs);
+        maybeSendRotation(nowMs);
         return;
     }
 
@@ -146,13 +163,25 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.handshakesSent = handshakesSent_;
     s.heartbeatSent = heartbeatSent_;
     s.sensorInfoSent = sensorInfoSent_;
+    s.rotationSent = rotationSent_;
+    s.rotationNoSnapshot = rotationNoSnapshot_;
+    s.rotationDuplicateSnapshot = rotationDuplicateSnapshot_;
     s.packetsReceived = packetsReceived_;
     s.discoveryResponses = discoveryResponses_;
     s.sendFailures = sendFailures_;
     s.udpBeginFailures = udpBeginFailures_;
+    s.nextPacketNumber = static_cast<uint32_t>(writer_.packetNumber());
+    s.rotationRateHz = rotationRateHz_;
+    s.preparedOutputAvailable = copyOutputSnapshot_ != nullptr;
     s.lastHandshakeMs = lastHandshakeMs_;
     s.lastIncomingPacketMs = lastIncomingPacketMs_;
     s.lastStateChangeMs = lastStateChangeMs_;
+    s.lastRotationMs = lastRotationMs_;
+    s.lastRotationSnapshotSequence = lastRotationSnapshotSequence_;
+    s.lastRotationRuntimeSample = lastRotationRuntimeSample_;
+    s.lastRotationTimestampUs = lastRotationTimestampUs_;
+    s.lastRotationQualityFlags = lastRotationQualityFlags_;
+    s.lastRotationConfidence = lastRotationConfidence_;
     return s;
 }
 
@@ -170,6 +199,13 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastIncomingPacketMs_ = 0;
     lastHeartbeatMs_ = 0;
     lastSensorInfoMs_ = 0;
+    lastRotationAttemptMs_ = 0;
+    lastRotationMs_ = 0;
+    lastRotationSnapshotSequence_ = 0;
+    lastRotationRuntimeSample_ = 0;
+    lastRotationTimestampUs_ = 0;
+    lastRotationQualityFlags_ = 0;
+    lastRotationConfidence_ = 0.0f;
     nextUdpBeginRetryMs_ = 0;
     writer_.resetPacketNumber(0);
     if (!keepCounters) resetCounters();
@@ -260,6 +296,61 @@ void SlimeVROutputRuntime::sendHeartbeat(uint32_t nowMs) {
     if (sendPacket(packet, serverEndpoint_)) {
         ++heartbeatSent_;
         lastHeartbeatMs_ = nowMs;
+    }
+}
+
+uint32_t SlimeVROutputRuntime::rotationPeriodMs() const {
+    const uint16_t hz = rotationRateHz_ == 0 ? ROTATION_RATE_HZ_DEFAULT : rotationRateHz_;
+    const uint32_t period = 1000UL / hz;
+    return period == 0 ? 1UL : period;
+}
+
+uint8_t SlimeVROutputRuntime::accuracyFromConfidence(float confidence) {
+    if (confidence >= 0.90f) return 3;
+    if (confidence >= 0.65f) return 2;
+    if (confidence >= 0.35f) return 1;
+    return 0;
+}
+
+void SlimeVROutputRuntime::maybeSendRotation(uint32_t nowMs) {
+    if (!serverEndpoint_.valid()) return;
+    if (!copyOutputSnapshot_) return;
+    if (lastRotationAttemptMs_ != 0 && nowMs - lastRotationAttemptMs_ < rotationPeriodMs()) return;
+    lastRotationAttemptMs_ = nowMs;
+
+    TrackerPreparedOutputSnapshot snapshot;
+    if (!copyOutputSnapshot_(snapshot, copyOutputSnapshotUser_) || !snapshot.valid) {
+        ++rotationNoSnapshot_;
+        return;
+    }
+
+    if (snapshot.sequence == lastRotationSnapshotSequence_) {
+        ++rotationDuplicateSnapshot_;
+        return;
+    }
+
+    sendRotation(snapshot, nowMs);
+}
+
+void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& snapshot, uint32_t nowMs) {
+    const uint8_t accuracy = accuracyFromConfidence(snapshot.confidence);
+    const SlimeVRPacketWriteResult packet = writer_.writeRotationData(
+        packetBuffer_,
+        sizeof(packetBuffer_),
+        sensorId_,
+        snapshot.q,
+        accuracy,
+        SlimeVRRotationDataType::Normal
+    );
+
+    if (sendPacket(packet, serverEndpoint_)) {
+        ++rotationSent_;
+        lastRotationMs_ = nowMs;
+        lastRotationSnapshotSequence_ = snapshot.sequence;
+        lastRotationRuntimeSample_ = snapshot.runtimeSample;
+        lastRotationTimestampUs_ = snapshot.timestampUs;
+        lastRotationQualityFlags_ = snapshot.qualityFlags;
+        lastRotationConfidence_ = snapshot.confidence;
     }
 }
 

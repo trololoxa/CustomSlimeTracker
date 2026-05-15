@@ -6,18 +6,19 @@
 #include "network/udp_transport.hpp"
 #include "network/wifi_manager.hpp"
 #include "output/slimevr_packet_writer.hpp"
+#include "runtime/tracker_runtime_types.hpp"
 
 namespace tracker {
 
 class TrackerNetworkConfig;
 
+using SlimeVRCopyOutputSnapshotFn = bool (*)(TrackerPreparedOutputSnapshot& out, void* user);
+
 constexpr uint16_t SLIMEVR_DISCOVERY_LOCAL_PORT = 6969;
 constexpr uint32_t SLIMEVR_DISCOVERY_BROADCAST_IPV4 = 0xffffffffUL;
 
-// First SlimeVR runtime stage: UDP bring-up + discovery handshake.
-// It intentionally does not send RotationData yet. The next patch should wire
-// PreparedOutputRuntime snapshots into RotationData once server discovery is
-// confirmed on real hardware.
+// SlimeVR UDP output runtime: Wi-Fi/UDP discovery, SensorInfo/heartbeat and
+// non-blocking RotationData emission from prepared quaternion snapshots.
 enum class SlimeVROutputState : uint8_t {
     Disabled,
     WaitingForWifi,
@@ -38,6 +39,7 @@ struct SlimeVROutputRuntimeConfig {
     uint16_t serverPort = SLIMEVR_DEFAULT_SERVER_PORT;
     uint16_t localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
     uint32_t discoveryIntervalMs = 1000;
+    uint16_t rotationRateHz = 100;
     uint8_t incomingPacketsPerUpdate = 4;
 };
 
@@ -62,19 +64,34 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t handshakesSent = 0;
     uint32_t heartbeatSent = 0;
     uint32_t sensorInfoSent = 0;
+    uint32_t rotationSent = 0;
+    uint32_t rotationNoSnapshot = 0;
+    uint32_t rotationDuplicateSnapshot = 0;
     uint32_t packetsReceived = 0;
     uint32_t discoveryResponses = 0;
     uint32_t sendFailures = 0;
     uint32_t udpBeginFailures = 0;
 
+    uint32_t nextPacketNumber = 0;
+    uint16_t rotationRateHz = 0;
+    bool preparedOutputAvailable = false;
     uint32_t lastHandshakeMs = 0;
     uint32_t lastIncomingPacketMs = 0;
     uint32_t lastStateChangeMs = 0;
+    uint32_t lastRotationMs = 0;
+    uint32_t lastRotationSnapshotSequence = 0;
+    uint32_t lastRotationRuntimeSample = 0;
+    uint64_t lastRotationTimestampUs = 0;
+    uint32_t lastRotationQualityFlags = 0;
+    float lastRotationConfidence = 0.0f;
 };
 
 class SlimeVROutputRuntime {
 public:
-    void begin(IUdpTransport& udp, const TrackerWifiManager& wifi);
+    void begin(IUdpTransport& udp,
+               const TrackerWifiManager& wifi,
+               SlimeVRCopyOutputSnapshotFn copyOutputSnapshot = nullptr,
+               void* copyOutputSnapshotUser = nullptr);
     void configure(const SlimeVROutputRuntimeConfig& config);
     void resetCounters();
     void stop();
@@ -96,11 +113,17 @@ private:
     void sendHandshakeTo(const UdpEndpoint& endpoint, uint32_t nowMs);
     void sendSensorInfo(uint32_t nowMs);
     void sendHeartbeat(uint32_t nowMs);
+    void maybeSendRotation(uint32_t nowMs);
+    void sendRotation(const TrackerPreparedOutputSnapshot& snapshot, uint32_t nowMs);
     void makeHandshakeInfo(SlimeVRHandshakeInfo& info) const;
     bool sendPacket(const SlimeVRPacketWriteResult& packet, const UdpEndpoint& endpoint);
+    uint32_t rotationPeriodMs() const;
+    static uint8_t accuracyFromConfidence(float confidence);
 
     IUdpTransport* udp_ = nullptr;
     const TrackerWifiManager* wifi_ = nullptr;
+    SlimeVRCopyOutputSnapshotFn copyOutputSnapshot_ = nullptr;
+    void* copyOutputSnapshotUser_ = nullptr;
 
     SlimeVRPacketWriter writer_;
     uint8_t packetBuffer_[512] = {};
@@ -117,6 +140,7 @@ private:
     uint16_t serverPort_ = SLIMEVR_DEFAULT_SERVER_PORT;
     uint16_t localPort_ = SLIMEVR_DISCOVERY_LOCAL_PORT;
     uint32_t discoveryIntervalMs_ = 1000;
+    uint16_t rotationRateHz_ = 100;
     uint8_t incomingPacketsPerUpdate_ = 4;
 
     UdpEndpoint serverEndpoint_;
@@ -124,6 +148,9 @@ private:
     uint32_t handshakesSent_ = 0;
     uint32_t heartbeatSent_ = 0;
     uint32_t sensorInfoSent_ = 0;
+    uint32_t rotationSent_ = 0;
+    uint32_t rotationNoSnapshot_ = 0;
+    uint32_t rotationDuplicateSnapshot_ = 0;
     uint32_t packetsReceived_ = 0;
     uint32_t discoveryResponses_ = 0;
     uint32_t sendFailures_ = 0;
@@ -134,6 +161,13 @@ private:
     uint32_t lastStateChangeMs_ = 0;
     uint32_t lastHeartbeatMs_ = 0;
     uint32_t lastSensorInfoMs_ = 0;
+    uint32_t lastRotationAttemptMs_ = 0;
+    uint32_t lastRotationMs_ = 0;
+    uint32_t lastRotationSnapshotSequence_ = 0;
+    uint32_t lastRotationRuntimeSample_ = 0;
+    uint64_t lastRotationTimestampUs_ = 0;
+    uint32_t lastRotationQualityFlags_ = 0;
+    float lastRotationConfidence_ = 0.0f;
     uint32_t nextUdpBeginRetryMs_ = 0;
 };
 
