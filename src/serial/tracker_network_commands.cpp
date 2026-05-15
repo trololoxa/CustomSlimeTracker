@@ -2,10 +2,6 @@
 
 #include <cstring>
 
-#if defined(ARDUINO)
-#include <WiFi.h>
-#endif
-
 #include "config/tracker_network_config.hpp"
 #include "network/wifi_manager.hpp"
 
@@ -103,10 +99,8 @@ bool saveIfRequested(TrackerSerialCommandContext& ctx, bool save) {
 
 void printNetworkHelp(Stream& out) {
     out.println("net status");
-    out.println("net print [reveal]");
+    out.println("net print");
     out.println("net scan [visible|hidden] [limit <n>]");
-    out.println("net password-info");
-    out.println("net connect-test [seconds] [clean] [bssid <mac> ch <channel>]");
     out.println("net enable [save]");
     out.println("net disable [save]");
     out.println("net set ssid <ssid> [save]");
@@ -129,290 +123,6 @@ void printQuotedSsid(Stream& out, const char* ssid) {
     out.print('"');
 }
 
-
-uint8_t cstringLenBounded(const char* s, uint8_t cap) {
-    if (!s) return 0;
-    uint8_t n = 0;
-    while (n < cap && s[n] != '\0') ++n;
-    return n;
-}
-
-bool isPrintableAscii(char c) {
-    const unsigned char u = static_cast<unsigned char>(c);
-    return u >= 0x20u && u <= 0x7Eu;
-}
-
-void printByteHex(Stream& out, uint8_t v) {
-    out.print("0x");
-    if (v < 0x10u) out.print('0');
-    out.print(static_cast<unsigned int>(v), HEX);
-}
-
-uint32_t fnv1aString(const char* s) {
-    uint32_t h = 2166136261u;
-    if (!s) return h;
-    while (*s) {
-        h ^= static_cast<uint8_t>(*s++);
-        h *= 16777619u;
-    }
-    return h;
-}
-
-int hexNibble(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-bool parseBssid(const char* text, uint8_t out[6]) {
-    if (!text || !out) return false;
-    for (int i = 0; i < 6; ++i) {
-        const int hi = hexNibble(text[0]);
-        const int lo = hexNibble(text[1]);
-        if (hi < 0 || lo < 0) return false;
-        out[i] = static_cast<uint8_t>((hi << 4) | lo);
-        text += 2;
-        if (i < 5) {
-            if (*text != ':') return false;
-            ++text;
-        }
-    }
-    return *text == '\0';
-}
-
-void runPasswordInfo(TrackerSerialCommandContext& ctx) {
-    Stream& out = netStream(ctx);
-    if (!ctx.networkConfig) {
-        tracker_serial_detail::printErr(out, "network config not available");
-        return;
-    }
-
-    ctx.networkConfig->sanitize();
-    const auto& n = ctx.networkConfig->data;
-    const uint8_t ssidLen = cstringLenBounded(n.ssid, sizeof(n.ssid));
-    const uint8_t passLen = cstringLenBounded(n.password, sizeof(n.password));
-
-    bool passPrintable = true;
-    bool passHasQuote = false;
-    bool passHasLeadingOrTrailingSpace = false;
-    for (uint8_t i = 0; i < passLen; ++i) {
-        const char c = n.password[i];
-        if (!isPrintableAscii(c)) passPrintable = false;
-        if (c == '\"' || c == '\'') passHasQuote = true;
-    }
-    if (passLen > 0 && (n.password[0] == ' ' || n.password[passLen - 1] == ' ')) {
-        passHasLeadingOrTrailingSpace = true;
-    }
-
-    out.println("# NET PASSWORD INFO");
-    out.print("ssid_length="); out.println(ssidLen);
-    out.print("ssid_hash_fnv1a=0x"); out.println(fnv1aString(n.ssid), HEX);
-    out.print("password_set="); out.println(passLen > 0 ? "yes" : "no");
-    out.print("password_length="); out.println(passLen);
-    out.print("password_hash_fnv1a=0x"); out.println(fnv1aString(n.password), HEX);
-    out.print("password_printable_ascii="); out.println(passPrintable ? "yes" : "no");
-    out.print("password_has_quote_char="); out.println(passHasQuote ? "yes" : "no");
-    out.print("password_leading_or_trailing_space="); out.println(passHasLeadingOrTrailingSpace ? "yes" : "no");
-    if (passLen > 0) {
-        out.print("password_first_byte="); printByteHex(out, static_cast<uint8_t>(n.password[0])); out.println();
-        out.print("password_last_byte="); printByteHex(out, static_cast<uint8_t>(n.password[passLen - 1])); out.println();
-    }
-    if (passHasQuote) {
-        out.println("# WARN password contains quote characters. Serial CLI does not strip quotes; enter without \"...\".");
-    }
-    if (passLen > 0 && passLen < 8) {
-        out.println("# WARN WPA/WPA2-PSK password must be at least 8 characters.");
-    }
-}
-
-#if defined(ARDUINO)
-const char* wlStatusName(int status) {
-    switch (status) {
-        case WL_IDLE_STATUS: return "WL_IDLE_STATUS";
-        case WL_NO_SSID_AVAIL: return "WL_NO_SSID_AVAIL";
-        case WL_SCAN_COMPLETED: return "WL_SCAN_COMPLETED";
-        case WL_CONNECTED: return "WL_CONNECTED";
-        case WL_CONNECT_FAILED: return "WL_CONNECT_FAILED";
-        case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
-        case WL_DISCONNECTED: return "WL_DISCONNECTED";
-        default: return "WL_UNKNOWN";
-    }
-}
-
-void printArduinoIp(Stream& out, const IPAddress& ip) {
-    out.print(static_cast<unsigned int>(ip[0]));
-    out.print('.');
-    out.print(static_cast<unsigned int>(ip[1]));
-    out.print('.');
-    out.print(static_cast<unsigned int>(ip[2]));
-    out.print('.');
-    out.print(static_cast<unsigned int>(ip[3]));
-}
-#endif
-
-
-void runWifiConnectTest(TrackerSerialCommandContext& ctx, int argc, char** argv) {
-    Stream& out = netStream(ctx);
-    if (!ctx.networkConfig) {
-        tracker_serial_detail::printErr(out, "network config not available");
-        return;
-    }
-
-    uint32_t timeoutSec = 20;
-    bool cleanStart = false;
-    bool useBssid = false;
-    uint8_t bssid[6] = {0, 0, 0, 0, 0, 0};
-    uint32_t channel = 0;
-
-    for (int i = 2; i < argc; ++i) {
-        if (!argv[i]) continue;
-
-        if (is(argv[i], "clean") || is(argv[i], "wipe")) {
-            cleanStart = true;
-            continue;
-        }
-        if (is(argv[i], "bssid")) {
-            if (i + 1 >= argc || !parseBssid(argv[i + 1], bssid)) {
-                tracker_serial_detail::printErr(out, "usage: net connect-test [seconds] [clean] [bssid AA:BB:CC:DD:EE:FF ch <channel>]");
-                return;
-            }
-            useBssid = true;
-            ++i;
-            continue;
-        }
-        if (is(argv[i], "ch") || is(argv[i], "channel")) {
-            if (i + 1 >= argc || !tracker_serial_detail::parseU32(argv[i + 1], channel) || channel < 1 || channel > 14) {
-                tracker_serial_detail::printErr(out, "channel must be 1..14");
-                return;
-            }
-            ++i;
-            continue;
-        }
-
-        uint32_t parsed = 0;
-        if (!tracker_serial_detail::parseU32(argv[i], parsed) || parsed < 1 || parsed > 120) {
-            tracker_serial_detail::printErr(out, "usage: net connect-test [seconds:1..120] [clean] [bssid AA:BB:CC:DD:EE:FF ch <channel>]");
-            return;
-        }
-        timeoutSec = parsed;
-    }
-
-    if (useBssid && channel == 0) {
-        tracker_serial_detail::printErr(out, "bssid mode requires channel: net connect-test bssid AA:BB:CC:DD:EE:FF ch <channel>");
-        return;
-    }
-
-    ctx.networkConfig->sanitize();
-    const auto& n = ctx.networkConfig->data;
-    if (n.ssid[0] == '\0') {
-        tracker_serial_detail::printErr(out, "set ssid first: net set ssid <ssid>");
-        return;
-    }
-
-#if !defined(ARDUINO)
-    tracker_serial_detail::printErr(out, "connect-test is only available on Arduino/ESP32 builds");
-    (void)timeoutSec;
-    (void)cleanStart;
-    (void)useBssid;
-    (void)bssid;
-    (void)channel;
-#else
-    out.println("# NET CONNECT TEST");
-    out.println("# blocking diagnostic connection; sensor processing pauses until it finishes");
-    out.print("ssid="); out.println(n.ssid);
-    out.print("ssid_length="); out.println(cstringLenBounded(n.ssid, sizeof(n.ssid)));
-    out.print("password_set="); out.println(n.password[0] != '\0' ? "yes" : "no");
-    out.print("password_length="); out.println(cstringLenBounded(n.password, sizeof(n.password)));
-    out.print("hostname="); out.println(n.deviceName);
-    out.print("timeout_s="); out.println(timeoutSec);
-    out.print("clean_start="); out.println(cleanStart ? "yes" : "no");
-    out.print("explicit_bssid="); out.println(useBssid ? "yes" : "no");
-    if (useBssid) {
-        out.print("target_bssid="); printMac(out, bssid); out.println();
-        out.print("target_channel="); out.println(channel);
-    }
-
-    if (ctx.wifiManager) {
-        ctx.wifiManager->reset();
-    }
-
-    if (cleanStart) {
-        out.println("# clean start: WiFi.disconnect(true,true), WIFI_OFF, then WIFI_STA");
-        WiFi.disconnect(true, true);
-        delay(500);
-        WiFi.mode(WIFI_OFF);
-        delay(500);
-    } else {
-        WiFi.disconnect(false, false);
-        delay(250);
-    }
-
-    WiFi.mode(WIFI_STA);
-    WiFi.persistent(false);
-#if defined(ESP32)
-    WiFi.setSleep(false);
-#endif
-
-    bool hostOk = true;
-    if (n.deviceName[0] != '\0') {
-        hostOk = WiFi.setHostname(n.deviceName);
-    }
-    out.print("set_hostname_ok="); out.println(hostOk ? "yes" : "no");
-
-    const unsigned long start = millis();
-    if (useBssid) {
-        if (n.password[0] != '\0') WiFi.begin(n.ssid, n.password, static_cast<int32_t>(channel), bssid, true);
-        else WiFi.begin(n.ssid, nullptr, static_cast<int32_t>(channel), bssid, true);
-    } else {
-        if (n.password[0] != '\0') WiFi.begin(n.ssid, n.password);
-        else WiFi.begin(n.ssid);
-    }
-
-    int lastStatus = -999;
-    unsigned long lastPrint = 0;
-    while (millis() - start < timeoutSec * 1000UL) {
-        const int status = static_cast<int>(WiFi.status());
-        const unsigned long now = millis();
-        if (status != lastStatus || now - lastPrint >= 1000UL) {
-            out.print("t_ms="); out.print(now - start);
-            out.print(" raw_status="); out.print(status);
-            out.print(" status="); out.println(wlStatusName(status));
-            lastStatus = status;
-            lastPrint = now;
-        }
-        if (status == WL_CONNECTED) break;
-        delay(100);
-    }
-
-    const int finalStatus = static_cast<int>(WiFi.status());
-    out.print("final_raw_status="); out.println(finalStatus);
-    out.print("final_status="); out.println(wlStatusName(finalStatus));
-
-    if (finalStatus == WL_CONNECTED) {
-        out.print("ip="); printArduinoIp(out, WiFi.localIP()); out.println();
-        out.print("gateway="); printArduinoIp(out, WiFi.gatewayIP()); out.println();
-        out.print("subnet="); printArduinoIp(out, WiFi.subnetMask()); out.println();
-        out.print("dns="); printArduinoIp(out, WiFi.dnsIP()); out.println();
-        out.print("rssi_dbm="); out.println(WiFi.RSSI());
-        out.print("channel="); out.println(WiFi.channel());
-        out.print("bssid="); out.println(WiFi.BSSIDstr());
-        out.print("mac="); out.println(WiFi.macAddress());
-        tracker_serial_detail::printOk(out, "blocking wifi connect succeeded");
-    } else {
-        tracker_serial_detail::printErr(out, "blocking wifi connect failed");
-        out.println("# next checks:");
-        out.println("# 1) run: net password-info");
-        out.println("# 2) if password_has_quote_char=yes, re-enter password without quotes");
-        out.println("# 3) try explicit AP: net connect-test 30 clean bssid <BSSID_FROM_SCAN> ch <CHANNEL_FROM_SCAN>");
-        out.println("# 4) try a temporary open hotspot: net clear pass; net set ssid <open_ssid>; net connect-test 30 clean");
-    }
-
-    if (ctx.wifiManager) {
-        applyWifiConfig(ctx);
-    }
-#endif
-}
 
 bool parseScanArgs(Stream& out, int argc, char** argv, bool& showHidden, uint8_t& limit) {
     showHidden = true;
@@ -593,14 +303,6 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
 
     if (is(argv[1], "print")) {
         trackerSerialPrintNetworkConfig(ctx);
-        if (argc >= 3 && is(argv[2], "reveal")) {
-            out.print("password_reveal="); out.println(net.data.password);
-        }
-        return true;
-    }
-
-    if (is(argv[1], "password-info") || is(argv[1], "pass-info")) {
-        runPasswordInfo(ctx);
         return true;
     }
 
@@ -609,10 +311,6 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
         return true;
     }
 
-    if (is(argv[1], "connect-test") || is(argv[1], "jointest") || is(argv[1], "join-test")) {
-        runWifiConnectTest(ctx, argc, argv);
-        return true;
-    }
 
     if (is(argv[1], "enable")) {
         if (!net.data.credentialsValid || net.data.ssid[0] == '\0') {

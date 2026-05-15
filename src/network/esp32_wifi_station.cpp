@@ -8,6 +8,16 @@ namespace tracker {
 
 namespace {
 
+constexpr wifi_power_t kTrackerWifiTxPower = WIFI_POWER_8_5dBm;
+
+void applyTrackerWifiTxPower() {
+    // Some ESP32-C3 board revisions have RF problems at maximum TX power
+    // because the antenna is too close to the crystal. Match the known
+    // workaround used by SlimeVR builds: lower station TX power immediately
+    // after WiFi.begin().
+    WiFi.setTxPower(kTrackerWifiTxPower);
+}
+
 void copyBounded(char* dst, size_t dstSize, const char* src) {
     if (!dst || dstSize == 0) return;
     if (!src) src = "";
@@ -58,6 +68,7 @@ bool Esp32WifiStationAdapter::begin(const char* ssid, const char* password, cons
     } else {
         WiFi.begin(ssid);
     }
+    applyTrackerWifiTxPower();
     return true;
 }
 
