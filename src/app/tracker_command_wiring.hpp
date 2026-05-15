@@ -16,6 +16,7 @@ struct TrackerCommandRuntimeObjects {
     TrackerNetworkConfigStore* networkConfigStore = nullptr;
     bool* networkConfigLoadedFromNvs = nullptr;
     TrackerWifiManager* wifiManager = nullptr;
+    SlimeVROutputRuntime* slimevrRuntime = nullptr;
 
     Lsm6dsv* lsm = nullptr;
     Lsm6dsvFifoReader* fifo = nullptr;

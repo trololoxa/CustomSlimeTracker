@@ -144,6 +144,20 @@ static TrackerWifiManagerConfig makeAppWifiManagerConfig() {
     return cfg;
 }
 
+static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
+    SlimeVROutputRuntimeConfig cfg;
+    cfg.enabled = enabled;
+    cfg.discoveryEnabled = g_networkConfig.data.discoveryEnabled;
+    cfg.manualServerEnabled = g_networkConfig.data.manualServerEnabled;
+    cfg.deviceName = g_networkConfig.data.deviceName;
+    cfg.sensorId = g_networkConfig.data.sensorId;
+    cfg.serverPort = g_networkConfig.data.serverPort;
+    cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
+    cfg.discoveryIntervalMs = 1000;
+    cfg.incomingPacketsPerUpdate = 4;
+    return cfg;
+}
+
 static void setupNetworkRuntime() {
     TrackerNetworkConfig loaded;
     if (g_networkConfigStore.load(loaded)) {
@@ -157,6 +171,8 @@ static void setupNetworkRuntime() {
 
     g_wifiManager.begin(g_wifiStation);
     g_wifiManager.configure(makeAppWifiManagerConfig());
+    g_slimevrRuntime.begin(g_udpTransport, g_wifiManager);
+    g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(false));
 
     Serial.print("# network_config_loaded_from_nvs=");
     Serial.println(g_networkConfigLoadedFromNvs ? "yes" : "no");
@@ -168,7 +184,9 @@ static void setupNetworkRuntime() {
 }
 
 static void updateNetworkRuntime() {
-    g_wifiManager.update(millis());
+    const uint32_t nowMs = millis();
+    g_wifiManager.update(nowMs);
+    g_slimevrRuntime.update(nowMs);
 }
 
 static TrackerAppDeps makeTrackerAppDeps() {

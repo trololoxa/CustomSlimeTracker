@@ -30,6 +30,8 @@
 #include "config/tracker_network_config.hpp"
 #include "network/wifi_manager.hpp"
 #include "network/esp32_wifi_station.hpp"
+#include "network/esp32_udp_transport.hpp"
+#include "runtime/slimevr_output_runtime.hpp"
 #include "serial/tracker_serial_commands.hpp"
 
 using namespace tracker;
@@ -42,6 +44,8 @@ static TrackerNetworkConfigStore g_networkConfigStore;
 static bool g_networkConfigLoadedFromNvs = false;
 static Esp32WifiStationAdapter g_wifiStation;
 static TrackerWifiManager g_wifiManager;
+static Esp32UdpTransport g_udpTransport;
+static SlimeVROutputRuntime g_slimevrRuntime;
 
 static ImuCalibration g_imuCal;
 static GyroTempCompensator g_gyroTempComp;

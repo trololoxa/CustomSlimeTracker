@@ -88,7 +88,8 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  net set ssid <ssid> [save] | set pass <password> [save] | clear pass [save]");
     out.println("  net set name <deviceName> [save] | set server <host> [port] [save]");
     out.println("  net discovery on|off [save] | enable [save] | disable [save]");
-    out.println("  net save | load | defaults | erase | reconnect | counters reset");
+    out.println("  net save | load | defaults | erase | reconnect | counters reset | scan [visible|hidden] [limit N]");
+    out.println("  slime status | start | stop | reconnect | counters reset");
     out.println();
     out.println("[output/log/test]");
     out.println("  stream off | heartbeat | raw | scaled | quat | debug");
@@ -97,7 +98,8 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  bias status | on | off | reset");
     out.println("  test static <seconds> | test stop | test status");
     out.println("  output mode debug | output rate <hz> | output start | output stop");
-    out.println("  # output mode binary/slimevr: NOT_IMPLEMENTED in this build");
+    out.println("  # SlimeVR UDP discovery is available through slime start/status.");
+    out.println("  # RotationData output is not enabled yet.");
     out.println();
     out.println("[replay capture baseline]");
     out.println("  log full");

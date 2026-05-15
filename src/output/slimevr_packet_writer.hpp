@@ -18,7 +18,7 @@ namespace tracker {
 // Packet type values below fit into the low byte, so the first four bytes are
 // normally 00 00 00 <type>.
 
-constexpr uint8_t SLIMEVR_PROTOCOL_VERSION = 5;
+constexpr uint8_t SLIMEVR_PROTOCOL_VERSION = 19;
 constexpr uint16_t SLIMEVR_DEFAULT_SERVER_PORT = 6969;
 constexpr size_t SLIMEVR_PACKET_HEADER_SIZE = 12;
 constexpr size_t SLIMEVR_DISCOVERY_RESPONSE_SIZE = 13;
@@ -57,14 +57,13 @@ enum class SlimeVRSensorState : uint8_t {
     Online = 1,
 };
 
-enum class SlimeVRSensorType : uint8_t {
+enum class SlimeVRImuType : uint8_t {
     Unknown = 0,
-    IMU = 1,
+    LSM6DSV = 13,
 };
 
 enum class SlimeVRSensorDataType : uint8_t {
-    Unknown = 0,
-    Rotation = 1,
+    Rotation = 0,
 };
 
 enum class SlimeVRRotationDataType : uint8_t {
@@ -89,12 +88,11 @@ struct SlimeVRPacketWriteResult {
 };
 
 struct SlimeVRHandshakeInfo {
-    // Values used by the existing project reference implementation.
-    // Keep these configurable: SlimeVR enum ids can be adjusted later without
-    // changing the packet writer API.
-    uint32_t boardType = 2; // ESP32 in the reference code.
-    uint32_t imuType = 13;  // LSM6DSV in the reference code.
-    uint32_t mcuType = 2;   // ESP32 in the reference code.
+    // Current SlimeVR enum ids used by the sender example/server metadata.
+    // Keep these configurable so custom boards can override them later.
+    uint32_t boardType = 10; // LOLIN_C3_MINI. Use 4 for generic CUSTOM boards.
+    uint32_t imuType = 13;   // LSM6DSV.
+    uint32_t mcuType = 6;    // ESP32_C3.
 
     uint32_t imuInfo0 = 0;
     uint32_t imuInfo1 = 0;
@@ -115,13 +113,13 @@ struct SlimeVRHandshakeInfo {
 struct SlimeVRSensorInfo {
     uint8_t sensorId = 0;
     SlimeVRSensorState sensorState = SlimeVRSensorState::Online;
-    SlimeVRSensorType sensorType = SlimeVRSensorType::IMU;
-    uint8_t sensorConfigData = 1;
+    SlimeVRImuType imuType = SlimeVRImuType::LSM6DSV;
+    // SensorConfig is a u16 in the current server packet parser. Keep it zero
+    // until mag/config flags are implemented and acknowledged correctly.
+    uint16_t sensorConfig = 0;
     bool hasCompletedRestCalibration = true;
     uint8_t sensorPosition = 0;
     SlimeVRSensorDataType sensorDataType = SlimeVRSensorDataType::Rotation;
-    float tpsCounterAveragedTps = 100.0f;
-    float dataCounterAveragedTps = 100.0f;
 };
 
 class SlimeVRPacketWriter {
@@ -169,6 +167,7 @@ private:
         bool ok() const { return error == SlimeVRPacketWriteError::None; }
         bool ensure(size_t n);
         bool writeU8(uint8_t value);
+        bool writeU16Be(uint16_t value);
         bool writeU32Be(uint32_t value);
         bool writeU64Be(uint64_t value);
         bool writeF32Be(float value);

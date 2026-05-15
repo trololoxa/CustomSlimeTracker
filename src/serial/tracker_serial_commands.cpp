@@ -74,6 +74,10 @@ void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int ar
         return;
     }
 
+    if (trackerSerialDispatchSlimeVRCommand(ctx, argc, argv)) {
+        return;
+    }
+
     Stream& out = ctx.io ? *ctx.io : Serial;
     tracker_serial_detail::printErr(out, "unknown command; type help");
 }

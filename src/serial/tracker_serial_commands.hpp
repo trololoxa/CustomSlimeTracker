@@ -14,6 +14,7 @@
 #include "serial/tracker_bias_commands.hpp"
 #include "serial/tracker_test_commands.hpp"
 #include "serial/tracker_network_commands.hpp"
+#include "serial/tracker_slimevr_commands.hpp"
 
 namespace tracker {
 

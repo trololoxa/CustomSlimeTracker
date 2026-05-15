@@ -46,6 +46,13 @@ bool SlimeVRPacketWriter::BufferCursor::writeU8(uint8_t value) {
     return true;
 }
 
+bool SlimeVRPacketWriter::BufferCursor::writeU16Be(uint16_t value) {
+    if (!ensure(2)) return false;
+    *ptr++ = static_cast<uint8_t>((value >> 8) & 0xffu);
+    *ptr++ = static_cast<uint8_t>(value & 0xffu);
+    return true;
+}
+
 bool SlimeVRPacketWriter::BufferCursor::writeU32Be(uint32_t value) {
     if (!ensure(4)) return false;
     *ptr++ = static_cast<uint8_t>((value >> 24) & 0xffu);
@@ -144,13 +151,11 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writeSensorInfo(uint8_t* out, size
     if (writePacketHeader(cursor, SlimeVRSendPacketType::SensorInfo)) {
         cursor.writeU8(info.sensorId);
         cursor.writeU8(static_cast<uint8_t>(info.sensorState));
-        cursor.writeU8(static_cast<uint8_t>(info.sensorType));
-        cursor.writeU8(info.sensorConfigData);
+        cursor.writeU8(static_cast<uint8_t>(info.imuType));
+        cursor.writeU16Be(info.sensorConfig);
         cursor.writeU8(info.hasCompletedRestCalibration ? 1u : 0u);
         cursor.writeU8(info.sensorPosition);
         cursor.writeU8(static_cast<uint8_t>(info.sensorDataType));
-        cursor.writeF32Be(info.tpsCounterAveragedTps);
-        cursor.writeF32Be(info.dataCounterAveragedTps);
     }
     return finish(cursor);
 }

@@ -36,6 +36,8 @@ PROJECT_SOURCES = [
     pathlib.Path("src/config/tracker_config_runtime.cpp"),
     pathlib.Path("src/output/slimevr_packet_writer.cpp"),
     pathlib.Path("src/network/wifi_manager.cpp"),
+    pathlib.Path("src/network/udp_transport.cpp"),
+    pathlib.Path("src/runtime/slimevr_output_runtime.cpp"),
 ]
 
 

@@ -63,19 +63,20 @@ int main() {
 
     SlimeVRSensorInfo sensor;
     sensor.sensorId = 3;
-    sensor.tpsCounterAveragedTps = 99.5f;
-    sensor.dataCounterAveragedTps = 98.25f;
+    sensor.sensorConfig = 0x1234;
+    sensor.sensorPosition = 5;
     const SlimeVRPacketWriteResult sensorInfo = writer.writeSensorInfo(packet, sizeof(packet), sensor);
     CHECK(ctx, sensorInfo.ok);
-    CHECK(ctx, sensorInfo.size == SLIMEVR_PACKET_HEADER_SIZE + 15u);
+    CHECK(ctx, sensorInfo.size == SLIMEVR_PACKET_HEADER_SIZE + 8u);
     CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::SensorInfo));
     CHECK(ctx, packet[12] == 3);
     CHECK(ctx, packet[13] == static_cast<uint8_t>(SlimeVRSensorState::Online));
-    CHECK(ctx, packet[14] == static_cast<uint8_t>(SlimeVRSensorType::IMU));
-    CHECK(ctx, packet[16] == 1); // hasCompletedRestCalibration
-    CHECK(ctx, packet[18] == static_cast<uint8_t>(SlimeVRSensorDataType::Rotation));
-    CHECK_NEAR(ctx, readF32Be(packet + 19), 99.5f, 0.0f);
-    CHECK_NEAR(ctx, readF32Be(packet + 23), 98.25f, 0.0f);
+    CHECK(ctx, packet[14] == static_cast<uint8_t>(SlimeVRImuType::LSM6DSV));
+    CHECK(ctx, packet[15] == 0x12); // sensorConfig u16be high byte
+    CHECK(ctx, packet[16] == 0x34); // sensorConfig u16be low byte
+    CHECK(ctx, packet[17] == 1); // hasCompletedRestCalibration
+    CHECK(ctx, packet[18] == 5); // tracker position
+    CHECK(ctx, packet[19] == static_cast<uint8_t>(SlimeVRSensorDataType::Rotation));
 
     SlimeVRHandshakeInfo handshakeInfo;
     handshakeInfo.firmwareVersion = "fw";
@@ -90,9 +91,9 @@ int main() {
     CHECK(ctx, handshake.ok);
     CHECK(ctx, handshake.size == SLIMEVR_PACKET_HEADER_SIZE + 24u + 4u + 1u + 2u + 6u + 1u + 5u * 2u);
     CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::Handshake));
-    CHECK(ctx, readU32Be(packet + 12) == 2u);  // boardType
-    CHECK(ctx, readU32Be(packet + 16) == 13u); // imuType
-    CHECK(ctx, readU32Be(packet + 20) == 2u);  // mcuType
+    CHECK(ctx, readU32Be(packet + 12) == 10u); // boardType: LOLIN_C3_MINI
+    CHECK(ctx, readU32Be(packet + 16) == 13u); // imuType: LSM6DSV
+    CHECK(ctx, readU32Be(packet + 20) == 6u);  // mcuType: ESP32_C3
     CHECK(ctx, readU32Be(packet + 36) == SLIMEVR_PROTOCOL_VERSION);
     CHECK(ctx, packet[40] == 2);
     CHECK(ctx, packet[41] == 'f');
