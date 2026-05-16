@@ -43,12 +43,13 @@ uint16_t slimeRotationRateHzFromConfig(const TrackerSerialCommandContext& ctx) {
     return ctx.config ? ctx.config->data.output.outputRateHz : 100;
 }
 
-void enablePreparedQuaternionOutput(TrackerSerialCommandContext& ctx) {
-    if (!ctx.config) return;
-    ctx.config->data.output.quaternionOutputEnabled = true;
-    ctx.config->data.output.packetFormat = 2;
-    ctx.config->updateCrc();
+void stopLocalSerialStreamForSlime(TrackerSerialCommandContext& ctx) {
+    if (ctx.streamState) {
+        ctx.streamState->mode = TrackerStreamMode::Off;
+        ctx.streamState->lastEmitUs = 0;
+    }
 }
+
 
 void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     char ipBuf[24];
@@ -75,6 +76,7 @@ void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("signal_strength_sent="); out.println(s.signalStrengthSent);
     out.print("temperature_sent="); out.println(s.temperatureSent);
     out.print("magnetometer_accuracy_sent="); out.println(s.magnetometerAccuracySent);
+    out.println("# note: mag support is advertised via SensorInfo.sensor_config; packet 18 is not sent as periodic telemetry");
     out.print("mag_support_enabled="); out.println(yn(s.magSupportEnabled));
     out.print("sensor_config=0x"); out.println(s.sensorConfig, HEX);
     out.print("signal_telemetry_enabled="); out.println(yn(s.signalTelemetryEnabled));
@@ -109,6 +111,7 @@ void printHelp(Stream& out) {
     out.println("slime start");
     out.println("slime stop");
     out.println("slime reconnect");
+    out.println("slime rate <hz>");
     out.println("slime counters reset");
 }
 
@@ -143,8 +146,7 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             return true;
         }
         ctx.networkConfig->sanitize();
-        enablePreparedQuaternionOutput(ctx);
-        if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
+        stopLocalSerialStreamForSlime(ctx);
         ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
         tracker_serial_detail::printOk(out, "SlimeVR output started");
         out.println("# use: slime status");
@@ -163,11 +165,36 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             return true;
         }
         ctx.networkConfig->sanitize();
-        enablePreparedQuaternionOutput(ctx);
-        if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
+        stopLocalSerialStreamForSlime(ctx);
         ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
         ctx.slimevrRuntime->restart();
         tracker_serial_detail::printOk(out, "SlimeVR output restarted");
+        return true;
+    }
+
+
+    if (tracker_serial_detail::eqIgnoreCase(argv[1], "rate")) {
+        if (!ctx.config) {
+            tracker_serial_detail::printErr(out, "config not available");
+            return true;
+        }
+        if (argc < 3) {
+            tracker_serial_detail::printErr(out, "usage: slime rate <hz>");
+            return true;
+        }
+        uint32_t hz = 0;
+        if (!tracker_serial_detail::parseU32(argv[2], hz) || hz == 0 || hz > 1000) {
+            tracker_serial_detail::printErr(out, "invalid slime rate; expected 1..1000");
+            return true;
+        }
+        ctx.config->data.output.outputRateHz = static_cast<uint16_t>(hz);
+        ctx.config->data.output.packetFormat = 0;
+        ctx.config->updateCrc();
+        if (ctx.networkConfig) {
+            ctx.networkConfig->sanitize();
+            ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, static_cast<uint16_t>(hz)));
+        }
+        tracker_serial_detail::printOk(out, "SlimeVR rotation rate set");
         return true;
     }
 

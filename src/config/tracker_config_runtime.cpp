@@ -343,8 +343,9 @@ void TrackerConfig::sanitize() {
 
     if (data.output.outputRateHz == 0) data.output.outputRateHz = cfg::OUTPUT_RATE_HZ;
     if (data.output.outputRateHz > cfg::OUTPUT_RATE_HZ_MAX) data.output.outputRateHz = cfg::OUTPUT_RATE_HZ_MAX;
-    if (data.output.packetFormat != 0 && data.output.packetFormat != 2) data.output.packetFormat = 0;
-    if (data.output.packetFormat == 2) data.output.quaternionOutputEnabled = true;
+    // packetFormat is kept only for backward compatibility with old configs.
+    // SlimeVR UDP is controlled by `slime`/network runtime, not by output mode.
+    if (data.output.packetFormat != 0) data.output.packetFormat = 0;
 
     updateCrc();
 }

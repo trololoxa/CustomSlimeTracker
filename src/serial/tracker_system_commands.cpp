@@ -126,7 +126,7 @@ void trackerSerialPrintSetupStatus(TrackerSerialCommandContext& ctx) {
     const bool magDriverEnabled = ctx.config && ctx.config->data.magCal.driverEnabled;
     const bool magCalReady = ctx.config && ctx.config->data.magCal.calibrationValid;
     const bool magAxisReady = ctx.config && ctx.config->data.magCal.axisAlignmentValid;
-    const bool outputReady = ctx.config && ctx.config->data.output.packetFormat == 0;
+    const bool outputReady = ctx.config != nullptr;
 
     out.print("config_valid="); out.println(yesNo(configReady));
     out.print("gyro_bias_ready="); out.println(yesNo(gyroReady));

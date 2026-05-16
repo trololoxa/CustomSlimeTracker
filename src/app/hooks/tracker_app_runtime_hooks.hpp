@@ -152,10 +152,11 @@ static bool slimevrMagSupportEnabledFromConfig() {
 }
 
 static bool slimevrAutostartEnabledFromConfig() {
+    // SlimeVR UDP is now controlled by the network/slime runtime, not by the
+    // local output/serial backend. If Wi-Fi is configured to start, the tracker
+    // should also discover the server and emit RotationData automatically.
     return g_networkConfig.data.wifiEnabled &&
-           g_networkConfig.data.credentialsValid &&
-           g_config.data.output.packetFormat == 2 &&
-           g_config.data.output.quaternionOutputEnabled;
+           g_networkConfig.data.credentialsValid;
 }
 
 static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {

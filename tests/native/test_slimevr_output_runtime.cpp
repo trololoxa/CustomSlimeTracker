@@ -162,9 +162,9 @@ int main() {
     CHECK(ctx, st.rotationSent == 1);
     CHECK(ctx, st.signalStrengthSent == 1);
     CHECK(ctx, st.temperatureSent == 1);
-    CHECK(ctx, st.magnetometerAccuracySent == 1);
+    CHECK(ctx, st.magnetometerAccuracySent == 0);
     CHECK(ctx, st.magSupportEnabled);
-    CHECK(ctx, st.sensorConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED);
+    CHECK(ctx, st.sensorConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED);
     CHECK(ctx, st.lastSignalStrength == 64);
     CHECK(ctx, st.lastRssiDbm == -68);
     CHECK(ctx, st.lastTemperatureValid);

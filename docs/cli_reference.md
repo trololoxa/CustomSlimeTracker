@@ -104,11 +104,10 @@ Legend:
 | `log header` | Emit LOGVER/LOGFMT header | No | Use before captures intended for replay. |
 | `log summary` | Emit compact runtime summary | No | Human/agent diagnostic helper. |
 | `log reset` | Reset log counters | Runtime | Does not reset firmware runtime. |
-| `output mode debug` | Select local/debug output | Runtime/config | Stops SlimeVR packet mode selection. |
-| `output mode slimevr` | Select and start SlimeVR UDP output | Runtime/config | Enables prepared quaternion output and starts discovery/UDP backend; use `config save` to persist autostart. |
+| `output mode debug` | Select local serial debug output | Runtime/config | Does not affect SlimeVR UDP. |
 | `output mode binary` | Return `NOT_IMPLEMENTED` | No | Custom binary backend is still reserved. |
-| `output rate <hz>` | Set output/rotation rate | Runtime/config | SlimeVR `RotationData` uses this rate. |
-| `output start|stop` | Start/stop selected output | Runtime/config | In SlimeVR mode this starts/stops UDP output; it does not enable serial quaternion spam. |
+| `output rate <hz>` | Set local serial output rate | Runtime/config | SlimeVR has its own `slime rate <hz>` command. |
+| `output start|stop` | Start/stop local serial quaternion output | Runtime/config | Does not start/stop SlimeVR UDP. |
 
 
 ## Network / SlimeVR
@@ -127,22 +126,25 @@ Legend:
 | `net reconnect` | Restart Wi-Fi connection attempt | No | Non-blocking reconnect. |
 | `net scan [visible|hidden] [limit N]` | Blocking Wi-Fi environment scan | No | Developer diagnostic; pauses sensor processing while scan runs. |
 | `net save|load|defaults|erase` | Manage network NVS config | Yes/Runtime | Network config is stored separately from main tracker config. |
-| `slime status` | Print SlimeVR UDP runtime status | No | Includes server endpoint, packet counters, telemetry, protocol metadata. |
-| `slime start` | Start SlimeVR output runtime | Runtime/config | Enables prepared quaternion output and packet format 2. |
+| `slime status` | Print SlimeVR UDP runtime status | No | Includes server endpoint, packet counters, telemetry, protocol metadata. Temperature is sent as UDP packet 20 and is visible here even if the current server GUI does not show it. |
+| `slime start` | Start SlimeVR UDP runtime | Runtime | Uses prepared quaternion snapshots directly and leaves local serial output off. |
 | `slime stop` | Stop SlimeVR output runtime | Runtime | Does not erase saved Wi-Fi/config. |
-| `slime reconnect` | Restart SlimeVR discovery/session | Runtime/config | Useful after server restart or network changes. |
+| `slime reconnect` | Restart SlimeVR discovery/session | Runtime | Useful after server restart or network changes. |
+| `slime rate <hz>` | Set SlimeVR `RotationData` rate | Runtime/config | Stored in the existing outputRateHz field for compatibility, but not tied to local serial output. |
 | `slime counters reset` | Reset SlimeVR counters | Runtime | Does not restart Wi-Fi. |
 
-Autostart requires both configs: network config must have `wifi_enabled=yes` and valid credentials, and the main config must have `output.packetFormat=2` plus quaternion output enabled. A typical setup is:
+SlimeVR UDP is independent from the local `output`/`stream` commands. `slime start` leaves serial `Q,...` output off and reads prepared quaternion snapshots directly.
+
+Autostart only depends on network config: if Wi-Fi is enabled and credentials are valid, SlimeVR discovery starts after boot. Typical setup:
 
 ```text
 net set ssid <2.4GHz SSID> save
 net set pass <password> save
 net enable save
-output mode slimevr
-config save
 reboot
 ```
+
+`SensorInfo.sensor_config` advertises magnetometer support/enabled state. The firmware intentionally does not send periodic dummy `MagnetometerAccuracy` packets; packet 18 should be reserved for real mag-calibration feedback later.
 
 ## Bias and tests
 
@@ -174,3 +176,9 @@ It reports:
 
 The command also prints the next low-level commands to run when a block is not
 ready. It does not modify config, NVS, AHRS, FIFO, or calibration state.
+
+### SlimeVR telemetry notes
+
+- Temperature telemetry is sent with SlimeVR UDP packet type 20 (`sensorId + f32 temperatureC`). The server parser accepts it, but not every GUI view exposes it. Use `slime status` fields `temperature_sent`, `last_temperature_valid`, and `last_temperature_c` to verify firmware-side emission.
+- Magnetometer support is advertised through `SensorInfo.sensorConfig`: bit 1 = supported, bit 0 = enabled. When mag support is enabled from firmware config, `sensor_config` should be `0x3`; `0x1` is interpreted by the current server as `Mag not supported`.
+

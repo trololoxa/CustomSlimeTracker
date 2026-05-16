@@ -65,7 +65,9 @@ int main() {
     sensor.sensorId = 3;
     sensor.sensorConfig = 0x1234;
     sensor.sensorPosition = 5;
-    CHECK(ctx, SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED == 0x0001u);
+    CHECK(ctx, SLIMEVR_SENSOR_CONFIG_MAG_ENABLED == 0x0001u);
+    CHECK(ctx, SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED == 0x0002u);
+    CHECK(ctx, SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED == 0x0003u);
     const SlimeVRPacketWriteResult sensorInfo = writer.writeSensorInfo(packet, sizeof(packet), sensor);
     CHECK(ctx, sensorInfo.ok);
     CHECK(ctx, sensorInfo.size == SLIMEVR_PACKET_HEADER_SIZE + 8u);

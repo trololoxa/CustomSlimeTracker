@@ -24,10 +24,14 @@ constexpr size_t SLIMEVR_PACKET_HEADER_SIZE = 12;
 constexpr size_t SLIMEVR_DISCOVERY_RESPONSE_SIZE = 13;
 constexpr const char* SLIMEVR_DISCOVERY_RESPONSE = "Hey OVR =D 5";
 
-// Current server SensorInfo uses a u16 SensorConfig. The sender example labels
-// this field as "Mag support"; keep only bit 0 for now and leave all other
-// capability/config flags for the later server-command pass.
-constexpr uint16_t SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED = 0x0001u;
+// Current server SensorInfo uses a u16 SensorConfig. Server-side SensorConfig
+// decodes bit 1 as "magnetometer supported" and bit 0 as "magnetometer
+// enabled". If bit 1 is not set, the GUI reports "Mag not supported" even
+// when bit 0 is set.
+constexpr uint16_t SLIMEVR_SENSOR_CONFIG_MAG_ENABLED = 0x0001u;
+constexpr uint16_t SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED = 0x0002u;
+constexpr uint16_t SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED =
+    SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED | SLIMEVR_SENSOR_CONFIG_MAG_ENABLED;
 
 enum class SlimeVRSendPacketType : uint8_t {
     HeartBeat = 0,

@@ -234,85 +234,49 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
         }
         if (trackerSerialOutputIs(argv[2], "debug")) {
             ctx.config->data.output.packetFormat = 0;
+            ctx.config->data.output.serialDebugEnabled = true;
+            ctx.config->data.output.quaternionOutputEnabled = false;
+            if (ctx.streamState) {
+                ctx.streamState->mode = TrackerStreamMode::Debug;
+                ctx.streamState->lastEmitUs = 0;
+            }
             ctx.config->updateCrc();
-            tracker_serial_detail::printOk(out, "output mode set");
+            tracker_serial_detail::printOk(out, "output mode debug");
             return;
         }
         if (trackerSerialOutputIs(argv[2], "slimevr")) {
-            if (!ctx.slimevrRuntime || !ctx.networkConfig) {
-                tracker_serial_detail::printErr(out, "SlimeVR backend is not available");
-                return;
-            }
-            ctx.networkConfig->sanitize();
-            ctx.config->data.output.quaternionOutputEnabled = true;
-            ctx.config->data.output.packetFormat = 2;
-            if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
-            ctx.config->updateCrc();
-
-            SlimeVROutputRuntimeConfig cfg;
-            cfg.enabled = true;
-            cfg.discoveryEnabled = ctx.networkConfig->data.discoveryEnabled;
-            cfg.manualServerEnabled = ctx.networkConfig->data.manualServerEnabled;
-            cfg.deviceName = ctx.networkConfig->data.deviceName;
-            cfg.sensorId = ctx.networkConfig->data.sensorId;
-            cfg.serverPort = ctx.networkConfig->data.serverPort;
-            cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
-            cfg.discoveryIntervalMs = 1000;
-            cfg.rotationRateHz = ctx.config->data.output.outputRateHz;
-            cfg.incomingPacketsPerUpdate = 4;
-            cfg.magSupportEnabled = ctx.config->data.magCal.driverEnabled ||
-                                    ctx.config->data.magCal.calibrationValid ||
-                                    ctx.config->data.magCal.axisAlignmentValid ||
-                                    ctx.config->data.magYaw.applyEnabled;
-            ctx.slimevrRuntime->configure(cfg);
-            tracker_serial_detail::printOk(out, "output mode slimevr");
+            tracker_serial_detail::printErr(out, "output mode slimevr was removed; use: slime start");
             return;
         }
         if (trackerSerialOutputIs(argv[2], "binary")) {
             tracker_serial_detail::printErr(out, "NOT_IMPLEMENTED: binary output backend is not available in this build");
             return;
         }
-        tracker_serial_detail::printErr(out, "unknown output mode");
+        tracker_serial_detail::printErr(out, "unknown output mode; SlimeVR is controlled with: slime start|stop|status");
         return;
     }
 
     if (trackerSerialOutputIs(argv[1], "start")) {
         ctx.config->data.output.quaternionOutputEnabled = true;
-        if (ctx.streamState && ctx.config->data.output.packetFormat != 2) {
+        ctx.config->data.output.serialDebugEnabled = false;
+        ctx.config->data.output.packetFormat = 0;
+        if (ctx.streamState) {
             ctx.streamState->mode = TrackerStreamMode::Quat;
-        }
-        if (ctx.config->data.output.packetFormat == 2 && ctx.slimevrRuntime && ctx.networkConfig) {
-            if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
-            ctx.networkConfig->sanitize();
-            SlimeVROutputRuntimeConfig cfg;
-            cfg.enabled = true;
-            cfg.discoveryEnabled = ctx.networkConfig->data.discoveryEnabled;
-            cfg.manualServerEnabled = ctx.networkConfig->data.manualServerEnabled;
-            cfg.deviceName = ctx.networkConfig->data.deviceName;
-            cfg.sensorId = ctx.networkConfig->data.sensorId;
-            cfg.serverPort = ctx.networkConfig->data.serverPort;
-            cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
-            cfg.discoveryIntervalMs = 1000;
-            cfg.rotationRateHz = ctx.config->data.output.outputRateHz;
-            cfg.incomingPacketsPerUpdate = 4;
-            cfg.magSupportEnabled = ctx.config->data.magCal.driverEnabled ||
-                                    ctx.config->data.magCal.calibrationValid ||
-                                    ctx.config->data.magCal.axisAlignmentValid ||
-                                    ctx.config->data.magYaw.applyEnabled;
-            ctx.slimevrRuntime->configure(cfg);
+            ctx.streamState->lastEmitUs = 0;
         }
         ctx.config->updateCrc();
-        tracker_serial_detail::printOk(out, "output started");
+        tracker_serial_detail::printOk(out, "local quaternion output started");
+        out.println("# SlimeVR UDP is independent; use: slime start");
         return;
     }
 
     if (trackerSerialOutputIs(argv[1], "stop")) {
         ctx.config->data.output.quaternionOutputEnabled = false;
+        ctx.config->data.output.serialDebugEnabled = false;
         ctx.config->data.output.packetFormat = 0;
-        if (ctx.slimevrRuntime) ctx.slimevrRuntime->stop();
         if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
         ctx.config->updateCrc();
-        tracker_serial_detail::printOk(out, "output stopped");
+        tracker_serial_detail::printOk(out, "local output stopped");
         return;
     }
 

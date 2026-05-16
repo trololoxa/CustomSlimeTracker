@@ -349,7 +349,10 @@ void SlimeVROutputRuntime::maybeSendTelemetry(uint32_t nowMs) {
 
     if (signalTelemetryEnabled_) sendSignalStrength(nowMs);
     if (temperatureTelemetryEnabled_) sendTemperature(nowMs);
-    if (magSupportEnabled_) sendMagnetometerAccuracy(nowMs);
+    // Do not periodically send MagnetometerAccuracy as generic telemetry. The
+    // server learns magnetometer support from SensorInfo.sensorConfig. Some
+    // server builds treat packet 18 as active mag-calibration feedback, so
+    // sending dummy accuracy values can disturb preview/tracker state.
 }
 
 void SlimeVROutputRuntime::sendSignalStrength(uint32_t nowMs) {
@@ -406,7 +409,7 @@ uint32_t SlimeVROutputRuntime::rotationPeriodMs() const {
 
 uint16_t SlimeVROutputRuntime::sensorConfigFlags() const {
     uint16_t flags = 0;
-    if (magSupportEnabled_) flags |= SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED;
+    if (magSupportEnabled_) flags |= SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED;
     return flags;
 }
 

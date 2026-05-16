@@ -53,6 +53,7 @@ void trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx) {
         ctx.config->data.output.outputRateHz = ctx.streamState->rateHz;
         ctx.config->data.output.quaternionOutputEnabled = (ctx.streamState->mode == TrackerStreamMode::Quat);
         ctx.config->data.output.serialDebugEnabled = (ctx.streamState->mode == TrackerStreamMode::Debug);
+        ctx.config->data.output.packetFormat = 0;
     }
 
     ctx.config->updateCrc();

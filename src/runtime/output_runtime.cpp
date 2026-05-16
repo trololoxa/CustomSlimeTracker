@@ -20,7 +20,12 @@ void outputPrintU64Dec(Stream& out, uint64_t v) {
 
 bool PreparedOutputRuntime::enabled(const TrackerConfig& config) const {
 #if TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
-    return config.data.output.quaternionOutputEnabled;
+    // Prepared quaternion snapshots are a runtime service, not a serial/output
+    // mode. SlimeVR UDP consumes these snapshots independently from the local
+    // serial stream state, so keep them fresh whenever the feature is compiled
+    // in. The copy path remains lock-free and cheap.
+    (void)config;
+    return true;
 #else
     (void)config;
     return false;

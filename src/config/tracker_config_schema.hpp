@@ -273,8 +273,9 @@ struct TrackerOutputConfig {
     bool quaternionOutputEnabled = false;
     uint16_t outputRateHz = cfg::OUTPUT_RATE_HZ;
 
-    // Output packet format. 0 = local debug/serial, 2 = SlimeVR-compatible UDP.
-    // 1 remains reserved for a future custom binary backend.
+    // Deprecated legacy field. SlimeVR UDP is controlled by the `slime`/network
+    // runtime, not by the local serial output backend. Sanitization forces this
+    // field to 0 so old configs with packetFormat=2 do not bind output to UDP.
     uint8_t packetFormat = 0;
 };
 
