@@ -41,7 +41,7 @@ python tools/check_all.py --clean --skip-pio
 1. Keep `serial/tracker_serial_context.hpp` lightweight by moving reusable parse/print helpers to focused headers.
 2. Maintain `docs/cli_reference.md` when commands or side effects change.
 3. Maintain `docs/config_schema.md` when persisted schema changes.
-4. Build replay/log tooling before major tracking-filter changes.
+4. Maintain replay/log tooling and add fixtures before major tracking-filter changes.
 5. Keep SlimeVR UDP output decoupled from AHRS/FIFO: it must consume prepared output snapshots only, never low-level sensor state directly.
 
 ## Current SlimeVR network baseline

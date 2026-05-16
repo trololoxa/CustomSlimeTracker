@@ -13,7 +13,7 @@ The firmware is responsible for the physical sensor side of tracking:
 - apply local calibration;
 - run local sensor fusion;
 - expose diagnostics and calibration commands;
-- eventually output tracker orientation to a host/server.
+- output tracker orientation through local serial developer streams and the SlimeVR UDP backend.
 
 The firmware should **not** own body model logic, SlimeVR mounting/body calibration, skeleton offsets, or recenter semantics. Those belong to the host/server side. The firmware should produce a good sensor/device orientation and robust health information.
 
@@ -31,7 +31,8 @@ src/
   runtime/                         firmware runtime controllers and diagnostics
   sensor/                          sensor math, calibration, fusion, quality models
   serial/                          serial CLI parser and command domains
-  network/                         reserved for future real Wi-Fi/UDP transport
+  network/                         real Wi-Fi station management and UDP transport primitives
+  output/                          host-safe SlimeVR packet writer/protocol helpers
 
 docs/
   architecture.md                  this document
@@ -212,7 +213,7 @@ config/tracker_config_detail.hpp     constants, CRC helpers, small utilities
 config/tracker_config_schema.hpp     persistent schema structs only
 config/tracker_config_runtime.hpp    runtime apply/capture/sanitize/validate
 config/tracker_config_store.hpp      NVS storage and inspection
-config/tracker_network_config.hpp    future Wi-Fi/SlimeVR network config storage
+config/tracker_network_config.hpp    Wi-Fi/SlimeVR network config storage
 config/tracker_config_print.hpp      config summary printers
 ```
 
@@ -231,7 +232,7 @@ config/tracker_config_print.hpp      config summary printers
 
 2. **Do not put Wi-Fi secrets in the main tracker config blob.**
 
-   Main tracker config stores IMU/FIFO/AHRS/calibration/output/frame policy. Future network settings live in `TrackerNetworkConfig` under a separate namespace/key.
+   Main tracker config stores IMU/FIFO/AHRS/calibration/output/frame policy. Network credentials and SlimeVR endpoint settings live in `TrackerNetworkConfig` under a separate namespace/key.
 
 3. **Schema changes must be intentional.**
 
@@ -451,8 +452,8 @@ Persisted in NVS:
 - mag calibration and quality metadata;
 - mag yaw correction config;
 - output policy;
-- frame/device identity placeholders;
-- future network config in separate storage.
+- frame/device identity fields;
+- network/SlimeVR config in separate storage.
 
 Runtime only:
 
@@ -482,9 +483,14 @@ Do not put calibration algorithms into CLI files. CLI files should only parse ar
 
 ## Output and SlimeVR boundary
 
-Current production-safe output is serial/debug-oriented. Fake SlimeVR/binary output modes should not be enabled without a real transport/backend.
+There are two output paths with separate ownership:
 
-Future SlimeVR support should be added as real transport/output modules only after the local quaternion/log/replay baseline is stable, for example:
+- local serial developer output: `stream ...`, `output ...`, and machine logs;
+- SlimeVR UDP output: `net ...` / `slime ...`, using prepared quaternion snapshots.
+
+The SlimeVR backend is real Wi-Fi/UDP transport, not a fake packet mode. Custom binary output is still not implemented and should remain disabled until it has a real backend.
+
+Current SlimeVR-related modules:
 
 ```text
 network/wifi_manager.hpp
@@ -493,7 +499,7 @@ output/slimevr_packet_writer.hpp
 runtime/slimevr_output_runtime.hpp
 ```
 
-`src/network/` is reserved for Wi-Fi/UDP transport primitives. Do not place fake packet modes or command-only placeholders there.
+`src/network/` owns Wi-Fi/UDP transport primitives only. `src/output/` owns packet encoding, and `runtime/slimevr_output_runtime.*` owns discovery/session/output scheduling. Do not place AHRS/FIFO logic in transport modules, and do not place transport state in AHRS or mag-yaw code.
 
 The firmware should send local sensor/device orientation and health. It should not bake in server/body/mounting calibration semantics unless there is a clear protocol-level reason.
 
@@ -629,10 +635,10 @@ If a file contains multiple unrelated domains, split it before adding more logic
 - Command exposure: `serial/`.
 - Wiring: `app/`.
 
-### Add new network/SlimeVR support
+### Change network/SlimeVR support
 
 - Do not put Wi-Fi secrets in `TrackerConfigBlob`.
-- Use `TrackerNetworkConfig` or a future `net/` layer.
+- Use `TrackerNetworkConfig` for Wi-Fi credentials and SlimeVR endpoint settings.
 - Keep protocol encoding separate from transport.
 - Keep output runtime separate from sensor fusion.
 
@@ -720,8 +726,8 @@ Architecture is now much cleaner, but these areas remain future work:
 4. **Config migration policy.**
    Current schema is versioned, but future changes should consider block-level migrations instead of invalidating all calibration.
 
-5. **Network/SlimeVR backend.**
-   Add only after local tracking, calibration, and health reporting remain stable.
+5. **Network/SlimeVR hardening.**
+   Keep runtime tests, reconnect behavior, and packet diagnostics current as Wi-Fi/server behavior changes.
 
 ## Final rule
 
@@ -733,6 +739,8 @@ runtime code runs
 serial code commands
 config code persists
 connection code talks to hardware
+network code transports
+output code encodes packets
 app code wires
 main.cpp enters
 ```

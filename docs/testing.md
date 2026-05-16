@@ -23,6 +23,10 @@ Native tests are for pure or mostly-pure logic:
 - `sensor/mag_yaw_correction.hpp` gate/reject/cooldown behavior.
 - `config/tracker_config_detail.hpp` CRC helpers and schema constants.
 - `config/tracker_config_schema.hpp` default schema layout expectations.
+- `network/wifi_manager.hpp` non-blocking connection/reconnect decisions through fake adapters.
+- `network/udp_transport.hpp` host-safe endpoint helpers.
+- `output/slimevr_packet_writer.hpp` packet encoding/parsing helpers.
+- `runtime/slimevr_output_runtime.hpp` host-safe session/output state rules.
 
 Native tests are intentionally not a replacement for firmware tests. They do
 not verify SPI, GPIO interrupts, LSM6DSV FIFO timing, QMC6309 sensor-hub traffic,
@@ -115,7 +119,7 @@ warning profile:
 Do not add ESP32 hardware APIs to native tests. A tiny `tests/native/Arduino.h`
 stub exists only for host-safe modules that mention `Stream`/`millis()` in a
 print/status helper but do not actually use ESP32 hardware. Do not use that stub
-to test app, SPI, GPIO, Preferences/NVS, Wi-Fi or Serial transport behavior. If a
+to test app, SPI, GPIO, Preferences/NVS, real Wi-Fi or Serial transport behavior. If a
 module needs real Arduino framework semantics, it remains firmware-test only
 until the pure decision rule is isolated behind a host-safe helper.
 
@@ -148,7 +152,9 @@ quality stats
 ahrs status
 bias status
 mag status
-output status
+stream
+net status
+slime status
 stream quat
 stream off
 test status
@@ -168,7 +174,9 @@ quality stats
 ahrs status
 bias status
 mag status
-output status
+stream
+net status
+slime status
 test status
 cal temp print
 ```
@@ -177,7 +185,7 @@ If IMU/FIFO live reconfiguration was touched, verify that the magnetometer path
 is re-armed correctly after the change:
 
 ```text
-imu odr 240 save
+imu rate 240 save
 fifo stats
 mag status
 ```
@@ -280,6 +288,7 @@ Allowed in native tests:
   core/*
   selected sensor/* pure logic
   selected runtime/* pure state/types and host-safe decision helpers
+  selected network/output protocol logic through fake host adapters
   config/* schema/detail headers
   the minimal tests/native/Arduino.h stub for Stream/millis-only helpers
 
@@ -287,7 +296,7 @@ Avoid in native tests:
   app/*
   serial/* command dispatcher
   Preferences/NVS
-  SPI/GPIO/Serial/Wi-Fi
+  SPI/GPIO/Serial/real Wi-Fi
   hardware timing or interrupt behavior
 ```
 
@@ -313,6 +322,12 @@ static temp bin indexing
 runtime gyro bias reset state and controller decision helpers
 mag yaw gate/reject/cooldown behavior
 config detail CRC/schema defaults
+config hardening/sanitize behavior
+serial parse helper behavior
+tracking-state controller transitions
+Wi-Fi manager state-machine behavior through fake adapters
+UDP endpoint helpers
+SlimeVR packet writer and output-runtime behavior
 ```
 
 This is a starting point, not complete coverage. The next useful native-test

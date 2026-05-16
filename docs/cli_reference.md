@@ -154,7 +154,7 @@ net enable save
 reboot
 ```
 
-`SensorInfo.sensor_config` advertises magnetometer support/enabled state. The firmware intentionally does not send periodic dummy `MagnetometerAccuracy` packets; packet 18 should be reserved for real mag-calibration feedback later.
+`SensorInfo.sensor_config` advertises magnetometer support/enabled state. The firmware intentionally does not send periodic dummy `MagnetometerAccuracy` packets; packet 18 is only sent if a real mag-calibration/accuracy workflow starts using it.
 
 ## Bias and tests
 
@@ -164,8 +164,9 @@ reboot
 | `bias on|off` | Enable/disable runtime bias estimator | Runtime | No NVS write by itself. |
 | `bias reset` | Clear runtime trim/estimator state | Runtime | Does not clear saved calibration. |
 | `test static <seconds>` | Start non-blocking static test | Runtime | FIFO/AHRS/CLI continue running. |
-| `test status` | Print static test status | No | Inspection only. |
-| `test stop` | Stop current static test | Runtime | Leaves last completed result if available. |
+| `test runtime <seconds>` | Start full loop/network runtime test | Runtime | Measures Wi-Fi/SlimeVR/FIFO/quality deltas. |
+| `test status` | Print static/runtime test status | No | Inspection only. |
+| `test stop` | Stop current static/runtime test | Runtime | Leaves last completed report when available. |
 
 ## Setup status
 
@@ -181,8 +182,11 @@ It reports:
 - `mag_driver_enabled`
 - `mag_cal_ready`
 - `mag_axis_ready`
+- `local_output_wired`
+- `slimevr_runtime_wired`
 - `setup_ready_6dof`
 - `setup_ready_mag_yaw`
+- `setup_ready_slimevr_runtime`
 
 The command also prints the next low-level commands to run when a block is not
 ready. It does not modify config, NVS, AHRS, FIFO, or calibration state.

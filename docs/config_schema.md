@@ -10,7 +10,7 @@ Persistent config lives in `src/config/`. Runtime/session state must not be pers
 | `tracker_config_detail.hpp` | CRC/constants/detail helpers. |
 | `tracker_config_runtime.hpp/.cpp` | Defaults, sanitize/validate, apply/capture runtime values. |
 | `tracker_config_store.hpp/.cpp` | NVS/Preferences persistence and store inspection. |
-| `tracker_network_config.hpp/.cpp` | Future network config storage, separate from core IMU config. |
+| `tracker_network_config.hpp/.cpp` | Wi-Fi/SlimeVR network config storage, separate from core IMU config. |
 | `tracker_config_print.hpp/.cpp` | Human-readable config printing. |
 
 ## Ownership rules
@@ -24,7 +24,7 @@ Persisted:
 - accel calibration;
 - mag axis/calibration/yaw-correction policy;
 - output policy;
-- future network configuration.
+- network/SlimeVR configuration in its own NVS namespace.
 
 Runtime only:
 
@@ -48,4 +48,4 @@ When changing persisted structs:
 5. Add or update native tests for defaults/sanitize/CRC/layout expectations.
 6. Update this document and `docs/cli_reference.md` if commands or side effects change.
 
-Current config hardening is intentionally low-cost: compile-time/native-test layout guards and host tests are preferred over runtime-heavy migration logic until Wi-Fi/SlimeVR fields are finalized.
+Current config hardening is intentionally low-cost: compile-time/native-test layout guards and host tests are preferred over runtime-heavy migration logic. Keep network credentials in the separate `TrackerNetworkConfig` namespace so IMU/calibration resets do not expose or erase Wi-Fi secrets by accident.

@@ -33,7 +33,7 @@ class FifoAccel6PosCalibrationRunner;
 //   - non-blocking poll(), optionally limited by bytes per loop
 //   - nearly zero CPU load when Serial has no bytes
 //   - text commands for development/config/calibration
-//   - future binary/quaternion output can coexist separately
+//   - local stream/log output and SlimeVR UDP output stay separate domains
 //
 // Usage in main.cpp:
 //   static TrackerSerialCommandInterface<> g_cli;

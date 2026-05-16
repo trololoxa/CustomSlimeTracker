@@ -122,7 +122,7 @@ Magnetometer capability is advertised via `SensorInfo.sensor_config`:
 0x3 = mag supported, enabled
 ```
 
-The firmware intentionally does not send periodic dummy `MagnetometerAccuracy` packets. Packet 18 is reserved for future real mag calibration/accuracy feedback.
+The firmware intentionally does not send periodic dummy `MagnetometerAccuracy` packets. Packet 18 should only be emitted if a real mag-calibration/accuracy workflow starts using it.
 
 ## CLI diagnostics
 

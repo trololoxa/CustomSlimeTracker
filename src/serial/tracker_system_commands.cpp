@@ -125,7 +125,8 @@ void trackerSerialPrintSetupStatus(TrackerSerialCommandContext& ctx) {
     const bool magDriverEnabled = ctx.config && ctx.config->data.magCal.driverEnabled;
     const bool magCalReady = ctx.config && ctx.config->data.magCal.calibrationValid;
     const bool magAxisReady = ctx.config && ctx.config->data.magCal.axisAlignmentValid;
-    const bool outputReady = ctx.config != nullptr;
+    const bool localOutputWired = ctx.config != nullptr && ctx.streamState != nullptr;
+    const bool slimevrRuntimeWired = ctx.networkConfig != nullptr && ctx.wifiManager != nullptr && ctx.slimevrRuntime != nullptr;
 
     out.print("config_valid="); out.println(yesNo(configReady));
     out.print("gyro_bias_ready="); out.println(yesNo(gyroReady));
@@ -133,16 +134,19 @@ void trackerSerialPrintSetupStatus(TrackerSerialCommandContext& ctx) {
     out.print("mag_driver_enabled="); out.println(yesNo(magDriverEnabled));
     out.print("mag_cal_ready="); out.println(yesNo(magCalReady));
     out.print("mag_axis_ready="); out.println(yesNo(magAxisReady));
-    out.print("output_backend_ready="); out.println(yesNo(outputReady));
+    out.print("local_output_wired="); out.println(yesNo(localOutputWired));
+    out.print("slimevr_runtime_wired="); out.println(yesNo(slimevrRuntimeWired));
 
     out.print("setup_ready_6dof="); out.println(yesNo(configReady && gyroReady && accelReady));
     out.print("setup_ready_mag_yaw="); out.println(yesNo(configReady && gyroReady && accelReady && magDriverEnabled && magCalReady && magAxisReady));
+    out.print("setup_ready_slimevr_runtime="); out.println(yesNo(configReady && localOutputWired && slimevrRuntimeWired));
 
     if (!gyroReady) out.println("next: cal gyro; cal gyro save; config save");
     if (!accelReady) out.println("next: cal accel face XP/XN/YP/YN/ZP/ZN; cal accel compute; cal accel save; config save");
     if (magDriverEnabled && !magAxisReady) out.println("next: mag axis print; mag axis set <bodyX> <bodyY> <bodyZ> [save]");
     if (magDriverEnabled && !magCalReady) out.println("next: mag cal start; rotate tracker through many orientations; mag cal apply save; config save");
     if (!configReady) out.println("next: config print; config defaults/save if this is intentional");
+    if (configReady && !slimevrRuntimeWired) out.println("next: verify network/slime wiring; expected net status and slime status to be available");
     out.println("replay baseline: log full; log rate 20; log header; test static 600; log summary; log off");
 }
 

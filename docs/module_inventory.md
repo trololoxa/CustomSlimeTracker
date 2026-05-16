@@ -14,10 +14,11 @@ This inventory is the current ownership map. It is intentionally compact; update
 | `src/runtime/` | runtime controllers | FIFO runtime, sample pipeline, logs, output snapshots, static tests, bias, mag runtime, state | Should expose status/results, not own CLI parsing. |
 | `src/sensor/` | sensor math/models | AHRS, calibration, IMU quality, mag heading/yaw correction | Prefer pure/host-testable logic. |
 | `src/serial/` | developer CLI | Fixed-buffer parser, command context, domain command handlers, serial stream helpers | Domain commands live in `.cpp`; headers expose API only. |
-| `src/network/` | reserved transport | Future Wi-Fi/UDP transport boundary | No placeholder backend. |
+| `src/network/` | transport | Wi-Fi station management and UDP transport primitives | No AHRS/FIFO logic or SlimeVR packet formatting here. |
+| `src/output/` | protocol output | Host-safe SlimeVR packet writer/protocol helpers | No Wi-Fi state or sensor fusion ownership. |
 | `tools/logs/` | host tools | Existing E0 log summarizer | Human/debug summaries. |
 | `tools/replay/` | host tools | Replay/metrics tooling for machine logs | Added before major tracking changes. |
-| `tests/native/` | host tests | Host-safe C++ regression tests | No real Arduino/SPI/NVS/Wi-Fi behavior. |
+| `tests/native/` | host tests | Host-safe C++ regression tests | No real Arduino/SPI/NVS/Wi-Fi hardware behavior. |
 | `docs/` | docs | Architecture, testing, CLI, config, replay, tracking pipeline | Docs should describe current code, not stale roadmaps. |
 
 ## Experimental/future code policy

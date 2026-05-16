@@ -179,10 +179,10 @@ void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("outputRateHz="); out.println(cfg.data.output.outputRateHz);
     out.print("packetFormat="); out.println(cfg.data.output.packetFormat);
 
-    out.println("-- future network storage --");
+    out.println("-- network storage --");
     out.print("networkNvsNamespace="); out.println(tracker_network_detail::NVS_NAMESPACE);
     out.print("networkNvsKey="); out.println(tracker_network_detail::NVS_KEY_CONFIG);
-    out.println("networkRuntimeWired=no");
+    out.println("networkConfigStorage=separate_nvs");
     out.println("==============================================================================");
 }
 

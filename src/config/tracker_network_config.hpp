@@ -8,11 +8,11 @@
 namespace tracker {
 
 // ============================================================
-// Future network / SlimeVR persistent storage
+// Network / SlimeVR persistent storage
 // ============================================================
 // Kept in a separate NVS namespace so normal config dumps can stay safe and
-// calibration resets do not have to imply Wi-Fi credential resets. This is not
-// wired to runtime yet; it reserves the schema before the next calibration pass.
+// calibration resets do not have to imply Wi-Fi credential resets. Runtime Wi-Fi
+// and SlimeVR commands load/apply this config through app-level wiring.
 
 namespace tracker_network_detail {
 static constexpr uint32_t CONFIG_MAGIC = 0x544E4554UL; // 'TNET'

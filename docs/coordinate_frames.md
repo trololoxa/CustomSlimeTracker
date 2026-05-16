@@ -1,8 +1,8 @@
 # Coordinate frames and quaternion conventions
 
 This document records the frame conventions used by the firmware. Keep it in
-sync with `core/math.hpp`, AHRS code, mag heading/yaw code, and future SlimeVR
-output code.
+sync with `core/math.hpp`, AHRS code, mag heading/yaw code, prepared output
+snapshots, and SlimeVR output code.
 
 ## Quaternion convention
 
@@ -90,7 +90,7 @@ calibration and should not encode SlimeVR body offsets.
 
 ## Device/body/mounting frame
 
-Persistent config contains placeholders for:
+Persistent config contains frame/device identity fields for:
 
 ```text
 sensorToDevice
@@ -104,8 +104,7 @@ Current firmware policy:
 - SlimeVR/server-side logic owns body assignment, mounting calibration, recenter,
   body proportions, AutoBone and Stay Aligned.
 - Do not bake body/recenter/mounting offsets into local AHRS output unless a
-  future output backend explicitly requires a documented firmware-side output
-  convention.
+  documented firmware-side output convention explicitly requires it.
 
 ## Mag heading and yaw correction
 
@@ -149,7 +148,9 @@ SlimeVR Server expects tracker orientation as a quaternion. It does not replace
 local IMU calibration, gyro bias calibration, accel calibration, mag calibration,
 or sensor fusion.
 
-Firmware should eventually output a documented device orientation quaternion.
+Firmware currently publishes the AHRS device/sensor orientation through prepared
+output snapshots. Local serial output and SlimeVR UDP consume that same snapshot
+boundary instead of reading AHRS/FIFO objects directly.
 The server should remain responsible for:
 
 ```text

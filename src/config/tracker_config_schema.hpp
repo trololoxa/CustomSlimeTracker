@@ -212,8 +212,9 @@ struct TrackerFrameConfigPersisted {
 };
 
 struct TrackerDeviceIdentityPersisted {
-    // Stable IDs/names for future network/SlimeVR transport. These are not used
-    // by the current serial/debug output path yet.
+    // Stable local identity defaults. SlimeVR/Wi-Fi runtime identity is stored in
+    // TrackerNetworkConfig so credentials and network naming stay isolated from
+    // IMU/calibration config resets.
     uint32_t deviceId = 0;
     uint8_t sensorId = 0;
     uint8_t reserved0 = 0;

@@ -137,8 +137,8 @@ public:
 
     bool readRegs(uint8_t reg, uint8_t* dst, uint8_t len);
 
-    bool writeReg(uint8_t reg, uint8_t value);    // For future FIFO path: QMC is configured once, then LSM6DSV SLV0 can be
-    // armed to read REG_DATA_X_L..REG_DATA_X_L+5 continuously.
+    bool writeReg(uint8_t reg, uint8_t value);    // QMC is configured once, then LSM6DSV SLV0 is armed for the runtime FIFO
+    // path to read REG_DATA_X_L..REG_DATA_X_L+5 continuously.
     bool armHubFifoRead(Lsm6dsvSensorHub::ShubOdr hubOdr = Lsm6dsvSensorHub::ShubOdr::Hz60);
 
     float lsbPerGauss() const;
