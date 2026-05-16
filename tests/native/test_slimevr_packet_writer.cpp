@@ -110,6 +110,20 @@ int main() {
     CHECK(ctx, packet[12] == 9);
     CHECK_NEAR(ctx, readF32Be(packet + 13), 0.5f, 1.0e-6f);
 
+    const SlimeVRPacketWriteResult pong = writer.writePingPong(packet, sizeof(packet), 0xAABBCCDDu);
+    CHECK(ctx, pong.ok);
+    CHECK(ctx, pong.size == SLIMEVR_PACKET_HEADER_SIZE + 4u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::PingPong));
+    CHECK(ctx, readU32Be(packet + 12) == 0xAABBCCDDu);
+
+    const SlimeVRPacketWriteResult ack = writer.writeAcknowledgeConfigChange(packet, sizeof(packet), 4, SLIMEVR_CONFIG_TYPE_MAGNETOMETER);
+    CHECK(ctx, ack.ok);
+    CHECK(ctx, ack.size == SLIMEVR_PACKET_HEADER_SIZE + 3u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::AcknowledgeConfigChange));
+    CHECK(ctx, packet[12] == 4);
+    CHECK(ctx, packet[13] == 0x00);
+    CHECK(ctx, packet[14] == 0x01);
+
     const uint8_t discovery[] = {
         static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
         'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
@@ -117,6 +131,11 @@ int main() {
     CHECK(ctx, SlimeVRPacketWriter::isServerHandshakeResponse(discovery, sizeof(discovery)));
     CHECK(ctx, SlimeVRPacketWriter::isPacketType(discovery, sizeof(discovery), SlimeVRReceivePacketType::Handshake));
     CHECK(ctx, !SlimeVRPacketWriter::isPacketType(discovery, sizeof(discovery), SlimeVRReceivePacketType::PingPong));
+
+    const SlimeVRPacketWriteResult pong2 = writer.writePingPong(packet, sizeof(packet), 0x01020304u);
+    CHECK(ctx, pong2.ok);
+    CHECK(ctx, SlimeVRPacketWriter::isPacketType(packet, pong2.size, SlimeVRReceivePacketType::PingPong));
+    CHECK(ctx, !SlimeVRPacketWriter::isPacketType(packet, pong2.size, SlimeVRReceivePacketType::SetConfigFlag));
 
     const SlimeVRPacketWriteResult tooSmall = writer.writeHeartbeat(packet, 3);
     CHECK(ctx, !tooSmall.ok);

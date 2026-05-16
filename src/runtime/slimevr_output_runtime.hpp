@@ -14,6 +14,7 @@ namespace tracker {
 class TrackerNetworkConfig;
 
 using SlimeVRCopyOutputSnapshotFn = bool (*)(TrackerPreparedOutputSnapshot& out, void* user);
+using SlimeVRSetConfigFlagFn = bool (*)(uint8_t sensorId, uint16_t configType, bool enabled, void* user);
 
 constexpr uint16_t SLIMEVR_DISCOVERY_LOCAL_PORT = 6969;
 constexpr uint32_t SLIMEVR_DISCOVERY_BROADCAST_IPV4 = 0xffffffffUL;
@@ -43,7 +44,12 @@ struct SlimeVROutputRuntimeConfig {
     uint16_t rotationRateHz = 100;
     uint8_t incomingPacketsPerUpdate = 4;
 
-    bool magSupportEnabled = false;
+    // magSupported means the firmware can expose a magnetometer-backed yaw
+    // path. magEnabled means the server/runtime currently allows using it.
+    bool magSupportEnabled = false; // compatibility field: true means supported.
+    bool magEnabled = false;
+    SlimeVRSetConfigFlagFn setConfigFlag = nullptr;
+    void* setConfigFlagUser = nullptr;
     bool signalTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0;
     bool temperatureTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0;
     uint32_t telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
@@ -80,6 +86,16 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t rotationDuplicateSnapshot = 0;
     uint32_t packetsReceived = 0;
     uint32_t discoveryResponses = 0;
+    uint32_t heartbeatReceived = 0;
+    uint32_t pingReceived = 0;
+    uint32_t pongSent = 0;
+    uint32_t featureFlagsReceived = 0;
+    uint32_t setConfigFlagReceived = 0;
+    uint32_t setConfigFlagApplied = 0;
+    uint32_t setConfigFlagIgnored = 0;
+    uint32_t ackConfigSent = 0;
+    uint32_t protocolChangeReceived = 0;
+    uint32_t unknownPacketsReceived = 0;
     uint32_t sendFailures = 0;
     uint32_t udpBeginFailures = 0;
 
@@ -87,6 +103,7 @@ struct SlimeVROutputRuntimeStatus {
     uint16_t rotationRateHz = 0;
     bool preparedOutputAvailable = false;
     bool magSupportEnabled = false;
+    bool magEnabled = false;
     uint16_t sensorConfig = 0;
     bool signalTelemetryEnabled = false;
     bool temperatureTelemetryEnabled = false;
@@ -95,6 +112,15 @@ struct SlimeVROutputRuntimeStatus {
     int32_t lastRssiDbm = 0;
     float lastTemperatureC = 0.0f;
     bool lastTemperatureValid = false;
+    uint32_t lastPingId = 0;
+    uint32_t lastServerFeatureFlags = 0;
+    uint8_t lastSetConfigSensorId = 0;
+    uint16_t lastSetConfigType = 0;
+    bool lastSetConfigState = false;
+    bool lastSetConfigApplied = false;
+    uint8_t lastProtocolTarget = 0;
+    uint8_t lastProtocolVersion = 0;
+    uint8_t lastUnknownPacketType = 0;
     uint32_t lastHandshakeMs = 0;
     uint32_t lastIncomingPacketMs = 0;
     uint32_t lastStateChangeMs = 0;
@@ -129,6 +155,11 @@ private:
     void ensureUdp(uint32_t nowMs);
     void pollIncoming(uint32_t nowMs);
     void handleIncomingPacket(const uint8_t* data, size_t len, const UdpEndpoint& remote, uint32_t nowMs);
+    void handlePingPong(const uint8_t* data, size_t len);
+    void handleFeatureFlags(const uint8_t* data, size_t len);
+    void handleSetConfigFlag(const uint8_t* data, size_t len, uint32_t nowMs);
+    void handleProtocolChange(const uint8_t* data, size_t len);
+    void sendAckConfigChange(uint16_t configType);
     void maybeSendDiscovery(uint32_t nowMs);
     void sendHandshakeTo(const UdpEndpoint& endpoint, uint32_t nowMs);
     void sendSensorInfo(uint32_t nowMs);
@@ -170,11 +201,24 @@ private:
     uint8_t incomingPacketsPerUpdate_ = 4;
 
     bool magSupportEnabled_ = false;
+    bool magEnabled_ = false;
+    SlimeVRSetConfigFlagFn setConfigFlag_ = nullptr;
+    void* setConfigFlagUser_ = nullptr;
     bool signalTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0;
     bool temperatureTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0;
     uint32_t telemetryIntervalMs_ = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
     bool latestTemperatureValid_ = false;
     float latestTemperatureC_ = 0.0f;
+
+    uint32_t lastPingId_ = 0;
+    uint32_t lastServerFeatureFlags_ = 0;
+    uint8_t lastSetConfigSensorId_ = 0;
+    uint16_t lastSetConfigType_ = 0;
+    bool lastSetConfigState_ = false;
+    bool lastSetConfigApplied_ = false;
+    uint8_t lastProtocolTarget_ = 0;
+    uint8_t lastProtocolVersion_ = 0;
+    uint8_t lastUnknownPacketType_ = 0;
 
     UdpEndpoint serverEndpoint_;
 
@@ -189,6 +233,16 @@ private:
     uint32_t rotationDuplicateSnapshot_ = 0;
     uint32_t packetsReceived_ = 0;
     uint32_t discoveryResponses_ = 0;
+    uint32_t heartbeatReceived_ = 0;
+    uint32_t pingReceived_ = 0;
+    uint32_t pongSent_ = 0;
+    uint32_t featureFlagsReceived_ = 0;
+    uint32_t setConfigFlagReceived_ = 0;
+    uint32_t setConfigFlagApplied_ = 0;
+    uint32_t setConfigFlagIgnored_ = 0;
+    uint32_t ackConfigSent_ = 0;
+    uint32_t protocolChangeReceived_ = 0;
+    uint32_t unknownPacketsReceived_ = 0;
     uint32_t sendFailures_ = 0;
     uint32_t udpBeginFailures_ = 0;
 

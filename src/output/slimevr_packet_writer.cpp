@@ -6,6 +6,13 @@ namespace tracker {
 
 namespace {
 
+uint32_t readU32BeLocal(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) |
+           (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) |
+           static_cast<uint32_t>(p[3]);
+}
+
 uint32_t floatToU32(float value) {
     uint32_t bits = 0;
     static_assert(sizeof(bits) == sizeof(value), "float must be 32-bit IEEE-754");
@@ -122,6 +129,15 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writeHeartbeat(uint8_t* out, size_
     return finish(cursor);
 }
 
+SlimeVRPacketWriteResult SlimeVRPacketWriter::writePingPong(uint8_t* out, size_t capacity,
+                                                            uint32_t pingId) {
+    BufferCursor cursor{out, out, capacity};
+    if (writePacketHeader(cursor, SlimeVRSendPacketType::PingPong)) {
+        cursor.writeU32Be(pingId);
+    }
+    return finish(cursor);
+}
+
 SlimeVRPacketWriteResult SlimeVRPacketWriter::writeHandshake(uint8_t* out, size_t capacity,
                                                              const SlimeVRHandshakeInfo& info) {
     BufferCursor cursor{out, out, capacity};
@@ -225,17 +241,25 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writeTemperature(uint8_t* out, siz
 
 SlimeVRPacketWriteResult SlimeVRPacketWriter::writeAcknowledgeConfigChange(uint8_t* out, size_t capacity,
                                                                            uint8_t sensorId,
-                                                                           uint32_t configType) {
+                                                                           uint16_t configType) {
     BufferCursor cursor{out, out, capacity};
     if (writePacketHeader(cursor, SlimeVRSendPacketType::AcknowledgeConfigChange)) {
         cursor.writeU8(sensorId);
-        cursor.writeU32Be(configType);
+        cursor.writeU16Be(configType);
     }
     return finish(cursor);
 }
 
 bool SlimeVRPacketWriter::isPacketType(const uint8_t* data, size_t len, SlimeVRReceivePacketType type) {
-    return data && len >= 1 && data[0] == static_cast<uint8_t>(type);
+    if (!data || len == 0) return false;
+    const uint8_t expected = static_cast<uint8_t>(type);
+    if (len >= SLIMEVR_PACKET_HEADER_SIZE) {
+        const uint32_t headerType = readU32BeLocal(data);
+        if (headerType <= 0xffu) {
+            return static_cast<uint8_t>(headerType) == expected;
+        }
+    }
+    return data[0] == expected;
 }
 
 bool SlimeVRPacketWriter::isServerHandshakeResponse(const uint8_t* data, size_t len) {

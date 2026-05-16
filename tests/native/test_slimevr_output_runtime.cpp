@@ -1,6 +1,7 @@
 #include "test_common.hpp"
 
 #include <cstring>
+#include <initializer_list>
 #include <vector>
 
 #include "network/udp_transport.hpp"
@@ -75,6 +76,31 @@ struct FakeSnapshotSource {
     }
 };
 
+
+static std::vector<uint8_t> makeServerPacket(uint8_t type, std::initializer_list<uint8_t> payload) {
+    std::vector<uint8_t> packet(12, 0);
+    packet[3] = type;
+    packet.insert(packet.end(), payload.begin(), payload.end());
+    return packet;
+}
+
+struct FakeConfigFlagSink {
+    uint32_t calls = 0;
+    uint8_t sensorId = 0;
+    uint16_t configType = 0;
+    bool enabled = false;
+    bool result = true;
+
+    static bool apply(uint8_t sensorId, uint16_t configType, bool enabled, void* user) {
+        auto* self = static_cast<FakeConfigFlagSink*>(user);
+        ++self->calls;
+        self->sensorId = sensorId;
+        self->configType = configType;
+        self->enabled = enabled;
+        return self->result;
+    }
+};
+
 static TrackerWifiManagerConfig wifiConfig() {
     TrackerWifiManagerConfig cfg;
     cfg.enabled = true;
@@ -120,6 +146,7 @@ int main() {
     snapshots.snapshot.confidence = 0.99f;
 
     SlimeVROutputRuntime rt;
+    FakeConfigFlagSink configFlagSink;
     rt.begin(udp, wifi, FakeSnapshotSource::copy, &snapshots);
 
     SlimeVROutputRuntimeConfig cfg;
@@ -131,8 +158,11 @@ int main() {
     cfg.discoveryIntervalMs = 1000;
     cfg.rotationRateHz = 100;
     cfg.magSupportEnabled = true;
+    cfg.magEnabled = true;
     cfg.latestTemperatureValid = true;
     cfg.latestTemperatureC = 42.5f;
+    cfg.setConfigFlag = FakeConfigFlagSink::apply;
+    cfg.setConfigFlagUser = &configFlagSink;
     rt.configure(cfg);
 
     rt.update(1000);
@@ -193,6 +223,80 @@ int main() {
 
     rt.update(6100);
     CHECK(ctx, rt.status().heartbeatSent >= 1);
+
+    udp.incoming = makeServerPacket(static_cast<uint8_t>(SlimeVRReceivePacketType::HeartBeat0), {});
+    udp.incomingRemote = UdpEndpoint{0xC0A80001UL, 6969};
+    udp.incomingPending = true;
+    rt.update(6110);
+    CHECK(ctx, rt.status().heartbeatReceived == 1);
+
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::PingPong),
+        {0x11, 0x22, 0x33, 0x44}
+    );
+    udp.incomingRemote = UdpEndpoint{0xC0A80001UL, 6969};
+    udp.incomingPending = true;
+    const size_t sentBeforePing = udp.sent.size();
+    rt.update(6120);
+    CHECK(ctx, rt.status().pingReceived == 1);
+    CHECK(ctx, rt.status().pongSent == 1);
+    CHECK(ctx, rt.status().lastPingId == 0x11223344u);
+    CHECK(ctx, udp.sent.size() == sentBeforePing + 1u);
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::PingPong));
+    CHECK(ctx, udp.sent.back().data[12] == 0x11);
+    CHECK(ctx, udp.sent.back().data[15] == 0x44);
+
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags),
+        {0xAA, 0xBB, 0xCC, 0xDD}
+    );
+    udp.incomingPending = true;
+    rt.update(6130);
+    CHECK(ctx, rt.status().featureFlagsReceived == 1);
+    CHECK(ctx, rt.status().lastServerFeatureFlags == 0xAABBCCDDu);
+
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::SetConfigFlag),
+        {2, 0x00, 0x01, 0x00}
+    );
+    udp.incomingPending = true;
+    const size_t sentBeforeConfig = udp.sent.size();
+    rt.update(6140);
+    SlimeVROutputRuntimeStatus afterConfig = rt.status();
+    CHECK(ctx, configFlagSink.calls == 1);
+    CHECK(ctx, configFlagSink.sensorId == 2);
+    CHECK(ctx, configFlagSink.configType == SLIMEVR_CONFIG_TYPE_MAGNETOMETER);
+    CHECK(ctx, !configFlagSink.enabled);
+    CHECK(ctx, afterConfig.setConfigFlagReceived == 1);
+    CHECK(ctx, afterConfig.setConfigFlagApplied == 1);
+    CHECK(ctx, afterConfig.ackConfigSent == 1);
+    CHECK(ctx, afterConfig.magSupportEnabled);
+    CHECK(ctx, !afterConfig.magEnabled);
+    CHECK(ctx, afterConfig.sensorConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED);
+    CHECK(ctx, afterConfig.lastSetConfigType == SLIMEVR_CONFIG_TYPE_MAGNETOMETER);
+    CHECK(ctx, !afterConfig.lastSetConfigState);
+    CHECK(ctx, afterConfig.lastSetConfigApplied);
+    CHECK(ctx, udp.sent.size() >= sentBeforeConfig + 2u); // SensorInfo + AckConfigChange.
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::AcknowledgeConfigChange));
+    CHECK(ctx, udp.sent.back().data[12] == 2);
+    CHECK(ctx, udp.sent.back().data[13] == 0x00);
+    CHECK(ctx, udp.sent.back().data[14] == 0x01);
+
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::ProtocolChange),
+        {0x01, 0x13}
+    );
+    udp.incomingPending = true;
+    rt.update(6150);
+    CHECK(ctx, rt.status().protocolChangeReceived == 1);
+    CHECK(ctx, rt.status().lastProtocolTarget == 1);
+    CHECK(ctx, rt.status().lastProtocolVersion == 0x13);
+
+    udp.incoming = makeServerPacket(0xFE, {});
+    udp.incomingPending = true;
+    rt.update(6160);
+    CHECK(ctx, rt.status().unknownPacketsReceived == 1);
+    CHECK(ctx, rt.status().lastUnknownPacketType == 0xFE);
 
     return ctx.finish("slimevr_output_runtime");
 }

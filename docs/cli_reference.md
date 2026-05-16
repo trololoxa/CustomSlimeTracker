@@ -182,3 +182,16 @@ ready. It does not modify config, NVS, AHRS, FIFO, or calibration state.
 - Temperature telemetry is sent with SlimeVR UDP packet type 20 (`sensorId + f32 temperatureC`). The server parser accepts it, but not every GUI view exposes it. Use `slime status` fields `temperature_sent`, `last_temperature_valid`, and `last_temperature_c` to verify firmware-side emission.
 - Magnetometer support is advertised through `SensorInfo.sensorConfig`: bit 1 = supported, bit 0 = enabled. When mag support is enabled from firmware config, `sensor_config` should be `0x3`; `0x1` is interpreted by the current server as `Mag not supported`.
 
+### SlimeVR incoming UDP packet handling
+
+The firmware handles normal server-to-tracker UDP packets with the SlimeVR 12-byte header (`type:u32be + packetNumber:u64be + payload`). It also keeps a legacy raw one-byte fallback for diagnostics. The raw discovery response remains a special case: `0x03 + "Hey OVR =D 5"`.
+
+The firmware currently handles the server-to-tracker packets needed for a normal UDP SlimeVR session:
+
+- packet `0`/`1` HeartBeat: counted and answered with tracker heartbeat packet `0`.
+- packet `10` PingPong: reads `pingId:u32be` and echoes it with tracker packet `10`, so the server can compute ping instead of showing a timeout placeholder.
+- packet `22` FeatureFlags: stored for diagnostics. The current firmware does not enable optional behavior from these flags yet.
+- packet `25` SetConfigFlag: reads `sensorId:u8`, `configType:u16be`, `state:u8`. For config type `0x0001` the firmware treats it as the runtime magnetometer/yaw enable toggle, applies it without writing NVS, refreshes `SensorInfo`, and sends packet `24` AckConfigChange.
+- packet `200` ProtocolChange: stored for diagnostics only. The firmware stays on UDP protocol v19.
+
+Use `slime status` to inspect `ping_received`, `pong_sent`, `feature_flags_received`, `set_config_flag_*`, `ack_config_sent`, `protocol_change_received`, and `unknown_packets_received`.

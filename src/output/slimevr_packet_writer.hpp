@@ -33,10 +33,17 @@ constexpr uint16_t SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED = 0x0002u;
 constexpr uint16_t SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED =
     SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED | SLIMEVR_SENSOR_CONFIG_MAG_ENABLED;
 
+// SlimeVR SetConfigFlag currently uses config type 1 for the runtime
+// magnetometer enable/disable toggle. The exact ID is echoed back in
+// AckConfigChange so newer server builds can still be inspected safely.
+constexpr uint16_t SLIMEVR_CONFIG_TYPE_MAGNETOMETER = 0x0001u;
+constexpr uint8_t SLIMEVR_SENSOR_ID_GLOBAL = 0xffu;
+
 enum class SlimeVRSendPacketType : uint8_t {
     HeartBeat = 0,
     Handshake = 3,
     Accel = 4,
+    PingPong = 10,
     Serial = 11,
     BatteryLevel = 12,
     Tap = 13,
@@ -54,11 +61,13 @@ enum class SlimeVRSendPacketType : uint8_t {
 };
 
 enum class SlimeVRReceivePacketType : uint8_t {
+    HeartBeat0 = 0,
     HeartBeat = 1,
     Handshake = 3,
     PingPong = 10,
     FeatureFlags = 22,
     SetConfigFlag = 25,
+    ProtocolChange = 200,
 };
 
 enum class SlimeVRSensorState : uint8_t {
@@ -123,8 +132,8 @@ struct SlimeVRSensorInfo {
     uint8_t sensorId = 0;
     SlimeVRSensorState sensorState = SlimeVRSensorState::Online;
     SlimeVRImuType imuType = SlimeVRImuType::LSM6DSV;
-    // SensorConfig is a u16 in the current server packet parser. Bit 0 is
-    // used here as the local mag-support capability/debug toggle.
+    // SensorConfig is a u16 in the current server packet parser. Bit 1 means
+    // magnetometer supported; bit 0 means magnetometer currently enabled.
     uint16_t sensorConfig = 0;
     bool hasCompletedRestCalibration = true;
     uint8_t sensorPosition = 0;
@@ -137,6 +146,8 @@ public:
     uint64_t packetNumber() const { return nextPacketNumber_; }
 
     SlimeVRPacketWriteResult writeHeartbeat(uint8_t* out, size_t capacity);
+    SlimeVRPacketWriteResult writePingPong(uint8_t* out, size_t capacity,
+                                           uint32_t pingId);
     SlimeVRPacketWriteResult writeHandshake(uint8_t* out, size_t capacity,
                                             const SlimeVRHandshakeInfo& info);
     SlimeVRPacketWriteResult writeSensorInfo(uint8_t* out, size_t capacity,
@@ -160,7 +171,7 @@ public:
                                               float temperatureC);
     SlimeVRPacketWriteResult writeAcknowledgeConfigChange(uint8_t* out, size_t capacity,
                                                           uint8_t sensorId,
-                                                          uint32_t configType);
+                                                          uint16_t configType);
 
     static bool isServerHandshakeResponse(const uint8_t* data, size_t len);
     static bool isPacketType(const uint8_t* data, size_t len, SlimeVRReceivePacketType type);

@@ -21,6 +21,51 @@ void copyCString(char* dst, size_t dstSize, const char* src) {
     dst[dstSize - 1] = '\0';
 }
 
+
+uint16_t readU16Be(const uint8_t* p) {
+    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) |
+                                 static_cast<uint16_t>(p[1]));
+}
+
+uint32_t readU32Be(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) |
+           (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) |
+           static_cast<uint32_t>(p[3]);
+}
+
+struct SlimeVRIncomingPacketView {
+    uint8_t type = 0;
+    const uint8_t* payload = nullptr;
+    size_t payloadLen = 0;
+    bool headered = false;
+};
+
+bool parseIncomingPacketView(const uint8_t* data, size_t len, SlimeVRIncomingPacketView& out) {
+    if (!data || len == 0) return false;
+
+    // Normal SlimeVR UDP packets use the same 12-byte header as tracker ->
+    // server packets: type:u32be + packetNumber:u64be + payload. The raw
+    // discovery response is the exception and is handled before this helper.
+    if (len >= SLIMEVR_PACKET_HEADER_SIZE) {
+        const uint32_t packetType = readU32Be(data);
+        if (packetType <= 0xffu) {
+            out.type = static_cast<uint8_t>(packetType);
+            out.payload = data + SLIMEVR_PACKET_HEADER_SIZE;
+            out.payloadLen = len - SLIMEVR_PACKET_HEADER_SIZE;
+            out.headered = true;
+            return true;
+        }
+    }
+
+    // Keep a fallback for legacy/raw test packets and the old one-byte parser.
+    out.type = data[0];
+    out.payload = data + 1;
+    out.payloadLen = len - 1;
+    out.headered = false;
+    return true;
+}
+
 } // namespace
 
 const char* slimevrOutputStateName(SlimeVROutputState state) {
@@ -54,6 +99,7 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
                                localPort_ != config.localPort ||
                                sensorId_ != config.sensorId ||
                                magSupportEnabled_ != config.magSupportEnabled ||
+                               magEnabled_ != config.magEnabled ||
                                std::strncmp(deviceName_, config.deviceName ? config.deviceName : "", sizeof(deviceName_)) != 0;
 
     const bool rotationRateChanged = rotationRateHz_ != config.rotationRateHz;
@@ -69,6 +115,10 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
     if (rotationRateHz_ > ROTATION_RATE_HZ_MAX) rotationRateHz_ = ROTATION_RATE_HZ_MAX;
     incomingPacketsPerUpdate_ = config.incomingPacketsPerUpdate == 0 ? 1u : config.incomingPacketsPerUpdate;
     magSupportEnabled_ = config.magSupportEnabled;
+    magEnabled_ = config.magEnabled;
+    if (!magSupportEnabled_) magEnabled_ = false;
+    setConfigFlag_ = config.setConfigFlag;
+    setConfigFlagUser_ = config.setConfigFlagUser;
     signalTelemetryEnabled_ = config.signalTelemetryEnabled;
     temperatureTelemetryEnabled_ = config.temperatureTelemetryEnabled;
     telemetryIntervalMs_ = config.telemetryIntervalMs == 0 ? TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS : config.telemetryIntervalMs;
@@ -100,6 +150,16 @@ void SlimeVROutputRuntime::resetCounters() {
     rotationDuplicateSnapshot_ = 0;
     packetsReceived_ = 0;
     discoveryResponses_ = 0;
+    heartbeatReceived_ = 0;
+    pingReceived_ = 0;
+    pongSent_ = 0;
+    featureFlagsReceived_ = 0;
+    setConfigFlagReceived_ = 0;
+    setConfigFlagApplied_ = 0;
+    setConfigFlagIgnored_ = 0;
+    ackConfigSent_ = 0;
+    protocolChangeReceived_ = 0;
+    unknownPacketsReceived_ = 0;
     sendFailures_ = 0;
     udpBeginFailures_ = 0;
 }
@@ -197,12 +257,23 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.rotationDuplicateSnapshot = rotationDuplicateSnapshot_;
     s.packetsReceived = packetsReceived_;
     s.discoveryResponses = discoveryResponses_;
+    s.heartbeatReceived = heartbeatReceived_;
+    s.pingReceived = pingReceived_;
+    s.pongSent = pongSent_;
+    s.featureFlagsReceived = featureFlagsReceived_;
+    s.setConfigFlagReceived = setConfigFlagReceived_;
+    s.setConfigFlagApplied = setConfigFlagApplied_;
+    s.setConfigFlagIgnored = setConfigFlagIgnored_;
+    s.ackConfigSent = ackConfigSent_;
+    s.protocolChangeReceived = protocolChangeReceived_;
+    s.unknownPacketsReceived = unknownPacketsReceived_;
     s.sendFailures = sendFailures_;
     s.udpBeginFailures = udpBeginFailures_;
     s.nextPacketNumber = static_cast<uint32_t>(writer_.packetNumber());
     s.rotationRateHz = rotationRateHz_;
     s.preparedOutputAvailable = copyOutputSnapshot_ != nullptr;
     s.magSupportEnabled = magSupportEnabled_;
+    s.magEnabled = magEnabled_;
     s.sensorConfig = sensorConfigFlags();
     s.signalTelemetryEnabled = signalTelemetryEnabled_;
     s.temperatureTelemetryEnabled = temperatureTelemetryEnabled_;
@@ -211,6 +282,15 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.lastRssiDbm = lastRssiDbm_;
     s.lastTemperatureC = latestTemperatureC_;
     s.lastTemperatureValid = latestTemperatureValid_;
+    s.lastPingId = lastPingId_;
+    s.lastServerFeatureFlags = lastServerFeatureFlags_;
+    s.lastSetConfigSensorId = lastSetConfigSensorId_;
+    s.lastSetConfigType = lastSetConfigType_;
+    s.lastSetConfigState = lastSetConfigState_;
+    s.lastSetConfigApplied = lastSetConfigApplied_;
+    s.lastProtocolTarget = lastProtocolTarget_;
+    s.lastProtocolVersion = lastProtocolVersion_;
+    s.lastUnknownPacketType = lastUnknownPacketType_;
     s.lastHandshakeMs = lastHandshakeMs_;
     s.lastIncomingPacketMs = lastIncomingPacketMs_;
     s.lastStateChangeMs = lastStateChangeMs_;
@@ -247,6 +327,15 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastRotationTimestampUs_ = 0;
     lastRotationQualityFlags_ = 0;
     lastRotationConfidence_ = 0.0f;
+    lastPingId_ = 0;
+    lastServerFeatureFlags_ = 0;
+    lastSetConfigSensorId_ = 0;
+    lastSetConfigType_ = 0;
+    lastSetConfigState_ = false;
+    lastSetConfigApplied_ = false;
+    lastProtocolTarget_ = 0;
+    lastProtocolVersion_ = 0;
+    lastUnknownPacketType_ = 0;
     nextUdpBeginRetryMs_ = 0;
     writer_.resetPacketNumber(0);
     if (!keepCounters) resetCounters();
@@ -294,9 +383,123 @@ void SlimeVROutputRuntime::handleIncomingPacket(const uint8_t* data,
         return;
     }
 
-    if (serverFound_ && SlimeVRPacketWriter::isPacketType(data, len, SlimeVRReceivePacketType::HeartBeat)) {
-        sendHeartbeat(nowMs);
+    if (!data || len == 0) return;
+
+    SlimeVRIncomingPacketView packet;
+    if (!parseIncomingPacketView(data, len, packet)) return;
+
+    switch (static_cast<SlimeVRReceivePacketType>(packet.type)) {
+        case SlimeVRReceivePacketType::HeartBeat0:
+        case SlimeVRReceivePacketType::HeartBeat:
+            if (serverFound_) {
+                ++heartbeatReceived_;
+                sendHeartbeat(nowMs);
+            }
+            return;
+        case SlimeVRReceivePacketType::PingPong:
+            if (serverFound_) handlePingPong(packet.payload, packet.payloadLen);
+            return;
+        case SlimeVRReceivePacketType::FeatureFlags:
+            handleFeatureFlags(packet.payload, packet.payloadLen);
+            return;
+        case SlimeVRReceivePacketType::SetConfigFlag:
+            handleSetConfigFlag(packet.payload, packet.payloadLen, nowMs);
+            return;
+        case SlimeVRReceivePacketType::ProtocolChange:
+            handleProtocolChange(packet.payload, packet.payloadLen);
+            return;
+        case SlimeVRReceivePacketType::Handshake:
+            // Non-discovery handshake-like packets are ignored; the real
+            // discovery response was handled above by isServerHandshakeResponse.
+            return;
+    }
+
+    ++unknownPacketsReceived_;
+    lastUnknownPacketType_ = packet.type;
+}
+
+void SlimeVROutputRuntime::handlePingPong(const uint8_t* data, size_t len) {
+    if (!serverEndpoint_.valid() || len < 4) return;
+    const uint32_t pingId = readU32Be(data);
+    const SlimeVRPacketWriteResult packet = writer_.writePingPong(packetBuffer_, sizeof(packetBuffer_), pingId);
+    ++pingReceived_;
+    lastPingId_ = pingId;
+    if (sendPacket(packet, serverEndpoint_)) {
+        ++pongSent_;
+    }
+}
+
+void SlimeVROutputRuntime::handleFeatureFlags(const uint8_t* data, size_t len) {
+    ++featureFlagsReceived_;
+    uint32_t packed = 0;
+    const size_t n = len < 4 ? len : 4;
+    for (size_t i = 0; i < n; ++i) {
+        packed = (packed << 8) | static_cast<uint32_t>(data[i]);
+    }
+    lastServerFeatureFlags_ = packed;
+}
+
+void SlimeVROutputRuntime::handleSetConfigFlag(const uint8_t* data, size_t len, uint32_t nowMs) {
+    if (len < 4) return;
+
+    const uint8_t targetSensorId = data[0];
+    const uint16_t configType = readU16Be(data + 1);
+    const bool requestedState = data[3] != 0;
+
+    ++setConfigFlagReceived_;
+    lastSetConfigSensorId_ = targetSensorId;
+    lastSetConfigType_ = configType;
+    lastSetConfigState_ = requestedState;
+    lastSetConfigApplied_ = false;
+
+    const bool targetsThisSensor = targetSensorId == sensorId_ || targetSensorId == SLIMEVR_SENSOR_ID_GLOBAL;
+    if (!targetsThisSensor) {
+        ++setConfigFlagIgnored_;
         return;
+    }
+
+    bool applied = false;
+    if (setConfigFlag_) {
+        applied = setConfigFlag_(sensorId_, configType, requestedState, setConfigFlagUser_);
+    } else if (configType == SLIMEVR_CONFIG_TYPE_MAGNETOMETER) {
+        applied = true;
+    }
+
+    if (applied && configType == SLIMEVR_CONFIG_TYPE_MAGNETOMETER) {
+        magSupportEnabled_ = true;
+        magEnabled_ = requestedState;
+        // Push the updated supported/enabled state promptly instead of waiting
+        // for the next periodic SensorInfo refresh.
+        sendSensorInfo(nowMs);
+    }
+
+    if (applied) {
+        ++setConfigFlagApplied_;
+        lastSetConfigApplied_ = true;
+        sendAckConfigChange(configType);
+    } else {
+        ++setConfigFlagIgnored_;
+    }
+}
+
+void SlimeVROutputRuntime::handleProtocolChange(const uint8_t* data, size_t len) {
+    ++protocolChangeReceived_;
+    if (len >= 2) {
+        lastProtocolTarget_ = data[0];
+        lastProtocolVersion_ = data[1];
+    }
+}
+
+void SlimeVROutputRuntime::sendAckConfigChange(uint16_t configType) {
+    if (!serverEndpoint_.valid()) return;
+    const SlimeVRPacketWriteResult packet = writer_.writeAcknowledgeConfigChange(
+        packetBuffer_,
+        sizeof(packetBuffer_),
+        sensorId_,
+        configType
+    );
+    if (sendPacket(packet, serverEndpoint_)) {
+        ++ackConfigSent_;
     }
 }
 
@@ -409,7 +612,10 @@ uint32_t SlimeVROutputRuntime::rotationPeriodMs() const {
 
 uint16_t SlimeVROutputRuntime::sensorConfigFlags() const {
     uint16_t flags = 0;
-    if (magSupportEnabled_) flags |= SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED;
+    if (magSupportEnabled_) {
+        flags |= SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED;
+        if (magEnabled_) flags |= SLIMEVR_SENSOR_CONFIG_MAG_ENABLED;
+    }
     return flags;
 }
 

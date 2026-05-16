@@ -35,6 +35,7 @@ SlimeVROutputRuntimeConfig makeConfigFromNetwork(TrackerSerialCommandContext& ct
                                 ctx.config->data.magCal.calibrationValid ||
                                 ctx.config->data.magCal.axisAlignmentValid ||
                                 ctx.config->data.magYaw.applyEnabled;
+        cfg.magEnabled = cfg.magSupportEnabled && ctx.config->data.magYaw.applyEnabled;
     }
     return cfg;
 }
@@ -78,6 +79,7 @@ void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("magnetometer_accuracy_sent="); out.println(s.magnetometerAccuracySent);
     out.println("# note: mag support is advertised via SensorInfo.sensor_config; packet 18 is not sent as periodic telemetry");
     out.print("mag_support_enabled="); out.println(yn(s.magSupportEnabled));
+    out.print("mag_enabled="); out.println(yn(s.magEnabled));
     out.print("sensor_config=0x"); out.println(s.sensorConfig, HEX);
     out.print("signal_telemetry_enabled="); out.println(yn(s.signalTelemetryEnabled));
     out.print("temperature_telemetry_enabled="); out.println(yn(s.temperatureTelemetryEnabled));
@@ -93,6 +95,25 @@ void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("next_packet_number="); out.println(s.nextPacketNumber);
     out.print("packets_received="); out.println(s.packetsReceived);
     out.print("discovery_responses="); out.println(s.discoveryResponses);
+    out.print("heartbeat_received="); out.println(s.heartbeatReceived);
+    out.print("ping_received="); out.println(s.pingReceived);
+    out.print("pong_sent="); out.println(s.pongSent);
+    out.print("feature_flags_received="); out.println(s.featureFlagsReceived);
+    out.print("set_config_flag_received="); out.println(s.setConfigFlagReceived);
+    out.print("set_config_flag_applied="); out.println(s.setConfigFlagApplied);
+    out.print("set_config_flag_ignored="); out.println(s.setConfigFlagIgnored);
+    out.print("ack_config_sent="); out.println(s.ackConfigSent);
+    out.print("protocol_change_received="); out.println(s.protocolChangeReceived);
+    out.print("unknown_packets_received="); out.println(s.unknownPacketsReceived);
+    out.print("last_ping_id="); out.println(s.lastPingId);
+    out.print("last_server_feature_flags=0x"); out.println(s.lastServerFeatureFlags, HEX);
+    out.print("last_set_config_sensor_id="); out.println(s.lastSetConfigSensorId);
+    out.print("last_set_config_type=0x"); out.println(s.lastSetConfigType, HEX);
+    out.print("last_set_config_state="); out.println(yn(s.lastSetConfigState));
+    out.print("last_set_config_applied="); out.println(yn(s.lastSetConfigApplied));
+    out.print("last_protocol_target="); out.println(s.lastProtocolTarget);
+    out.print("last_protocol_version="); out.println(s.lastProtocolVersion);
+    out.print("last_unknown_packet_type="); out.println(s.lastUnknownPacketType);
     out.print("send_failures="); out.println(s.sendFailures);
     out.print("udp_begin_failures="); out.println(s.udpBeginFailures);
     out.print("last_handshake_ms="); out.println(s.lastHandshakeMs);

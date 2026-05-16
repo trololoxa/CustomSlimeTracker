@@ -159,6 +159,19 @@ static bool slimevrAutostartEnabledFromConfig() {
            g_networkConfig.data.credentialsValid;
 }
 
+static bool slimevrSetConfigFlagHook(uint8_t sensorId, uint16_t configType, bool enabled, void* user) {
+    (void)sensorId;
+    (void)user;
+    if (configType != SLIMEVR_CONFIG_TYPE_MAGNETOMETER) {
+        return false;
+    }
+
+    // Server-side mag toggles are runtime-only. They should not silently write
+    // NVS, but they should go through the mag runtime controller so yaw state is
+    // reset consistently.
+    return setMagYawCorrectionApplyEnabledHook(enabled, false, nullptr);
+}
+
 static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     SlimeVROutputRuntimeConfig cfg;
     cfg.enabled = enabled;
@@ -172,6 +185,9 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     cfg.rotationRateHz = g_config.data.output.outputRateHz;
     cfg.incomingPacketsPerUpdate = 4;
     cfg.magSupportEnabled = slimevrMagSupportEnabledFromConfig();
+    cfg.magEnabled = cfg.magSupportEnabled && g_config.data.magYaw.applyEnabled;
+    cfg.setConfigFlag = slimevrSetConfigFlagHook;
+    cfg.setConfigFlagUser = nullptr;
     cfg.latestTemperatureValid = true;
     cfg.latestTemperatureC = g_latestTempC;
     return cfg;
