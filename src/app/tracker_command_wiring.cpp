@@ -25,6 +25,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.ahrs = objects.ahrs;
     ctx.calibrationIo = objects.calibrationIo;
     ctx.accelCalRunner = objects.accelCalRunner;
+    ctx.gyroTempCapture = objects.gyroTempCapture;
+    ctx.lastMagProcessed = objects.lastMagProcessed;
     ctx.streamState = objects.streamState;
     ctx.logState = objects.logState;
 
@@ -95,6 +97,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.printMagCalibrationStatusUser = hooks.printMagCalibrationStatusUser;
     ctx.fitGyroTempFromLastStatic = hooks.fitGyroTempFromLastStatic;
     ctx.fitGyroTempFromLastStaticUser = hooks.fitGyroTempFromLastStaticUser;
+    ctx.fitGyroTempFromCapture = hooks.fitGyroTempFromCapture;
+    ctx.fitGyroTempFromCaptureUser = hooks.fitGyroTempFromCaptureUser;
     ctx.serviceCalibrationRuntime = hooks.serviceCalibrationRuntime;
     ctx.serviceCalibrationRuntimeUser = hooks.serviceCalibrationRuntimeUser;
 }

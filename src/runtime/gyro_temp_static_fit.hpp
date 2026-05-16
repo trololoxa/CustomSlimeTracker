@@ -21,6 +21,11 @@ struct GyroTempStaticFitDeps {
     TrackerConfigStore* configStore = nullptr;
 };
 
+bool fitGyroTempFromCompletedStaticTest(GyroTempStaticFitDeps& deps,
+                                          const StaticRuntimeTest& test,
+                                          bool persist,
+                                          Stream& out);
+
 bool fitGyroTempFromLastStatic(GyroTempStaticFitDeps& deps, bool persist, Stream& out);
 
 } // namespace tracker

@@ -11,6 +11,7 @@
 #include "runtime/runtime_bias_types.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
 #include "runtime/static_test_runner.hpp"
+#include "runtime/gyro_temp_calibration_capture.hpp"
 #include "runtime/tracker_runtime_types.hpp"
 #include "runtime/tracking_state_controller.hpp"
 #include "sensor/ahrs_6dof.hpp"
@@ -58,6 +59,7 @@ struct ImuSamplePipelineDeps {
     TrackerSerialLogState& logState;
     MachineLogCounters& logCounters;
     StaticTestRunner& staticTestRunner;
+    GyroTempCalibrationCapture* gyroTempCapture = nullptr;
     TrackerPerfCounters& perf;
     FifoCalibrationIo* calibrationIo;
     Stream& out;

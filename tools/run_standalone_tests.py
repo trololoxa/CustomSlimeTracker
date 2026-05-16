@@ -32,6 +32,7 @@ PROJECT_SOURCES = [
     pathlib.Path("src/sensor/accel_6pos_calibration.cpp"),
     pathlib.Path("src/sensor/mag_calibration.cpp"),
     pathlib.Path("src/runtime/runtime_gyro_bias_controller.cpp"),
+    pathlib.Path("src/runtime/gyro_temp_calibration_capture.cpp"),
     pathlib.Path("src/runtime/tracking_state_controller.cpp"),
     pathlib.Path("src/config/tracker_config_runtime.cpp"),
     pathlib.Path("src/output/slimevr_packet_writer.cpp"),

@@ -16,6 +16,7 @@
 #include "sensor/mag_heading.hpp"
 #include "sensor/mag_yaw_correction.hpp"
 #include "runtime/static_test_runner.hpp"
+#include "runtime/gyro_temp_calibration_capture.hpp"
 #include "runtime/runtime_test_runner.hpp"
 #include "runtime/tracker_runtime_types.hpp"
 #include "runtime/fifo_runtime_processor.hpp"
@@ -93,6 +94,7 @@ static MagHeadingReferenceState g_magHeadingRef;
 static MagHeadingAutoReferenceState g_magHeadingAutoRef;
 
 static StaticRuntimeTest g_staticTest;
+static GyroTempCalibrationCapture g_gyroTempCapture;
 static StaticRuntimeTest g_lastCompletedStaticTest;
 static StaticTestRunner g_staticTestRunner;
 static RuntimeTestRunner g_runtimeTestRunner;

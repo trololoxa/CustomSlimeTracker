@@ -29,6 +29,8 @@ struct TrackerCommandRuntimeObjects {
 
     FifoCalibrationIo* calibrationIo = nullptr;
     FifoAccel6PosCalibrationRunner* accelCalRunner = nullptr;
+    GyroTempCalibrationCapture* gyroTempCapture = nullptr;
+    const MagProcessedSample* lastMagProcessed = nullptr;
 
     TrackerSerialStreamState* streamState = nullptr;
     TrackerSerialLogState* logState = nullptr;
@@ -133,6 +135,9 @@ struct TrackerCommandRuntimeHooks {
 
     decltype(TrackerSerialCommandContext::fitGyroTempFromLastStatic) fitGyroTempFromLastStatic = nullptr;
     void* fitGyroTempFromLastStaticUser = nullptr;
+
+    decltype(TrackerSerialCommandContext::fitGyroTempFromCapture) fitGyroTempFromCapture = nullptr;
+    void* fitGyroTempFromCaptureUser = nullptr;
 
     decltype(TrackerSerialCommandContext::serviceCalibrationRuntime) serviceCalibrationRuntime = nullptr;
     void* serviceCalibrationRuntimeUser = nullptr;

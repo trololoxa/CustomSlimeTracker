@@ -9,10 +9,12 @@
 #include "config/tracker_network_config.hpp"
 #include "network/wifi_manager.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
+#include "runtime/gyro_temp_calibration_capture.hpp"
 #include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/fifo_calibrations.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
+#include "sensor/mag_runtime.hpp"
 #include "serial/tracker_calibration_commands.hpp"
 #include "serial/tracker_config_commands.hpp"
 #include "serial/tracker_mag_commands.hpp"
@@ -245,6 +247,227 @@ void dispatchMag(TrackerSerialCommandContext& ctx, int argc, char** argv) {
 bool readSetupLine(TrackerSerialCommandContext& ctx, const char* prompt, char* buf, size_t cap, uint32_t timeoutMs);
 bool serviceSetupRuntime(TrackerSerialCommandContext& ctx);
 void cmdSetupSave(TrackerSerialCommandContext& ctx);
+
+struct SetupMagAxisFaceSample {
+    bool valid = false;
+    Accel6PosCalibration::Face face = Accel6PosCalibration::Face::Invalid;
+    Vec3 accelMeanG = Vec3::zero();
+    Vec3 magRawMean = Vec3::zero();
+    uint32_t magSamples = 0;
+};
+
+struct SetupMagAxisAutoCollector {
+    SetupMagAxisFaceSample samples[6];
+    uint8_t count = 0;
+
+    void reset() {
+        for (auto& s : samples) s = SetupMagAxisFaceSample{};
+        count = 0;
+    }
+
+    bool add(Accel6PosCalibration::Face face,
+             const Vec3& accelMeanG,
+             const Vec3& magRawMean,
+             uint32_t magSamples) {
+        const uint8_t idx = static_cast<uint8_t>(face);
+        if (idx >= 6 || !accelMeanG.isFinite() || !magRawMean.isFinite() || magSamples == 0) return false;
+        if (!samples[idx].valid) count++;
+        samples[idx].valid = true;
+        samples[idx].face = face;
+        samples[idx].accelMeanG = accelMeanG;
+        samples[idx].magRawMean = magRawMean;
+        samples[idx].magSamples = magSamples;
+        return true;
+    }
+};
+
+struct SetupMagAxisAutoResult {
+    bool valid = false;
+    Mat3 magToImu = Mat3::identity();
+    float score = 0.0f;
+    float secondBestScore = 0.0f;
+    float inclinationMean = 0.0f;
+    float inclinationStddev = 0.0f;
+    uint8_t usedSamples = 0;
+};
+
+Vec3 normalizeSafe(const Vec3& v) {
+    const float n = v.norm();
+    if (!v.isFinite() || n <= 1.0e-6f) return Vec3::zero();
+    return v / n;
+}
+
+float setupMagAxisScore(const SetupMagAxisAutoCollector& c,
+                        const TrackerConfig& config,
+                        const ImuCalibration& imuCal,
+                        const Mat3& m,
+                        float& meanOut,
+                        float& stddevOut,
+                        uint8_t& usedOut) {
+    float values[6] = {};
+    uint8_t used = 0;
+    for (const auto& s : c.samples) {
+        if (!s.valid) continue;
+        const Vec3 accelBody = normalizeSafe(imuCal.accelCalValid ? imuCal.applyAccel(s.accelMeanG) : s.accelMeanG);
+        const Vec3 magCal = config.data.magCal.softIron * (s.magRawMean - config.data.magCal.hardIron);
+        const Vec3 magBody = normalizeSafe(m * magCal);
+        if (!accelBody.isFinite() || !magBody.isFinite() || accelBody.norm() <= 1.0e-6f || magBody.norm() <= 1.0e-6f) continue;
+        values[used++] = dot(accelBody, magBody);
+    }
+
+    usedOut = used;
+    if (used < 4) {
+        meanOut = 0.0f;
+        stddevOut = 999.0f;
+        return 999.0f;
+    }
+
+    float mean = 0.0f;
+    for (uint8_t i = 0; i < used; ++i) mean += values[i];
+    mean /= static_cast<float>(used);
+
+    float var = 0.0f;
+    for (uint8_t i = 0; i < used; ++i) {
+        const float d = values[i] - mean;
+        var += d * d;
+    }
+    var /= static_cast<float>(used);
+
+    meanOut = mean;
+    stddevOut = std::sqrt(var > 0.0f ? var : 0.0f);
+    return stddevOut;
+}
+
+Mat3 setupPermutationMatrix(uint8_t ax0, float s0, uint8_t ax1, float s1, uint8_t ax2, float s2) {
+    Mat3 m = Mat3::zero();
+    m.m[0][ax0] = s0;
+    m.m[1][ax1] = s1;
+    m.m[2][ax2] = s2;
+    return m;
+}
+
+bool setupAutoSolveMagAxis(const SetupMagAxisAutoCollector& c,
+                           const TrackerConfig& config,
+                           const ImuCalibration& imuCal,
+                           SetupMagAxisAutoResult& result) {
+    result = SetupMagAxisAutoResult{};
+    if (c.count < 4 || !config.data.magCal.calibrationValid) return false;
+
+    const uint8_t perms[6][3] = {
+        {0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0},
+    };
+    float best = 999.0f;
+    float second = 999.0f;
+    Mat3 bestM = Mat3::identity();
+    float bestMean = 0.0f;
+    float bestStd = 999.0f;
+    uint8_t bestUsed = 0;
+
+    for (const auto& p : perms) {
+        for (int sx = -1; sx <= 1; sx += 2) {
+            for (int sy = -1; sy <= 1; sy += 2) {
+                for (int sz = -1; sz <= 1; sz += 2) {
+                    const Mat3 m = setupPermutationMatrix(p[0], static_cast<float>(sx),
+                                                          p[1], static_cast<float>(sy),
+                                                          p[2], static_cast<float>(sz));
+                    float mean = 0.0f;
+                    float stddev = 999.0f;
+                    uint8_t used = 0;
+                    const float score = setupMagAxisScore(c, config, imuCal, m, mean, stddev, used);
+                    if (score < best) {
+                        second = best;
+                        best = score;
+                        bestM = m;
+                        bestMean = mean;
+                        bestStd = stddev;
+                        bestUsed = used;
+                    } else if (score < second) {
+                        second = score;
+                    }
+                }
+            }
+        }
+    }
+
+    result.magToImu = bestM;
+    result.score = best;
+    result.secondBestScore = second;
+    result.inclinationMean = bestMean;
+    result.inclinationStddev = bestStd;
+    result.usedSamples = bestUsed;
+
+    // Static accel-face samples constrain the magnetic inclination.  This is a
+    // deliberate quality gate: when the result is ambiguous, do not enable mag yaw.
+    const float separation = second - best;
+    result.valid = bestUsed >= 4 && best < 0.12f && separation > 0.03f;
+    return result.valid;
+}
+
+void setupPrintMagAxisToken(Stream& s, const Mat3& m, uint8_t row) {
+    uint8_t axis = 0;
+    uint8_t nonZero = 0;
+    float sign = 1.0f;
+    for (uint8_t col = 0; col < 3; ++col) {
+        const float v = m.m[row][col];
+        if (std::fabs(v) > 0.5f) {
+            nonZero++;
+            axis = col;
+            sign = v >= 0.0f ? 1.0f : -1.0f;
+        }
+    }
+    if (nonZero != 1) {
+        s.print("?");
+        return;
+    }
+    s.print(sign >= 0.0f ? "+" : "-");
+    s.print(axis == 0 ? "x" : (axis == 1 ? "y" : "z"));
+}
+
+void setupPrintMagAxisMapping(Stream& s, const Mat3& m) {
+    setupPrintMagAxisToken(s, m, 0);
+    s.print(' ');
+    setupPrintMagAxisToken(s, m, 1);
+    s.print(' ');
+    setupPrintMagAxisToken(s, m, 2);
+}
+
+bool setupCaptureMagAxisFaceSample(TrackerSerialCommandContext& ctx,
+                                   SetupMagAxisAutoCollector& collector,
+                                   Accel6PosCalibration::Face face) {
+    Stream& s = out(ctx);
+    if (!ctx.lastMagProcessed || !ctx.accelCalRunner) return false;
+    const auto& faceData = ctx.accelCalRunner->calibration().faceData(face);
+    if (!faceData.valid) return false;
+
+    Vec3 sum = Vec3::zero();
+    uint32_t count = 0;
+    uint32_t lastSeq = ctx.lastMagProcessed->seq;
+    const uint32_t startMs = millis();
+    while (millis() - startMs < 2500UL) {
+        serviceSetupRuntime(ctx);
+        const MagProcessedSample& mag = *ctx.lastMagProcessed;
+        if (mag.seq != 0 && mag.seq != lastSeq && mag.raw.isFinite() && mag.rawNorm > 1.0e-6f) {
+            lastSeq = mag.seq;
+            sum += mag.raw;
+            count++;
+        }
+        delay(5);
+    }
+
+    if (count < 3) {
+        s.print("# WARN mag axis auto: too few mag samples for face ");
+        s.println(Accel6PosCalibration::faceName(face));
+        return false;
+    }
+
+    const Vec3 mean = sum / static_cast<float>(count);
+    collector.add(face, faceData.meanG, mean, count);
+    s.print("# setup mag axis auto face=");
+    s.print(Accel6PosCalibration::faceName(face));
+    s.print(" mag_samples=");
+    s.println(count);
+    return true;
+}
 
 
 void printSetupWifiList(Stream& s, const WifiScanResult* results, uint8_t count) {
@@ -569,9 +792,10 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     s.println();
     s.println("# SETUP CALIBRATION STEP 2/6: GYRO TEMPERATURE MODEL");
     s.println("# Keep the tracker still. The firmware will stop when temperature reaches a relative plateau.");
+    s.println("# This uses a dedicated setup temperature capture, not the developer test static runner.");
 
-    if (!ctx.startStaticTest || !ctx.stopStaticTest || !ctx.fitGyroTempFromLastStatic) {
-        tracker_serial_detail::printErr(s, "setup calibration failed: static/temp hooks are not available");
+    if (!ctx.gyroTempCapture || !ctx.fitGyroTempFromCapture) {
+        tracker_serial_detail::printErr(s, "setup calibration failed: gyro temperature capture hooks are not available");
         return false;
     }
 
@@ -583,24 +807,19 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     constexpr float kPlateauDeltaC = 0.15f;
     constexpr float kMinTempRangeC = 3.0f;
 
-    const float startTemp = ctx.calibrationIo ? ctx.calibrationIo->latestTempC : 25.0f;
-    float minTemp = startTemp;
-    float maxTemp = startTemp;
-    float windowStartTemp = startTemp;
-    uint32_t windowStartMs = millis();
-    uint32_t lastPrintMs = 0;
-
-    if (!ctx.startStaticTest(kMaxMs, ctx.startStaticTestUser)) {
-        tracker_serial_detail::printErr(s, "setup calibration failed: could not start static temperature capture");
-        return false;
-    }
-
+    ctx.gyroTempCapture->start(millis(), kMaxMs);
     const uint32_t startMs = millis();
+    float minTemp = ctx.calibrationIo ? ctx.calibrationIo->latestTempC : 25.0f;
+    float maxTemp = minTemp;
+    float windowStartTemp = minTemp;
+    uint32_t windowStartMs = startMs;
+    uint32_t lastPrintMs = 0;
     bool plateau = false;
-    while (millis() - startMs < kMaxMs) {
+
+    while (ctx.gyroTempCapture->active()) {
         serviceSetupRuntime(ctx);
         const uint32_t nowMs = millis();
-        const float t = ctx.calibrationIo ? ctx.calibrationIo->latestTempC : startTemp;
+        const float t = ctx.calibrationIo ? ctx.calibrationIo->latestTempC : minTemp;
         if (t < minTemp) minTemp = t;
         if (t > maxTemp) maxTemp = t;
 
@@ -609,7 +828,8 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
             s.print("# setup temp elapsed_s="); s.print((nowMs - startMs) / 1000UL);
             s.print(" temp_c="); s.print(t, 3);
             s.print(" range_c="); s.print(maxTemp - minTemp, 3);
-            s.print(" plateau_window_delta_c="); s.println(std::fabs(t - windowStartTemp), 3);
+            s.print(" usable_bins="); s.print(ctx.gyroTempCapture->usableTempBins());
+            s.print(" samples="); s.println(ctx.gyroTempCapture->capture().samples);
         }
 
         if (nowMs - windowStartMs >= kPlateauWindowMs) {
@@ -625,17 +845,15 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
         delay(5);
     }
 
-    if (plateau) s.println("# setup temp: relative plateau detected; stopping static capture");
-    else s.println("# setup temp: max capture duration reached; trying fit with collected data");
-
-    ctx.stopStaticTest(ctx.stopStaticTestUser);
-    const uint32_t finishStartMs = millis();
-    while (millis() - finishStartMs < 5000UL) {
-        serviceSetupRuntime(ctx);
-        delay(5);
+    if (ctx.gyroTempCapture->active()) {
+        ctx.gyroTempCapture->stop(millis());
     }
 
-    if (!ctx.fitGyroTempFromLastStatic(true, s, ctx.fitGyroTempFromLastStaticUser)) {
+    if (plateau) s.println("# setup temp: relative plateau detected; stopping capture");
+    else s.println("# setup temp: max capture duration reached; trying fit with collected data");
+
+    const StaticRuntimeTest& capture = ctx.gyroTempCapture->capture();
+    if (!ctx.fitGyroTempFromCapture(&capture, true, s, ctx.fitGyroTempFromCaptureUser)) {
         tracker_serial_detail::printErr(s, "setup calibration failed: gyro temperature fit did not pass quality gates");
         s.println("# TIP: repeat setup calibration after a larger cold-to-warm temperature change");
         return false;
@@ -643,7 +861,7 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     return true;
 }
 
-bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx) {
+bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx, SetupMagAxisAutoCollector& axisAuto) {
     Stream& s = out(ctx);
     s.println();
     s.println("# SETUP CALIBRATION STEP 3/6: ACCEL 6-POS + MAG COLLECTION");
@@ -687,6 +905,7 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx) {
             tracker_serial_detail::printErr(s, "setup calibration failed: accel face was not captured");
             return false;
         }
+        (void)setupCaptureMagAxisFaceSample(ctx, axisAuto, f.face);
     }
 
     char* compute[] = { const_cast<char*>("cal"), const_cast<char*>("accel"), const_cast<char*>("compute") };
@@ -732,7 +951,20 @@ bool setupSetAxisMapping(TrackerSerialCommandContext& ctx, const char* x, const 
     return ctx.config && ctx.config->data.magCal.axisAlignmentValid;
 }
 
+bool setupApplyAxisMatrix(TrackerSerialCommandContext& ctx, const Mat3& m, bool save) {
+    if (!ctx.config) return false;
+    ctx.config->data.magCal.magToImu = m;
+    ctx.config->data.magCal.axisAlignmentValid = true;
+    ctx.config->updateCrc();
+    if (save) {
+        cmdSetupSave(ctx);
+    }
+    if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+    return true;
+}
+
 bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
+                           const SetupMagAxisAutoCollector& axisAuto,
                            const char* axisX,
                            const char* axisY,
                            const char* axisZ) {
@@ -740,42 +972,53 @@ bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
     s.println();
     s.println("# SETUP CALIBRATION STEP 5/6: MAG AXIS ALIGNMENT");
 
-    char line[48] = {};
-    const char* x = axisX;
-    const char* y = axisY;
-    const char* z = axisZ;
-
-    if (!x || !y || !z) {
-        if (ctx.config && ctx.config->data.magCal.axisAlignmentValid) {
-            s.println("# Existing mag axis alignment is valid; keeping it.");
-            return true;
-        }
-
-        s.println("# Enter mag axis mapping as three tokens for IMU/body X Y Z, for example: +x +y +z");
-        s.println("# Leave blank only if this board's magnetometer axes are already known to match IMU axes.");
-        if (!readSetupLine(ctx, "# axis mapping> ", line, sizeof(line), 300000UL)) {
-            tracker_serial_detail::printErr(s, "setup calibration aborted: axis mapping timeout");
-            return false;
-        }
-        if (line[0] == '\0') {
-            return setupSetAxisIdentity(ctx);
-        }
-
-        char* tokens[3] = {};
-        uint8_t count = 0;
-        char* save = nullptr;
-        for (char* p = strtok(line, " \t"); p != nullptr && count < 3; p = strtok(nullptr, " \t")) {
-            tokens[count++] = p;
-        }
-        if (count != 3) {
-            tracker_serial_detail::printErr(s, "setup calibration failed: expected three axis tokens, for example +x +y +z");
-            return false;
-        }
-        x = tokens[0]; y = tokens[1]; z = tokens[2];
-        (void)save;
+    if (axisX && axisY && axisZ) {
+        s.println("# Manual axis mapping was provided; applying it instead of auto-detection.");
+        return setupSetAxisMapping(ctx, axisX, axisY, axisZ);
     }
 
-    return setupSetAxisMapping(ctx, x, y, z);
+    if (ctx.config && ctx.imuCal) {
+        SetupMagAxisAutoResult autoAxis;
+        if (setupAutoSolveMagAxis(axisAuto, *ctx.config, *ctx.imuCal, autoAxis)) {
+            s.print("# auto_mag_axis_mapping=");
+            setupPrintMagAxisMapping(s, autoAxis.magToImu);
+            s.println();
+            s.print("# auto_mag_axis_score="); s.println(autoAxis.score, 6);
+            s.print("# auto_mag_axis_second_best="); s.println(autoAxis.secondBestScore, 6);
+            s.print("# auto_mag_axis_inclination_mean="); s.println(autoAxis.inclinationMean, 6);
+            s.print("# auto_mag_axis_inclination_stddev="); s.println(autoAxis.inclinationStddev, 6);
+            s.print("# auto_mag_axis_samples="); s.println(static_cast<unsigned int>(autoAxis.usedSamples));
+            if (setupApplyAxisMatrix(ctx, autoAxis.magToImu, true)) {
+                tracker_serial_detail::printOk(s, "mag axis alignment auto-detected and saved");
+                return true;
+            }
+        } else {
+            s.println("# WARN automatic mag axis alignment was ambiguous or had insufficient data.");
+        }
+    }
+
+    char line[48] = {};
+    s.println("# Enter mag axis mapping as three tokens for IMU/body X Y Z, for example: +x +y +z");
+    s.println("# Leave blank only if this board's magnetometer axes are already known to match IMU axes.");
+    if (!readSetupLine(ctx, "# axis mapping> ", line, sizeof(line), 300000UL)) {
+        tracker_serial_detail::printErr(s, "setup calibration aborted: axis mapping timeout");
+        return false;
+    }
+    if (line[0] == '\0') {
+        return setupSetAxisIdentity(ctx);
+    }
+
+    char* tokens[3] = {};
+    uint8_t count = 0;
+    for (char* p = strtok(line, " \t"); p != nullptr && count < 3; p = strtok(nullptr, " \t")) {
+        tokens[count++] = p;
+    }
+    if (count != 3) {
+        tracker_serial_detail::printErr(s, "setup calibration failed: expected three axis tokens, for example +x +y +z");
+        return false;
+    }
+
+    return setupSetAxisMapping(ctx, tokens[0], tokens[1], tokens[2]);
 }
 
 bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx) {
@@ -850,9 +1093,11 @@ void cmdSetupCalibration(TrackerSerialCommandContext& ctx, int argc, char** argv
 
     if (!setupRunRestGyro(ctx)) return;
     if (!setupRunTemperatureFit(ctx)) return;
-    if (!setupRunAccelFacesWithMagCollection(ctx)) return;
+    SetupMagAxisAutoCollector axisAuto;
+    axisAuto.reset();
+    if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto)) return;
     if (!setupRunMagMotionAndApply(ctx)) return;
-    if (!setupRunAxisAlignment(ctx, axisX, axisY, axisZ)) return;
+    if (!setupRunAxisAlignment(ctx, axisAuto, axisX, axisY, axisZ)) return;
     if (!setupEnableProductionTracking(ctx)) return;
 }
 

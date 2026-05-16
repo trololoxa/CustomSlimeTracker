@@ -74,6 +74,9 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
         deps.callbacks.emitMachineLogFrame(raw, calibrated, quality, deps.callbacks.user);
     }
     deps.staticTestRunner.updateSample(calibrated, quality, deps.out);
+    if (deps.gyroTempCapture != nullptr) {
+        deps.gyroTempCapture->updateSample(calibrated, quality, millis());
+    }
     imuPipelineUpdateRuntimeGyroBiasEstimator(deps, scaled, calibrated, quality, raw.t_us);
 }
 

@@ -23,6 +23,9 @@ class ImuQualityMonitor;
 class Ahrs6Dof;
 struct FifoCalibrationIo;
 class FifoAccel6PosCalibrationRunner;
+class GyroTempCalibrationCapture;
+struct StaticRuntimeTest;
+struct MagProcessedSample;
 
 // ============================================================
 // Lightweight serial command protocol
@@ -118,6 +121,7 @@ struct TrackerSerialCommandContext {
 
     FifoCalibrationIo* calibrationIo = nullptr;
     FifoAccel6PosCalibrationRunner* accelCalRunner = nullptr;
+    GyroTempCalibrationCapture* gyroTempCapture = nullptr;
 
     TrackerSerialStreamState* streamState = nullptr;
     TrackerSerialLogState* logState = nullptr;
@@ -221,6 +225,11 @@ struct TrackerSerialCommandContext {
 
     bool (*fitGyroTempFromLastStatic)(bool persist, Stream& out, void* user) = nullptr;
     void* fitGyroTempFromLastStaticUser = nullptr;
+
+    bool (*fitGyroTempFromCapture)(const StaticRuntimeTest* capture, bool persist, Stream& out, void* user) = nullptr;
+    void* fitGyroTempFromCaptureUser = nullptr;
+
+    const MagProcessedSample* lastMagProcessed = nullptr;
 
     // Used by blocking guided setup/calibration flows. The hook must service
     // FIFO, magnetometer runtime and network/slime runtime without polling the

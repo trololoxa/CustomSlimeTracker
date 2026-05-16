@@ -52,7 +52,10 @@ struct WeightedFit1D {
 
 } // namespace gyro_temp_static_fit_detail
 
-bool fitGyroTempFromLastStatic(GyroTempStaticFitDeps& deps, bool persist, Stream& out) {
+bool fitGyroTempFromCompletedStaticTest(GyroTempStaticFitDeps& deps,
+                                           const StaticRuntimeTest& test,
+                                           bool persist,
+                                           Stream& out) {
     if (!deps.gyroTempComp || !deps.imuCal || !deps.runtimeBias || !deps.config || !deps.configStore) {
         out.println("# ERR gyro temp fit dependencies are not configured");
         return false;
@@ -69,15 +72,10 @@ bool fitGyroTempFromLastStatic(GyroTempStaticFitDeps& deps, bool persist, Stream
         return false;
     }
 
-    if (!deps.lastCompletedStaticTestValid ||
-        !deps.lastCompletedStaticTest ||
-        deps.lastCompletedStaticTest->samples < 1000 ||
-        deps.lastCompletedStaticTest->gyroAfterRadS.count < 1000) {
-        out.println("# ERR no usable completed static test data; run test static first and let it finish");
+    if (test.samples < 1000 || test.gyroAfterRadS.count < 1000) {
+        out.println("# ERR no usable gyro temperature capture data");
         return false;
     }
-
-    const StaticRuntimeTest& test = *deps.lastCompletedStaticTest;
 
     using gyro_temp_static_fit_detail::WeightedFit1D;
     WeightedFit1D fitX, fitY, fitZ;
@@ -238,6 +236,14 @@ bool fitGyroTempFromLastStatic(GyroTempStaticFitDeps& deps, bool persist, Stream
 
     out.println("# OK gyro temperature compensation fitted and saved");
     return true;
+}
+
+bool fitGyroTempFromLastStatic(GyroTempStaticFitDeps& deps, bool persist, Stream& out) {
+    if (!deps.lastCompletedStaticTestValid || !deps.lastCompletedStaticTest) {
+        out.println("# ERR no usable completed static test data; run test static first and let it finish");
+        return false;
+    }
+    return fitGyroTempFromCompletedStaticTest(deps, *deps.lastCompletedStaticTest, persist, out);
 }
 
 } // namespace tracker
