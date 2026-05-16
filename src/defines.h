@@ -110,7 +110,13 @@ static constexpr uint8_t SPI_MODE = 0;
 // FIFO / runtime loop defaults
 // ============================================================
 
-static constexpr uint8_t FIFO_WATERMARK_WORDS = 48;
+static constexpr uint8_t LEGACY_FIFO_WATERMARK_WORDS = 48;
+// SlimeVR UDP output is paced from prepared quaternion snapshots. With the
+// original 48-word FIFO watermark, snapshots were only refreshed at about
+// 23 Hz because samples arrived in large FIFO batches. A 12-word watermark
+// keeps FIFO/AHRS latency low enough for a real ~100 Hz RotationData stream
+// while the runtime test still shows no drops/recovery on the target board.
+static constexpr uint8_t FIFO_WATERMARK_WORDS = 12;
 static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN = 384;
 static constexpr uint8_t FIFO_MAX_DRAIN_ROUNDS_PER_EVENT = 6;
 static constexpr uint8_t FIFO_MAX_WAITING_SAMPLES_BEFORE_FALLBACK = 32;

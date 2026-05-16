@@ -39,6 +39,16 @@ void trackerBootstrapMigrateRuntimeConfigForPerformance(TrackerConfig& config) {
         config.data.hardware.spiHz = tracker_config_detail::DEFAULT_SPI_HZ;
     }
 
+    // Early SlimeVR UDP builds used a 48-word FIFO watermark. It was stable,
+    // but with the network loop outside FIFO batch processing it produced only
+    // ~23 Hz effective RotationData because the prepared quaternion snapshot
+    // changed once per FIFO drain. Runtime testing showed that 12 words keeps
+    // the full firmware stable while producing ~98 Hz RotationData. Migrate
+    // only the known legacy default; explicit user-tuned values are preserved.
+    if (config.data.fifo.watermarkWords == cfg::LEGACY_FIFO_WATERMARK_WORDS) {
+        config.data.fifo.watermarkWords = cfg::FIFO_WATERMARK_WORDS;
+    }
+
     config.sanitize();
     config.updateCrc();
 }

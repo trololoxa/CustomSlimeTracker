@@ -160,6 +160,17 @@ Manual rotation rate change:
 slime rate 100
 ```
 
+`100 Hz` is the default target because it gives smooth SlimeVR preview/tracking
+and the current ESP32-C3 runtime can sustain it with the 12-word FIFO watermark.
+It is not a protocol requirement. For thermal experiments or battery-focused
+builds, `slime rate 50` is a valid lower-load setting, but verify the result
+with `test runtime <seconds>` and the SlimeVR preview before changing defaults.
+
+The FIFO watermark affects the effective rotation rate. The default is 12 words.
+The older 48-word default was stable but refreshed prepared snapshots at only
+about one rate per FIFO drain, which caused about 23 Hz effective RotationData
+when `slime rate` was set to 100.
+
 ## Reconnect behavior
 
 The runtime handles these cases:

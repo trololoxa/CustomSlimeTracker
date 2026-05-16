@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 
+#include "defines.h"
 #include "core/math.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 
@@ -88,7 +89,7 @@ public:
 
         // FIFO watermark is in FIFO words, not IMU samples.
         // With gyro + accel + timestamp per sample: 48 words ~= 16 IMU samples.
-        uint8_t watermarkWords = 48;
+        uint8_t watermarkWords = cfg::FIFO_WATERMARK_WORDS;
 
         FifoMode mode = FifoMode::Continuous;
 

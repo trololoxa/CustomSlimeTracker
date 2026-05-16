@@ -447,4 +447,17 @@ fifo_overrun_delta=0
 fifo_full_delta=0
 ```
 
+For SlimeVR output, also check the effective rotation rate:
+
+```text
+slime_rotation_rate_hz_observed ~= slime rate
+```
+
+The default FIFO watermark is 12 words. A larger watermark may still be
+stable, but it batches samples and can reduce effective `RotationData` output
+rate because the network loop sees only the latest prepared snapshot after each
+FIFO drain. If `slime rate 100` observes much less than 80 Hz, inspect
+`perf_fifo_process_calls`, `fifo_loop_section_avg_us`, and the configured
+`fifo watermark`.
+
 Use `test stop` to finish early. `test status` prints both static and runtime test status.
