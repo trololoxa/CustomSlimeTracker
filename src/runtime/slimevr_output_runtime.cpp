@@ -11,6 +11,7 @@ constexpr uint32_t UDP_BEGIN_RETRY_MS = 1000;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 5000;
 constexpr uint32_t SENSOR_INFO_INTERVAL_MS = 1000;
 constexpr uint32_t SERVER_SILENCE_TIMEOUT_MS = 15000;
+constexpr uint32_t SERVER_FOUND_SEND_GRACE_MS = 100;
 constexpr uint16_t ROTATION_RATE_HZ_DEFAULT = 100;
 constexpr uint16_t ROTATION_RATE_HZ_MAX = 1000;
 
@@ -214,6 +215,10 @@ void SlimeVROutputRuntime::update(uint32_t nowMs) {
             maybeSendDiscovery(nowMs);
             return;
         }
+        if (serverFoundSendGraceUntilMs_ != 0 && static_cast<int32_t>(nowMs - serverFoundSendGraceUntilMs_) < 0) {
+            return;
+        }
+        serverFoundSendGraceUntilMs_ = 0;
         if (nowMs - lastHeartbeatMs_ >= HEARTBEAT_INTERVAL_MS) sendHeartbeat(nowMs);
         if (nowMs - lastSensorInfoMs_ >= SENSOR_INFO_INTERVAL_MS) sendSensorInfo(nowMs);
         maybeSendTelemetry(nowMs);
@@ -337,6 +342,7 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastProtocolVersion_ = 0;
     lastUnknownPacketType_ = 0;
     nextUdpBeginRetryMs_ = 0;
+    serverFoundSendGraceUntilMs_ = 0;
     writer_.resetPacketNumber(0);
     if (!keepCounters) resetCounters();
 }
@@ -379,7 +385,15 @@ void SlimeVROutputRuntime::handleIncomingPacket(const uint8_t* data,
         if (serverEndpoint_.port == 0) serverEndpoint_.port = serverPort_;
         ++discoveryResponses_;
         transitionTo(SlimeVROutputState::ServerFound, nowMs);
-        sendSensorInfo(nowMs);
+        // ESP32 WiFiUDP can transiently fail with ENOMEM if we immediately
+        // burst SensorInfo/telemetry/rotation in the same update that consumed
+        // the discovery response. Give the Wi-Fi stack a short grace period,
+        // then resume normal scheduled sends.
+        serverFoundSendGraceUntilMs_ = nowMs + SERVER_FOUND_SEND_GRACE_MS;
+        lastHeartbeatMs_ = nowMs;
+        lastTelemetryMs_ = nowMs;
+        lastRotationAttemptMs_ = nowMs;
+        lastSensorInfoMs_ = 0;
         return;
     }
 

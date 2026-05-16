@@ -262,6 +262,7 @@ private:
     uint32_t lastRotationQualityFlags_ = 0;
     float lastRotationConfidence_ = 0.0f;
     uint32_t nextUdpBeginRetryMs_ = 0;
+    uint32_t serverFoundSendGraceUntilMs_ = 0;
 };
 
 } // namespace tracker

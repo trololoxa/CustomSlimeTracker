@@ -183,20 +183,27 @@ int main() {
     udp.incomingPending = true;
     rt.update(1100);
 
+    {
+        const SlimeVROutputRuntimeStatus st = rt.status();
+        CHECK(ctx, st.serverFound);
+        CHECK(ctx, st.state == SlimeVROutputState::ServerFound);
+        CHECK(ctx, st.serverIpv4 == 0xC0A80001UL);
+        CHECK(ctx, st.discoveryResponses == 1);
+        CHECK(ctx, st.sensorInfoSent == 0);
+        CHECK(ctx, st.rotationSent == 0);
+        CHECK(ctx, st.signalStrengthSent == 0);
+        CHECK(ctx, st.temperatureSent == 0);
+    }
+
+    rt.update(1201);
     const SlimeVROutputRuntimeStatus st = rt.status();
-    CHECK(ctx, st.serverFound);
-    CHECK(ctx, st.state == SlimeVROutputState::ServerFound);
-    CHECK(ctx, st.serverIpv4 == 0xC0A80001UL);
-    CHECK(ctx, st.discoveryResponses == 1);
     CHECK(ctx, st.sensorInfoSent == 1);
     CHECK(ctx, st.rotationSent == 1);
-    CHECK(ctx, st.signalStrengthSent == 1);
-    CHECK(ctx, st.temperatureSent == 1);
+    CHECK(ctx, st.signalStrengthSent == 0);
+    CHECK(ctx, st.temperatureSent == 0);
     CHECK(ctx, st.magnetometerAccuracySent == 0);
     CHECK(ctx, st.magSupportEnabled);
     CHECK(ctx, st.sensorConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED);
-    CHECK(ctx, st.lastSignalStrength == 64);
-    CHECK(ctx, st.lastRssiDbm == -68);
     CHECK(ctx, st.lastTemperatureValid);
     CHECK_NEAR(ctx, st.lastTemperatureC, 42.5f, 1.0e-6f);
     CHECK(ctx, st.rotationNoSnapshot == 0);
@@ -212,17 +219,21 @@ int main() {
     CHECK(ctx, udp.sent.back().endpoint.ipv4 == 0xC0A80001UL);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
 
-    rt.update(1105);
+    rt.update(1205);
     CHECK(ctx, rt.status().rotationSent == 1);
 
     snapshots.snapshot.sequence = 2;
     snapshots.snapshot.runtimeSample = 124;
-    rt.update(1110);
+    rt.update(1211);
     CHECK(ctx, rt.status().rotationSent == 2);
     CHECK(ctx, rt.status().lastRotationSnapshotSequence == 2);
 
-    rt.update(6100);
+    rt.update(6101);
     CHECK(ctx, rt.status().heartbeatSent >= 1);
+    CHECK(ctx, rt.status().signalStrengthSent >= 1);
+    CHECK(ctx, rt.status().temperatureSent >= 1);
+    CHECK(ctx, rt.status().lastSignalStrength == 64);
+    CHECK(ctx, rt.status().lastRssiDbm == -68);
 
     udp.incoming = makeServerPacket(static_cast<uint8_t>(SlimeVRReceivePacketType::HeartBeat0), {});
     udp.incomingRemote = UdpEndpoint{0xC0A80001UL, 6969};
