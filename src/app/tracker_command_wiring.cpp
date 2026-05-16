@@ -56,6 +56,13 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.stopStaticTestUser = hooks.stopStaticTestUser;
     ctx.printStaticTestStatus = hooks.printStaticTestStatus;
     ctx.printStaticTestStatusUser = hooks.printStaticTestStatusUser;
+
+    ctx.startRuntimeTest = hooks.startRuntimeTest;
+    ctx.startRuntimeTestUser = hooks.startRuntimeTestUser;
+    ctx.stopRuntimeTest = hooks.stopRuntimeTest;
+    ctx.stopRuntimeTestUser = hooks.stopRuntimeTestUser;
+    ctx.printRuntimeTestStatus = hooks.printRuntimeTestStatus;
+    ctx.printRuntimeTestStatusUser = hooks.printRuntimeTestStatusUser;
     ctx.setMagRuntimeEnabled = hooks.setMagRuntimeEnabled;
     ctx.setMagRuntimeEnabledUser = hooks.setMagRuntimeEnabledUser;
     ctx.printMagRuntimeStatus = hooks.printMagRuntimeStatus;

@@ -131,6 +131,20 @@ static void setupStaticTestRunner() {
     g_staticTestRunner.begin(deps);
 }
 
+static void setupRuntimeTestRunner() {
+    RuntimeTestRunner::Dependencies deps;
+    deps.perf = &g_perf;
+    deps.fifo = &lsmFifo;
+    deps.quality = &g_quality;
+    deps.wifi = &g_wifiManager;
+    deps.slimevr = &g_slimevrRuntime;
+    deps.trackingState = &g_trackingState;
+    deps.runtimeSamples = &g_runtimeSamples;
+    deps.latestTempC = &g_latestTempC;
+    deps.progressPeriodMs = HEARTBEAT_PERIOD_MS;
+    g_runtimeTestRunner.begin(deps);
+}
+
 static bool startStaticTestHook(uint32_t durationMs, void* user) {
     (void)user;
     const float magErrorStartDeg =
@@ -148,6 +162,21 @@ static bool stopStaticTestHook(void* user) {
 static void printStaticTestStatus(Stream& out, void* user) {
     (void)user;
     g_staticTestRunner.printStatus(out);
+}
+
+static bool startRuntimeTestHook(uint32_t durationMs, void* user) {
+    (void)user;
+    return g_runtimeTestRunner.start(durationMs, millis(), Serial);
+}
+
+static bool stopRuntimeTestHook(void* user) {
+    (void)user;
+    return g_runtimeTestRunner.stop();
+}
+
+static void printRuntimeTestStatus(Stream& out, void* user) {
+    (void)user;
+    g_runtimeTestRunner.printStatus(out, millis());
 }
 
 static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user);
@@ -193,6 +222,9 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     hooks.startStaticTest = startStaticTestHook;
     hooks.stopStaticTest = stopStaticTestHook;
     hooks.printStaticTestStatus = printStaticTestStatus;
+    hooks.startRuntimeTest = startRuntimeTestHook;
+    hooks.stopRuntimeTest = stopRuntimeTestHook;
+    hooks.printRuntimeTestStatus = printRuntimeTestStatus;
     hooks.setMagRuntimeEnabled = setMagRuntimeEnabledHook;
     hooks.printMagRuntimeStatus = printMagRuntimeStatus;
     hooks.printMagProcessedStatus = printMagProcessedStatus;
@@ -214,6 +246,7 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
 
 static void setupCommandInterface() {
     setupStaticTestRunner();
+    setupRuntimeTestRunner();
     wireTrackerCommandContext(g_cmdCtx,
                               makeTrackerCommandRuntimeObjects(),
                               makeTrackerCommandRuntimeHooks());

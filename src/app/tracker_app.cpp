@@ -85,19 +85,35 @@ void TrackerApp::setup() {
 void TrackerApp::loop() {
     if (!ready()) return;
 
+    RuntimeLoopTimingSample timing;
+    const uint32_t loopStartUs = micros();
+    uint32_t sectionStartUs = 0;
+
 #if TRACKER_ENABLE_SERIAL_CLI
+    sectionStartUs = micros();
     deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
-#endif
-    processFifoRuntime();
-    call(deps_.callbacks.updateNetworkRuntime);
-#if TRACKER_ENABLE_SERIAL_CLI
-    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+    timing.cliUs += micros() - sectionStartUs;
 #endif
 
+    sectionStartUs = micros();
+    processFifoRuntime();
+    timing.fifoUs = micros() - sectionStartUs;
+
+    sectionStartUs = micros();
+    call(deps_.callbacks.updateNetworkRuntime);
+    timing.networkUs = micros() - sectionStartUs;
+
+#if TRACKER_ENABLE_SERIAL_CLI
+    sectionStartUs = micros();
+    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+    timing.cliUs += micros() - sectionStartUs;
+#endif
+
+    sectionStartUs = micros();
     maybePrintBootHeartbeat(
         *deps_.runtime.out,
         *deps_.runtime.streamState,
-        deps_.runtime.staticTestRunner->active(),
+        deps_.runtime.staticTestRunner->active() || deps_.runtime.runtimeTestRunner->active(),
         millis(),
         *deps_.runtime.lastHeartbeatMs,
         *deps_.runtime.runtimeSamples,
@@ -105,6 +121,11 @@ void TrackerApp::loop() {
         *deps_.runtime.latestTempC,
         deps_.runtime.magState->samples
     );
+    timing.heartbeatUs = micros() - sectionStartUs;
+    timing.loopUs = micros() - loopStartUs;
+
+    deps_.runtime.runtimeTestRunner->recordLoopTiming(timing);
+    deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);
 }
 
 bool TrackerApp::ready() const {

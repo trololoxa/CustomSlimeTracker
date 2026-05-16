@@ -16,6 +16,7 @@
 #include "sensor/mag_heading.hpp"
 #include "sensor/mag_yaw_correction.hpp"
 #include "runtime/static_test_runner.hpp"
+#include "runtime/runtime_test_runner.hpp"
 #include "runtime/tracker_runtime_types.hpp"
 #include "runtime/fifo_runtime_processor.hpp"
 #include "runtime/runtime_bias_types.hpp"
@@ -94,6 +95,7 @@ static MagHeadingAutoReferenceState g_magHeadingAutoRef;
 static StaticRuntimeTest g_staticTest;
 static StaticRuntimeTest g_lastCompletedStaticTest;
 static StaticTestRunner g_staticTestRunner;
+static RuntimeTestRunner g_runtimeTestRunner;
 static bool g_lastCompletedStaticTestValid = false;
 static uint32_t g_lastCompletedStaticTestFinishedMs = 0;
 

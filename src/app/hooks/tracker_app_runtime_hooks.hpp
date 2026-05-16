@@ -253,6 +253,7 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.runtime.fifoEvents = &g_fifoEvents;
     deps.runtime.fifoRuntime = &g_fifoRuntime;
     deps.runtime.staticTestRunner = &g_staticTestRunner;
+    deps.runtime.runtimeTestRunner = &g_runtimeTestRunner;
     deps.runtime.magState = &g_magState;
     deps.runtime.fifoIntCount = &g_fifoIntCount;
     deps.runtime.runtimeSamples = &g_runtimeSamples;

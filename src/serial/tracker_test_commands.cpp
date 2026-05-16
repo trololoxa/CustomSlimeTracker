@@ -17,37 +17,40 @@ bool trackerSerialTestIs(const char* a, const char* b) {
 void trackerSerialDispatchTestCommand(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     Stream& out = trackerSerialTestStream(ctx);
     if (argc < 2) {
-        tracker_serial_detail::printErr(out, "usage: test static <seconds>|stop|status");
+        tracker_serial_detail::printErr(out, "usage: test static <seconds>|runtime <seconds>|stop|status");
         return;
     }
 
     if (trackerSerialTestIs(argv[1], "status")) {
         if (ctx.printStaticTestStatus) {
+            out.println("# STATIC TEST STATUS");
             ctx.printStaticTestStatus(out, ctx.printStaticTestStatusUser);
         } else {
             tracker_serial_detail::printErr(out, "static test status hook not available");
+        }
+        if (ctx.printRuntimeTestStatus) {
+            out.println("# RUNTIME TEST STATUS");
+            ctx.printRuntimeTestStatus(out, ctx.printRuntimeTestStatusUser);
         }
         return;
     }
 
     if (trackerSerialTestIs(argv[1], "stop")) {
-        if (!ctx.stopStaticTest) {
-            tracker_serial_detail::printErr(out, "static test stop hook not available");
-            return;
+        bool stopped = false;
+        if (ctx.stopStaticTest) {
+            stopped = ctx.stopStaticTest(ctx.stopStaticTestUser) || stopped;
         }
-        const bool ok = ctx.stopStaticTest(ctx.stopStaticTestUser);
-        if (ok) tracker_serial_detail::printOk(out, "static test stop requested");
-        else tracker_serial_detail::printErr(out, "static test was not running");
+        if (ctx.stopRuntimeTest) {
+            stopped = ctx.stopRuntimeTest(ctx.stopRuntimeTestUser) || stopped;
+        }
+        if (stopped) tracker_serial_detail::printOk(out, "test stop requested");
+        else tracker_serial_detail::printErr(out, "no test was running");
         return;
     }
 
-    if (trackerSerialTestIs(argv[1], "static")) {
+    if (trackerSerialTestIs(argv[1], "static") || trackerSerialTestIs(argv[1], "runtime")) {
         if (argc < 3) {
-            tracker_serial_detail::printErr(out, "usage: test static <seconds>");
-            return;
-        }
-        if (!ctx.startStaticTest) {
-            tracker_serial_detail::printErr(out, "static test start hook not available");
+            tracker_serial_detail::printErr(out, trackerSerialTestIs(argv[1], "static") ? "usage: test static <seconds>" : "usage: test runtime <seconds>");
             return;
         }
         uint32_t seconds = 0;
@@ -55,9 +58,25 @@ void trackerSerialDispatchTestCommand(TrackerSerialCommandContext& ctx, int argc
             tracker_serial_detail::printErr(out, "invalid duration; expected 1..21600 seconds");
             return;
         }
-        const bool ok = ctx.startStaticTest(seconds * 1000UL, ctx.startStaticTestUser);
-        if (ok) tracker_serial_detail::printOk(out, "static test started");
-        else tracker_serial_detail::printErr(out, "static test already running");
+
+        if (trackerSerialTestIs(argv[1], "static")) {
+            if (!ctx.startStaticTest) {
+                tracker_serial_detail::printErr(out, "static test start hook not available");
+                return;
+            }
+            const bool ok = ctx.startStaticTest(seconds * 1000UL, ctx.startStaticTestUser);
+            if (ok) tracker_serial_detail::printOk(out, "static test started");
+            else tracker_serial_detail::printErr(out, "static test already running");
+            return;
+        }
+
+        if (!ctx.startRuntimeTest) {
+            tracker_serial_detail::printErr(out, "runtime test start hook not available");
+            return;
+        }
+        const bool ok = ctx.startRuntimeTest(seconds * 1000UL, ctx.startRuntimeTestUser);
+        if (ok) tracker_serial_detail::printOk(out, "runtime test started");
+        else tracker_serial_detail::printErr(out, "runtime test already running or unavailable");
         return;
     }
 

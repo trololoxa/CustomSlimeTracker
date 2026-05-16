@@ -110,6 +110,15 @@ Legend:
 | `output start|stop` | Start/stop local serial quaternion output | Runtime/config | Does not start/stop SlimeVR UDP. |
 
 
+## Tests
+
+| Command | Effect | Persisted | Notes |
+|---|---|---:|---|
+| `test status` | Print static-test and runtime-test status | No | Runtime test status is shown when the hook is available. |
+| `test static <seconds>` | Existing IMU/FIFO stationary test | No | Best for calibration/stability of IMU path, not full Wi-Fi load. |
+| `test runtime <seconds>` | Full firmware runtime/load test | No | Measures loop/CLI/FIFO/network/heartbeat timing plus Wi-Fi/SlimeVR/FIFO/quality deltas. |
+| `test stop` | Stop active static/runtime test | No | Requests stop; report is printed by the runner. |
+
 ## Network / SlimeVR
 
 | Command | Effect | Persisted | Notes |
@@ -126,7 +135,8 @@ Legend:
 | `net reconnect` | Restart Wi-Fi connection attempt | No | Non-blocking reconnect. |
 | `net scan [visible|hidden] [limit N]` | Blocking Wi-Fi environment scan | No | Developer diagnostic; pauses sensor processing while scan runs. |
 | `net save|load|defaults|erase` | Manage network NVS config | Yes/Runtime | Network config is stored separately from main tracker config. |
-| `slime status` | Print SlimeVR UDP runtime status | No | Includes server endpoint, packet counters, telemetry, protocol metadata. Temperature is sent as UDP packet 20 and is visible here even if the current server GUI does not show it. |
+| `slime status` | Print compact SlimeVR UDP runtime status | No | Shows server state, rotation, failures, ping, mag flags, RSSI and latest temperature. |
+| `slime debug` | Print full SlimeVR counters/timestamps | No | Developer view with packet counters, last packet values and reconnect-hardening counters. |
 | `slime start` | Start SlimeVR UDP runtime | Runtime | Uses prepared quaternion snapshots directly and leaves local serial output off. |
 | `slime stop` | Stop SlimeVR output runtime | Runtime | Does not erase saved Wi-Fi/config. |
 | `slime reconnect` | Restart SlimeVR discovery/session | Runtime | Useful after server restart or network changes. |

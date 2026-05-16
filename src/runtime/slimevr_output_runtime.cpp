@@ -10,7 +10,7 @@ namespace {
 constexpr uint32_t UDP_BEGIN_RETRY_MS = 1000;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 5000;
 constexpr uint32_t SENSOR_INFO_INTERVAL_MS = 1000;
-constexpr uint32_t SERVER_SILENCE_TIMEOUT_MS = 15000;
+constexpr uint32_t SERVER_SILENCE_TIMEOUT_MS = TRACKER_SLIMEVR_SERVER_SILENCE_TIMEOUT_MS;
 constexpr uint32_t SERVER_FOUND_SEND_GRACE_MS = 100;
 constexpr uint16_t ROTATION_RATE_HZ_DEFAULT = 100;
 constexpr uint16_t ROTATION_RATE_HZ_MAX = 1000;
@@ -163,6 +163,11 @@ void SlimeVROutputRuntime::resetCounters() {
     unknownPacketsReceived_ = 0;
     sendFailures_ = 0;
     udpBeginFailures_ = 0;
+    serverSilenceResets_ = 0;
+    wifiLostResets_ = 0;
+    udpReopenRequests_ = 0;
+    consecutiveSendFailures_ = 0;
+    udpReopenRequested_ = false;
 }
 
 void SlimeVROutputRuntime::stop() {
@@ -188,15 +193,32 @@ void SlimeVROutputRuntime::update(uint32_t nowMs) {
 
     const bool wifiConnected = wifi_->connected();
     if (!wifiConnected) {
+        if (udp_->active() || serverFound_) ++wifiLostResets_;
         if (udp_->active()) udp_->stop();
         serverFound_ = false;
         serverEndpoint_ = UdpEndpoint{};
+        consecutiveSendFailures_ = 0;
+        udpReopenRequested_ = false;
         transitionTo(SlimeVROutputState::WaitingForWifi, nowMs);
         return;
     }
 
     ensureUdp(nowMs);
     if (!udp_->active()) return;
+
+    if (udpReopenRequested_) {
+        ++udpReopenRequests_;
+        udp_->stop();
+        serverFound_ = false;
+        serverEndpoint_ = UdpEndpoint{};
+        consecutiveSendFailures_ = 0;
+        udpReopenRequested_ = false;
+        lastSensorInfoMs_ = 0;
+        lastHeartbeatMs_ = 0;
+        lastTelemetryMs_ = 0;
+        transitionTo(SlimeVROutputState::UdpStarting, nowMs);
+        return;
+    }
 
     pollIncoming(nowMs);
 
@@ -206,6 +228,7 @@ void SlimeVROutputRuntime::update(uint32_t nowMs) {
             // UDP sends can continue to succeed while the server process was
             // restarted or the old association disappeared. Drop back to
             // discovery when the server has been silent long enough.
+            ++serverSilenceResets_;
             serverFound_ = false;
             serverEndpoint_ = UdpEndpoint{};
             lastSensorInfoMs_ = 0;
@@ -274,6 +297,10 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.unknownPacketsReceived = unknownPacketsReceived_;
     s.sendFailures = sendFailures_;
     s.udpBeginFailures = udpBeginFailures_;
+    s.serverSilenceResets = serverSilenceResets_;
+    s.wifiLostResets = wifiLostResets_;
+    s.udpReopenRequests = udpReopenRequests_;
+    s.consecutiveSendFailures = consecutiveSendFailures_;
     s.nextPacketNumber = static_cast<uint32_t>(writer_.packetNumber());
     s.rotationRateHz = rotationRateHz_;
     s.preparedOutputAvailable = copyOutputSnapshot_ != nullptr;
@@ -343,6 +370,8 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastUnknownPacketType_ = 0;
     nextUdpBeginRetryMs_ = 0;
     serverFoundSendGraceUntilMs_ = 0;
+    consecutiveSendFailures_ = 0;
+    udpReopenRequested_ = false;
     writer_.resetPacketNumber(0);
     if (!keepCounters) resetCounters();
 }
@@ -705,12 +734,18 @@ void SlimeVROutputRuntime::makeHandshakeInfo(SlimeVRHandshakeInfo& info) const {
 bool SlimeVROutputRuntime::sendPacket(const SlimeVRPacketWriteResult& packet, const UdpEndpoint& endpoint) {
     if (!udp_ || !packet.ok || packet.size == 0) {
         ++sendFailures_;
+        ++consecutiveSendFailures_;
         return false;
     }
     if (!udp_->send(endpoint, packetBuffer_, packet.size)) {
         ++sendFailures_;
+        ++consecutiveSendFailures_;
+        if (consecutiveSendFailures_ >= TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD) {
+            udpReopenRequested_ = true;
+        }
         return false;
     }
+    consecutiveSendFailures_ = 0;
     return true;
 }
 

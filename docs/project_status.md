@@ -43,3 +43,19 @@ python tools/check_all.py --clean --skip-pio
 3. Maintain `docs/config_schema.md` when persisted schema changes.
 4. Build replay/log tooling before major tracking-filter changes.
 5. Keep SlimeVR UDP output decoupled from AHRS/FIFO: it must consume prepared output snapshots only, never low-level sensor state directly.
+
+## Current SlimeVR network baseline
+
+The tracker now has a working SlimeVR UDP MVP:
+
+- non-blocking Wi-Fi station manager;
+- ESP32-C3 TX power workaround through `TRACKER_WIFI_TX_POWER`;
+- UDP discovery and server reconnect;
+- SlimeVR protocol v19 metadata;
+- `SensorInfo`, `RotationData`, heartbeat, ping/pong, RSSI and temperature telemetry;
+- incoming `SetConfigFlag` handling for runtime mag/yaw toggle;
+- local serial output decoupled from SlimeVR UDP;
+- `slime status` compact view and `slime debug` full counter dump;
+- `test runtime <seconds>` for full Wi-Fi/server/FIFO loop-load measurement.
+
+Next optimization work should start from a `test runtime 600` baseline rather than from `test static` alone.

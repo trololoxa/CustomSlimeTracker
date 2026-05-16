@@ -400,3 +400,51 @@ python tools/replay/replay_machine_log.py logs/mag_sweep_001.log --require-magr 
 Do not mix `stream raw/scaled/quat/debug` with replay capture; the replay parser
 ignores human output, but cleaner serial captures are easier to inspect and
 archive.
+
+## Full runtime / Wi-Fi / SlimeVR load test
+
+`test static` is an IMU/FIFO stationary test. It is not enough for Wi-Fi/server optimization because it was designed around sensor stability, not around the complete firmware loop. For full network load use:
+
+```text
+test runtime <seconds>
+```
+
+Recommended baseline before optimizing heat or Wi-Fi power:
+
+```text
+net status
+slime status
+slime counters reset
+test runtime 600
+slime debug
+health
+fifo stats
+quality stats
+```
+
+The runtime test reports:
+
+- loop/CLI/FIFO/network/heartbeat section timing;
+- max and average loop costs;
+- slow loop/network/FIFO counters;
+- IMU runtime sample rate;
+- FIFO/perf/quality deltas;
+- Wi-Fi disconnect/connect-timeout deltas;
+- SlimeVR rotation, ping/pong, unknown packet and send failure deltas;
+- start/end temperature.
+
+Healthy Wi-Fi + SlimeVR run targets:
+
+```text
+wifi_connected_end=yes
+slime_server_found_end=yes
+slime_send_failures_delta=0
+slime_unknown_packets_delta=0
+wifi_disconnects_delta=0
+tracking_recovery_delta=0
+quality_estimated_dropped_delta=0
+fifo_overrun_delta=0
+fifo_full_delta=0
+```
+
+Use `test stop` to finish early. `test status` prints both static and runtime test status.

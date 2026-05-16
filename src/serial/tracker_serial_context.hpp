@@ -165,6 +165,15 @@ struct TrackerSerialCommandContext {
     void (*printStaticTestStatus)(Stream& out, void* user) = nullptr;
     void* printStaticTestStatusUser = nullptr;
 
+    bool (*startRuntimeTest)(uint32_t durationMs, void* user) = nullptr;
+    void* startRuntimeTestUser = nullptr;
+
+    bool (*stopRuntimeTest)(void* user) = nullptr;
+    void* stopRuntimeTestUser = nullptr;
+
+    void (*printRuntimeTestStatus)(Stream& out, void* user) = nullptr;
+    void* printRuntimeTestStatusUser = nullptr;
+
     bool (*setMagRuntimeEnabled)(bool enabled, bool persist, void* user) = nullptr;
     void* setMagRuntimeEnabledUser = nullptr;
 

@@ -52,9 +52,40 @@ void stopLocalSerialStreamForSlime(TrackerSerialCommandContext& ctx) {
 }
 
 
-void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
+void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     char ipBuf[24];
     out.println("# SLIMEVR STATUS");
+    out.print("enabled="); out.println(yn(s.enabled));
+    out.print("state="); out.println(slimevrOutputStateName(s.state));
+    out.print("wifi_connected="); out.println(yn(s.wifiConnected));
+    out.print("udp_ready="); out.println(yn(s.udpReady));
+    out.print("server_found="); out.println(yn(s.serverFound));
+    out.print("server_ip="); out.println(s.serverIpv4 ? udpIpv4ToCString(s.serverIpv4, ipBuf, sizeof(ipBuf)) : "0.0.0.0");
+    out.print("server_port="); out.println(s.serverPort);
+    out.print("rotation_sent="); out.println(s.rotationSent);
+    out.print("rotation_rate_hz="); out.println(s.rotationRateHz);
+    out.print("send_failures="); out.println(s.sendFailures);
+    out.print("udp_begin_failures="); out.println(s.udpBeginFailures);
+    out.print("server_silence_resets="); out.println(s.serverSilenceResets);
+    out.print("wifi_lost_resets="); out.println(s.wifiLostResets);
+    out.print("udp_reopen_requests="); out.println(s.udpReopenRequests);
+    out.print("ping_received="); out.println(s.pingReceived);
+    out.print("pong_sent="); out.println(s.pongSent);
+    out.print("unknown_packets_received="); out.println(s.unknownPacketsReceived);
+    out.print("mag_support_enabled="); out.println(yn(s.magSupportEnabled));
+    out.print("mag_enabled="); out.println(yn(s.magEnabled));
+    out.print("sensor_config=0x"); out.println(s.sensorConfig, HEX);
+    out.print("last_rssi_dbm="); out.println(s.lastRssiDbm);
+    out.print("last_signal_strength="); out.println(s.lastSignalStrength);
+    out.print("last_temperature_valid="); out.println(yn(s.lastTemperatureValid));
+    out.print("last_temperature_c="); out.println(s.lastTemperatureC, 2);
+    out.print("last_rotation_confidence="); out.println(s.lastRotationConfidence, 4);
+    out.println("# use 'slime debug' for full counters/timestamps");
+}
+
+void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
+    char ipBuf[24];
+    out.println("# SLIMEVR DEBUG");
     out.print("enabled="); out.println(yn(s.enabled));
     out.print("state="); out.println(slimevrOutputStateName(s.state));
     out.print("wifi_connected="); out.println(yn(s.wifiConnected));
@@ -116,6 +147,10 @@ void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("last_unknown_packet_type="); out.println(s.lastUnknownPacketType);
     out.print("send_failures="); out.println(s.sendFailures);
     out.print("udp_begin_failures="); out.println(s.udpBeginFailures);
+    out.print("server_silence_resets="); out.println(s.serverSilenceResets);
+    out.print("wifi_lost_resets="); out.println(s.wifiLostResets);
+    out.print("udp_reopen_requests="); out.println(s.udpReopenRequests);
+    out.print("consecutive_send_failures="); out.println(s.consecutiveSendFailures);
     out.print("last_handshake_ms="); out.println(s.lastHandshakeMs);
     out.print("last_incoming_packet_ms="); out.println(s.lastIncomingPacketMs);
     out.print("last_state_change_ms="); out.println(s.lastStateChangeMs);
@@ -129,6 +164,7 @@ void printSlimeStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
 
 void printHelp(Stream& out) {
     out.println("slime status");
+    out.println("slime debug");
     out.println("slime start");
     out.println("slime stop");
     out.println("slime reconnect");
@@ -152,7 +188,12 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
     }
 
     if (argc < 2 || tracker_serial_detail::eqIgnoreCase(argv[1], "status")) {
-        printSlimeStatus(out, ctx.slimevrRuntime->status());
+        printSlimeStatusBrief(out, ctx.slimevrRuntime->status());
+        return true;
+    }
+
+    if (tracker_serial_detail::eqIgnoreCase(argv[1], "debug")) {
+        printSlimeDebug(out, ctx.slimevrRuntime->status());
         return true;
     }
 

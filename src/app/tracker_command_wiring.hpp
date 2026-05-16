@@ -77,6 +77,15 @@ struct TrackerCommandRuntimeHooks {
     decltype(TrackerSerialCommandContext::printStaticTestStatus) printStaticTestStatus = nullptr;
     void* printStaticTestStatusUser = nullptr;
 
+    decltype(TrackerSerialCommandContext::startRuntimeTest) startRuntimeTest = nullptr;
+    void* startRuntimeTestUser = nullptr;
+
+    decltype(TrackerSerialCommandContext::stopRuntimeTest) stopRuntimeTest = nullptr;
+    void* stopRuntimeTestUser = nullptr;
+
+    decltype(TrackerSerialCommandContext::printRuntimeTestStatus) printRuntimeTestStatus = nullptr;
+    void* printRuntimeTestStatusUser = nullptr;
+
     decltype(TrackerSerialCommandContext::setMagRuntimeEnabled) setMagRuntimeEnabled = nullptr;
     void* setMagRuntimeEnabledUser = nullptr;
 

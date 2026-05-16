@@ -98,6 +98,10 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t unknownPacketsReceived = 0;
     uint32_t sendFailures = 0;
     uint32_t udpBeginFailures = 0;
+    uint32_t serverSilenceResets = 0;
+    uint32_t wifiLostResets = 0;
+    uint32_t udpReopenRequests = 0;
+    uint32_t consecutiveSendFailures = 0;
 
     uint32_t nextPacketNumber = 0;
     uint16_t rotationRateHz = 0;
@@ -245,6 +249,11 @@ private:
     uint32_t unknownPacketsReceived_ = 0;
     uint32_t sendFailures_ = 0;
     uint32_t udpBeginFailures_ = 0;
+    uint32_t serverSilenceResets_ = 0;
+    uint32_t wifiLostResets_ = 0;
+    uint32_t udpReopenRequests_ = 0;
+    uint32_t consecutiveSendFailures_ = 0;
+    bool udpReopenRequested_ = false;
 
     uint32_t lastHandshakeMs_ = 0;
     uint32_t lastIncomingPacketMs_ = 0;

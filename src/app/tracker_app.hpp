@@ -8,6 +8,7 @@
 #include "config/tracker_config_runtime.hpp"
 #include "runtime/fifo_runtime_processor.hpp"
 #include "runtime/static_test_runner.hpp"
+#include "runtime/runtime_test_runner.hpp"
 #include "runtime/tracker_runtime_types.hpp"
 #include "runtime/mag_runtime_state.hpp"
 #include "sensor/ahrs_6dof.hpp"
@@ -49,6 +50,7 @@ struct TrackerAppRuntimeObjects {
     FifoInterruptEventSource* fifoEvents = nullptr;
     FifoRuntimeProcessor* fifoRuntime = nullptr;
     StaticTestRunner* staticTestRunner = nullptr;
+    RuntimeTestRunner* runtimeTestRunner = nullptr;
     MagRuntimeState* magState = nullptr;
     volatile uint32_t* fifoIntCount = nullptr;
     uint32_t* runtimeSamples = nullptr;
