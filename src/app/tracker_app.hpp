@@ -88,6 +88,11 @@ public:
     void setup();
     void loop();
 
+    // Services the non-CLI runtime while a blocking command-driven calibration
+    // flow is active. This keeps FIFO, mag runtime, Wi-Fi and SlimeVR alive
+    // without recursively polling the serial parser.
+    void serviceRuntimeForBlockingCommand();
+
 private:
     bool ready() const;
     void fatal(const char* message);

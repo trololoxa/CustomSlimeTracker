@@ -55,6 +55,7 @@ struct SlimeVROutputRuntimeConfig {
     uint32_t telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
     bool latestTemperatureValid = false;
     float latestTemperatureC = 0.0f;
+    bool hasCompletedRestCalibration = false;
 };
 
 struct SlimeVROutputRuntimeStatus {
@@ -116,6 +117,7 @@ struct SlimeVROutputRuntimeStatus {
     int32_t lastRssiDbm = 0;
     float lastTemperatureC = 0.0f;
     bool lastTemperatureValid = false;
+    bool hasCompletedRestCalibration = false;
     uint32_t lastPingId = 0;
     uint32_t lastServerFeatureFlags = 0;
     uint8_t lastSetConfigSensorId = 0;
@@ -147,6 +149,7 @@ public:
     void stop();
     void restart();
     void update(uint32_t nowMs);
+    void requestSensorInfoRefresh();
 
     bool enabled() const { return enabled_; }
     bool serverFound() const { return serverFound_; }
@@ -213,6 +216,7 @@ private:
     uint32_t telemetryIntervalMs_ = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
     bool latestTemperatureValid_ = false;
     float latestTemperatureC_ = 0.0f;
+    bool hasCompletedRestCalibration_ = false;
 
     uint32_t lastPingId_ = 0;
     uint32_t lastServerFeatureFlags_ = 0;

@@ -221,6 +221,13 @@ struct TrackerSerialCommandContext {
 
     bool (*fitGyroTempFromLastStatic)(bool persist, Stream& out, void* user) = nullptr;
     void* fitGyroTempFromLastStaticUser = nullptr;
+
+    // Used by blocking guided setup/calibration flows. The hook must service
+    // FIFO, magnetometer runtime and network/slime runtime without polling the
+    // serial command parser recursively. It is intentionally optional so unit
+    // tests and host-only command dispatch can still build.
+    bool (*serviceCalibrationRuntime)(void* user) = nullptr;
+    void* serviceCalibrationRuntimeUser = nullptr;
 };
 
 

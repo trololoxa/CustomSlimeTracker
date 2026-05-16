@@ -206,6 +206,7 @@ int main() {
     CHECK(ctx, st.sensorConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED);
     CHECK(ctx, st.lastTemperatureValid);
     CHECK_NEAR(ctx, st.lastTemperatureC, 42.5f, 1.0e-6f);
+    CHECK(ctx, !st.hasCompletedRestCalibration);
     CHECK(ctx, st.rotationNoSnapshot == 0);
     CHECK(ctx, st.rotationDuplicateSnapshot == 0);
     CHECK(ctx, st.lastRotationSnapshotSequence == 1);
@@ -216,6 +217,7 @@ int main() {
     CHECK(ctx, udp.sent.size() >= 3u);
     CHECK(ctx, udp.sent[1].endpoint.ipv4 == 0xC0A80001UL);
     CHECK(ctx, udp.sent[1].data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo));
+    CHECK(ctx, udp.sent[1].data[17] == 0);
     CHECK(ctx, udp.sent.back().endpoint.ipv4 == 0xC0A80001UL);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
 
@@ -227,6 +229,16 @@ int main() {
     rt.update(1211);
     CHECK(ctx, rt.status().rotationSent == 2);
     CHECK(ctx, rt.status().lastRotationSnapshotSequence == 2);
+
+    cfg.hasCompletedRestCalibration = true;
+    rt.configure(cfg);
+    const size_t sentBeforeRestRefresh = udp.sent.size();
+    rt.update(1220);
+    CHECK(ctx, rt.status().hasCompletedRestCalibration);
+    CHECK(ctx, rt.status().sensorInfoSent == 2);
+    CHECK(ctx, udp.sent.size() == sentBeforeRestRefresh + 1u);
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo));
+    CHECK(ctx, udp.sent.back().data[17] == 1);
 
     rt.update(6101);
     CHECK(ctx, rt.status().heartbeatSent >= 1);

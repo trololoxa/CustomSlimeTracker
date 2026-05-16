@@ -59,3 +59,17 @@ The tracker now has a working SlimeVR UDP MVP:
 - `test runtime <seconds>` for full Wi-Fi/server/FIFO loop-load measurement.
 
 Next optimization work should start from a `test runtime 600` baseline rather than from `test static` alone.
+
+## Current setup baseline
+
+The firmware now has a compact user-facing `setup` layer for first-run preparation. It no longer exposes manual `setup rest/accel/mag/axis/temp` wrappers; those jobs belong either to the full guided setup flow or to the lower-level service commands.
+
+Current setup coverage:
+
+- `setup guide` prints the recommended first-run sequence.
+- `setup status` reports production, 6DoF, mag-yaw, temperature-model, Wi-Fi, and SlimeVR readiness plus next commands.
+- `setup wifi` is an interactive serial Wi-Fi provisioner: scan visible networks, choose one by number, enter password, connect, save successful credentials to NVS, start SlimeVR discovery, and leave Wi-Fi/SlimeVR autostart enabled. If Wi-Fi succeeds but the server is not found in the setup timeout, Wi-Fi remains saved and discovery continues in normal runtime.
+- `setup calibration [axis <bodyX> <bodyY> <bodyZ>]` runs a blocking guided production calibration flow: rest/gyro, Wi-Fi heat warm-up, stationary gyro temperature model until relative plateau, accel 6-position capture, magnetometer hard/soft collection, mag axis alignment, production tracking feature enable and final save.
+- SlimeVR `SensorInfo.hasCompletedRestCalibration` follows local gyro/rest validity instead of being hardcoded true.
+
+The guided calibration command services FIFO, magnetometer runtime, Wi-Fi and SlimeVR internally while blocking the CLI. Temperature fitting still uses the existing static-test quality gates, and mag hard/soft apply still uses the existing magnetometer quality gates. The final setup save captures runtime calibration/config to NVS after production features are enabled. Fully automatic magnetic axis inference remains future work; the current production flow either keeps a valid saved mapping, accepts axis tokens in the command, or asks for the mapping interactively.

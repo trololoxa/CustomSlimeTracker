@@ -181,6 +181,12 @@ static void printRuntimeTestStatus(Stream& out, void* user) {
 
 static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user);
 
+static bool serviceCalibrationRuntimeHook(void* user) {
+    (void)user;
+    g_app.serviceRuntimeForBlockingCommand();
+    return true;
+}
+
 static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     TrackerCommandRuntimeObjects objects;
     objects.io = &Serial;
@@ -241,6 +247,7 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     hooks.applyMagCalibration = applyMagCalibrationHook;
     hooks.printMagCalibrationStatus = printMagCalibrationStatus;
     hooks.fitGyroTempFromLastStatic = fitGyroTempFromLastStaticHook;
+    hooks.serviceCalibrationRuntime = serviceCalibrationRuntimeHook;
     return hooks;
 }
 

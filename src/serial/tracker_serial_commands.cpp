@@ -5,6 +5,11 @@ namespace tracker {
 void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     if (argc <= 0 || !argv || !argv[0]) return;
 
+    if (tracker_serial_detail::eqIgnoreCase(argv[0], "setup")) {
+        trackerSerialDispatchSetupCommand(ctx, argc, argv);
+        return;
+    }
+
     if (trackerSerialDispatchSystemCommand(ctx, argc, argv)) {
         return;
     }

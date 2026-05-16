@@ -190,6 +190,7 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     cfg.setConfigFlagUser = nullptr;
     cfg.latestTemperatureValid = true;
     cfg.latestTemperatureC = g_latestTempC;
+    cfg.hasCompletedRestCalibration = g_imuCal.gyroBiasValid;
     return cfg;
 }
 

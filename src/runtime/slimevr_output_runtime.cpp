@@ -93,14 +93,19 @@ void SlimeVROutputRuntime::begin(IUdpTransport& udp,
 }
 
 void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
+    const bool incomingRestComplete = config.hasCompletedRestCalibration;
+    const bool restCalibrationChanged = hasCompletedRestCalibration_ != incomingRestComplete;
+    const uint16_t incomingServerPort = config.serverPort == 0 ? SLIMEVR_DEFAULT_SERVER_PORT : config.serverPort;
+    const uint16_t incomingLocalPort = config.localPort == 0 ? SLIMEVR_DISCOVERY_LOCAL_PORT : config.localPort;
+    const bool incomingMagEnabled = config.magSupportEnabled && config.magEnabled;
     const bool configChanged = enabled_ != config.enabled ||
                                discoveryEnabled_ != config.discoveryEnabled ||
                                manualServerEnabled_ != config.manualServerEnabled ||
-                               serverPort_ != config.serverPort ||
-                               localPort_ != config.localPort ||
+                               serverPort_ != incomingServerPort ||
+                               localPort_ != incomingLocalPort ||
                                sensorId_ != config.sensorId ||
                                magSupportEnabled_ != config.magSupportEnabled ||
-                               magEnabled_ != config.magEnabled ||
+                               magEnabled_ != incomingMagEnabled ||
                                std::strncmp(deviceName_, config.deviceName ? config.deviceName : "", sizeof(deviceName_)) != 0;
 
     const bool rotationRateChanged = rotationRateHz_ != config.rotationRateHz;
@@ -125,6 +130,7 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
     telemetryIntervalMs_ = config.telemetryIntervalMs == 0 ? TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS : config.telemetryIntervalMs;
     latestTemperatureValid_ = config.latestTemperatureValid && std::isfinite(config.latestTemperatureC);
     latestTemperatureC_ = latestTemperatureValid_ ? config.latestTemperatureC : 0.0f;
+    hasCompletedRestCalibration_ = incomingRestComplete;
     copyCString(deviceName_, sizeof(deviceName_), config.deviceName && config.deviceName[0] ? config.deviceName : "c3-6dsv-tracker");
 
     if (!enabled_) {
@@ -134,9 +140,18 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
 
     if (configChanged) {
         resetConnectionState(true);
-    } else if (rotationRateChanged) {
-        lastRotationAttemptMs_ = 0;
+    } else {
+        if (rotationRateChanged) {
+            lastRotationAttemptMs_ = 0;
+        }
+        if (restCalibrationChanged) {
+            requestSensorInfoRefresh();
+        }
     }
+}
+
+void SlimeVROutputRuntime::requestSensorInfoRefresh() {
+    lastSensorInfoMs_ = 0;
 }
 
 void SlimeVROutputRuntime::resetCounters() {
@@ -314,6 +329,7 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.lastRssiDbm = lastRssiDbm_;
     s.lastTemperatureC = latestTemperatureC_;
     s.lastTemperatureValid = latestTemperatureValid_;
+    s.hasCompletedRestCalibration = hasCompletedRestCalibration_;
     s.lastPingId = lastPingId_;
     s.lastServerFeatureFlags = lastServerFeatureFlags_;
     s.lastSetConfigSensorId = lastSetConfigSensorId_;
@@ -571,6 +587,7 @@ void SlimeVROutputRuntime::sendSensorInfo(uint32_t nowMs) {
     SlimeVRSensorInfo info;
     info.sensorId = sensorId_;
     info.sensorConfig = sensorConfigFlags();
+    info.hasCompletedRestCalibration = hasCompletedRestCalibration_;
     const SlimeVRPacketWriteResult packet = writer_.writeSensorInfo(packetBuffer_, sizeof(packetBuffer_), info);
     if (sendPacket(packet, serverEndpoint_)) {
         ++sensorInfoSent_;

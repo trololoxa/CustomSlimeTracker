@@ -95,6 +95,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.printMagCalibrationStatusUser = hooks.printMagCalibrationStatusUser;
     ctx.fitGyroTempFromLastStatic = hooks.fitGyroTempFromLastStatic;
     ctx.fitGyroTempFromLastStaticUser = hooks.fitGyroTempFromLastStaticUser;
+    ctx.serviceCalibrationRuntime = hooks.serviceCalibrationRuntime;
+    ctx.serviceCalibrationRuntimeUser = hooks.serviceCalibrationRuntimeUser;
 }
 
 } // namespace tracker

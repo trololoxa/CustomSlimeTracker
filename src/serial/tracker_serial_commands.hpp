@@ -15,6 +15,7 @@
 #include "serial/tracker_test_commands.hpp"
 #include "serial/tracker_network_commands.hpp"
 #include "serial/tracker_slimevr_commands.hpp"
+#include "serial/tracker_setup_commands.hpp"
 
 namespace tracker {
 

@@ -145,14 +145,13 @@ Legend:
 
 SlimeVR UDP is independent from the local `output`/`stream` commands. `slime start` leaves serial `Q,...` output off and reads prepared quaternion snapshots directly.
 
-Autostart only depends on network config: if Wi-Fi is enabled and credentials are valid, SlimeVR discovery starts after boot. Typical setup:
+Autostart only depends on network config: if Wi-Fi is enabled and credentials are valid, SlimeVR discovery starts after boot. User-facing first-run setup should normally use:
 
 ```text
-net set ssid <2.4GHz SSID> save
-net set pass <password> save
-net enable save
-reboot
+setup wifi
 ```
+
+That command scans visible networks, asks for a numbered selection and password, connects, saves successful credentials to NVS, starts SlimeVR discovery, and leaves Wi-Fi/SlimeVR autostart enabled. The lower-level `net set ...`, `net scan`, and `slime ...` commands remain available for diagnostics and scripting.
 
 `SensorInfo.sensor_config` advertises magnetometer support/enabled state. The firmware intentionally does not send periodic dummy `MagnetometerAccuracy` packets; packet 18 is only sent if a real mag-calibration/accuracy workflow starts using it.
 
@@ -168,28 +167,34 @@ reboot
 | `test status` | Print static/runtime test status | No | Inspection only. |
 | `test stop` | Stop current static/runtime test | Runtime | Leaves last completed report when available. |
 
-## Setup status
+## Guided setup commands
 
-`setup status` prints a compact readiness checklist for the current firmware
-configuration. It is meant to answer: "can this tracker produce a useful local
-6DoF quaternion, and is mag-yaw ready?"
+`setup` is the user-facing first-run layer. It intentionally exposes only the compact production path; low-level `net`, `cal`, `mag`, and `test` commands remain available for service diagnostics, but the old manual `setup rest/accel/mag/axis/temp` wrappers are not part of the public setup CLI.
 
-It reports:
+| Command | Effect | Notes |
+|---|---|---|
+| `setup guide` | Print the first-run sequence | Does not modify state. |
+| `setup status` | Print readiness checklist and next step | Includes 6DoF, mag-yaw, temp model, Wi-Fi and SlimeVR readiness. |
+| `setup wifi` | Interactive Wi-Fi provisioning | Scans visible networks, asks for a network number and password, tries to connect, saves successful credentials to NVS, starts SlimeVR discovery and enables Wi-Fi/SlimeVR autostart. If Wi-Fi connects but the server is not found within the setup timeout, Wi-Fi remains saved and discovery continues in normal runtime. |
+| `setup calibration [axis <bodyX> <bodyY> <bodyZ>]` | Run the full guided production calibration | Performs rest/gyro, Wi-Fi heat warm-up, static gyro temperature fit, accel 6-position capture, mag hard/soft collection, mag axis alignment, enables accel/adaptive accel, runtime gyro bias and mag-yaw apply, then saves. If axis tokens are omitted and no valid mapping exists, the command asks for mapping interactively. |
 
-- `config_valid`
-- `gyro_bias_ready`
-- `accel_cal_ready`
-- `mag_driver_enabled`
-- `mag_cal_ready`
-- `mag_axis_ready`
-- `local_output_wired`
-- `slimevr_runtime_wired`
-- `setup_ready_6dof`
-- `setup_ready_mag_yaw`
-- `setup_ready_slimevr_runtime`
+`setup calibration` persists the finished calibration path. During the flow, each stage uses the existing quality gates and save path: gyro/rest calibration is saved after a valid stationary capture, gyro temperature fit is saved only after its fit gates pass, accel 6-position calibration is saved after valid compute, mag hard/soft calibration and mag axis mapping are saved through the mag calibration path, and the final setup save captures runtime calibration/config to NVS again after production tracking flags are enabled.
 
-The command also prints the next low-level commands to run when a block is not
-ready. It does not modify config, NVS, AHRS, FIFO, or calibration state.
+`setup status` reports:
+
+- `production_ready`
+- `tracking_6dof_ready`
+- `mag_yaw_ready`
+- `temp_model_ready`
+- `slimevr_ready`
+- per-block statuses for `config`, `wifi`, `rest_gyro`, `accel_6pos`, `mag_driver`, `mag_hard_soft`, `mag_axis`, `temperature_model`, and `slimevr_runtime`
+- `rest_calibration_sent_to_slimevr`
+- `slimevr_server_found`
+- `mag_yaw_apply_enabled`
+
+When a block is missing, `setup status` points back to the simple production path (`setup wifi` or `setup calibration`). The readiness report does not modify config, NVS, AHRS, FIFO, or calibration state.
+
+SlimeVR `SensorInfo.hasCompletedRestCalibration` is driven by the local rest/gyro calibration state. Before a valid gyro bias exists, the firmware reports `false`; after `setup calibration` or another valid gyro calibration save, it reports `true` and requests a SensorInfo refresh.
 
 ### SlimeVR telemetry notes
 

@@ -164,6 +164,14 @@ void TrackerApp::call(void (*callback)()) {
     if (callback != nullptr) callback();
 }
 
+void TrackerApp::serviceRuntimeForBlockingCommand() {
+    if (!ready()) return;
+
+    processFifoRuntime();
+    call(deps_.callbacks.updateNetworkRuntime);
+    deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);
+}
+
 void TrackerApp::processFifoRuntime() {
     const TrackerConfig& config = *deps_.runtime.config;
     const uint16_t watermarkWords = config.data.fifo.watermarkWords;
