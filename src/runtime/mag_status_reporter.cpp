@@ -309,12 +309,19 @@ void magStatusPrintCalibration(Stream& out, const MagStatusReporterDeps& deps) {
         out.print(result.hardIron.y, 6); out.print(',');
         out.println(result.hardIron.z, 6);
 
-        out.print("computed_soft_iron_diag=");
-        out.print(result.softIron.m[0][0], 6); out.print(',');
-        out.print(result.softIron.m[1][1], 6); out.print(',');
-        out.println(result.softIron.m[2][2], 6);
+        out.print("computed_soft_iron=");
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                if (r != 0 || c != 0) out.print(',');
+                out.print(result.softIron.m[r][c], 6);
+            }
+        }
+        out.println();
 
         out.print("computed_expected_norm="); out.println(result.expectedNorm, 6);
+        out.print("computed_residual_rms="); out.println(result.residualRms, 6);
+        out.print("computed_coverage_score="); out.println(result.coverageScore, 6);
+        out.print("computed_axis_ratio="); out.println(result.axisRatio, 6);
 
         out.print("computed_radius_xyz=");
         out.print(result.radiusX, 3); out.print(',');

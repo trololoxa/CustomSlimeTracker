@@ -124,6 +124,14 @@ void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print(cfg.data.magCal.hardIron.x, 6); out.print(',');
     out.print(cfg.data.magCal.hardIron.y, 6); out.print(',');
     out.println(cfg.data.magCal.hardIron.z, 6);
+    out.print("magSoftIron=");
+    for (uint8_t r = 0; r < 3; ++r) {
+        for (uint8_t c = 0; c < 3; ++c) {
+            if (r || c) out.print(',');
+            out.print(cfg.data.magCal.softIron.m[r][c], 6);
+        }
+    }
+    out.println();
     out.print("magExpectedFieldNorm="); out.println(cfg.data.magCal.expectedFieldNorm, 6);
     out.print("magTrustNormMinMax=");
     out.print(cfg.data.magCal.minTrustNorm, 6); out.print(',');
@@ -133,6 +141,7 @@ void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("magCalRadiusXYZ="); out.print(cfg.data.magCalQuality.radiusX, 3); out.print(','); out.print(cfg.data.magCalQuality.radiusY, 3); out.print(','); out.println(cfg.data.magCalQuality.radiusZ, 3);
     out.print("magCalNormMinMeanMax="); out.print(cfg.data.magCalQuality.normMin, 3); out.print(','); out.print(cfg.data.magCalQuality.normMean, 3); out.print(','); out.println(cfg.data.magCalQuality.normMax, 3);
     out.print("magCalCoverageScore="); out.println(cfg.data.magCalQuality.coverageScore, 6);
+    out.print("magCalResidualRms="); out.println(cfg.data.magCalQuality.residualRms, 6);
 
     out.println("-- frame/device --");
     out.print("sensorToDeviceValid="); out.println(cfg.data.frame.sensorToDeviceValid ? "yes" : "no");

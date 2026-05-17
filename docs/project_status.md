@@ -73,3 +73,9 @@ Current setup coverage:
 - SlimeVR `SensorInfo.hasCompletedRestCalibration` follows local gyro/rest validity instead of being hardcoded true.
 
 The guided calibration command services FIFO, magnetometer runtime, Wi-Fi and SlimeVR internally while blocking the CLI. Temperature fitting now uses a dedicated setup temperature capture instead of the developer `test static` runner, while reusing the same fit quality gates. Mag hard/soft apply still uses the existing magnetometer quality gates. The final setup save captures runtime calibration/config to NVS after production features are enabled. Magnetic axis inference now uses accel-face samples and simultaneous raw mag samples to score signed-axis permutations; explicit `axis ...` tokens remain available as an override/fallback.
+
+
+## Calibration implementation notes
+
+- Magnetometer calibration now uses a full ellipsoid fit and stores hard-iron plus a full 3x3 soft-iron matrix when coverage/residual quality gates pass.
+- `setup calibration` remains transaction-safe: failed late calibration stages must not overwrite the last saved NVS calibration.

@@ -358,13 +358,21 @@ bool MagRuntimeController::applyCalibration(bool persist) {
     stream().print(result.hardIron.y, 6); stream().print(',');
     stream().println(result.hardIron.z, 6);
 
-    stream().print("# OK mag softIronDiag=");
-    stream().print(result.softIron.m[0][0], 6); stream().print(',');
-    stream().print(result.softIron.m[1][1], 6); stream().print(',');
-    stream().println(result.softIron.m[2][2], 6);
+    stream().print("# OK mag softIron=");
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            if (r != 0 || c != 0) stream().print(',');
+            stream().print(result.softIron.m[r][c], 6);
+        }
+    }
+    stream().println();
 
     stream().print("# OK mag expectedNorm=");
     stream().println(result.expectedNorm, 6);
+    stream().print("# OK mag residualRms=");
+    stream().println(result.residualRms, 6);
+    stream().print("# OK mag coverageScore=");
+    stream().println(result.coverageScore, 6);
 
     return true;
 }

@@ -91,7 +91,7 @@ Legend:
 | `mag heading ...` | Manage heading reference/auto-reference | Runtime | Reference is runtime state. |
 | `mag yaw ... [save]` | Tune yaw correction gates/rates/apply flag | Optional | Applies only when mag path is trusted. |
 | `mag axis ... [save]` | Configure mag axis mapping | Optional | Persist after validating orientation. |
-| `mag cal start|stop|reset|status|print|apply [save]` | Manage mag calibration collector | Optional | `apply save` persists. |
+| `mag cal start|stop|reset|status|print|apply [save]` | Manage full ellipsoid mag calibration collector | Optional | `apply save` persists hard-iron plus full 3x3 soft-iron matrix when coverage/residual gates pass. |
 
 ## Stream/log/output
 

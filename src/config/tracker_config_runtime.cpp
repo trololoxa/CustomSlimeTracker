@@ -511,14 +511,8 @@ void TrackerConfig::captureFromMagCalibrationResult(const MagCalibrationResult& 
     data.magCalQuality.normMin = normMin;
     data.magCalQuality.normMean = normMean;
     data.magCalQuality.normMax = normMax;
-    float maxRadius = result.radiusX;
-    if (result.radiusY > maxRadius) maxRadius = result.radiusY;
-    if (result.radiusZ > maxRadius) maxRadius = result.radiusZ;
-    float minRadius = result.radiusX;
-    if (result.radiusY < minRadius) minRadius = result.radiusY;
-    if (result.radiusZ < minRadius) minRadius = result.radiusZ;
-    data.magCalQuality.coverageScore = (result.valid && maxRadius > 0.0f) ? (minRadius / maxRadius) : 0.0f;
-    data.magCalQuality.residualRms = 0.0f;
+    data.magCalQuality.coverageScore = result.valid ? result.coverageScore : 0.0f;
+    data.magCalQuality.residualRms = result.valid ? result.residualRms : 0.0f;
     data.magCalQuality.expectedHorizontalNorm = 0.0f;
     updateCrc();
 }

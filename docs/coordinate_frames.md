@@ -80,10 +80,13 @@ The QMC6309 has its own raw magnetometer frame. Runtime processing applies:
 ```text
 raw mag frame
   -> hard iron subtraction
-  -> soft iron matrix
+  -> full 3x3 soft-iron ellipsoid correction matrix
   -> magToImu matrix
   -> IMU/body frame
 ```
+
+The soft-iron matrix is produced by the mag ellipsoid calibration stage. It can
+contain off-diagonal cross-axis terms; it is not limited to diagonal scaling.
 
 `magToImu` is a sensor-to-sensor alignment matrix. It is not a body mounting
 calibration and should not encode SlimeVR body offsets.

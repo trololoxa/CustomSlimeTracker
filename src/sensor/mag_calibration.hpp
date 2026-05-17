@@ -10,6 +10,9 @@ namespace tracker {
 struct MagCalibrationParams {
     uint32_t minSamples = 300;
     float minAxisRadius = 20.0f;
+    float minCoverageScore = 0.35f;
+    float maxAxisRatio = 6.0f;
+    float maxAlgebraicResidualRms = 0.12f;
     float trustNormMinFactor = 0.65f;
     float trustNormMaxFactor = 1.35f;
 };
@@ -24,6 +27,9 @@ struct MagCalibrationResult {
     float radiusX = 0.0f;
     float radiusY = 0.0f;
     float radiusZ = 0.0f;
+    float coverageScore = 0.0f;
+    float residualRms = 0.0f;
+    float axisRatio = 0.0f;
 };
 
 class MagCalibrationCollector {
@@ -93,6 +99,9 @@ private:
     float normMin_ = 0.0f;
     float normMax_ = 0.0f;
     double normSum_ = 0.0;
+
+    double ellipsoidNormal_[9][9] = {};
+    double ellipsoidRhs_[9] = {};
 
     MagCalibrationResult lastResult_;
 };
