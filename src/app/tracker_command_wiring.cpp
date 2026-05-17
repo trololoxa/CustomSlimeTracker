@@ -99,6 +99,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.fitGyroTempFromLastStaticUser = hooks.fitGyroTempFromLastStaticUser;
     ctx.fitGyroTempFromCapture = hooks.fitGyroTempFromCapture;
     ctx.fitGyroTempFromCaptureUser = hooks.fitGyroTempFromCaptureUser;
+    ctx.fitGyroTempFromCaptureRam = hooks.fitGyroTempFromCaptureRam;
+    ctx.fitGyroTempFromCaptureRamUser = hooks.fitGyroTempFromCaptureRamUser;
     ctx.serviceCalibrationRuntime = hooks.serviceCalibrationRuntime;
     ctx.serviceCalibrationRuntimeUser = hooks.serviceCalibrationRuntimeUser;
 }

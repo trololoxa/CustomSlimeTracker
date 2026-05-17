@@ -52,9 +52,9 @@ struct WeightedFit1D {
 
 } // namespace gyro_temp_static_fit_detail
 
-bool fitGyroTempFromCompletedStaticTest(GyroTempStaticFitDeps& deps,
+bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
                                            const StaticRuntimeTest& test,
-                                           bool persist,
+                                           GyroTempStaticFitMode mode,
                                            Stream& out) {
     if (!deps.gyroTempComp || !deps.imuCal || !deps.runtimeBias || !deps.config || !deps.configStore) {
         out.println("# ERR gyro temp fit dependencies are not configured");
@@ -205,7 +205,7 @@ bool fitGyroTempFromCompletedStaticTest(GyroTempStaticFitDeps& deps,
         return false;
     }
 
-    if (!persist) {
+    if (mode == GyroTempStaticFitMode::PreviewOnly) {
         out.println("# OK gyro temperature compensation fit preview only; model was NOT applied");
         out.println("# TIP run: cal temp fit_static save   to apply and save this model");
         return true;
@@ -228,6 +228,11 @@ bool fitGyroTempFromCompletedStaticTest(GyroTempStaticFitDeps& deps,
     config.sanitize();
     config.updateCrc();
 
+    if (mode == GyroTempStaticFitMode::ApplyRam) {
+        out.println("# OK gyro temperature compensation fitted and applied to RAM");
+        return true;
+    }
+
     if (!configStore.save(config)) {
         out.print("# ERR gyro temp fit save failed: ");
         out.println(configStore.lastErrorName());
@@ -236,6 +241,18 @@ bool fitGyroTempFromCompletedStaticTest(GyroTempStaticFitDeps& deps,
 
     out.println("# OK gyro temperature compensation fitted and saved");
     return true;
+}
+
+bool fitGyroTempFromCompletedStaticTest(GyroTempStaticFitDeps& deps,
+                                           const StaticRuntimeTest& test,
+                                           bool persist,
+                                           Stream& out) {
+    return fitGyroTempFromCompletedStaticTestEx(
+        deps,
+        test,
+        persist ? GyroTempStaticFitMode::ApplyAndSave : GyroTempStaticFitMode::PreviewOnly,
+        out
+    );
 }
 
 bool fitGyroTempFromLastStatic(GyroTempStaticFitDeps& deps, bool persist, Stream& out) {

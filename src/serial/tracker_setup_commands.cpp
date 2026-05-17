@@ -246,7 +246,93 @@ void dispatchMag(TrackerSerialCommandContext& ctx, int argc, char** argv) {
 
 bool readSetupLine(TrackerSerialCommandContext& ctx, const char* prompt, char* buf, size_t cap, uint32_t timeoutMs);
 bool serviceSetupRuntime(TrackerSerialCommandContext& ctx);
-void cmdSetupSave(TrackerSerialCommandContext& ctx);
+
+struct SetupCalibrationTransaction {
+    TrackerConfig configSnapshot;
+    ImuCalibration imuSnapshot;
+    bool haveConfig = false;
+    bool haveImu = false;
+    bool originalMagDriverEnabled = false;
+    bool originalMagYawApplyEnabled = false;
+    bool committed = false;
+
+    explicit SetupCalibrationTransaction(TrackerSerialCommandContext& ctx) {
+        if (ctx.config) {
+            configSnapshot = *ctx.config;
+            haveConfig = true;
+            originalMagDriverEnabled = ctx.config->data.magCal.driverEnabled;
+            originalMagYawApplyEnabled = ctx.config->data.magYaw.applyEnabled;
+        }
+        if (ctx.imuCal) {
+            imuSnapshot = *ctx.imuCal;
+            haveImu = true;
+        }
+    }
+
+    void rollback(TrackerSerialCommandContext& ctx, const char* reason) {
+        Stream& s = out(ctx);
+        if (committed) return;
+
+        if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+        if (ctx.gyroTempCapture && ctx.gyroTempCapture->active()) ctx.gyroTempCapture->stop(millis());
+
+        if (haveConfig && ctx.config) {
+            *ctx.config = configSnapshot;
+            ctx.config->sanitize();
+            ctx.config->updateCrc();
+        }
+        if (haveImu && ctx.imuCal) {
+            *ctx.imuCal = imuSnapshot;
+        } else if (ctx.config && ctx.imuCal) {
+            ctx.config->applyToImuCalibration(*ctx.imuCal);
+        }
+        if (ctx.config && ctx.gyroTempComp) {
+            ctx.config->applyToGyroTempComp(*ctx.gyroTempComp);
+        }
+
+        if (ctx.accelCalRunner) ctx.accelCalRunner->reset();
+        if (ctx.resetRuntimeGyroBiasEstimator) ctx.resetRuntimeGyroBiasEstimator(ctx.resetRuntimeGyroBiasEstimatorUser);
+        if (ctx.resetMagCalibration) ctx.resetMagCalibration(ctx.resetMagCalibrationUser);
+        if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+        if (ctx.resetMagYawCorrection) ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
+
+        if (ctx.setMagRuntimeEnabled) {
+            (void)ctx.setMagRuntimeEnabled(originalMagDriverEnabled, false, ctx.setMagRuntimeEnabledUser);
+        }
+        if (ctx.setMagYawCorrectionApplyEnabled) {
+            (void)ctx.setMagYawCorrectionApplyEnabled(originalMagYawApplyEnabled, false, ctx.setMagYawCorrectionApplyEnabledUser);
+        }
+        if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
+
+        s.print("# SETUP CALIBRATION ROLLBACK");
+        if (reason && reason[0]) {
+            s.print(" reason=");
+            s.print(reason);
+        }
+        s.println();
+        s.println("# Previous RAM calibration/config restored; NVS was not changed by the failed setup calibration.");
+    }
+
+    bool commit(TrackerSerialCommandContext& ctx) {
+        Stream& s = out(ctx);
+        if (!ctx.config || !ctx.configStore) {
+            tracker_serial_detail::printErr(s, "setup calibration commit failed: config store not available");
+            return false;
+        }
+        trackerSerialCaptureRuntimeToConfig(ctx);
+        ctx.config->sanitize();
+        ctx.config->updateCrc();
+        if (!ctx.configStore->save(*ctx.config)) {
+            s.print("# ERR setup calibration commit save failed: ");
+            s.println(ctx.configStore->lastErrorName());
+            return false;
+        }
+        committed = true;
+        tracker_serial_detail::printOk(s, "setup calibration transaction committed to NVS");
+        if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
+        return true;
+    }
+};
 
 struct SetupMagAxisFaceSample {
     bool valid = false;
@@ -657,8 +743,6 @@ void cmdSetupWifi(TrackerSerialCommandContext& ctx, int argc, char** argv) {
 }
 
 
-void cmdSetupSave(TrackerSerialCommandContext& ctx);
-
 bool serviceSetupRuntime(TrackerSerialCommandContext& ctx) {
     if (ctx.serviceCalibrationRuntime) {
         return ctx.serviceCalibrationRuntime(ctx.serviceCalibrationRuntimeUser);
@@ -758,8 +842,8 @@ bool setupMaybeStartWifiHeating(TrackerSerialCommandContext& ctx) {
     }
 
     s.println("# setup calibration: enabling Wi-Fi during static warm-up for realistic tracker heating");
-    char* enable[] = { const_cast<char*>("net"), const_cast<char*>("enable"), const_cast<char*>("save") };
-    dispatchNetwork(ctx, 3, enable);
+    char* enable[] = { const_cast<char*>("net"), const_cast<char*>("enable") };
+    dispatchNetwork(ctx, 2, enable);
     char* reconnect[] = { const_cast<char*>("net"), const_cast<char*>("reconnect") };
     dispatchNetwork(ctx, 2, reconnect);
     return true;
@@ -781,8 +865,6 @@ bool setupRunRestGyro(TrackerSerialCommandContext& ctx) {
         tracker_serial_detail::printErr(s, "setup calibration failed: gyro/rest calibration is not valid");
         return false;
     }
-    char* saveGyro[] = { const_cast<char*>("cal"), const_cast<char*>("gyro"), const_cast<char*>("save") };
-    dispatchCal(ctx, 3, saveGyro);
     if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
     return true;
 }
@@ -794,8 +876,8 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     s.println("# Keep the tracker still. The firmware will stop when temperature reaches a relative plateau.");
     s.println("# This uses a dedicated setup temperature capture, not the developer test static runner.");
 
-    if (!ctx.gyroTempCapture || !ctx.fitGyroTempFromCapture) {
-        tracker_serial_detail::printErr(s, "setup calibration failed: gyro temperature capture hooks are not available");
+    if (!ctx.gyroTempCapture || !ctx.fitGyroTempFromCaptureRam) {
+        tracker_serial_detail::printErr(s, "setup calibration failed: gyro temperature capture RAM-fit hook is not available");
         return false;
     }
 
@@ -853,7 +935,7 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     else s.println("# setup temp: max capture duration reached; trying fit with collected data");
 
     const StaticRuntimeTest& capture = ctx.gyroTempCapture->capture();
-    if (!ctx.fitGyroTempFromCapture(&capture, true, s, ctx.fitGyroTempFromCaptureUser)) {
+    if (!ctx.fitGyroTempFromCaptureRam(&capture, s, ctx.fitGyroTempFromCaptureRamUser)) {
         tracker_serial_detail::printErr(s, "setup calibration failed: gyro temperature fit did not pass quality gates");
         s.println("# TIP: repeat setup calibration after a larger cold-to-warm temperature change");
         return false;
@@ -915,9 +997,6 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx, Setup
         tracker_serial_detail::printErr(s, "setup calibration failed: accel 6-position quality gates rejected the result");
         return false;
     }
-    char* saveAccel[] = { const_cast<char*>("cal"), const_cast<char*>("accel"), const_cast<char*>("save") };
-    dispatchCal(ctx, 3, saveAccel);
-
     return true;
 }
 
@@ -929,7 +1008,7 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx) {
     waitSetupEnterOrTimeout(ctx, "# Press Enter after good all-axis coverage, or let the timed collection finish.", 90000UL);
 
     if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
-    if (!ctx.applyMagCalibration || !ctx.applyMagCalibration(true, ctx.applyMagCalibrationUser)) {
+    if (!ctx.applyMagCalibration || !ctx.applyMagCalibration(false, ctx.applyMagCalibrationUser)) {
         tracker_serial_detail::printErr(s, "setup calibration failed: mag hard/soft calibration did not pass quality gates");
         return false;
     }
@@ -937,28 +1016,25 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx) {
 }
 
 bool setupSetAxisIdentity(TrackerSerialCommandContext& ctx) {
-    char* identity[] = { const_cast<char*>("mag"), const_cast<char*>("axis"), const_cast<char*>("identity"), const_cast<char*>("save") };
-    dispatchMag(ctx, 4, identity);
+    char* identity[] = { const_cast<char*>("mag"), const_cast<char*>("axis"), const_cast<char*>("identity") };
+    dispatchMag(ctx, 3, identity);
     return ctx.config && ctx.config->data.magCal.axisAlignmentValid;
 }
 
 bool setupSetAxisMapping(TrackerSerialCommandContext& ctx, const char* x, const char* y, const char* z) {
     char* setAxis[] = {
         const_cast<char*>("mag"), const_cast<char*>("axis"), const_cast<char*>("set"),
-        const_cast<char*>(x), const_cast<char*>(y), const_cast<char*>(z), const_cast<char*>("save")
+        const_cast<char*>(x), const_cast<char*>(y), const_cast<char*>(z)
     };
-    dispatchMag(ctx, 7, setAxis);
+    dispatchMag(ctx, 6, setAxis);
     return ctx.config && ctx.config->data.magCal.axisAlignmentValid;
 }
 
-bool setupApplyAxisMatrix(TrackerSerialCommandContext& ctx, const Mat3& m, bool save) {
+bool setupApplyAxisMatrix(TrackerSerialCommandContext& ctx, const Mat3& m) {
     if (!ctx.config) return false;
     ctx.config->data.magCal.magToImu = m;
     ctx.config->data.magCal.axisAlignmentValid = true;
     ctx.config->updateCrc();
-    if (save) {
-        cmdSetupSave(ctx);
-    }
     if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
     return true;
 }
@@ -988,8 +1064,8 @@ bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
             s.print("# auto_mag_axis_inclination_mean="); s.println(autoAxis.inclinationMean, 6);
             s.print("# auto_mag_axis_inclination_stddev="); s.println(autoAxis.inclinationStddev, 6);
             s.print("# auto_mag_axis_samples="); s.println(static_cast<unsigned int>(autoAxis.usedSamples));
-            if (setupApplyAxisMatrix(ctx, autoAxis.magToImu, true)) {
-                tracker_serial_detail::printOk(s, "mag axis alignment auto-detected and saved");
+            if (setupApplyAxisMatrix(ctx, autoAxis.magToImu)) {
+                tracker_serial_detail::printOk(s, "mag axis alignment auto-detected in RAM");
                 return true;
             }
         } else {
@@ -1040,7 +1116,7 @@ bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx) {
         (void)ctx.setRuntimeGyroBiasEnabled(true, ctx.setRuntimeGyroBiasEnabledUser);
     }
     if (ctx.setMagYawCorrectionApplyEnabled) {
-        if (!ctx.setMagYawCorrectionApplyEnabled(true, true, ctx.setMagYawCorrectionApplyEnabledUser)) {
+        if (!ctx.setMagYawCorrectionApplyEnabled(true, false, ctx.setMagYawCorrectionApplyEnabledUser)) {
             tracker_serial_detail::printErr(s, "setup calibration failed: mag yaw apply enable failed");
             return false;
         }
@@ -1048,14 +1124,14 @@ bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx) {
         ctx.config->data.magYaw.applyEnabled = true;
     }
 
+    trackerSerialCaptureRuntimeToConfig(ctx);
     if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
-    cmdSetupSave(ctx);
 
     const SetupReadiness r = readSetupReadiness(ctx);
     if (!r.production()) {
-        s.println("# WARN setup calibration finished, but production_ready is still no; run setup status for missing items");
+        s.println("# WARN setup calibration finished in RAM, but production_ready is still no; run setup status for missing items");
     } else {
-        tracker_serial_detail::printOk(s, "setup calibration complete: tracker is production-ready");
+        tracker_serial_detail::printOk(s, "setup calibration features enabled in RAM");
     }
     if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
     printSetupStatus(ctx);
@@ -1085,37 +1161,32 @@ void cmdSetupCalibration(TrackerSerialCommandContext& ctx, int argc, char** argv
     s.println("# This is a blocking guided production calibration flow.");
     s.println("# It services FIFO, magnetometer runtime, Wi-Fi and SlimeVR while waiting.");
     s.println("# Stages: rest gyro -> temperature model -> accel 6-position -> mag hard/soft -> mag axis -> enable tracking features.");
+    s.println("# Transactional mode: NVS is not changed until all stages pass.");
 
     if (!ctx.calibrationIo || !ctx.imuCal || !ctx.accelCalRunner || !ctx.config || !ctx.configStore) {
         tracker_serial_detail::printErr(s, "setup calibration failed: required calibration dependencies are not available");
         return;
     }
 
-    if (!setupRunRestGyro(ctx)) return;
-    if (!setupRunTemperatureFit(ctx)) return;
+    SetupCalibrationTransaction tx(ctx);
+    auto fail = [&](const char* reason) {
+        tx.rollback(ctx, reason);
+    };
+
+    if (!setupRunRestGyro(ctx)) { fail("rest_gyro"); return; }
+    if (!setupRunTemperatureFit(ctx)) { fail("gyro_temperature"); return; }
+
     SetupMagAxisAutoCollector axisAuto;
     axisAuto.reset();
-    if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto)) return;
-    if (!setupRunMagMotionAndApply(ctx)) return;
-    if (!setupRunAxisAlignment(ctx, axisAuto, axisX, axisY, axisZ)) return;
-    if (!setupEnableProductionTracking(ctx)) return;
-}
+    if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto)) { fail("accel_mag_faces"); return; }
+    if (!setupRunMagMotionAndApply(ctx)) { fail("mag_hard_soft"); return; }
+    if (!setupRunAxisAlignment(ctx, axisAuto, axisX, axisY, axisZ)) { fail("mag_axis"); return; }
+    if (!setupEnableProductionTracking(ctx)) { fail("enable_tracking"); return; }
 
-void cmdSetupSave(TrackerSerialCommandContext& ctx) {
-    Stream& s = out(ctx);
-    if (!ctx.config || !ctx.configStore) {
-        tracker_serial_detail::printErr(s, "config store not available");
-        return;
-    }
-    trackerSerialCaptureRuntimeToConfig(ctx);
-    ctx.config->sanitize();
-    ctx.config->updateCrc();
-    if (ctx.configStore->save(*ctx.config)) {
-        tracker_serial_detail::printOk(s, "setup calibration/config saved");
-    } else {
-        s.print("# ERR setup save failed: ");
-        s.println(ctx.configStore->lastErrorName());
-    }
+    if (!tx.commit(ctx)) { fail("commit_save"); return; }
+
+    tracker_serial_detail::printOk(s, "setup calibration complete: tracker calibration saved to NVS");
+    printSetupStatus(ctx);
 }
 
 } // namespace

@@ -139,6 +139,9 @@ struct TrackerCommandRuntimeHooks {
     decltype(TrackerSerialCommandContext::fitGyroTempFromCapture) fitGyroTempFromCapture = nullptr;
     void* fitGyroTempFromCaptureUser = nullptr;
 
+    decltype(TrackerSerialCommandContext::fitGyroTempFromCaptureRam) fitGyroTempFromCaptureRam = nullptr;
+    void* fitGyroTempFromCaptureRamUser = nullptr;
+
     decltype(TrackerSerialCommandContext::serviceCalibrationRuntime) serviceCalibrationRuntime = nullptr;
     void* serviceCalibrationRuntimeUser = nullptr;
 };

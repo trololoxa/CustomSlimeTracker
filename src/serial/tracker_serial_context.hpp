@@ -229,6 +229,11 @@ struct TrackerSerialCommandContext {
     bool (*fitGyroTempFromCapture)(const StaticRuntimeTest* capture, bool persist, Stream& out, void* user) = nullptr;
     void* fitGyroTempFromCaptureUser = nullptr;
 
+    // Apply a temperature fit to RAM without saving it. Used by transactional
+    // guided setup so NVS is only changed by the final commit.
+    bool (*fitGyroTempFromCaptureRam)(const StaticRuntimeTest* capture, Stream& out, void* user) = nullptr;
+    void* fitGyroTempFromCaptureRamUser = nullptr;
+
     const MagProcessedSample* lastMagProcessed = nullptr;
 
     // Used by blocking guided setup/calibration flows. The hook must service

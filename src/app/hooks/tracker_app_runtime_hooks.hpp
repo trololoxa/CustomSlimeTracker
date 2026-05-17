@@ -50,6 +50,21 @@ static bool fitGyroTempFromCaptureHook(const StaticRuntimeTest* capture, bool pe
     return fitGyroTempFromCompletedStaticTest(deps, *capture, persist, out);
 }
 
+static bool fitGyroTempFromCaptureRamHook(const StaticRuntimeTest* capture, Stream& out, void* user) {
+    (void)user;
+    if (!capture) {
+        out.println("# ERR gyro temp capture is not available");
+        return false;
+    }
+    GyroTempStaticFitDeps deps = makeGyroTempStaticFitDeps();
+    return fitGyroTempFromCompletedStaticTestEx(
+        deps,
+        *capture,
+        GyroTempStaticFitMode::ApplyRam,
+        out
+    );
+}
+
 static void pipelineEnterTrackingRecoveryCallback(uint32_t reasonFlags,
                                                   const char* reason,
                                                   uint64_t timestampUs,

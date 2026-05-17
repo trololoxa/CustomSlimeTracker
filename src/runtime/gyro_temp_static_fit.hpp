@@ -21,6 +21,17 @@ struct GyroTempStaticFitDeps {
     TrackerConfigStore* configStore = nullptr;
 };
 
+enum class GyroTempStaticFitMode : uint8_t {
+    PreviewOnly,
+    ApplyRam,
+    ApplyAndSave,
+};
+
+bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
+                                          const StaticRuntimeTest& test,
+                                          GyroTempStaticFitMode mode,
+                                          Stream& out);
+
 bool fitGyroTempFromCompletedStaticTest(GyroTempStaticFitDeps& deps,
                                           const StaticRuntimeTest& test,
                                           bool persist,

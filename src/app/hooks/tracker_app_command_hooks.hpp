@@ -181,6 +181,7 @@ static void printRuntimeTestStatus(Stream& out, void* user) {
 
 static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user);
 static bool fitGyroTempFromCaptureHook(const StaticRuntimeTest* capture, bool persist, Stream& out, void* user);
+static bool fitGyroTempFromCaptureRamHook(const StaticRuntimeTest* capture, Stream& out, void* user);
 
 static bool serviceCalibrationRuntimeHook(void* user) {
     (void)user;
@@ -251,6 +252,7 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     hooks.printMagCalibrationStatus = printMagCalibrationStatus;
     hooks.fitGyroTempFromLastStatic = fitGyroTempFromLastStaticHook;
     hooks.fitGyroTempFromCapture = fitGyroTempFromCaptureHook;
+    hooks.fitGyroTempFromCaptureRam = fitGyroTempFromCaptureRamHook;
     hooks.serviceCalibrationRuntime = serviceCalibrationRuntimeHook;
     return hooks;
 }
