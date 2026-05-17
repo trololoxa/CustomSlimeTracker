@@ -71,6 +71,47 @@ static void testAccel6PosFull3x3Calibration(TestContext& ctx) {
     CHECK_NEAR(ctx, corrected.z, 0.75f, 2.0e-5f);
 }
 
+static void testAccelAutoFaceDetection(TestContext& ctx) {
+    auto xp = Accel6PosCalibration::detectFace(Vec3(0.96f, 0.12f, -0.08f));
+    CHECK(ctx, xp.valid);
+    CHECK(ctx, xp.face == Accel6PosCalibration::Face::XP);
+
+    auto yn = Accel6PosCalibration::detectFace(Vec3(0.05f, -0.98f, 0.10f));
+    CHECK(ctx, yn.valid);
+    CHECK(ctx, yn.face == Accel6PosCalibration::Face::YN);
+
+    auto diagonal = Accel6PosCalibration::detectFace(Vec3(0.58f, 0.56f, 0.58f));
+    CHECK(ctx, !diagonal.valid);
+
+    Accel6PosCalibration::FaceDetectionParams strict;
+    strict.minDominanceMarginG = 0.40f;
+    auto slightlyRotated = Accel6PosCalibration::detectFace(Vec3(0.83f, 0.38f, 0.02f), strict);
+    CHECK(ctx, slightlyRotated.valid);
+    CHECK(ctx, slightlyRotated.face == Accel6PosCalibration::Face::XP);
+}
+
+static void testAccelCaptureResetsAfterMotion(TestContext& ctx) {
+    Accel6PosCapture::Params params;
+    params.requiredSamples = 4;
+    params.resetAfterConsecutiveRejected = 2;
+    Accel6PosCapture capture(params);
+    capture.begin(Accel6PosCalibration::Face::XP);
+
+    CHECK(ctx, !capture.push(makeSample(Vec3::zero(), Vec3(1.0f, 0.0f, 0.0f))));
+    CHECK(ctx, !capture.push(makeSample(Vec3::zero(), Vec3(1.0f, 0.0f, 0.0f))));
+    CHECK(ctx, capture.snapshot().acceptedSamples == 2);
+
+    capture.push(makeSample(Vec3(10.0f * MATH_DEG_TO_RAD, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f)));
+    capture.push(makeSample(Vec3(10.0f * MATH_DEG_TO_RAD, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f)));
+    CHECK(ctx, capture.snapshot().acceptedSamples == 0);
+
+    for (int i = 0; i < 4; ++i) {
+        capture.push(makeSample(Vec3::zero(), Vec3(0.0f, 1.0f, 0.0f)));
+    }
+    CHECK(ctx, capture.done());
+    CHECK_NEAR(ctx, capture.snapshot().meanG.y, 1.0f, 1.0e-6f);
+}
+
 static void testStationaryStats(TestContext& ctx) {
     StationaryStats stats;
     stats.push(makeSample(Vec3(1.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, 1.0f)));
@@ -132,6 +173,8 @@ int main() {
     TestContext ctx;
     testImuCalibrationApply(ctx);
     testAccel6PosFull3x3Calibration(ctx);
+    testAccelAutoFaceDetection(ctx);
+    testAccelCaptureResetsAfterMotion(ctx);
     testStationaryStats(ctx);
     testStationaryDetectorAndGyroStartup(ctx);
     testOnlineGyroBiasEstimator(ctx);

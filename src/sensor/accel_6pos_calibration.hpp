@@ -21,6 +21,7 @@ static constexpr uint32_t NORM_RESIDUAL_HIGH    = 1u << 8;
 static constexpr uint32_t AXIS_RESIDUAL_HIGH    = 1u << 9;
 static constexpr uint32_t PAIR_CENTER_RESIDUAL_HIGH = 1u << 10;
 static constexpr uint32_t MATRIX_SINGULAR       = 1u << 11;
+static constexpr uint32_t AUTO_FACE_AMBIGUOUS    = 1u << 12;
 }
 
 class Accel6PosCalibration {
@@ -57,6 +58,25 @@ public:
         float maxScale = 1.30f;
         float maxPostCalNormErrorG = 0.080f;
         float maxPostCalAxisResidualG = 0.220f;
+    };
+
+    struct FaceDetectionParams {
+        float minNormG = 0.75f;
+        float maxNormG = 1.25f;
+        // Dominant raw axis must be clearly stronger than the other axes.
+        // This still allows modest IMU solder/board misalignment while rejecting
+        // diagonal/unstable positions that would poison a 6-position solve.
+        float minDominantAbsG = 0.70f;
+        float minDominanceMarginG = 0.18f;
+    };
+
+    struct FaceDetectionResult {
+        bool valid = false;
+        Face face = Face::Invalid;
+        float normG = 0.0f;
+        float dominantAbsG = 0.0f;
+        float secondAbsG = 0.0f;
+        float dominanceMarginG = 0.0f;
     };
 
     struct Result {
@@ -96,6 +116,8 @@ public:
     static Face parseFace(const char* s);
     static const char* qualityFlagName(uint32_t flag);
     static Vec3 expectedVector(Face face);
+    static FaceDetectionResult detectFace(const Vec3& meanG);
+    static FaceDetectionResult detectFace(const Vec3& meanG, const FaceDetectionParams& params);
 
 private:
     static float clamp01(float x);
@@ -114,6 +136,10 @@ public:
         float maxGyroNormDps = 2.0f;
         float minAccelNormG = 0.75f;
         float maxAccelNormG = 1.25f;
+        // When non-zero, a burst of rejected/moving samples after some stable
+        // samples resets the running mean.  This prevents one capture from being
+        // a blend of two physical sides while the user is moving the tracker.
+        uint32_t resetAfterConsecutiveRejected = 8;
     };
 
     struct Snapshot {
@@ -147,9 +173,12 @@ private:
     Accel6PosCalibration::Face face_ = Accel6PosCalibration::Face::Invalid;
     uint32_t accepted_ = 0;
     uint32_t rejected_ = 0;
+    uint32_t consecutiveRejected_ = 0;
     Vec3 meanG_ = Vec3::zero();
     Vec3 m2G_ = Vec3::zero();
     float meanNormG_ = 0.0f;
+
+    void resetAccumulation();
 };
 
 } // namespace tracker

@@ -251,6 +251,7 @@ void FifoAccel6PosCalibrationRunner::setParams(const FifoAccel6PosCaptureParams&
     p.maxGyroNormDps = params.maxGyroNormDps;
     p.minAccelNormG = params.minAccelNormG;
     p.maxAccelNormG = params.maxAccelNormG;
+    p.resetAfterConsecutiveRejected = params.resetAfterConsecutiveRejected;
     capture_ = Accel6PosCapture(p);
 }
 
@@ -310,6 +311,70 @@ bool FifoAccel6PosCalibrationRunner::captureFace(FifoCalibrationIo& io,
     const bool ok = capture_.finish(cal_);
     publishProgress(progressCb, progressUser, io);
     return ok;
+}
+
+bool FifoAccel6PosCalibrationRunner::captureAutoFace(FifoCalibrationIo& io,
+                                                     FifoAccelAutoFaceCaptureResult& result,
+                                                     FifoAccelCaptureProgressCallback progressCb,
+                                                     void* progressUser) {
+    result = FifoAccelAutoFaceCaptureResult{};
+    if (!fifoCalibrationIoValid(io)) return false;
+
+    capture_.begin(Accel6PosCalibration::Face::Invalid);
+    publishProgress(progressCb, progressUser, io);
+
+    while (!capture_.done()) {
+        if (!fifoCalibrationWait(io, params_.fifoWaitTimeoutMs)) {
+            publishProgress(progressCb, progressUser, io);
+            continue;
+        }
+
+        bool drainedAny = false;
+        const bool drainOk = fifoCalibrationDrainBounded(
+            io,
+            [&](const Lsm6dsv::RawSample&, const Lsm6dsv::Sample& scaled) -> bool {
+                capture_.push(scaled);
+                return !capture_.done();
+            },
+            &drainedAny
+        );
+
+        if (!drainOk) {
+            capture_.cancel();
+            return false;
+        }
+
+        if (drainedAny) {
+            publishProgress(progressCb, progressUser, io);
+        }
+    }
+
+    const auto snap = capture_.snapshot();
+    capture_.cancel();
+
+    result.acceptedSamples = snap.acceptedSamples;
+    result.rejectedSamples = snap.rejectedSamples;
+    result.meanG = snap.meanG;
+    result.varianceG2 = snap.varianceG2;
+    result.meanNormG = snap.meanNormG;
+    result.detection = Accel6PosCalibration::detectFace(snap.meanG, params_.autoFaceDetection);
+    result.detectedFace = result.detection.face;
+
+    if (!result.detection.valid) {
+        result.ambiguous = true;
+        publishProgress(progressCb, progressUser, io);
+        return false;
+    }
+
+    if (cal_.hasFace(result.detectedFace)) {
+        result.duplicate = true;
+        publishProgress(progressCb, progressUser, io);
+        return false;
+    }
+
+    result.success = cal_.setFace(result.detectedFace, snap.meanG, snap.acceptedSamples, snap.varianceG2);
+    publishProgress(progressCb, progressUser, io);
+    return result.success;
 }
 
 bool FifoAccel6PosCalibrationRunner::compute() {

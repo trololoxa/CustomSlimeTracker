@@ -246,6 +246,7 @@ const char* Accel6PosCalibration::qualityFlagName(uint32_t flag) {
         case accel_cal_quality_flags::AXIS_RESIDUAL_HIGH:    return "AXIS_RESIDUAL_HIGH";
         case accel_cal_quality_flags::PAIR_CENTER_RESIDUAL_HIGH: return "PAIR_CENTER_RESIDUAL_HIGH";
         case accel_cal_quality_flags::MATRIX_SINGULAR:       return "MATRIX_SINGULAR";
+        case accel_cal_quality_flags::AUTO_FACE_AMBIGUOUS:   return "AUTO_FACE_AMBIGUOUS";
     }
     return "UNKNOWN";
 }
@@ -260,6 +261,44 @@ Vec3 Accel6PosCalibration::expectedVector(Face face) {
         case Face::ZN: return Vec3( 0.0f,  0.0f, -1.0f);
         default:       return Vec3::zero();
     }
+}
+
+Accel6PosCalibration::FaceDetectionResult Accel6PosCalibration::detectFace(const Vec3& meanG) {
+    return detectFace(meanG, FaceDetectionParams{});
+}
+
+Accel6PosCalibration::FaceDetectionResult Accel6PosCalibration::detectFace(
+    const Vec3& meanG,
+    const FaceDetectionParams& params
+) {
+    FaceDetectionResult r;
+    r.normG = meanG.norm();
+    if (!meanG.isFinite() ||
+        r.normG < params.minNormG ||
+        r.normG > params.maxNormG) {
+        return r;
+    }
+
+    const float ax[3] = { std::fabs(meanG.x), std::fabs(meanG.y), std::fabs(meanG.z) };
+    uint8_t dominant = 0;
+    uint8_t second = 1;
+    if (ax[1] > ax[dominant]) { dominant = 1; second = 0; }
+    if (ax[2] > ax[dominant]) { second = dominant; dominant = 2; }
+    else if (ax[2] > ax[second]) { second = 2; }
+
+    r.dominantAbsG = ax[dominant];
+    r.secondAbsG = ax[second];
+    r.dominanceMarginG = r.dominantAbsG - r.secondAbsG;
+    if (r.dominantAbsG < params.minDominantAbsG ||
+        r.dominanceMarginG < params.minDominanceMarginG) {
+        return r;
+    }
+
+    if (dominant == 0) r.face = meanG.x >= 0.0f ? Face::XP : Face::XN;
+    else if (dominant == 1) r.face = meanG.y >= 0.0f ? Face::YP : Face::YN;
+    else r.face = meanG.z >= 0.0f ? Face::ZP : Face::ZN;
+    r.valid = true;
+    return r;
 }
 
 float Accel6PosCalibration::clamp01(float x) {
@@ -291,11 +330,8 @@ Accel6PosCapture::Accel6PosCapture(const Params& params) : params_(params) {}
 void Accel6PosCapture::begin(Accel6PosCalibration::Face face) {
     active_ = true;
     face_ = face;
-    accepted_ = 0;
     rejected_ = 0;
-    meanG_ = Vec3::zero();
-    m2G_ = Vec3::zero();
-    meanNormG_ = 0.0f;
+    resetAccumulation();
 }
 
 void Accel6PosCapture::cancel() {
@@ -309,6 +345,14 @@ bool Accel6PosCapture::active() const {
 
 Accel6PosCalibration::Face Accel6PosCapture::face() const {
     return face_;
+}
+
+void Accel6PosCapture::resetAccumulation() {
+    accepted_ = 0;
+    consecutiveRejected_ = 0;
+    meanG_ = Vec3::zero();
+    m2G_ = Vec3::zero();
+    meanNormG_ = 0.0f;
 }
 
 bool Accel6PosCapture::push(const Lsm6dsv::Sample& sample) {
@@ -326,9 +370,16 @@ bool Accel6PosCapture::push(const Lsm6dsv::Sample& sample) {
 
     if (!accepted) {
         rejected_++;
+        consecutiveRejected_++;
+        if (params_.resetAfterConsecutiveRejected > 0 &&
+            accepted_ > 0 &&
+            consecutiveRejected_ >= params_.resetAfterConsecutiveRejected) {
+            resetAccumulation();
+        }
         return false;
     }
 
+    consecutiveRejected_ = 0;
     accepted_++;
     const float n = static_cast<float>(accepted_);
 

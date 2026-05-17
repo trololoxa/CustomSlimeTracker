@@ -188,8 +188,8 @@ void printSetupGuide(Stream& s) {
     s.println("setup calibration [axis <bodyX> <bodyY> <bodyZ>]");
     s.println("  Blocking guided production calibration. It services FIFO, magnetometer,");
     s.println("  Wi-Fi and SlimeVR while it performs rest gyro, gyro temperature model,");
-    s.println("  accel 6-position, mag hard/soft collection, mag axis alignment and");
-    s.println("  production tracking enable/save.");
+    s.println("  auto-detected accel 6-position, mag hard/soft collection, mag axis");
+    s.println("  alignment and production tracking enable/save.");
     s.println();
     s.println("setup status");
     s.println("  Readiness checklist for tracking, mag-yaw, temperature model and SlimeVR.");
@@ -947,6 +947,10 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx, Setup
     Stream& s = out(ctx);
     s.println();
     s.println("# SETUP CALIBRATION STEP 3/6: ACCEL 6-POS + MAG COLLECTION");
+    s.println("# You do NOT need to know the IMU axis labels.");
+    s.println("# For each capture, place the tracker on any uncaptured physical side, let it fully settle, then press Enter.");
+    s.println("# The firmware waits for a contiguous still window, detects which accel side is up, and rejects duplicates/diagonal positions.");
+    s.println("# Slight IMU solder/board misalignment is handled later by the full 3x3 accel correction matrix.");
 
     if (ctx.setMagRuntimeEnabled) {
         (void)ctx.setMagRuntimeEnabled(true, false, ctx.setMagRuntimeEnabledUser);
@@ -964,30 +968,73 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx, Setup
     char* clearAccel[] = { const_cast<char*>("cal"), const_cast<char*>("accel"), const_cast<char*>("clear") };
     dispatchCal(ctx, 3, clearAccel);
 
-    struct FaceStep { Accel6PosCalibration::Face face; const char* token; const char* prompt; };
-    const FaceStep faces[] = {
-        { Accel6PosCalibration::Face::XP, "XP", "# Place tracker with +X up, keep still, then press Enter." },
-        { Accel6PosCalibration::Face::XN, "XN", "# Place tracker with -X up, keep still, then press Enter." },
-        { Accel6PosCalibration::Face::YP, "YP", "# Place tracker with +Y up, keep still, then press Enter." },
-        { Accel6PosCalibration::Face::YN, "YN", "# Place tracker with -Y up, keep still, then press Enter." },
-        { Accel6PosCalibration::Face::ZP, "ZP", "# Place tracker with +Z up, keep still, then press Enter." },
-        { Accel6PosCalibration::Face::ZN, "ZN", "# Place tracker with -Z up, keep still, then press Enter." },
-    };
+    uint8_t captured = 0;
+    uint8_t attempts = 0;
+    while (captured < 6 && attempts < 18) {
+        attempts++;
+        s.println();
+        s.print("# Accel face ");
+        s.print(static_cast<unsigned int>(captured + 1));
+        s.println("/6");
+        s.print("# already captured:");
+        bool any = false;
+        if (ctx.accelCalRunner) {
+            for (uint8_t i = 0; i < 6; ++i) {
+                const auto face = static_cast<Accel6PosCalibration::Face>(i);
+                if (ctx.accelCalRunner->calibration().hasFace(face)) {
+                    s.print(' ');
+                    s.print(Accel6PosCalibration::faceName(face));
+                    any = true;
+                }
+            }
+        }
+        if (!any) s.print(" none");
+        s.println();
 
-    for (const FaceStep& f : faces) {
-        if (!waitSetupEnter(ctx, f.prompt, 300000UL)) {
+        if (!waitSetupEnter(ctx, "# Move to a NEW side, wait until it stops wobbling, then press Enter.", 300000UL)) {
             if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
             tracker_serial_detail::printErr(s, "setup calibration aborted while waiting for accel face");
             return false;
         }
-        char* faceCmd[] = { const_cast<char*>("cal"), const_cast<char*>("accel"), const_cast<char*>("face"), const_cast<char*>(f.token) };
-        dispatchCal(ctx, 4, faceCmd);
-        if (!ctx.accelCalRunner || !ctx.accelCalRunner->calibration().hasFace(f.face)) {
+
+        FifoAccelAutoFaceCaptureResult faceResult;
+        if (!ctx.accelCalRunner ||
+            !ctx.accelCalRunner->captureAutoFace(*ctx.calibrationIo, faceResult, &accelProgressCallback, nullptr)) {
+            if (faceResult.duplicate) {
+                s.print("# WARN duplicate accel face detected: ");
+                s.println(Accel6PosCalibration::faceName(faceResult.detectedFace));
+                s.println("# Keep the tracker on a different physical side for the next capture.");
+                continue;
+            }
+            if (faceResult.ambiguous) {
+                s.println("# WARN accel face was ambiguous/diagonal or not settled enough.");
+                s.print("# detection norm_g="); s.print(faceResult.detection.normG, 4);
+                s.print(" dominant_abs_g="); s.print(faceResult.detection.dominantAbsG, 4);
+                s.print(" second_abs_g="); s.print(faceResult.detection.secondAbsG, 4);
+                s.print(" margin_g="); s.println(faceResult.detection.dominanceMarginG, 4);
+                s.println("# Put the tracker flat on one side, avoid holding it in your hand, and retry.");
+                continue;
+            }
             if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
-            tracker_serial_detail::printErr(s, "setup calibration failed: accel face was not captured");
+            tracker_serial_detail::printErr(s, "setup calibration failed: auto accel face capture failed");
             return false;
         }
-        (void)setupCaptureMagAxisFaceSample(ctx, axisAuto, f.face);
+
+        captured++;
+        s.print("# setup accel auto_face=");
+        s.print(Accel6PosCalibration::faceName(faceResult.detectedFace));
+        s.print(" samples="); s.print(faceResult.acceptedSamples);
+        s.print(" rejected="); s.print(faceResult.rejectedSamples);
+        s.print(" norm_g="); s.print(faceResult.meanNormG, 5);
+        s.print(" dominance_margin_g="); s.println(faceResult.detection.dominanceMarginG, 5);
+
+        (void)setupCaptureMagAxisFaceSample(ctx, axisAuto, faceResult.detectedFace);
+    }
+
+    if (captured < 6) {
+        if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+        tracker_serial_detail::printErr(s, "setup calibration failed: could not collect six unique accel faces");
+        return false;
     }
 
     char* compute[] = { const_cast<char*>("cal"), const_cast<char*>("accel"), const_cast<char*>("compute") };

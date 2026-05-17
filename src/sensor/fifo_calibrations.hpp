@@ -140,6 +140,11 @@ struct FifoAccel6PosCaptureParams {
     float minAccelNormG = 0.75f;
     float maxAccelNormG = 1.25f;
     uint32_t fifoWaitTimeoutMs = 1000;
+    // Reset a partially-collected face after this many consecutive moving/invalid samples.
+    // This gives the user time to physically move the tracker between sides without
+    // blending two stable positions into one face mean.
+    uint32_t resetAfterConsecutiveRejected = 8;
+    Accel6PosCalibration::FaceDetectionParams autoFaceDetection;
 };
 
 struct FifoAccel6PosCaptureProgress {
@@ -152,6 +157,19 @@ struct FifoAccel6PosCaptureProgress {
     Vec3 varianceG2 = Vec3::zero();
     float meanNormG = 0.0f;
     float latestTempC = 25.0f;
+};
+
+struct FifoAccelAutoFaceCaptureResult {
+    bool success = false;
+    bool duplicate = false;
+    bool ambiguous = false;
+    Accel6PosCalibration::Face detectedFace = Accel6PosCalibration::Face::Invalid;
+    Accel6PosCalibration::FaceDetectionResult detection;
+    uint32_t acceptedSamples = 0;
+    uint32_t rejectedSamples = 0;
+    Vec3 meanG = Vec3::zero();
+    Vec3 varianceG2 = Vec3::zero();
+    float meanNormG = 0.0f;
 };
 
 using FifoAccelCaptureProgressCallback = void (*)(
@@ -177,6 +195,11 @@ public:
                      Accel6PosCalibration::Face face,
                      FifoAccelCaptureProgressCallback progressCb = nullptr,
                      void* progressUser = nullptr);
+
+    bool captureAutoFace(FifoCalibrationIo& io,
+                         FifoAccelAutoFaceCaptureResult& result,
+                         FifoAccelCaptureProgressCallback progressCb = nullptr,
+                         void* progressUser = nullptr);
 
     bool compute();
     bool applyToImuCalibration(ImuCalibration& imuCal) const;
