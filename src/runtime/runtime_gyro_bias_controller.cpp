@@ -76,7 +76,12 @@ void runtimeBiasApplyGyroTempQualityFlags(const GyroTempCompensator& gyroTempCom
                                                  float tempC) {
     const GyroTempCompSnapshot s = gyroTempComp.snapshot(tempC);
     if (s.valid && s.enabled && s.hasCalibratedRange && s.tempOutOfRange) {
-        quality.markTempCompOutOfRange(0.75f);
+        // The calibrated temperature interval is a confidence hint, not a
+        // hard runtime cliff.  Just outside the fitted range, keep tracking
+        // confidence almost unchanged; degrade more only for large
+        // extrapolation.
+        const float multiplier = clampf(s.extrapolationConfidence, 0.35f, 0.98f);
+        quality.markTempCompOutOfRange(multiplier);
     }
 }
 
@@ -107,16 +112,33 @@ RuntimeBiasTempGate runtimeBiasTempGateFor(const RuntimeGyroBiasEstimator& bias,
         return gate;
     }
 
-    const float marginC = bias.tempExtrapolationMarginC;
-    const bool withinMargin = std::isfinite(marginC) && marginC >= 0.0f &&
-        gate.distanceToRangeC <= marginC;
+    const float configuredMarginC = std::isfinite(bias.tempExtrapolationMarginC) && bias.tempExtrapolationMarginC >= 0.0f
+        ? bias.tempExtrapolationMarginC
+        : 0.0f;
+    const float softMarginC = std::isfinite(s.softExtrapolationMarginC) && s.softExtrapolationMarginC > 0.0f
+        ? s.softExtrapolationMarginC
+        : 0.0f;
+    const float cautiousMarginC = configuredMarginC > softMarginC ? configuredMarginC : softMarginC;
+    float hardMarginC = std::isfinite(s.hardExtrapolationMarginC) && s.hardExtrapolationMarginC > cautiousMarginC
+        ? s.hardExtrapolationMarginC
+        : cautiousMarginC;
 
-    if (bias.allowOutOfRangeEstimator && withinMargin) {
+    const float baseScale = clampf(bias.outOfRangeGainScale, 0.01f, 1.0f);
+    gate.gainScale = clampf(baseScale * clampf(s.extrapolationConfidence, 0.20f, 1.0f), 0.01f, 1.0f);
+
+    if (bias.allowOutOfRangeEstimator && gate.distanceToRangeC <= cautiousMarginC) {
         gate.nearOutOfRange = true;
-        gate.gainScale = clampf(bias.outOfRangeGainScale, 0.01f, 1.0f);
+    } else if (bias.allowOutOfRangeEstimator && gate.distanceToRangeC <= hardMarginC) {
+        // Still allow very cautious updates for moderate extrapolation.  This
+        // avoids a hard failure when the tracker naturally warms a few degrees
+        // beyond the setup range, while keeping learning slow and visible in
+        // diagnostics.
+        gate.nearOutOfRange = true;
+        gate.farOutOfRange = true;
+        gate.gainScale = clampf(gate.gainScale * 0.5f, 0.01f, 1.0f);
     } else {
         gate.farOutOfRange = true;
-        gate.gainScale = clampf(bias.outOfRangeGainScale, 0.01f, 1.0f);
+        gate.gainScale = clampf(gate.gainScale * 0.25f, 0.01f, 1.0f);
         gate.reject = bias.requireTempCompRange;
     }
 

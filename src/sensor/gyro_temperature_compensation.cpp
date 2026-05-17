@@ -165,9 +165,39 @@ GyroTempCompSnapshot GyroTempCompensator::snapshot(float currentTempC) const {
     s.fitQuality = cfg_.fitQuality;
     s.fitResidualBeforeDps = cfg_.fitResidualBeforeDps;
     s.fitResidualAfterDps = cfg_.fitResidualAfterDps;
+    s.softExtrapolationMarginC = cfg_.softExtrapolationMarginC;
+    s.hardExtrapolationMarginC = cfg_.hardExtrapolationMarginC;
     s.hasCalibratedRange = cfg_.calibratedTempMaxC > cfg_.calibratedTempMinC;
-    s.tempOutOfRange = s.hasCalibratedRange &&
-        (currentTempC < cfg_.calibratedTempMinC || currentTempC > cfg_.calibratedTempMaxC);
+    if (s.hasCalibratedRange && std::isfinite(currentTempC)) {
+        if (currentTempC < cfg_.calibratedTempMinC) {
+            s.tempDistanceToRangeC = cfg_.calibratedTempMinC - currentTempC;
+        } else if (currentTempC > cfg_.calibratedTempMaxC) {
+            s.tempDistanceToRangeC = currentTempC - cfg_.calibratedTempMaxC;
+        }
+    }
+    s.tempOutOfRange = s.hasCalibratedRange && s.tempDistanceToRangeC > 0.0f;
+
+    const float softMarginC = std::isfinite(cfg_.softExtrapolationMarginC) && cfg_.softExtrapolationMarginC > 0.0f
+        ? cfg_.softExtrapolationMarginC
+        : 0.0f;
+    float hardMarginC = std::isfinite(cfg_.hardExtrapolationMarginC) && cfg_.hardExtrapolationMarginC > softMarginC
+        ? cfg_.hardExtrapolationMarginC
+        : softMarginC;
+
+    if (!s.tempOutOfRange) {
+        s.extrapolationConfidence = 1.0f;
+    } else if (softMarginC > 0.0f && s.tempDistanceToRangeC <= softMarginC) {
+        s.tempSoftExtrapolated = true;
+        const float u = clampf(s.tempDistanceToRangeC / softMarginC, 0.0f, 1.0f);
+        s.extrapolationConfidence = 1.0f - 0.20f * u;
+    } else if (hardMarginC > softMarginC && s.tempDistanceToRangeC <= hardMarginC) {
+        s.tempSoftExtrapolated = true;
+        const float u = clampf((s.tempDistanceToRangeC - softMarginC) / (hardMarginC - softMarginC), 0.0f, 1.0f);
+        s.extrapolationConfidence = 0.80f - 0.45f * u;
+    } else {
+        s.tempHardExtrapolated = true;
+        s.extrapolationConfidence = 0.20f;
+    }
     return s;
 }
 

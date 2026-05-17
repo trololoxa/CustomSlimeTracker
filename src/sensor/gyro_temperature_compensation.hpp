@@ -42,6 +42,13 @@ struct GyroTempCompConfig {
     float fitQuality = 0.0f;
     float fitResidualBeforeDps = 0.0f;
     float fitResidualAfterDps = 0.0f;
+
+    // Temperature calibration range is treated as a confidence ramp, not as
+    // a hard runtime boundary.  Small extrapolation beyond the fitted range is
+    // common during normal warm-up and must not disable tracking or runtime
+    // bias learning by itself.
+    float softExtrapolationMarginC = 5.0f;
+    float hardExtrapolationMarginC = 12.0f;
 };
 
 struct GyroTempCompSnapshot {
@@ -72,6 +79,12 @@ struct GyroTempCompSnapshot {
     float fitResidualAfterDps = 0.0f;
     bool hasCalibratedRange = false;
     bool tempOutOfRange = false;
+    float tempDistanceToRangeC = 0.0f;
+    float softExtrapolationMarginC = 0.0f;
+    float hardExtrapolationMarginC = 0.0f;
+    bool tempSoftExtrapolated = false;
+    bool tempHardExtrapolated = false;
+    float extrapolationConfidence = 1.0f;
 };
 
 class GyroTempCompensator {

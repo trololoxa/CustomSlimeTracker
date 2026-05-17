@@ -126,10 +126,13 @@ struct StaticTempBinStats {
     }
 
     void push(float temp, const Vec3& gyroAfter, float accelNorm, bool goodQuality) {
+        if (!goodQuality) {
+            badQualitySamples++;
+            return;
+        }
         tempC.push(temp);
         accelNormG.push(accelNorm);
         gyroAfterRadS.push(gyroAfter);
-        if (!goodQuality) badQualitySamples++;
     }
 };
 

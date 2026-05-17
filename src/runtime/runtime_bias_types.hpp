@@ -32,8 +32,8 @@ struct RuntimeGyroBiasEstimator {
     float accelNormStdMaxG = 0.006f;
     float accelTrustMin = 0.92f;
     float maxWindowTempDeltaC = 0.35f;
-    float tempExtrapolationMarginC = 5.0f;
-    float outOfRangeGainScale = 0.25f;
+    float tempExtrapolationMarginC = 6.0f;
+    float outOfRangeGainScale = 0.35f;
     float updateAlpha = 0.05f;
     float maxUpdateStepDps = 0.0015f;
     float maxRuntimeTrimDps = 0.08f;

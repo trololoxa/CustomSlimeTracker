@@ -41,6 +41,19 @@ static void testVec3Stats(TestContext& ctx) {
     CHECK_NEAR(ctx, sd.z, 3.0f, 1.0e-6f);
 }
 
+static void testTempBinStatsRejectBadQuality(TestContext& ctx) {
+    StaticTempBinStats b;
+    b.push(25.0f, Vec3(1.0f, 2.0f, 3.0f), 1.0f, false);
+    CHECK(ctx, b.badQualitySamples == 1);
+    CHECK(ctx, b.tempC.count == 0);
+    CHECK(ctx, b.gyroAfterRadS.count == 0);
+
+    b.push(25.0f, Vec3(1.0f, 2.0f, 3.0f), 1.0f, true);
+    CHECK(ctx, b.badQualitySamples == 1);
+    CHECK(ctx, b.tempC.count == 1);
+    CHECK(ctx, b.gyroAfterRadS.count == 1);
+}
+
 static void testTempBins(TestContext& ctx) {
     CHECK(ctx, staticTempBinIndex(9.99f) == -1);
     CHECK(ctx, staticTempBinIndex(10.00f) == 0);
@@ -55,6 +68,7 @@ int main() {
     TestContext ctx;
     testScalarStats(ctx);
     testVec3Stats(ctx);
+    testTempBinStatsRejectBadQuality(ctx);
     testTempBins(ctx);
     return ctx.finish("test_static_stats");
 }

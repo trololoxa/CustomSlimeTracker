@@ -58,18 +58,26 @@ static void testTemperatureGateAndQualityFlags(TestContext& ctx) {
     CHECK(ctx, near.nearOutOfRange);
     CHECK(ctx, !near.reject);
     CHECK_NEAR(ctx, near.distanceToRangeC, 3.0f, 1.0e-6f);
-    CHECK_NEAR(ctx, near.gainScale, 0.25f, 1.0e-6f);
+    CHECK_NEAR(ctx, near.gainScale, 0.22f, 1.0e-6f);
 
-    RuntimeBiasTempGate far = runtimeBiasTempGateFor(bias, comp, 50.0f);
+    RuntimeBiasTempGate moderate = runtimeBiasTempGateFor(bias, comp, 44.0f);
+    CHECK(ctx, moderate.outOfRange);
+    CHECK(ctx, moderate.farOutOfRange);
+    CHECK(ctx, moderate.nearOutOfRange);
+    CHECK(ctx, !moderate.reject);
+    CHECK_NEAR(ctx, moderate.distanceToRangeC, 9.0f, 1.0e-6f);
+    CHECK(ctx, moderate.gainScale < near.gainScale);
+
+    RuntimeBiasTempGate far = runtimeBiasTempGateFor(bias, comp, 60.0f);
     CHECK(ctx, far.outOfRange);
     CHECK(ctx, far.farOutOfRange);
     CHECK(ctx, far.reject);
 
     ImuQualityResult q;
-    runtimeBiasApplyGyroTempQualityFlags(comp, q, 50.0f);
+    runtimeBiasApplyGyroTempQualityFlags(comp, q, 37.0f);
     CHECK(ctx, q.has(imu_quality_flags::TEMP_COMP_OUT_OF_RANGE));
-    CHECK_NEAR(ctx, q.gyroConfidence, 0.75f, 1.0e-6f);
-    CHECK_NEAR(ctx, q.overallConfidence, 0.75f, 1.0e-6f);
+    CHECK(ctx, q.gyroConfidence > 0.80f);
+    CHECK(ctx, q.overallConfidence > 0.80f);
 }
 
 static void testClampAndDecisionFlags(TestContext& ctx) {

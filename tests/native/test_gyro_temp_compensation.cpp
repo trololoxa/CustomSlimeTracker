@@ -42,6 +42,15 @@ static void testSnapshotRangeAndMetadata(TestContext& ctx) {
     GyroTempCompSnapshot outside = comp.snapshot(40.0f);
     CHECK(ctx, outside.hasCalibratedRange);
     CHECK(ctx, outside.tempOutOfRange);
+    CHECK(ctx, outside.tempSoftExtrapolated);
+    CHECK(ctx, !outside.tempHardExtrapolated);
+    CHECK_NEAR(ctx, outside.tempDistanceToRangeC, 5.0f, 1.0e-6f);
+    CHECK(ctx, outside.extrapolationConfidence > 0.0f);
+    CHECK(ctx, outside.extrapolationConfidence < 1.0f);
+
+    GyroTempCompSnapshot farOutside = comp.snapshot(60.0f);
+    CHECK(ctx, farOutside.tempOutOfRange);
+    CHECK(ctx, farOutside.tempHardExtrapolated);
 }
 
 static void testLearningAcceptRejectCounters(TestContext& ctx) {
