@@ -82,6 +82,9 @@ static MagRuntimeState g_magState;
 static MagCalibrationCollector g_magCalCollector;
 static MagRuntimeProcessor g_magProcessor;
 static MagProcessedSample g_lastMagProcessed;
+static Lsm6dsv::Sample g_lastScaledSample;
+static Lsm6dsv::Sample g_lastCalibratedSample;
+static uint32_t g_lastImuSampleSequence = 0;
 
 static MagHeadingEstimator g_magHeading;
 static MagHeadingSample g_lastMagHeading;

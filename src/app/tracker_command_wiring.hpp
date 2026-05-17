@@ -31,6 +31,9 @@ struct TrackerCommandRuntimeObjects {
     FifoAccel6PosCalibrationRunner* accelCalRunner = nullptr;
     GyroTempCalibrationCapture* gyroTempCapture = nullptr;
     const MagProcessedSample* lastMagProcessed = nullptr;
+    const Lsm6dsv::Sample* lastScaledSample = nullptr;
+    const Lsm6dsv::Sample* lastCalibratedSample = nullptr;
+    const uint32_t* lastImuSampleSequence = nullptr;
 
     TrackerSerialStreamState* streamState = nullptr;
     TrackerSerialLogState* logState = nullptr;

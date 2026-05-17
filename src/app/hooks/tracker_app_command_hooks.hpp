@@ -211,6 +211,9 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.accelCalRunner = &g_accelCalRunner;
     objects.gyroTempCapture = &g_gyroTempCapture;
     objects.lastMagProcessed = &g_lastMagProcessed;
+    objects.lastScaledSample = &g_lastScaledSample;
+    objects.lastCalibratedSample = &g_lastCalibratedSample;
+    objects.lastImuSampleSequence = &g_lastImuSampleSequence;
     objects.streamState = &g_streamState;
     objects.logState = &g_logState;
     return objects;

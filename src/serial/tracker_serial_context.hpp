@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <cstdint>
+#include "connection/lsm6dsv_driver.hpp"
 #include "serial/tracker_serial_parse.hpp"
 #include "serial/tracker_serial_print.hpp"
 
@@ -235,6 +236,9 @@ struct TrackerSerialCommandContext {
     void* fitGyroTempFromCaptureRamUser = nullptr;
 
     const MagProcessedSample* lastMagProcessed = nullptr;
+    const Lsm6dsv::Sample* lastScaledSample = nullptr;
+    const Lsm6dsv::Sample* lastCalibratedSample = nullptr;
+    const uint32_t* lastImuSampleSequence = nullptr;
 
     // Used by blocking guided setup/calibration flows. The hook must service
     // FIFO, magnetometer runtime and network/slime runtime without polling the

@@ -91,6 +91,19 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
     scaled.temp_c = deps.latestTempC;
     Lsm6dsv::Sample calibrated = imuPipelineMakeCalibratedSample(deps, scaled);
 
+    if (deps.lastScaledSample != nullptr) {
+        *deps.lastScaledSample = scaled;
+    }
+    if (deps.lastCalibratedSample != nullptr) {
+        *deps.lastCalibratedSample = calibrated;
+    }
+    if (deps.lastImuSampleSequence != nullptr) {
+        (*deps.lastImuSampleSequence)++;
+        if (*deps.lastImuSampleSequence == 0u) {
+            *deps.lastImuSampleSequence = 1u;
+        }
+    }
+
     const auto& fifoStats = deps.fifo.stats();
     ImuQualityResult quality = deps.qualityMonitor.evaluate(raw, calibrated, fifoStats, checkFifoStatsDelta);
     runtimeBiasApplyGyroTempQualityFlags(deps.gyroTempComp, quality, calibrated.temp_c);

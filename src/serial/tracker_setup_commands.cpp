@@ -377,6 +377,103 @@ struct SetupMagAxisAutoResult {
     uint8_t usedSamples = 0;
 };
 
+struct SetupMagAxisDynamicInterval {
+    Vec3 gyroImuRadS = Vec3::zero();
+    Vec3 mag0Raw = Vec3::zero();
+    Vec3 mag1Raw = Vec3::zero();
+    float dtS = 0.0f;
+};
+
+struct SetupMagAxisDynamicResult {
+    bool valid = false;
+    Mat3 magToImu = Mat3::identity();
+    float score = 0.0f;
+    float secondBestScore = 0.0f;
+    float meanDirectionError = 0.0f;
+    float meanMagnitudeError = 0.0f;
+    uint16_t usedIntervals = 0;
+};
+
+struct SetupMagAxisDynamicCollector {
+    static constexpr uint16_t kMaxIntervals = 160;
+
+    SetupMagAxisDynamicInterval intervals[kMaxIntervals];
+    uint16_t intervalCount = 0;
+    uint32_t droppedIntervals = 0;
+
+    uint32_t lastImuSeq = 0;
+    uint32_t lastMagSeq = 0;
+    Vec3 gyroSumRadS = Vec3::zero();
+    uint16_t gyroSamples = 0;
+
+    bool havePrevMag = false;
+    Vec3 prevMagRaw = Vec3::zero();
+    uint64_t prevMagUs = 0;
+
+    float gyroNormMaxDps = 0.0f;
+    uint32_t imuSamplesSeen = 0;
+    uint32_t magSamplesSeen = 0;
+
+    void reset() {
+        *this = SetupMagAxisDynamicCollector{};
+    }
+
+    void pushInterval(const Vec3& gyroImuRadS, const Vec3& mag0Raw, const Vec3& mag1Raw, float dtS) {
+        if (intervalCount >= kMaxIntervals) {
+            droppedIntervals++;
+            return;
+        }
+        intervals[intervalCount++] = SetupMagAxisDynamicInterval{gyroImuRadS, mag0Raw, mag1Raw, dtS};
+    }
+
+    void update(TrackerSerialCommandContext& ctx) {
+        if (!ctx.lastCalibratedSample || !ctx.lastImuSampleSequence || !ctx.lastMagProcessed) return;
+
+        const uint32_t imuSeq = *ctx.lastImuSampleSequence;
+        if (imuSeq != 0u && imuSeq != lastImuSeq) {
+            lastImuSeq = imuSeq;
+            const Vec3 gyro = ctx.lastCalibratedSample->gyro_rad_s;
+            const float gyroNormDps = gyro.norm() * MATH_RAD_TO_DEG;
+            if (gyro.isFinite() && gyroNormDps >= 3.0f && gyroNormDps <= 720.0f && gyroSamples < 2000u) {
+                gyroSumRadS += gyro;
+                gyroSamples++;
+                imuSamplesSeen++;
+                if (gyroNormDps > gyroNormMaxDps) gyroNormMaxDps = gyroNormDps;
+            }
+        }
+
+        const MagProcessedSample& mag = *ctx.lastMagProcessed;
+        if (mag.seq == 0u || mag.seq == lastMagSeq || !mag.raw.isFinite() || mag.rawNorm <= 1.0e-6f) {
+            return;
+        }
+        lastMagSeq = mag.seq;
+        magSamplesSeen++;
+
+        if (havePrevMag && gyroSamples >= 3u) {
+            float dtS = 0.0f;
+            if (mag.t_us > prevMagUs && prevMagUs != 0u) {
+                dtS = static_cast<float>(mag.t_us - prevMagUs) * 1.0e-6f;
+            }
+            if (dtS >= 0.004f && dtS <= 0.200f) {
+                const Vec3 avgGyro = gyroSumRadS / static_cast<float>(gyroSamples);
+                const Vec3 m0 = prevMagRaw.normalized();
+                const Vec3 m1 = mag.raw.normalized();
+                const float angle = std::acos(clampf(dot(m0, m1), -1.0f, 1.0f));
+                const float gyroNormDps = avgGyro.norm() * MATH_RAD_TO_DEG;
+                if (angle >= 0.0035f && gyroNormDps >= 8.0f && gyroNormDps <= 540.0f) {
+                    pushInterval(avgGyro, prevMagRaw, mag.raw, dtS);
+                }
+            }
+        }
+
+        gyroSumRadS = Vec3::zero();
+        gyroSamples = 0;
+        prevMagRaw = mag.raw;
+        prevMagUs = mag.t_us;
+        havePrevMag = true;
+    }
+};
+
 Vec3 normalizeSafe(const Vec3& v) {
     const float n = v.norm();
     if (!v.isFinite() || n <= 1.0e-6f) return Vec3::zero();
@@ -487,6 +584,136 @@ bool setupAutoSolveMagAxis(const SetupMagAxisAutoCollector& c,
     const float separation = second - best;
     result.valid = bestUsed >= 4 && best < 0.12f && separation > 0.03f;
     return result.valid;
+}
+
+float setupDynamicAxisScore(const SetupMagAxisDynamicCollector& c,
+                            const TrackerConfig& config,
+                            const Mat3& candidate,
+                            float& dirErrOut,
+                            float& magErrOut,
+                            uint16_t& usedOut) {
+    float weightedErrorSum = 0.0f;
+    float weightSum = 0.0f;
+    float dirErrSum = 0.0f;
+    float magErrSum = 0.0f;
+    uint16_t used = 0;
+
+    if (!config.data.magCal.calibrationValid) {
+        dirErrOut = 999.0f;
+        magErrOut = 999.0f;
+        usedOut = 0;
+        return 999.0f;
+    }
+
+    for (uint16_t i = 0; i < c.intervalCount; ++i) {
+        const auto& in = c.intervals[i];
+        if (!in.gyroImuRadS.isFinite() || !in.mag0Raw.isFinite() || !in.mag1Raw.isFinite() ||
+            in.dtS <= 0.0f || !tracker::isFinite(in.dtS)) {
+            continue;
+        }
+
+        const Vec3 mag0Cal = config.data.magCal.softIron * (in.mag0Raw - config.data.magCal.hardIron);
+        const Vec3 mag1Cal = config.data.magCal.softIron * (in.mag1Raw - config.data.magCal.hardIron);
+        Vec3 m0 = candidate * mag0Cal;
+        Vec3 m1 = candidate * mag1Cal;
+        if (!m0.normalizeInPlace() || !m1.normalizeInPlace()) continue;
+
+        const Vec3 observed = (m1 - m0) / in.dtS;
+        const Vec3 predicted = -cross(in.gyroImuRadS, m0);
+        const float observedNorm = observed.norm();
+        const float predictedNorm = predicted.norm();
+        if (observedNorm < 0.02f || predictedNorm < 0.02f ||
+            !tracker::isFinite(observedNorm) || !tracker::isFinite(predictedNorm)) {
+            continue;
+        }
+
+        const float directionAgreement = clampf(dot(observed / observedNorm, predicted / predictedNorm), -1.0f, 1.0f);
+        const float dirErr = 1.0f - directionAgreement;
+        const float magErr = std::fabs(observedNorm - predictedNorm) / (predictedNorm + 0.05f);
+        const float weight = clampf(predictedNorm, 0.05f, 4.0f);
+        const float intervalScore = dirErr + 0.25f * clampf(magErr, 0.0f, 2.0f);
+
+        weightedErrorSum += intervalScore * weight;
+        weightSum += weight;
+        dirErrSum += dirErr;
+        magErrSum += magErr;
+        used++;
+    }
+
+    usedOut = used;
+    if (used < 10 || weightSum <= 0.0f) {
+        dirErrOut = 999.0f;
+        magErrOut = 999.0f;
+        return 999.0f;
+    }
+
+    dirErrOut = dirErrSum / static_cast<float>(used);
+    magErrOut = magErrSum / static_cast<float>(used);
+    return weightedErrorSum / weightSum;
+}
+
+bool setupAutoSolveMagAxisDynamic(const SetupMagAxisDynamicCollector& c,
+                                  const TrackerConfig& config,
+                                  SetupMagAxisDynamicResult& result) {
+    result = SetupMagAxisDynamicResult{};
+    if (c.intervalCount < 10 || !config.data.magCal.calibrationValid) return false;
+
+    const uint8_t perms[6][3] = {
+        {0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0},
+    };
+
+    float best = 999.0f;
+    float second = 999.0f;
+    Mat3 bestM = Mat3::identity();
+    float bestDir = 999.0f;
+    float bestMag = 999.0f;
+    uint16_t bestUsed = 0;
+
+    for (const auto& p : perms) {
+        for (int sx = -1; sx <= 1; sx += 2) {
+            for (int sy = -1; sy <= 1; sy += 2) {
+                for (int sz = -1; sz <= 1; sz += 2) {
+                    const Mat3 m = setupPermutationMatrix(p[0], static_cast<float>(sx),
+                                                          p[1], static_cast<float>(sy),
+                                                          p[2], static_cast<float>(sz));
+                    float dir = 999.0f;
+                    float mag = 999.0f;
+                    uint16_t used = 0;
+                    const float score = setupDynamicAxisScore(c, config, m, dir, mag, used);
+                    if (score < best) {
+                        second = best;
+                        best = score;
+                        bestM = m;
+                        bestDir = dir;
+                        bestMag = mag;
+                        bestUsed = used;
+                    } else if (score < second) {
+                        second = score;
+                    }
+                }
+            }
+        }
+    }
+
+    result.magToImu = bestM;
+    result.score = best;
+    result.secondBestScore = second;
+    result.meanDirectionError = bestDir;
+    result.meanMagnitudeError = bestMag;
+    result.usedIntervals = bestUsed;
+
+    const float separation = second - best;
+    result.valid = bestUsed >= 10 && best < 0.75f && bestDir < 0.55f && separation > 0.08f;
+    return result.valid;
+}
+
+bool setupAxisMatricesEqual(const Mat3& a, const Mat3& b) {
+    for (uint8_t r = 0; r < 3; ++r) {
+        for (uint8_t c = 0; c < 3; ++c) {
+            if (std::fabs(a.m[r][c] - b.m[r][c]) > 0.25f) return false;
+        }
+    }
+    return true;
 }
 
 void setupPrintMagAxisToken(Stream& s, const Mat3& m, uint8_t row) {
@@ -999,7 +1226,7 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx, Setup
 
         FifoAccelAutoFaceCaptureResult faceResult;
         if (!ctx.accelCalRunner ||
-            !ctx.accelCalRunner->captureAutoFace(*ctx.calibrationIo, faceResult, &accelProgressCallback, nullptr)) {
+            !ctx.accelCalRunner->captureAutoFace(*ctx.calibrationIo, faceResult, nullptr, nullptr)) {
             if (faceResult.duplicate) {
                 s.print("# WARN duplicate accel face detected: ");
                 s.println(Accel6PosCalibration::faceName(faceResult.detectedFace));
@@ -1047,14 +1274,47 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx, Setup
     return true;
 }
 
-bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx) {
+bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
+                                SetupMagAxisDynamicCollector& axisDynamic) {
     Stream& s = out(ctx);
     s.println();
-    s.println("# SETUP CALIBRATION STEP 4/6: MAG HARD/SOFT MOTION COVERAGE");
+    s.println("# SETUP CALIBRATION STEP 4/6: MAG HARD/SOFT MOTION + GYRO AXIS DATA");
     s.println("# Move slowly through as many orientations as possible. Avoid steel tables, speakers, chargers and magnets.");
-    waitSetupEnterOrTimeout(ctx, "# Press Enter after good all-axis coverage, or let the timed collection finish.", 90000UL);
+    s.println("# Include several smooth rotations around different tracker axes; gyro+mag motion will be used to validate mag axis mapping.");
 
+    drainSetupInput(ctx);
+    s.println("# Press Enter after good all-axis coverage, or let the timed collection finish.");
+    const uint32_t startMs = millis();
+    uint32_t lastPrintMs = 0;
+    axisDynamic.reset();
+    while (millis() - startMs < 90000UL) {
+        serviceSetupRuntime(ctx);
+        axisDynamic.update(ctx);
+        while (s.available() > 0) {
+            const int c = s.read();
+            if (c == '\n' || c == '\r') {
+                goto setup_mag_motion_done;
+            }
+        }
+        const uint32_t nowMs = millis();
+        if (nowMs - lastPrintMs >= 5000UL) {
+            lastPrintMs = nowMs;
+            s.print("# setup mag motion elapsed_s=");
+            s.print((nowMs - startMs) / 1000UL);
+            s.print(" axis_intervals=");
+            s.print(axisDynamic.intervalCount);
+            s.print(" mag_samples=");
+            s.print(axisDynamic.magSamplesSeen);
+            s.print(" gyro_max_dps=");
+            s.println(axisDynamic.gyroNormMaxDps, 1);
+        }
+        delay(5);
+    }
+
+setup_mag_motion_done:
     if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+    s.print("# setup mag dynamic_axis_intervals="); s.println(axisDynamic.intervalCount);
+    s.print("# setup mag dynamic_axis_dropped="); s.println(axisDynamic.droppedIntervals);
     if (!ctx.applyMagCalibration || !ctx.applyMagCalibration(false, ctx.applyMagCalibrationUser)) {
         tracker_serial_detail::printErr(s, "setup calibration failed: mag hard/soft calibration did not pass quality gates");
         return false;
@@ -1088,6 +1348,7 @@ bool setupApplyAxisMatrix(TrackerSerialCommandContext& ctx, const Mat3& m) {
 
 bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
                            const SetupMagAxisAutoCollector& axisAuto,
+                           const SetupMagAxisDynamicCollector& axisDynamic,
                            const char* axisX,
                            const char* axisY,
                            const char* axisZ) {
@@ -1101,23 +1362,60 @@ bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
     }
 
     if (ctx.config && ctx.imuCal) {
-        SetupMagAxisAutoResult autoAxis;
-        if (setupAutoSolveMagAxis(axisAuto, *ctx.config, *ctx.imuCal, autoAxis)) {
-            s.print("# auto_mag_axis_mapping=");
-            setupPrintMagAxisMapping(s, autoAxis.magToImu);
+        SetupMagAxisAutoResult staticAxis;
+        const bool staticOk = setupAutoSolveMagAxis(axisAuto, *ctx.config, *ctx.imuCal, staticAxis);
+
+        SetupMagAxisDynamicResult dynamicAxis;
+        const bool dynamicOk = setupAutoSolveMagAxisDynamic(axisDynamic, *ctx.config, dynamicAxis);
+
+        if (dynamicOk) {
+            s.print("# gyro_mag_axis_mapping=");
+            setupPrintMagAxisMapping(s, dynamicAxis.magToImu);
             s.println();
-            s.print("# auto_mag_axis_score="); s.println(autoAxis.score, 6);
-            s.print("# auto_mag_axis_second_best="); s.println(autoAxis.secondBestScore, 6);
-            s.print("# auto_mag_axis_inclination_mean="); s.println(autoAxis.inclinationMean, 6);
-            s.print("# auto_mag_axis_inclination_stddev="); s.println(autoAxis.inclinationStddev, 6);
-            s.print("# auto_mag_axis_samples="); s.println(static_cast<unsigned int>(autoAxis.usedSamples));
-            if (setupApplyAxisMatrix(ctx, autoAxis.magToImu)) {
+            s.print("# gyro_mag_axis_score="); s.println(dynamicAxis.score, 6);
+            s.print("# gyro_mag_axis_second_best="); s.println(dynamicAxis.secondBestScore, 6);
+            s.print("# gyro_mag_axis_direction_error="); s.println(dynamicAxis.meanDirectionError, 6);
+            s.print("# gyro_mag_axis_magnitude_error="); s.println(dynamicAxis.meanMagnitudeError, 6);
+            s.print("# gyro_mag_axis_intervals="); s.println(static_cast<unsigned int>(dynamicAxis.usedIntervals));
+
+            if (staticOk) {
+                s.print("# static_mag_axis_mapping=");
+                setupPrintMagAxisMapping(s, staticAxis.magToImu);
+                s.println();
+                s.print("# static_mag_axis_score="); s.println(staticAxis.score, 6);
+                if (!setupAxisMatricesEqual(dynamicAxis.magToImu, staticAxis.magToImu)) {
+                    s.println("# WARN static inclination axis check disagrees with gyro-assisted axis check; using gyro-assisted result");
+                }
+            } else {
+                s.println("# WARN static inclination axis check was inconclusive; using gyro-assisted result");
+            }
+
+            if (setupApplyAxisMatrix(ctx, dynamicAxis.magToImu)) {
+                tracker_serial_detail::printOk(s, "mag axis alignment gyro-assisted auto-detected in RAM");
+                return true;
+            }
+        }
+
+        if (staticOk) {
+            s.print("# static_mag_axis_mapping=");
+            setupPrintMagAxisMapping(s, staticAxis.magToImu);
+            s.println();
+            s.print("# static_mag_axis_score="); s.println(staticAxis.score, 6);
+            s.print("# static_mag_axis_second_best="); s.println(staticAxis.secondBestScore, 6);
+            s.print("# static_mag_axis_inclination_mean="); s.println(staticAxis.inclinationMean, 6);
+            s.print("# static_mag_axis_inclination_stddev="); s.println(staticAxis.inclinationStddev, 6);
+            s.print("# static_mag_axis_samples="); s.println(static_cast<unsigned int>(staticAxis.usedSamples));
+            s.println("# WARN gyro-assisted axis check was inconclusive; falling back to static inclination check");
+            if (setupApplyAxisMatrix(ctx, staticAxis.magToImu)) {
                 tracker_serial_detail::printOk(s, "mag axis alignment auto-detected in RAM");
                 return true;
             }
-        } else {
-            s.println("# WARN automatic mag axis alignment was ambiguous or had insufficient data.");
         }
+
+        s.print("# WARN automatic mag axis alignment failed. dynamic_intervals=");
+        s.print(axisDynamic.intervalCount);
+        s.print(" static_faces=");
+        s.println(axisAuto.count);
     }
 
     char line[48] = {};
@@ -1225,9 +1523,11 @@ void cmdSetupCalibration(TrackerSerialCommandContext& ctx, int argc, char** argv
 
     SetupMagAxisAutoCollector axisAuto;
     axisAuto.reset();
+    SetupMagAxisDynamicCollector axisDynamic;
+    axisDynamic.reset();
     if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto)) { fail("accel_mag_faces"); return; }
-    if (!setupRunMagMotionAndApply(ctx)) { fail("mag_hard_soft"); return; }
-    if (!setupRunAxisAlignment(ctx, axisAuto, axisX, axisY, axisZ)) { fail("mag_axis"); return; }
+    if (!setupRunMagMotionAndApply(ctx, axisDynamic)) { fail("mag_hard_soft"); return; }
+    if (!setupRunAxisAlignment(ctx, axisAuto, axisDynamic, axisX, axisY, axisZ)) { fail("mag_axis"); return; }
     if (!setupEnableProductionTracking(ctx)) { fail("enable_tracking"); return; }
 
     if (!tx.commit(ctx)) { fail("commit_save"); return; }

@@ -27,6 +27,9 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.accelCalRunner = objects.accelCalRunner;
     ctx.gyroTempCapture = objects.gyroTempCapture;
     ctx.lastMagProcessed = objects.lastMagProcessed;
+    ctx.lastScaledSample = objects.lastScaledSample;
+    ctx.lastCalibratedSample = objects.lastCalibratedSample;
+    ctx.lastImuSampleSequence = objects.lastImuSampleSequence;
     ctx.streamState = objects.streamState;
     ctx.logState = objects.logState;
 

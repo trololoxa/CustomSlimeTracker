@@ -126,6 +126,9 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
         g_lastOutputConfidence,
         callbacks
     };
+    deps.lastScaledSample = &g_lastScaledSample;
+    deps.lastCalibratedSample = &g_lastCalibratedSample;
+    deps.lastImuSampleSequence = &g_lastImuSampleSequence;
     return deps;
 }
 

@@ -68,6 +68,13 @@ struct ImuSamplePipelineDeps {
     float& latestTempC;
     float& lastOutputConfidence;
     ImuSamplePipelineCallbacks callbacks;
+
+    // Optional latest-sample mirrors for blocking guided calibration flows.
+    // They let setup calibration observe normal runtime samples without
+    // recursively draining FIFO or bypassing the production sample pipeline.
+    Lsm6dsv::Sample* lastScaledSample = nullptr;
+    Lsm6dsv::Sample* lastCalibratedSample = nullptr;
+    uint32_t* lastImuSampleSequence = nullptr;
 };
 
 void imuPipelineUpdateLatestTemperature(ImuSamplePipelineDeps& deps);
