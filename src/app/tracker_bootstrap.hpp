@@ -13,6 +13,7 @@
 #include "sensor/fifo_calibrations.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/imu_quality.hpp"
+#include "runtime/runtime_bias_types.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
@@ -39,6 +40,7 @@ struct TrackerBootstrapDeps {
 
     ImuCalibration* imuCal = nullptr;
     GyroTempCompensator* gyroTempComp = nullptr;
+    RuntimeGyroBiasEstimator* runtimeBias = nullptr;
     ImuQualityMonitor* quality = nullptr;
     Ahrs6Dof* ahrs = nullptr;
     TrackerSerialStreamState* streamState = nullptr;

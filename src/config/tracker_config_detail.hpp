@@ -28,6 +28,11 @@ static constexpr uint16_t SCHEMA_QUALITY_VERSION = 1;
 static constexpr uint16_t SCHEMA_OUTPUT_VERSION = 2;
 static constexpr uint16_t SCHEMA_FRAME_VERSION = 1;
 
+// Reuse TrackerAhrsRuntimeConfigPersisted::reserved without changing the
+// persistent config blob size. Bit 0 means the production runtime should start
+// the cautious stationary gyro-bias estimator once base gyro/temp/accel
+// calibration is valid. The estimator trim itself is never persisted.
+static constexpr uint8_t AHRS_RUNTIME_FLAG_RUNTIME_BIAS_ENABLED = 0x01;
 
 static constexpr uint32_t DEFAULT_SPI_HZ = cfg::SPI_HZ;
 static constexpr uint32_t LEGACY_SPI_HZ = cfg::LEGACY_SPI_HZ;

@@ -77,6 +77,20 @@ bool trackerBootstrapLoadConfigAndApplyRuntime(const TrackerBootstrapDeps& deps)
 
     deps.config->applyToImuCalibration(*deps.imuCal);
     deps.config->applyToGyroTempComp(*deps.gyroTempComp);
+
+    if (deps.runtimeBias) {
+        const bool requested = (deps.config->data.ahrsRuntime.reserved &
+                                tracker_config_detail::AHRS_RUNTIME_FLAG_RUNTIME_BIAS_ENABLED) != 0;
+        const bool baseReady = deps.imuCal->gyroBiasValid &&
+                               deps.imuCal->accelCalValid &&
+                               deps.gyroTempComp->valid() &&
+                               deps.config->data.gyroCal.tempCompEnabled &&
+                               deps.config->data.gyroTempQuality.fitQuality > 0.0f;
+        deps.runtimeBias->runtimeTrimRadS = Vec3::zero();
+        deps.runtimeBias->resetCounters();
+        deps.runtimeBias->enabled = requested && baseReady;
+    }
+
     deps.ahrs->setConfig(deps.config->makeAhrsConfig());
 
     deps.quality->setConfig(deps.config->makeQualityConfig());

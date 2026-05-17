@@ -60,6 +60,8 @@ void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("ahrsAccelNormStdGoodBadG="); out.print(cfg.data.ahrsRuntime.accelNormStdGoodG, 6); out.print(','); out.println(cfg.data.ahrsRuntime.accelNormStdBadG, 6);
     out.print("ahrsGyroMotionGoodBadDps="); out.print(cfg.data.ahrsRuntime.gyroMotionGoodDps, 3); out.print(','); out.println(cfg.data.ahrsRuntime.gyroMotionBadDps, 3);
     out.print("ahrsNormalizeEvery="); out.println(cfg.data.ahrsRuntime.normalizeEvery);
+    out.print("runtimeBiasAutostart=");
+    out.println((cfg.data.ahrsRuntime.reserved & tracker_config_detail::AHRS_RUNTIME_FLAG_RUNTIME_BIAS_ENABLED) ? "yes" : "no");
 
     out.println("-- gyro calibration --");
     out.print("gyroBiasValid="); out.println(cfg.data.gyroCal.biasValid ? "yes" : "no");

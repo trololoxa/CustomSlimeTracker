@@ -57,6 +57,7 @@ static TrackerBootstrapDeps makeTrackerBootstrapDeps() {
     deps.configLoadedFromNvs = &g_configLoadedFromNvs;
     deps.imuCal = &g_imuCal;
     deps.gyroTempComp = &g_gyroTempComp;
+    deps.runtimeBias = &g_runtimeBias;
     deps.quality = &g_quality;
     deps.ahrs = &g_ahrs6dof;
     deps.streamState = &g_streamState;

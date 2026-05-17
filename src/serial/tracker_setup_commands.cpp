@@ -112,15 +112,18 @@ struct SetupReadiness {
     bool wifiConnected = false;
     bool slimeEnabled = false;
     bool slimeServerFound = false;
+    bool runtimeBiasReady = false;
+    bool runtimeBiasEnabled = false;
     bool localOutputReady = false;
     bool runtimeWired = false;
 
     bool tracking6dof() const { return configValid && gyroReady && accelReady; }
     bool tempQuality() const { return gyroReady && tempReady && !tempHardExtrapolated; }
+    bool runtimeBias() const { return runtimeBiasReady && runtimeBiasEnabled; }
     bool magYaw() const { return tracking6dof() && magDriver && magCal && magAxis; }
     bool network() const { return wifiConfigured && wifiEnabled; }
     bool slimevr() const { return tracking6dof() && network() && localOutputReady && runtimeWired; }
-    bool production() const { return slimevr() && tempQuality() && magYaw(); }
+    bool production() const { return slimevr() && tempQuality() && runtimeBias() && magYaw(); }
 };
 
 SetupReadiness readSetupReadiness(TrackerSerialCommandContext& ctx) {
@@ -158,6 +161,9 @@ SetupReadiness readSetupReadiness(TrackerSerialCommandContext& ctx) {
         r.magAxis = ctx.config->data.magCal.axisAlignmentValid;
         r.magYawApply = ctx.config->data.magYaw.applyEnabled;
     }
+
+    r.runtimeBiasReady = r.gyroReady && r.accelReady && r.tempReady;
+    r.runtimeBiasEnabled = ctx.runtimeBias && ctx.runtimeBias->enabled;
 
     if (ctx.networkConfig) {
         const auto& n = ctx.networkConfig->data;
@@ -258,6 +264,8 @@ void printSetupStatus(TrackerSerialCommandContext& ctx) {
     printStep(s, "mag_hard_soft", r.magCal, "setup calibration");
     printStep(s, "mag_axis", r.magAxis, "setup calibration axis <bodyX> <bodyY> <bodyZ>");
     printStep(s, "temperature_model", r.tempQuality(), "setup calibration");
+    printStep(s, "runtime_bias", r.runtimeBias(), "setup calibration");
+    s.print("runtime_bias_enabled="); s.println(yesNo(r.runtimeBiasEnabled));
     s.print("temperature_range_current=");
     if (!r.tempReady) s.println("missing");
     else if (r.tempHardExtrapolated) s.println("hard_extrapolated");
@@ -273,6 +281,7 @@ void printSetupStatus(TrackerSerialCommandContext& ctx) {
     s.println(yesNo(r.gyroReady));
     s.print("slimevr_server_found="); s.println(yesNo(r.slimeServerFound));
     s.print("mag_yaw_apply_enabled="); s.println(yesNo(r.magYawApply));
+    s.print("runtime_bias_enabled="); s.println(yesNo(r.runtimeBiasEnabled));
 
     if (!r.production()) {
         s.println("# Use setup guide for the full first-run sequence.");
@@ -1643,6 +1652,8 @@ bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx) {
     ctx.config->data.ahrs.useAccelCorrection = true;
     ctx.config->data.ahrsRuntime.accelCorrectionEnabled = true;
     ctx.config->data.ahrsRuntime.adaptiveAccelCorrection = true;
+    ctx.config->data.ahrsRuntime.reserved |=
+        tracker_config_detail::AHRS_RUNTIME_FLAG_RUNTIME_BIAS_ENABLED;
 
     if (ctx.gyroTempComp) ctx.gyroTempComp->setEnabled(true);
     if (ctx.setRuntimeGyroBiasEnabled) {
