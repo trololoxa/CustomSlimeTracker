@@ -371,8 +371,16 @@ bool MagRuntimeController::applyCalibration(bool persist) {
     stream().println(result.expectedNorm, 6);
     stream().print("# OK mag residualRms=");
     stream().println(result.residualRms, 6);
+    stream().print("# OK mag geometricResidualRms=");
+    stream().println(result.geometricResidualRms, 6);
+    stream().print("# OK mag normalizedResidualRms=");
+    stream().println(result.normalizedResidualRms, 6);
     stream().print("# OK mag coverageScore=");
     stream().println(result.coverageScore, 6);
+    stream().print("# OK mag directionalCoverageScore=");
+    stream().println(result.directionalCoverageScore, 6);
+    stream().print("# OK mag inlierRatio=");
+    stream().println(result.inlierRatio, 6);
 
     return true;
 }

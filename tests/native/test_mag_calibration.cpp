@@ -111,6 +111,54 @@ int main() {
         CHECK(ctx, correctedNormRms(rawSamples, result) < 1.5f);
     }
 
+
+
+    {
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        params.maxAlgebraicResidualRms = 0.08f;
+        params.minInlierRatio = 0.90f;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+
+        const Vec3 hard(-180.0f, 95.0f, 42.0f);
+        const float target = 90.0f;
+        const Mat3 rot = makeRotZ(-0.51f);
+        const Mat3 diag = Mat3::diagonal(target / 130.0f, target / 80.0f, target / 60.0f);
+        const Mat3 trueSoft = rot * diag * rot.transposed();
+        Mat3 trueSoftInv;
+        CHECK(ctx, trueSoft.inverse(trueSoftInv));
+
+        std::vector<Vec3> rawSamples;
+        uint32_t seq = 1;
+        for (const Vec3& dir : makeDirections()) {
+            const Vec3 raw = hard + trueSoftInv * (dir * target);
+            rawSamples.push_back(Vec3(
+                static_cast<float>(std::lround(raw.x)),
+                static_cast<float>(std::lround(raw.y)),
+                static_cast<float>(std::lround(raw.z))
+            ));
+            pushRaw(collector, raw, seq++);
+        }
+        for (uint32_t i = 0; i < 28; ++i) {
+            const float sign = (i & 1U) ? 1.0f : -1.0f;
+            pushRaw(collector, Vec3(900.0f * sign, -750.0f, 640.0f + static_cast<float>(i * 3U)), seq++);
+        }
+        collector.stop();
+
+        MagCalibrationResult result;
+        CHECK(ctx, collector.compute(result));
+        CHECK(ctx, result.valid);
+        CHECK_NEAR(ctx, result.hardIron.x, hard.x, 2.0f);
+        CHECK_NEAR(ctx, result.hardIron.y, hard.y, 2.0f);
+        CHECK_NEAR(ctx, result.hardIron.z, hard.z, 2.0f);
+        CHECK(ctx, result.inlierRatio < 0.98f);
+        CHECK(ctx, result.inlierRatio > 0.92f);
+        CHECK(ctx, result.directionalCoverageScore > 0.80f);
+        CHECK(ctx, result.normalizedResidualRms < 0.04f);
+        CHECK(ctx, correctedNormRms(rawSamples, result) < 2.0f);
+    }
+
     {
         MagCalibrationParams params;
         params.minSamples = 50;

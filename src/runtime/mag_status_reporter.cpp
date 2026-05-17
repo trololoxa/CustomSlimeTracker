@@ -320,8 +320,13 @@ void magStatusPrintCalibration(Stream& out, const MagStatusReporterDeps& deps) {
 
         out.print("computed_expected_norm="); out.println(result.expectedNorm, 6);
         out.print("computed_residual_rms="); out.println(result.residualRms, 6);
+        out.print("computed_geometric_residual_rms="); out.println(result.geometricResidualRms, 6);
+        out.print("computed_normalized_residual_rms="); out.println(result.normalizedResidualRms, 6);
         out.print("computed_coverage_score="); out.println(result.coverageScore, 6);
+        out.print("computed_directional_coverage_score="); out.println(result.directionalCoverageScore, 6);
         out.print("computed_axis_ratio="); out.println(result.axisRatio, 6);
+        out.print("computed_inliers="); out.print(result.inlierSamples); out.print('/'); out.println(collector.samples());
+        out.print("computed_inlier_ratio="); out.println(result.inlierRatio, 6);
 
         out.print("computed_radius_xyz=");
         out.print(result.radiusX, 3); out.print(',');

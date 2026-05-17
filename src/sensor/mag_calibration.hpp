@@ -11,8 +11,13 @@ struct MagCalibrationParams {
     uint32_t minSamples = 300;
     float minAxisRadius = 20.0f;
     float minCoverageScore = 0.35f;
+    float minDirectionalCoverageScore = 0.65f;
     float maxAxisRatio = 6.0f;
     float maxAlgebraicResidualRms = 0.12f;
+    float maxGeometricResidualRmsFactor = 0.10f;
+    float outlierSigma = 3.0f;
+    float outlierMinResidualFactor = 0.08f;
+    float minInlierRatio = 0.82f;
     float trustNormMinFactor = 0.65f;
     float trustNormMaxFactor = 1.35f;
 };
@@ -28,8 +33,19 @@ struct MagCalibrationResult {
     float radiusY = 0.0f;
     float radiusZ = 0.0f;
     float coverageScore = 0.0f;
+    float directionalCoverageScore = 0.0f;
     float residualRms = 0.0f;
+    float geometricResidualRms = 0.0f;
+    float normalizedResidualRms = 0.0f;
     float axisRatio = 0.0f;
+    float inlierRatio = 0.0f;
+    uint32_t inlierSamples = 0;
+};
+
+struct MagCalibrationStoredSample {
+    int16_t x = 0;
+    int16_t y = 0;
+    int16_t z = 0;
 };
 
 class MagCalibrationCollector {
@@ -75,6 +91,8 @@ public:
     const MagCalibrationResult& lastResult() const;
 
 private:
+    static constexpr uint16_t kMaxStoredSamples = 768;
+
     MagCalibrationParams params_;
 
     bool active_ = false;
@@ -100,8 +118,9 @@ private:
     float normMax_ = 0.0f;
     double normSum_ = 0.0;
 
-    double ellipsoidNormal_[9][9] = {};
-    double ellipsoidRhs_[9] = {};
+    MagCalibrationStoredSample stored_[kMaxStoredSamples] = {};
+    uint16_t storedSamples_ = 0;
+    uint32_t storedSequence_ = 0;
 
     MagCalibrationResult lastResult_;
 };
