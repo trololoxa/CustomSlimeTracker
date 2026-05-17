@@ -18,6 +18,9 @@ namespace tracker {
 //   - Track hard and near saturation for accel/gyro.
 //   - Provide AHRS decisions: update/skip and accel-correction allow/deny.
 //   - Request FIFO recovery after serious stream faults.
+// Unknown FIFO tags are diagnosed but are not recovery-triggering by
+// default, because valid-but-disabled batched sources such as sensor-hub
+// words can otherwise create an endless reset loop.
 //
 // This module does NOT modify RawSample. It creates a parallel quality result
 // suitable for logs, output packets, and AHRS gating.
@@ -81,7 +84,7 @@ struct ImuQualityConfig {
     // Recovery policy.
     bool requestRecoveryOnFifoOverrun = true;
     bool requestRecoveryOnFifoFull = true;
-    bool requestRecoveryOnUnknownTag = true;
+    bool requestRecoveryOnUnknownTag = false;
     bool requestRecoveryOnTimestampBackwards = true;
     bool requestRecoveryOnTimestampQueueOverflow = true;
 

@@ -99,6 +99,10 @@ struct SetupReadiness {
     bool tempReady = false;
     bool tempEnabled = false;
     bool tempRangeValid = false;
+    bool tempSoftExtrapolated = false;
+    bool tempHardExtrapolated = false;
+    float tempDistanceToRangeC = 0.0f;
+    float tempExtrapolationConfidence = 1.0f;
     bool magDriver = false;
     bool magCal = false;
     bool magAxis = false;
@@ -112,7 +116,7 @@ struct SetupReadiness {
     bool runtimeWired = false;
 
     bool tracking6dof() const { return configValid && gyroReady && accelReady; }
-    bool tempQuality() const { return gyroReady && tempReady && tempRangeValid; }
+    bool tempQuality() const { return gyroReady && tempReady && !tempHardExtrapolated; }
     bool magYaw() const { return tracking6dof() && magDriver && magCal && magAxis; }
     bool network() const { return wifiConfigured && wifiEnabled; }
     bool slimevr() const { return tracking6dof() && network() && localOutputReady && runtimeWired; }
@@ -132,12 +136,20 @@ SetupReadiness readSetupReadiness(TrackerSerialCommandContext& ctx) {
         r.tempReady = s.valid && s.enabled && s.hasCalibratedRange && s.fitQuality > 0.0f;
         r.tempEnabled = s.enabled;
         r.tempRangeValid = s.hasCalibratedRange && !s.tempOutOfRange;
+        r.tempSoftExtrapolated = s.tempSoftExtrapolated;
+        r.tempHardExtrapolated = s.tempHardExtrapolated;
+        r.tempDistanceToRangeC = s.tempDistanceToRangeC;
+        r.tempExtrapolationConfidence = s.extrapolationConfidence;
     } else if (ctx.config) {
         r.tempReady = ctx.config->data.gyroCal.tempCompValid &&
                       ctx.config->data.gyroTempQuality.fitQuality > 0.0f;
         r.tempEnabled = ctx.config->data.gyroCal.tempCompEnabled;
         r.tempRangeValid = ctx.config->data.gyroTempQuality.tempRangeMaxC >
                            ctx.config->data.gyroTempQuality.tempRangeMinC;
+        r.tempSoftExtrapolated = false;
+        r.tempHardExtrapolated = false;
+        r.tempDistanceToRangeC = 0.0f;
+        r.tempExtrapolationConfidence = 1.0f;
     }
 
     if (ctx.config) {
@@ -224,6 +236,14 @@ void printSetupStatus(TrackerSerialCommandContext& ctx) {
     printStep(s, "mag_hard_soft", r.magCal, "setup calibration");
     printStep(s, "mag_axis", r.magAxis, "setup calibration axis <bodyX> <bodyY> <bodyZ>");
     printStep(s, "temperature_model", r.tempQuality(), "setup calibration");
+    s.print("temperature_range_current=");
+    if (!r.tempReady) s.println("missing");
+    else if (r.tempHardExtrapolated) s.println("hard_extrapolated");
+    else if (r.tempSoftExtrapolated) s.println("soft_extrapolated");
+    else if (!r.tempRangeValid) s.println("outside");
+    else s.println("in_range");
+    s.print("temperature_range_distance_c="); s.println(r.tempDistanceToRangeC, 3);
+    s.print("temperature_extrapolation_confidence="); s.println(r.tempExtrapolationConfidence, 3);
     printStep(s, "slimevr_runtime", r.slimevr(), "setup wifi; slime status");
 
     s.println();

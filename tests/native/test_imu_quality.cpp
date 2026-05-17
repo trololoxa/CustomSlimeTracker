@@ -101,6 +101,25 @@ static void testSaturationAndAccelOutlierGates(TestContext& ctx) {
     CHECK(ctx, c.accelCorrectionDisabledSamples == 1);
 }
 
+
+static void testUnknownTagAloneDoesNotRequestRecoveryByDefault(TestContext& ctx) {
+    ImuQualityMonitor monitor;
+    Lsm6dsvFifoReader::DrainStats stats = makeStats();
+
+    monitor.syncFifoStats(stats);
+    stats.unknownWords = 1;
+
+    ImuQualityResult q = monitor.evaluate(makeRaw(1000), makeSample(1000), stats, true);
+    CHECK(ctx, q.has(imu_quality_flags::FIFO_UNKNOWN_TAG));
+    CHECK(ctx, !q.has(imu_quality_flags::FIFO_RECOVERY_REQUESTED));
+    CHECK(ctx, !q.shouldRequestFifoRecovery);
+    CHECK(ctx, !monitor.recoveryRequested());
+
+    const ImuQualityCounters& c = monitor.counters();
+    CHECK(ctx, c.fifoUnknownTagEvents == 1);
+    CHECK(ctx, c.fifoRecoveryRequests == 0);
+}
+
 static void testFifoStatsDeltaRequestsRecovery(TestContext& ctx) {
     ImuQualityMonitor monitor;
     Lsm6dsvFifoReader::DrainStats stats = makeStats();
@@ -137,6 +156,7 @@ int main() {
     TestContext ctx;
     testTimestampGapAndRecovery(ctx);
     testSaturationAndAccelOutlierGates(ctx);
+    testUnknownTagAloneDoesNotRequestRecoveryByDefault(ctx);
     testFifoStatsDeltaRequestsRecovery(ctx);
     return ctx.finish("test_imu_quality");
 }

@@ -322,12 +322,15 @@ void Lsm6dsvFifoReader::processWord(const FifoWord& w, uint16_t statusFlags, uin
                 break;
 
             case TAG_SENSORHUB_SLAVE0:
+                // TAG 0x0E is a valid LSM6DSV sensor-hub FIFO tag. If the
+                // firmware currently has the mag parser disabled, drop it as
+                // an inactive external-sensor word instead of treating it as
+                // FIFO corruption. This prevents first-run/empty-NVS boots or
+                // abort paths from entering an endless FIFO recovery loop if
+                // stale sensor-hub batching is still present in the FIFO.
+                stats_.sensorHubSlave0Words++;
                 if (cfg_.enableSensorHubSlave0) {
-                    stats_.sensorHubSlave0Words++;
                     parseSensorHubSlave0Word(w, drainTimestampUs);
-                } else {
-                    stats_.unknownWords++;
-                    pendingFlags_ |= FIFO_FLAG_UNKNOWN_TAG;
                 }
                 break;
 

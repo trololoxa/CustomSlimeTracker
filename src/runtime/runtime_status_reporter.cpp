@@ -46,6 +46,10 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
     out.print("gyro_temp_enabled="); out.println(tempSnap.enabled ? "yes" : "no");
     out.print("gyro_temp_range_valid="); out.println(tempSnap.hasCalibratedRange ? "yes" : "no");
     out.print("gyro_temp_out_of_range="); out.println(tempSnap.tempOutOfRange ? "yes" : "no");
+    out.print("gyro_temp_soft_extrapolated="); out.println(tempSnap.tempSoftExtrapolated ? "yes" : "no");
+    out.print("gyro_temp_hard_extrapolated="); out.println(tempSnap.tempHardExtrapolated ? "yes" : "no");
+    out.print("gyro_temp_distance_to_range_c="); out.println(tempSnap.tempDistanceToRangeC, 6);
+    out.print("gyro_temp_extrapolation_confidence="); out.println(tempSnap.extrapolationConfidence, 6);
     out.print("gyro_temp_quality_flag=0x");
     out.println((tempSnap.valid && tempSnap.enabled && tempSnap.hasCalibratedRange && tempSnap.tempOutOfRange)
         ? imu_quality_flags::TEMP_COMP_OUT_OF_RANGE

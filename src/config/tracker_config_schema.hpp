@@ -259,7 +259,7 @@ struct TrackerQualityConfigPersisted {
 
     bool requestRecoveryOnFifoOverrun = true;
     bool requestRecoveryOnFifoFull = true;
-    bool requestRecoveryOnUnknownTag = true;
+    bool requestRecoveryOnUnknownTag = false;
     bool requestRecoveryOnTimestampBackwards = true;
     bool requestRecoveryOnTimestampQueueOverflow = true;
 
