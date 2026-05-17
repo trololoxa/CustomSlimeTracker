@@ -329,7 +329,18 @@ bool MagRuntimeController::applyCalibration(bool persist) {
     MagCalibrationResult result;
     if (!deps_.calibrationCollector->compute(result)) {
         stream().println("# ERR mag calibration compute failed");
-        stream().println("# Need more samples and wider 3-axis rotation coverage");
+        stream().print("# mag_cal_failure_reason=");
+        stream().println(deps_.calibrationCollector->lastFailureReasonName());
+        stream().print("# mag_cal_samples="); stream().println(deps_.calibrationCollector->samples());
+        stream().print("# mag_cal_span_xyz=");
+        stream().print(deps_.calibrationCollector->spanX(), 3); stream().print(',');
+        stream().print(deps_.calibrationCollector->spanY(), 3); stream().print(',');
+        stream().println(deps_.calibrationCollector->spanZ(), 3);
+        stream().print("# mag_cal_norm_min_mean_max=");
+        stream().print(deps_.calibrationCollector->normMin(), 3); stream().print(',');
+        stream().print(deps_.calibrationCollector->normMean(), 3); stream().print(',');
+        stream().println(deps_.calibrationCollector->normMax(), 3);
+        stream().println("# Need wider slow 3-axis rotation coverage; continue rotating away from metal/magnets and retry/continue.");
         return false;
     }
 

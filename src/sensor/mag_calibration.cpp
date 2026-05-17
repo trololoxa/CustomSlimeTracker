@@ -3,6 +3,23 @@
 #include <cmath>
 
 namespace tracker {
+
+const char* magCalibrationFailureReasonName(MagCalibrationFailureReason reason) {
+    switch (reason) {
+        case MagCalibrationFailureReason::None: return "none";
+        case MagCalibrationFailureReason::InsufficientSamples: return "insufficient_samples";
+        case MagCalibrationFailureReason::AxisRadiusTooSmall: return "axis_radius_too_small";
+        case MagCalibrationFailureReason::BoxCoverageTooLow: return "box_coverage_too_low";
+        case MagCalibrationFailureReason::RawNormFilterFailed: return "raw_norm_filter_failed";
+        case MagCalibrationFailureReason::EllipsoidFitFailed: return "ellipsoid_fit_failed";
+        case MagCalibrationFailureReason::InlierRatioTooLow: return "inlier_ratio_too_low";
+        case MagCalibrationFailureReason::GeometricResidualTooHigh: return "geometric_residual_too_high";
+        case MagCalibrationFailureReason::DirectionalCoverageTooLow: return "directional_coverage_too_low";
+        case MagCalibrationFailureReason::AlgebraicResidualTooHigh: return "algebraic_residual_too_high";
+    }
+    return "unknown";
+}
+
 namespace {
 
 constexpr int kMagFitTerms = 9;
@@ -454,6 +471,7 @@ void MagCalibrationCollector::reset() {
     storedSequence_ = 0;
     for (auto& s : stored_) s = MagCalibrationStoredSample{};
     lastResult_ = MagCalibrationResult{};
+    lastFailureReason_ = MagCalibrationFailureReason::None;
 }
 
 void MagCalibrationCollector::start(uint32_t nowMs) {
@@ -526,9 +544,11 @@ void MagCalibrationCollector::push(const Lsm6dsvFifoReader::MagRawSample& m, flo
 
 bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
     out = MagCalibrationResult{};
+    lastFailureReason_ = MagCalibrationFailureReason::None;
 
     const uint32_t minSamples = params_.minSamples;
     if (!hasData_ || samples_ < minSamples || storedSamples_ < minSamples) {
+        lastFailureReason_ = MagCalibrationFailureReason::InsufficientSamples;
         lastResult_ = out;
         return false;
     }
@@ -544,6 +564,7 @@ bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
     if (boxRadiusX < params_.minAxisRadius ||
         boxRadiusY < params_.minAxisRadius ||
         boxRadiusZ < params_.minAxisRadius) {
+        lastFailureReason_ = MagCalibrationFailureReason::AxisRadiusTooSmall;
         lastResult_ = out;
         return false;
     }
@@ -556,18 +577,21 @@ bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
     if (boxRadiusZ > maxBoxRadius) maxBoxRadius = boxRadiusZ;
     const float boxCoverageScore = maxBoxRadius > 0.0f ? minBoxRadius / maxBoxRadius : 0.0f;
     if (!tracker::isFinite(boxCoverageScore) || boxCoverageScore < params_.minCoverageScore) {
+        lastFailureReason_ = MagCalibrationFailureReason::BoxCoverageTooLow;
         lastResult_ = out;
         return false;
     }
 
     FitAccumulator all;
     if (!accumulateRawNormFiltered(stored_, storedSamples_, all) || all.count < minSamples) {
+        lastFailureReason_ = MagCalibrationFailureReason::RawNormFilterFailed;
         lastResult_ = out;
         return false;
     }
 
     FitCandidate initial;
     if (!fitFromAccumulator(all, params_, initial)) {
+        lastFailureReason_ = MagCalibrationFailureReason::EllipsoidFitFailed;
         lastResult_ = out;
         return false;
     }
@@ -590,21 +614,25 @@ bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
     const GeometricMetrics finalMetrics = computeGeometricMetrics(finalFit, stored_, storedSamples_, finalThreshold);
 
     if (finalMetrics.inliers < minSamples || finalMetrics.inlierRatio < params_.minInlierRatio) {
+        lastFailureReason_ = MagCalibrationFailureReason::InlierRatioTooLow;
         lastResult_ = out;
         return false;
     }
     if (!tracker::isFinite(finalMetrics.normalizedRms) ||
         finalMetrics.normalizedRms > params_.maxGeometricResidualRmsFactor) {
+        lastFailureReason_ = MagCalibrationFailureReason::GeometricResidualTooHigh;
         lastResult_ = out;
         return false;
     }
     if (!tracker::isFinite(finalMetrics.directionalCoverageScore) ||
         finalMetrics.directionalCoverageScore < params_.minDirectionalCoverageScore) {
+        lastFailureReason_ = MagCalibrationFailureReason::DirectionalCoverageTooLow;
         lastResult_ = out;
         return false;
     }
     if (!tracker::isFinite(finalFit.algebraicResidualRms) ||
         finalFit.algebraicResidualRms > params_.maxAlgebraicResidualRms) {
+        lastFailureReason_ = MagCalibrationFailureReason::AlgebraicResidualTooHigh;
         lastResult_ = out;
         return false;
     }
@@ -629,6 +657,12 @@ bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
 
     lastResult_ = out;
     return true;
+}
+
+MagCalibrationFailureReason MagCalibrationCollector::lastFailureReason() const { return lastFailureReason_; }
+
+const char* MagCalibrationCollector::lastFailureReasonName() const {
+    return magCalibrationFailureReasonName(lastFailureReason_);
 }
 
 MagCalibrationResult MagCalibrationCollector::compute() {

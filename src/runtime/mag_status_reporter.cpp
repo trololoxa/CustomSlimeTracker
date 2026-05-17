@@ -302,6 +302,10 @@ void magStatusPrintCalibration(Stream& out, const MagStatusReporterDeps& deps) {
     out.println(collector.normMax(), 3);
 
     out.print("can_compute="); out.println(canCompute ? "yes" : "no");
+    if (!canCompute) {
+        out.print("compute_failure_reason=");
+        out.println(collector.lastFailureReasonName());
+    }
 
     if (canCompute) {
         out.print("computed_hard_iron=");

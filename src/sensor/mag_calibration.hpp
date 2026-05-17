@@ -7,6 +7,21 @@
 
 namespace tracker {
 
+enum class MagCalibrationFailureReason : uint8_t {
+    None = 0,
+    InsufficientSamples,
+    AxisRadiusTooSmall,
+    BoxCoverageTooLow,
+    RawNormFilterFailed,
+    EllipsoidFitFailed,
+    InlierRatioTooLow,
+    GeometricResidualTooHigh,
+    DirectionalCoverageTooLow,
+    AlgebraicResidualTooHigh,
+};
+
+const char* magCalibrationFailureReasonName(MagCalibrationFailureReason reason);
+
 struct MagCalibrationParams {
     uint32_t minSamples = 300;
     float minAxisRadius = 20.0f;
@@ -89,6 +104,8 @@ public:
     float normMean() const;
 
     const MagCalibrationResult& lastResult() const;
+    MagCalibrationFailureReason lastFailureReason() const;
+    const char* lastFailureReasonName() const;
 
 private:
     static constexpr uint16_t kMaxStoredSamples = 768;
@@ -123,6 +140,7 @@ private:
     uint32_t storedSequence_ = 0;
 
     MagCalibrationResult lastResult_;
+    MagCalibrationFailureReason lastFailureReason_ = MagCalibrationFailureReason::None;
 };
 
 } // namespace tracker
