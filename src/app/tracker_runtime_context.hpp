@@ -69,6 +69,7 @@ static float g_latestTempC = 25.0f;
 static bool g_configLoadedFromNvs = false;
 static uint32_t g_lastHeartbeatMs = 0;
 static float g_lastOutputConfidence = 0.0f;
+static uint32_t g_lastQualityFlags = 0;
 
 static TrackerPerfCounters g_perf;
 static FifoInterruptEventSource g_fifoEvents;

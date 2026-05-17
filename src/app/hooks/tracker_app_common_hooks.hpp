@@ -33,6 +33,7 @@ static void resetFifoRuntimeCounters() {
 
     g_fifoEvents.reset();
     g_lastSampleTimestampUs = 0;
+    g_lastQualityFlags = 0;
 }
 
 static bool consumeFifoInterruptEvent(uint32_t timeoutMs) {

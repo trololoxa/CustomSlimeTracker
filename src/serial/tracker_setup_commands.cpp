@@ -10,6 +10,7 @@
 #include "network/wifi_manager.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
 #include "runtime/gyro_temp_calibration_capture.hpp"
+#include "runtime/runtime_bias_types.hpp"
 #include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/fifo_calibrations.hpp"
@@ -44,8 +45,12 @@ const char* readyWord(bool v) {
 void copySetupCString(char* dst, size_t dstSize, const char* src) {
     if (!dst || dstSize == 0) return;
     if (!src) src = "";
-    std::strncpy(dst, src, dstSize - 1);
-    dst[dstSize - 1] = '\0';
+
+    size_t i = 0;
+    for (; i + 1 < dstSize && src[i] != '\0'; ++i) {
+        dst[i] = src[i];
+    }
+    dst[i] = '\0';
 }
 
 TrackerWifiManagerConfig makeSetupWifiManagerConfig(const TrackerNetworkConfig& net) {
@@ -252,6 +257,8 @@ struct SetupCalibrationTransaction {
     ImuCalibration imuSnapshot;
     bool haveConfig = false;
     bool haveImu = false;
+    RuntimeGyroBiasEstimator runtimeBiasSnapshot;
+    bool haveRuntimeBias = false;
     bool originalMagDriverEnabled = false;
     bool originalMagYawApplyEnabled = false;
     bool committed = false;
@@ -266,6 +273,10 @@ struct SetupCalibrationTransaction {
         if (ctx.imuCal) {
             imuSnapshot = *ctx.imuCal;
             haveImu = true;
+        }
+        if (ctx.runtimeBias) {
+            runtimeBiasSnapshot = *ctx.runtimeBias;
+            haveRuntimeBias = true;
         }
     }
 
@@ -291,7 +302,11 @@ struct SetupCalibrationTransaction {
         }
 
         if (ctx.accelCalRunner) ctx.accelCalRunner->reset();
-        if (ctx.resetRuntimeGyroBiasEstimator) ctx.resetRuntimeGyroBiasEstimator(ctx.resetRuntimeGyroBiasEstimatorUser);
+        if (haveRuntimeBias && ctx.runtimeBias) {
+            *ctx.runtimeBias = runtimeBiasSnapshot;
+        } else if (ctx.resetRuntimeGyroBiasEstimator) {
+            ctx.resetRuntimeGyroBiasEstimator(ctx.resetRuntimeGyroBiasEstimatorUser);
+        }
         if (ctx.resetMagCalibration) ctx.resetMagCalibration(ctx.resetMagCalibrationUser);
         if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
         if (ctx.resetMagYawCorrection) ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
@@ -1026,30 +1041,28 @@ bool waitSetupEnter(TrackerSerialCommandContext& ctx, const char* prompt, uint32
     return readSetupLine(ctx, prompt, line, sizeof(line), timeoutMs);
 }
 
-bool waitSetupEnterOrTimeout(TrackerSerialCommandContext& ctx,
-                             const char* prompt,
-                             uint32_t durationMs) {
+bool setupPrepareCalibrationRuntime(TrackerSerialCommandContext& ctx) {
     Stream& s = out(ctx);
-    drainSetupInput(ctx);
-    if (prompt && prompt[0]) s.println(prompt);
 
-    const uint32_t startMs = millis();
-    uint32_t lastPrintMs = 0;
-    while (millis() - startMs < durationMs) {
-        serviceSetupRuntime(ctx);
-        while (s.available() > 0) {
-            const int c = s.read();
-            if (c == '\n' || c == '\r') return true;
-        }
-        const uint32_t nowMs = millis();
-        if (nowMs - lastPrintMs >= 5000UL) {
-            lastPrintMs = nowMs;
-            s.print("# setup calibration move_elapsed_s=");
-            s.print((nowMs - startMs) / 1000UL);
-            s.print(" target_s=");
-            s.println(durationMs / 1000UL);
-        }
-        delay(5);
+    // A full setup calibration must measure the physical gyro bias/temperature
+    // model, not the residual left after the previous runtime trim.  Pause and
+    // clear the transient runtime-bias estimator before collecting rest/temp
+    // samples.  The transaction snapshot restores it on failure; successful
+    // setup re-enables it after the new calibrated base model is committed.
+    if (ctx.runtimeBias) {
+        ctx.runtimeBias->enabled = false;
+        ctx.runtimeBias->runtimeTrimRadS = Vec3::zero();
+        ctx.runtimeBias->resetCounters();
+        s.println("# setup calibration: runtime gyro bias estimator paused and transient trim cleared");
+        return true;
+    }
+
+    if (ctx.setRuntimeGyroBiasEnabled) {
+        (void)ctx.setRuntimeGyroBiasEnabled(false, ctx.setRuntimeGyroBiasEnabledUser);
+    }
+    if (ctx.resetRuntimeGyroBiasEstimator) {
+        ctx.resetRuntimeGyroBiasEstimator(ctx.resetRuntimeGyroBiasEstimatorUser);
+        s.println("# setup calibration: runtime gyro bias estimator reset through hook");
     }
     return true;
 }
@@ -1514,6 +1527,7 @@ void cmdSetupCalibration(TrackerSerialCommandContext& ctx, int argc, char** argv
     }
 
     SetupCalibrationTransaction tx(ctx);
+    setupPrepareCalibrationRuntime(ctx);
     auto fail = [&](const char* reason) {
         tx.rollback(ctx, reason);
     };

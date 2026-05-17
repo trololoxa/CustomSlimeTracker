@@ -22,6 +22,7 @@ struct ImuCalibration;
 class GyroTempCompensator;
 class ImuQualityMonitor;
 class Ahrs6Dof;
+struct RuntimeGyroBiasEstimator;
 struct FifoCalibrationIo;
 class FifoAccel6PosCalibrationRunner;
 class GyroTempCalibrationCapture;
@@ -119,6 +120,7 @@ struct TrackerSerialCommandContext {
     GyroTempCompensator* gyroTempComp = nullptr;
     ImuQualityMonitor* quality = nullptr;
     Ahrs6Dof* ahrs = nullptr;
+    RuntimeGyroBiasEstimator* runtimeBias = nullptr;
 
     FifoCalibrationIo* calibrationIo = nullptr;
     FifoAccel6PosCalibrationRunner* accelCalRunner = nullptr;

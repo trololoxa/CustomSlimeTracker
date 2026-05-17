@@ -13,6 +13,7 @@ static void hookResetFifoRuntime(void* user) {
 static void hookResetAhrsRuntime(void* user) {
     (void)user;
     g_lastSampleTimestampUs = 0;
+    g_lastQualityFlags = 0;
     resetOrientationDependentState("ahrs_or_config_reset", lsmFifo.stats().lastAssignedTimestampUs, false);
 }
 
@@ -207,6 +208,7 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.gyroTempComp = &g_gyroTempComp;
     objects.quality = &g_quality;
     objects.ahrs = &g_ahrs6dof;
+    objects.runtimeBias = &g_runtimeBias;
     objects.calibrationIo = &g_calIo;
     objects.accelCalRunner = &g_accelCalRunner;
     objects.gyroTempCapture = &g_gyroTempCapture;

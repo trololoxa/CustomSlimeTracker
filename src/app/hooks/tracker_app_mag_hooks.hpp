@@ -145,7 +145,10 @@ static TrackingStateInputs makeTrackingStateInputs() {
     in.gyroBiasValid = g_imuCal.gyroBiasValid;
     in.ahrsInitialized = g_ahrs6dof.initialized();
     in.qualityRecoveryRequested = g_quality.recoveryRequested();
-    in.qualityFlags = g_quality.lastRecoveryFlags();
+    // Use the latest per-sample quality flags for ordinary DEGRADED_*
+    // states.  lastRecoveryFlags() only contains recovery reasons and would
+    // otherwise hide non-recovery accel/timing degradation from setup/status.
+    in.qualityFlags = g_lastQualityFlags | g_quality.lastRecoveryFlags();
     in.magRuntimeEnabled = g_magState.runtimeEnabled;
     in.magSampleSeen = g_lastMagProcessed.seq != 0 || g_magProcessor.stats().processedSamples != 0;
     in.magTrusted = g_lastMagProcessed.trusted;

@@ -114,6 +114,9 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
         deps.runtimeSamples++;
         deps.lastSampleTimestampUs = raw.t_us;
         deps.lastOutputConfidence = quality.overallConfidence;
+        if (deps.lastQualityFlags != nullptr) {
+            *deps.lastQualityFlags = quality.flags;
+        }
         deps.preparedOutput.update(deps.config, deps.runtimeSamples, raw.t_us, deps.ahrs, quality);
 
         imuPipelineEmitPerSampleOutputs(deps, raw, scaled, calibrated, quality);
@@ -140,6 +143,9 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
     deps.runtimeSamples++;
     deps.lastSampleTimestampUs = raw.t_us;
     deps.lastOutputConfidence = quality.overallConfidence;
+    if (deps.lastQualityFlags != nullptr) {
+        *deps.lastQualityFlags = quality.flags;
+    }
     deps.preparedOutput.update(deps.config, deps.runtimeSamples, raw.t_us, deps.ahrs, quality);
 
     imuPipelineEmitPerSampleOutputs(deps, raw, scaled, calibrated, quality);

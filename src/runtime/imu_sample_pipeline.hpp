@@ -67,6 +67,7 @@ struct ImuSamplePipelineDeps {
     uint64_t& lastSampleTimestampUs;
     float& latestTempC;
     float& lastOutputConfidence;
+    uint32_t* lastQualityFlags = nullptr;
     ImuSamplePipelineCallbacks callbacks;
 
     // Optional latest-sample mirrors for blocking guided calibration flows.
