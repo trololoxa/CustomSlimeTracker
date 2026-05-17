@@ -490,6 +490,8 @@ private:
         out.print("accel_matrix_row2="); out.print(r.scaleMatrix.m[2][0], 8); out.print(','); out.print(r.scaleMatrix.m[2][1], 8); out.print(','); out.println(r.scaleMatrix.m[2][2], 8);
         out.print("max_face_norm_error_g="); out.println(r.maxFaceNormErrorG, 8);
         out.print("max_axis_residual_g="); out.println(r.maxAxisResidualG, 8);
+        out.print("max_pair_center_residual_g="); out.println(r.maxPairCenterResidualG, 8);
+        out.print("accel_raw_basis_det="); out.println(r.matrixDeterminant, 8);
         out.print("face_norm_errors_g=");
         for (uint8_t i = 0; i < 6; ++i) {
             if (i) out.print(',');
@@ -523,6 +525,8 @@ private:
             accel_cal_quality_flags::SCALE_IMPLAUSIBLE,
             accel_cal_quality_flags::NORM_RESIDUAL_HIGH,
             accel_cal_quality_flags::AXIS_RESIDUAL_HIGH,
+            accel_cal_quality_flags::PAIR_CENTER_RESIDUAL_HIGH,
+            accel_cal_quality_flags::MATRIX_SINGULAR,
         };
         for (uint8_t i = 0; i < sizeof(known) / sizeof(known[0]); ++i) {
             if ((flags & known[i]) == 0) continue;

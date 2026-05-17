@@ -19,6 +19,8 @@ static constexpr uint32_t BIAS_IMPLAUSIBLE      = 1u << 6;
 static constexpr uint32_t SCALE_IMPLAUSIBLE     = 1u << 7;
 static constexpr uint32_t NORM_RESIDUAL_HIGH    = 1u << 8;
 static constexpr uint32_t AXIS_RESIDUAL_HIGH    = 1u << 9;
+static constexpr uint32_t PAIR_CENTER_RESIDUAL_HIGH = 1u << 10;
+static constexpr uint32_t MATRIX_SINGULAR       = 1u << 11;
 }
 
 class Accel6PosCalibration {
@@ -50,6 +52,7 @@ public:
         float minExpectedAxisAbsG = 0.50f;
         float minAxisSeparationG = 0.75f;
         float maxAbsBiasG = 0.30f;
+        float maxPairCenterResidualG = 0.080f;
         float minScale = 0.70f;
         float maxScale = 1.30f;
         float maxPostCalNormErrorG = 0.080f;
@@ -59,10 +62,16 @@ public:
     struct Result {
         bool valid = false;
         Vec3 biasG = Vec3::zero();
+        // Diagonal entries of scaleMatrix kept for compact legacy prints.
+        // The actual correction is the full 3x3 scaleMatrix below.
         Vec3 scale = Vec3::one();
+        // Full affine accelerometer correction: calibrated = scaleMatrix * (raw - biasG).
+        // Off-diagonal terms compensate cross-axis/misalignment from the six face means.
         Mat3 scaleMatrix = Mat3::identity();
         float maxFaceNormErrorG = 0.0f;
         float maxAxisResidualG = 0.0f;
+        float maxPairCenterResidualG = 0.0f;
+        float matrixDeterminant = 0.0f;
         float qualityScore = 0.0f;
         uint32_t qualityFlags = accel_cal_quality_flags::MISSING_FACE;
         float faceNormErrorG[6] = {};

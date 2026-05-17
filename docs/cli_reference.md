@@ -56,7 +56,7 @@ Legend:
 | `cal gyro save` | Save current gyro calibration | Yes | No |
 | `cal gyro clear` | Clear gyro bias calibration | Runtime | No |
 | `cal accel face XP|XN|YP|YN|ZP|ZN` | Capture one 6-position accel face | Runtime | Yes |
-| `cal accel compute` | Compute accel 6-position calibration | Runtime | No |
+| `cal accel compute` | Compute accel 6-position full 3x3 affine calibration | Runtime | No |
 | `cal accel dump` | Print captured accel faces | No | No |
 | `cal accel save` | Save accel calibration | Yes | No |
 | `cal accel clear` | Clear accel calibration/captures | Runtime | No |
@@ -176,7 +176,7 @@ That command scans visible networks, asks for a numbered selection and password,
 | `setup guide` | Print the first-run sequence | Does not modify state. |
 | `setup status` | Print readiness checklist and next step | Includes 6DoF, mag-yaw, temp model, Wi-Fi and SlimeVR readiness. |
 | `setup wifi` | Interactive Wi-Fi provisioning | Scans visible networks, asks for a network number and password, tries to connect, saves successful credentials to NVS, starts SlimeVR discovery and enables Wi-Fi/SlimeVR autostart. If Wi-Fi connects but the server is not found within the setup timeout, Wi-Fi remains saved and discovery continues in normal runtime. |
-| `setup calibration [axis <bodyX> <bodyY> <bodyZ>]` | Run the full guided production calibration | Performs rest/gyro, Wi-Fi heat warm-up, dedicated gyro temperature capture/fit, accel 6-position capture, mag hard/soft collection, automatic mag axis inference from accel-face + mag samples, enables accel/adaptive accel, runtime gyro bias and mag-yaw apply, then saves. Axis tokens are now an override/fallback path. |
+| `setup calibration [axis <bodyX> <bodyY> <bodyZ>]` | Run the full guided production calibration | Performs rest/gyro, Wi-Fi heat warm-up, dedicated gyro temperature capture/fit, accel 6-position full 3x3 affine calibration, mag hard/soft collection, automatic mag axis inference from accel-face + mag samples, enables accel/adaptive accel, runtime gyro bias and mag-yaw apply, then saves. Axis tokens are now an override/fallback path. |
 
 `setup calibration` is transactional. It snapshots the current RAM calibration/config at start, performs every stage in RAM, and writes to NVS only once after all quality gates pass. If any stage fails or is aborted, the command stops mag/temp captures, restores the previous RAM calibration/config, resets AHRS/mag/runtime-bias transient state, and leaves the previous NVS calibration untouched. The temperature stage no longer depends on `test static`; it uses a dedicated setup capture that records only the temperature-fit bins from the normal FIFO pipeline.
 

@@ -93,42 +93,72 @@ bool Accel6PosCalibration::compute(const ValidationParams& params) {
     const Vec3 zp = faces_[4].meanG;
     const Vec3 zn = faces_[5].meanG;
 
-    const float dx = xp.x - xn.x;
-    const float dy = yp.y - yn.y;
-    const float dz = zp.z - zn.z;
+    const Vec3 centerX = 0.5f * (xp + xn);
+    const Vec3 centerY = 0.5f * (yp + yn);
+    const Vec3 centerZ = 0.5f * (zp + zn);
+    const Vec3 rawAxisX = 0.5f * (xp - xn);
+    const Vec3 rawAxisY = 0.5f * (yp - yn);
+    const Vec3 rawAxisZ = 0.5f * (zp - zn);
 
-    if (std::fabs(dx) < params.minAxisSeparationG ||
-        std::fabs(dy) < params.minAxisSeparationG ||
-        std::fabs(dz) < params.minAxisSeparationG) {
+    const float sepX = (xp - xn).norm();
+    const float sepY = (yp - yn).norm();
+    const float sepZ = (zp - zn).norm();
+    if (sepX < params.minAxisSeparationG ||
+        sepY < params.minAxisSeparationG ||
+        sepZ < params.minAxisSeparationG) {
         result_.qualityFlags |= accel_cal_quality_flags::AXIS_SEPARATION_LOW;
         return false;
     }
 
-    result_.biasG = Vec3(
-        0.5f * (xp.x + xn.x),
-        0.5f * (yp.y + yn.y),
-        0.5f * (zp.z + zn.z)
-    );
-
-    result_.scale = Vec3(
-        2.0f / dx,
-        2.0f / dy,
-        2.0f / dz
-    );
+    result_.biasG = (centerX + centerY + centerZ) / 3.0f;
+    result_.maxPairCenterResidualG = 0.0f;
+    const Vec3 centers[3] = { centerX, centerY, centerZ };
+    for (uint8_t i = 0; i < 3; ++i) {
+        const float residual = (centers[i] - result_.biasG).norm();
+        if (residual > result_.maxPairCenterResidualG) {
+            result_.maxPairCenterResidualG = residual;
+        }
+    }
 
     if (std::fabs(result_.biasG.x) > params.maxAbsBiasG ||
         std::fabs(result_.biasG.y) > params.maxAbsBiasG ||
         std::fabs(result_.biasG.z) > params.maxAbsBiasG) {
         result_.qualityFlags |= accel_cal_quality_flags::BIAS_IMPLAUSIBLE;
     }
-
-    if (std::fabs(result_.scale.x) < params.minScale || std::fabs(result_.scale.x) > params.maxScale ||
-        std::fabs(result_.scale.y) < params.minScale || std::fabs(result_.scale.y) > params.maxScale ||
-        std::fabs(result_.scale.z) < params.minScale || std::fabs(result_.scale.z) > params.maxScale) {
-        result_.qualityFlags |= accel_cal_quality_flags::SCALE_IMPLAUSIBLE;
+    if (result_.maxPairCenterResidualG > params.maxPairCenterResidualG) {
+        result_.qualityFlags |= accel_cal_quality_flags::PAIR_CENTER_RESIDUAL_HIGH;
     }
 
-    result_.scaleMatrix = Mat3::diagonal(result_.scale.x, result_.scale.y, result_.scale.z);
+    // Full 3x3 affine model:
+    //   raw_mean(face) ~= bias + rawBasis * expected_unit_vector(face)
+    //   calibrated      = inverse(rawBasis) * (raw - bias)
+    // Unlike the old diagonal-only model, rawBasis columns may contain
+    // cross-axis terms, so the inverse corrects scale and sensor-axis
+    // misalignment in one matrix.
+    const Mat3 rawBasis = Mat3::fromColumns(rawAxisX, rawAxisY, rawAxisZ);
+    result_.matrixDeterminant = rawBasis.determinant();
+    Mat3 correction = Mat3::identity();
+    if (!rawBasis.inverse(correction, 1.0e-5f) || !correction.isFinite()) {
+        result_.qualityFlags |= accel_cal_quality_flags::MATRIX_SINGULAR;
+        return false;
+    }
+    result_.scaleMatrix = correction;
+    result_.scale = Vec3(
+        result_.scaleMatrix.m[0][0],
+        result_.scaleMatrix.m[1][1],
+        result_.scaleMatrix.m[2][2]
+    );
+
+    const Vec3 rowScale(
+        result_.scaleMatrix.row(0).norm(),
+        result_.scaleMatrix.row(1).norm(),
+        result_.scaleMatrix.row(2).norm()
+    );
+    if (rowScale.x < params.minScale || rowScale.x > params.maxScale ||
+        rowScale.y < params.minScale || rowScale.y > params.maxScale ||
+        rowScale.z < params.minScale || rowScale.z > params.maxScale) {
+        result_.qualityFlags |= accel_cal_quality_flags::SCALE_IMPLAUSIBLE;
+    }
 
     float maxNormErr = 0.0f;
     float maxAxisResidual = 0.0f;
@@ -158,7 +188,8 @@ bool Accel6PosCalibration::compute(const ValidationParams& params) {
 
     const float normScore = 1.0f - clamp01(maxNormErr / params.maxPostCalNormErrorG);
     const float axisScore = 1.0f - clamp01(maxAxisResidual / params.maxPostCalAxisResidualG);
-    result_.qualityScore = clamp01(0.5f * normScore + 0.5f * axisScore);
+    const float centerScore = 1.0f - clamp01(result_.maxPairCenterResidualG / params.maxPairCenterResidualG);
+    result_.qualityScore = clamp01(0.4f * normScore + 0.4f * axisScore + 0.2f * centerScore);
     result_.valid = result_.qualityFlags == accel_cal_quality_flags::OK;
     return result_.valid;
 }
@@ -213,6 +244,8 @@ const char* Accel6PosCalibration::qualityFlagName(uint32_t flag) {
         case accel_cal_quality_flags::SCALE_IMPLAUSIBLE:     return "SCALE_IMPLAUSIBLE";
         case accel_cal_quality_flags::NORM_RESIDUAL_HIGH:    return "NORM_RESIDUAL_HIGH";
         case accel_cal_quality_flags::AXIS_RESIDUAL_HIGH:    return "AXIS_RESIDUAL_HIGH";
+        case accel_cal_quality_flags::PAIR_CENTER_RESIDUAL_HIGH: return "PAIR_CENTER_RESIDUAL_HIGH";
+        case accel_cal_quality_flags::MATRIX_SINGULAR:       return "MATRIX_SINGULAR";
     }
     return "UNKNOWN";
 }
