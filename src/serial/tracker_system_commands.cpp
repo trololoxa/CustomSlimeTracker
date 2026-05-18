@@ -89,7 +89,8 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  mag cal start | stop | reset | status | print | apply [save]");
     out.println();
     out.println("[tap/input]");
-    out.println("  tap status | on | off | test [single|double] | reset");
+    out.println("  tap status | on | off | test [2..10] | inject <1..10> | reset");
+    out.println("  led status | auto | on | off | identify [ms] | test <mode> | reset");
     out.println();
     out.println("[network]");
     out.println("  net status | print | help");

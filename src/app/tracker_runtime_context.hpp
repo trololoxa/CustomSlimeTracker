@@ -35,6 +35,7 @@
 #include "network/esp32_udp_transport.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
 #include "runtime/tap_runtime_controller.hpp"
+#include "runtime/status_led_runtime.hpp"
 #include "serial/tracker_serial_commands.hpp"
 
 using namespace tracker;
@@ -50,6 +51,9 @@ static TrackerWifiManager g_wifiManager;
 static Esp32UdpTransport g_udpTransport;
 static SlimeVROutputRuntime g_slimevrRuntime;
 static TapRuntimeController g_tapRuntime;
+static GpioStatusLedSink g_statusLedSink;
+static StatusLedRuntime g_statusLedRuntime;
+static bool g_statusLedSensorError = false;
 
 static ImuCalibration g_imuCal;
 static GyroTempCompensator g_gyroTempComp;

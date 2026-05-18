@@ -106,6 +106,19 @@ Legend:
 
 LSM6DSV tap recognition is routed through the same physical INT1 line as FIFO events; INT2 is not required. The ISR remains lightweight, and the runtime polls/clears `TAP_SRC` from the normal loop. Hardware double-tap is disabled by default so the sensor reports physical taps one-by-one; firmware then aggregates 2..10 taps in a sliding `TRACKER_TAP_AGGREGATION_WINDOW_MS` window and sends one SlimeVR Tap packet. The driver enables `FUNCTIONS_ENABLE.INTERRUPTS_ENABLE` with a masked write and verifies it together with the tap registers; this preserves the FIFO timestamp bit in the same register. Register verification is performed after configuration and then only every `TRACKER_TAP_REGISTER_VERIFY_INTERVAL_MS` while no tap window is pending, so FIFO timing is not burdened by frequent config reads. The default tap threshold is intentionally moderate (`TRACKER_LSM6DSV_TAP_THRESHOLD=4`) so hand taps can be detected during RC1 tuning; raise it if the enclosure produces false positives.
 
+## Status LED
+
+| Command | Effect | Persisted | Notes |
+|---|---|---:|---|
+| `led status` | Print configured pin, polarity, current mode, override state and write counter | No | Use this first when validating the ESP32-C3 SuperMini onboard LED. |
+| `led auto` | Clear manual override and return to runtime-derived status | No | The runtime derives status from Wi-Fi and SlimeVR state. |
+| `led on` / `led off` | Force the GPIO LED on/off for the current boot | No | Hardware smoke-test for pin/polarity; does not change network state. |
+| `led identify [ms]` | Fast blink for locating this tracker | No | Defaults to `TRACKER_STATUS_LED_IDENTIFY_DEFAULT_MS`. |
+| `led test <mode>` | Force a status pattern | No | Modes include `normal`, `wifi`, `server`, `connection_error`, `sensor_error`, `hardware_error`. |
+| `led reset` | Reset LED write counter | No | Diagnostic only. |
+
+The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_ACTIVE_LOW=1`, matching common ESP32-C3 SuperMini blue-LED boards. Override those macros for clones or SuperMini Plus RGB/WS2812 variants. LED updates are non-blocking and rate-limited by `TRACKER_STATUS_LED_UPDATE_INTERVAL_MS`, so the FIFO path never waits for visible blink timing. Runtime patterns are SlimeVR-style: normal/server-found is a very short heartbeat blink, Wi-Fi connecting is one short blink per second, server discovery/connection error is three long blinks every five seconds, sensor error is two long blinks every five seconds, and hardware error is four long blinks every five seconds.
+
 ## Stream/log/output
 
 | Command | Effect | Persisted | Notes |

@@ -54,6 +54,7 @@ The tracker now has a working SlimeVR UDP MVP:
 - SlimeVR protocol v19 metadata;
 - `SensorInfo`, `RotationData`, heartbeat, ping/pong, RSSI and temperature telemetry;
 - LSM6DSV embedded physical tap runtime on INT1 with firmware-side 2..10 tap aggregation, `FUNCTIONS_ENABLE.INTERRUPTS_ENABLE` gating, masked register verification, SlimeVR Tap packet output and serial `tap ...` diagnostics;
+- non-blocking GPIO status LED runtime for ESP32-C3 SuperMini (`TRACKER_STATUS_LED_PIN=8`, active-low by default), SlimeVR-style status/error blink patterns and serial `led ...` diagnostics;
 - incoming `SetConfigFlag` handling for runtime mag/yaw toggle;
 - local serial output decoupled from SlimeVR UDP;
 - `slime status` compact view and `slime debug` full counter dump;

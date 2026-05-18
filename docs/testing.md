@@ -328,6 +328,7 @@ tracking-state controller transitions
 Wi-Fi manager state-machine behavior through fake adapters
 UDP endpoint helpers
 SlimeVR packet writer and output-runtime behavior
+status LED pattern timing and manual/identify overrides
 ```
 
 This is a starting point, not complete coverage. The next useful native-test

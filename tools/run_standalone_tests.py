@@ -35,6 +35,7 @@ PROJECT_SOURCES = [
     pathlib.Path("src/runtime/gyro_temp_calibration_capture.cpp"),
     pathlib.Path("src/runtime/tracking_state_controller.cpp"),
     pathlib.Path("src/runtime/tap_accumulator.cpp"),
+    pathlib.Path("src/runtime/status_led_runtime.cpp"),
     pathlib.Path("src/connection/lsm6dsv_driver.cpp"),
     pathlib.Path("src/config/tracker_config_runtime.cpp"),
     pathlib.Path("src/output/slimevr_packet_writer.cpp"),

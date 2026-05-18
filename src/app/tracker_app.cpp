@@ -29,6 +29,8 @@ void TrackerApp::setup() {
     out.print("# config_valid=");
     out.println(deps_.runtime.config->validate() ? "yes" : "no");
 
+    call(deps_.callbacks.setupStatusLedRuntime);
+
     pinMode(deps_.pins.int1, INPUT);
 
     if (!trackerBootstrapInitLsm(deps_.bootstrap)) {
@@ -103,6 +105,7 @@ void TrackerApp::loop() {
     sectionStartUs = micros();
     call(deps_.callbacks.updateNetworkRuntime);
     call(deps_.callbacks.updateTapRuntime);
+    call(deps_.callbacks.updateStatusLedRuntime);
     timing.networkUs = micros() - sectionStartUs;
 
 #if TRACKER_ENABLE_SERIAL_CLI
@@ -159,7 +162,11 @@ bool TrackerApp::ready() const {
 
 void TrackerApp::fatal(const char* message) {
     if (deps_.runtime.out != nullptr) deps_.runtime.out->println(message);
-    while (true) delay(1000);
+    call(deps_.callbacks.setStatusLedSensorError);
+    while (true) {
+        call(deps_.callbacks.updateStatusLedRuntime);
+        delay(20);
+    }
 }
 
 void TrackerApp::call(void (*callback)()) {
@@ -172,6 +179,7 @@ void TrackerApp::serviceRuntimeForBlockingCommand() {
     processFifoRuntime();
     call(deps_.callbacks.updateNetworkRuntime);
     call(deps_.callbacks.updateTapRuntime);
+    call(deps_.callbacks.updateStatusLedRuntime);
     deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);
 }
 

@@ -17,6 +17,7 @@
 #include "serial/tracker_slimevr_commands.hpp"
 #include "serial/tracker_setup_commands.hpp"
 #include "serial/tracker_tap_commands.hpp"
+#include "serial/tracker_led_commands.hpp"
 
 namespace tracker {
 

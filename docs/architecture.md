@@ -29,6 +29,7 @@ src/
   connection/                      low-level hardware/protocol drivers
   core/                            shared math primitives
   runtime/                         firmware runtime controllers and diagnostics
+                                   includes status LED, tap accumulator and SlimeVR output runtimes
   sensor/                          sensor math, calibration, fusion, quality models
   serial/                          serial CLI parser and command domains
   network/                         real Wi-Fi station management and UDP transport primitives
@@ -497,9 +498,10 @@ network/wifi_manager.hpp
 network/udp_transport.hpp
 output/slimevr_packet_writer.hpp
 runtime/slimevr_output_runtime.hpp
+runtime/status_led_runtime.hpp
 ```
 
-`src/network/` owns Wi-Fi/UDP transport primitives only. `src/output/` owns packet encoding, and `runtime/slimevr_output_runtime.*` owns discovery/session/output scheduling. Do not place AHRS/FIFO logic in transport modules, and do not place transport state in AHRS or mag-yaw code.
+`src/network/` owns Wi-Fi/UDP transport primitives only. `src/output/` owns packet encoding, and `runtime/slimevr_output_runtime.*` owns discovery/session/output scheduling. `runtime/status_led_runtime.*` owns only GPIO LED pattern timing and status display; it must consume high-level runtime states, not sensor samples. Do not place AHRS/FIFO logic in transport modules, and do not place transport state in AHRS or mag-yaw code.
 
 The firmware should send local sensor/device orientation and health. It should not bake in server/body/mounting calibration semantics unless there is a clear protocol-level reason.
 

@@ -69,6 +69,11 @@ void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int ar
         return;
     }
 
+    if (tracker_serial_detail::eqIgnoreCase(argv[0], "led")) {
+        trackerSerialDispatchLedCommand(ctx, argc, argv);
+        return;
+    }
+
     if (tracker_serial_detail::eqIgnoreCase(argv[0], "test")) {
         trackerSerialDispatchTestCommand(ctx, argc, argv);
         return;

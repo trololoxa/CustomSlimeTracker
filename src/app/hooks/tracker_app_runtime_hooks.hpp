@@ -260,6 +260,87 @@ static void setupNetworkRuntime() {
 }
 
 
+
+static TrackerStatusLedMode deriveStatusLedMode() {
+    if (g_statusLedSensorError) return TrackerStatusLedMode::SensorError;
+#if !TRACKER_ENABLE_STATUS_LED
+    return TrackerStatusLedMode::Disabled;
+#else
+    if (!g_slimevrRuntime.enabled()) {
+        if (g_networkConfig.data.wifiEnabled && !g_networkConfig.data.credentialsValid) {
+            return TrackerStatusLedMode::ConnectionError;
+        }
+        return TrackerStatusLedMode::Off;
+    }
+
+    const TrackerWifiManagerStatus wifi = g_wifiManager.status();
+    if (wifi.desiredEnabled && !wifi.credentialsValid) {
+        return TrackerStatusLedMode::ConnectionError;
+    }
+    if (wifi.state == TrackerWifiState::Backoff ||
+        wifi.linkStatus == WifiLinkStatus::NoSsid ||
+        wifi.linkStatus == WifiLinkStatus::ConnectFailed) {
+        return TrackerStatusLedMode::ConnectionError;
+    }
+
+    switch (g_slimevrRuntime.state()) {
+        case SlimeVROutputState::Disabled:
+            return TrackerStatusLedMode::Off;
+        case SlimeVROutputState::WaitingForWifi:
+        case SlimeVROutputState::UdpStarting:
+            return TrackerStatusLedMode::WifiConnecting;
+        case SlimeVROutputState::Discovering:
+            return TrackerStatusLedMode::ServerDiscovering;
+        case SlimeVROutputState::ServerFound:
+            return TrackerStatusLedMode::Normal;
+        case SlimeVROutputState::Error:
+            return TrackerStatusLedMode::ConnectionError;
+    }
+    return TrackerStatusLedMode::ConnectionError;
+#endif
+}
+
+static void setupStatusLedRuntime() {
+    StatusLedRuntimeConfig cfg;
+    cfg.enabled = TRACKER_ENABLE_STATUS_LED != 0;
+    cfg.pin = TRACKER_STATUS_LED_PIN;
+    cfg.activeLow = TRACKER_STATUS_LED_ACTIVE_LOW != 0;
+    cfg.updateIntervalMs = TRACKER_STATUS_LED_UPDATE_INTERVAL_MS;
+    cfg.normalBlinkPeriodMs = TRACKER_STATUS_LED_NORMAL_BLINK_PERIOD_MS;
+    cfg.normalBlinkOnMs = TRACKER_STATUS_LED_NORMAL_BLINK_ON_MS;
+    cfg.shortBlinkOnMs = TRACKER_STATUS_LED_SHORT_BLINK_ON_MS;
+    cfg.shortBlinkOffMs = TRACKER_STATUS_LED_SHORT_BLINK_OFF_MS;
+    cfg.longBlinkOnMs = TRACKER_STATUS_LED_LONG_BLINK_ON_MS;
+    cfg.longBlinkOffMs = TRACKER_STATUS_LED_LONG_BLINK_OFF_MS;
+    cfg.errorBlinkPeriodMs = TRACKER_STATUS_LED_ERROR_BLINK_PERIOD_MS;
+    cfg.identifyBlinkOnMs = TRACKER_STATUS_LED_IDENTIFY_BLINK_ON_MS;
+    cfg.identifyBlinkOffMs = TRACKER_STATUS_LED_IDENTIFY_BLINK_OFF_MS;
+
+    g_statusLedRuntime.begin(g_statusLedSink, cfg);
+    g_statusLedRuntime.setMode(TrackerStatusLedMode::Boot, millis());
+    g_statusLedRuntime.update(millis());
+
+    Serial.print("# status_led_enabled=");
+    Serial.print(cfg.enabled ? "yes" : "no");
+    Serial.print(" pin=");
+    Serial.print(static_cast<int>(cfg.pin));
+    Serial.print(" active_low=");
+    Serial.println(cfg.activeLow ? "yes" : "no");
+}
+
+static void updateStatusLedRuntime() {
+    const uint32_t nowMs = millis();
+    g_statusLedRuntime.setMode(deriveStatusLedMode(), nowMs);
+    g_statusLedRuntime.update(nowMs);
+}
+
+static void setStatusLedSensorError() {
+    g_statusLedSensorError = true;
+    const uint32_t nowMs = millis();
+    g_statusLedRuntime.setMode(TrackerStatusLedMode::SensorError, nowMs);
+    g_statusLedRuntime.update(nowMs);
+}
+
 static void setupTapRuntime() {
     g_tapRuntime.begin(lsm, g_slimevrRuntime);
 
@@ -330,6 +411,9 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
     deps.callbacks.setupTapRuntime = setupTapRuntime;
     deps.callbacks.updateTapRuntime = updateTapRuntime;
+    deps.callbacks.setupStatusLedRuntime = setupStatusLedRuntime;
+    deps.callbacks.updateStatusLedRuntime = updateStatusLedRuntime;
+    deps.callbacks.setStatusLedSensorError = setStatusLedSensorError;
     deps.callbacks.resetFifoRuntimeCounters = resetFifoRuntimeCounters;
     deps.callbacks.attachFifoInterrupt = appAttachFifoInterruptCallback;
     deps.callbacks.resetOrientationState = resetOrientationDependentState;

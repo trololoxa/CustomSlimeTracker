@@ -65,6 +65,9 @@ struct TrackerAppCallbacks {
     void (*updateNetworkRuntime)() = nullptr;
     void (*setupTapRuntime)() = nullptr;
     void (*updateTapRuntime)() = nullptr;
+    void (*setupStatusLedRuntime)() = nullptr;
+    void (*updateStatusLedRuntime)() = nullptr;
+    void (*setStatusLedSensorError)() = nullptr;
     void (*resetFifoRuntimeCounters)() = nullptr;
     void (*attachFifoInterrupt)() = nullptr;
     void (*resetOrientationState)(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase) = nullptr;
