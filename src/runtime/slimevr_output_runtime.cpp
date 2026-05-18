@@ -162,6 +162,9 @@ void SlimeVROutputRuntime::resetCounters() {
     signalStrengthSent_ = 0;
     temperatureSent_ = 0;
     magnetometerAccuracySent_ = 0;
+    tapSent_ = 0;
+    tapSendFailures_ = 0;
+    lastTapValue_ = 0;
     rotationNoSnapshot_ = 0;
     rotationDuplicateSnapshot_ = 0;
     packetsReceived_ = 0;
@@ -296,6 +299,9 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.signalStrengthSent = signalStrengthSent_;
     s.temperatureSent = temperatureSent_;
     s.magnetometerAccuracySent = magnetometerAccuracySent_;
+    s.tapSent = tapSent_;
+    s.tapSendFailures = tapSendFailures_;
+    s.lastTapValue = lastTapValue_;
     s.rotationNoSnapshot = rotationNoSnapshot_;
     s.rotationDuplicateSnapshot = rotationDuplicateSnapshot_;
     s.packetsReceived = packetsReceived_;
@@ -616,6 +622,26 @@ void SlimeVROutputRuntime::maybeSendTelemetry(uint32_t nowMs) {
     // server learns magnetometer support from SensorInfo.sensorConfig. Some
     // server builds treat packet 18 as active mag-calibration feedback, so
     // sending dummy accuracy values can disturb preview/tracker state.
+}
+
+bool SlimeVROutputRuntime::sendTap(uint8_t value) {
+    if (!serverFound_ || !serverEndpoint_.valid()) {
+        ++tapSendFailures_;
+        return false;
+    }
+    const SlimeVRPacketWriteResult packet = writer_.writeTap(
+        packetBuffer_,
+        sizeof(packetBuffer_),
+        sensorId_,
+        value
+    );
+    if (sendPacket(packet, serverEndpoint_)) {
+        ++tapSent_;
+        lastTapValue_ = value;
+        return true;
+    }
+    ++tapSendFailures_;
+    return false;
 }
 
 void SlimeVROutputRuntime::sendSignalStrength(uint32_t nowMs) {

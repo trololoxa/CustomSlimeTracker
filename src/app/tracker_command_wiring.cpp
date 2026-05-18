@@ -15,6 +15,7 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.networkConfigLoadedFromNvs = objects.networkConfigLoadedFromNvs;
     ctx.wifiManager = objects.wifiManager;
     ctx.slimevrRuntime = objects.slimevrRuntime;
+    ctx.tapRuntime = objects.tapRuntime;
     ctx.lsm = objects.lsm;
     ctx.fifo = objects.fifo;
     ctx.sensorHub = objects.sensorHub;

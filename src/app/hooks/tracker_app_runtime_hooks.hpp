@@ -259,6 +259,38 @@ static void setupNetworkRuntime() {
     }
 }
 
+
+static void setupTapRuntime() {
+    g_tapRuntime.begin(lsm, g_slimevrRuntime);
+
+    TapRuntimeConfig cfg;
+    cfg.enabled = TRACKER_ENABLE_TAP_RUNTIME != 0;
+    cfg.hardwareDoubleTap = TRACKER_TAP_HARDWARE_DOUBLE_TAP != 0;
+    cfg.slidingWindow = TRACKER_TAP_SLIDING_WINDOW != 0;
+    cfg.sensorId = g_networkConfig.data.sensorId;
+    cfg.minCount = TRACKER_TAP_MIN_COUNT;
+    cfg.maxCount = TRACKER_TAP_MAX_COUNT;
+    cfg.pollIntervalMs = TRACKER_TAP_POLL_INTERVAL_MS;
+    cfg.aggregationWindowMs = TRACKER_TAP_AGGREGATION_WINDOW_MS;
+    cfg.duplicateSuppressMs = TRACKER_TAP_DUPLICATE_SUPPRESS_MS;
+    cfg.postSendLockoutMs = TRACKER_TAP_POST_SEND_LOCKOUT_MS;
+    cfg.registerVerifyIntervalMs = TRACKER_TAP_REGISTER_VERIFY_INTERVAL_MS;
+    cfg.threshold = TRACKER_LSM6DSV_TAP_THRESHOLD;
+    cfg.shock = TRACKER_LSM6DSV_TAP_SHOCK;
+    cfg.quiet = TRACKER_LSM6DSV_TAP_QUIET;
+    cfg.duration = TRACKER_LSM6DSV_TAP_DURATION;
+
+    const bool ok = g_tapRuntime.configure(cfg);
+    Serial.print("# tap_runtime_enabled=");
+    Serial.print(cfg.enabled ? "yes" : "no");
+    Serial.print(" hardware=");
+    Serial.println(ok ? "ok" : "fail");
+}
+
+static void updateTapRuntime() {
+    g_tapRuntime.update(millis());
+}
+
 static void updateNetworkRuntime() {
     const uint32_t nowMs = millis();
     g_wifiManager.update(nowMs);
@@ -296,6 +328,8 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.callbacks.setupCommandInterface = setupCommandInterface;
     deps.callbacks.setupNetworkRuntime = setupNetworkRuntime;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
+    deps.callbacks.setupTapRuntime = setupTapRuntime;
+    deps.callbacks.updateTapRuntime = updateTapRuntime;
     deps.callbacks.resetFifoRuntimeCounters = resetFifoRuntimeCounters;
     deps.callbacks.attachFifoInterrupt = appAttachFifoInterruptCallback;
     deps.callbacks.resetOrientationState = resetOrientationDependentState;

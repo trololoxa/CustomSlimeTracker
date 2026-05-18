@@ -64,6 +64,9 @@ void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("server_port="); out.println(s.serverPort);
     out.print("rotation_sent="); out.println(s.rotationSent);
     out.print("rotation_rate_hz="); out.println(s.rotationRateHz);
+    out.print("tap_sent="); out.println(s.tapSent);
+    out.print("tap_send_failures="); out.println(s.tapSendFailures);
+    out.print("last_tap_value="); out.println(s.lastTapValue);
     out.print("send_failures="); out.println(s.sendFailures);
     out.print("udp_begin_failures="); out.println(s.udpBeginFailures);
     out.print("server_silence_resets="); out.println(s.serverSilenceResets);
@@ -108,6 +111,9 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("signal_strength_sent="); out.println(s.signalStrengthSent);
     out.print("temperature_sent="); out.println(s.temperatureSent);
     out.print("magnetometer_accuracy_sent="); out.println(s.magnetometerAccuracySent);
+    out.print("tap_sent="); out.println(s.tapSent);
+    out.print("tap_send_failures="); out.println(s.tapSendFailures);
+    out.print("last_tap_value="); out.println(s.lastTapValue);
     out.println("# note: mag support is advertised via SensorInfo.sensor_config; packet 18 is not sent as periodic telemetry");
     out.print("mag_support_enabled="); out.println(yn(s.magSupportEnabled));
     out.print("mag_enabled="); out.println(yn(s.magEnabled));

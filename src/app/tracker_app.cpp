@@ -62,6 +62,7 @@ void TrackerApp::setup() {
     trackerBootstrapSetupCalibrationIo(deps_.bootstrap);
     call(deps_.callbacks.setupMagRuntimeController);
     call(deps_.callbacks.setupNetworkRuntime);
+    call(deps_.callbacks.setupTapRuntime);
     call(deps_.callbacks.setupCommandInterface);
     call(deps_.callbacks.resetFifoRuntimeCounters);
     call(deps_.callbacks.attachFifoInterrupt);
@@ -101,6 +102,7 @@ void TrackerApp::loop() {
 
     sectionStartUs = micros();
     call(deps_.callbacks.updateNetworkRuntime);
+    call(deps_.callbacks.updateTapRuntime);
     timing.networkUs = micros() - sectionStartUs;
 
 #if TRACKER_ENABLE_SERIAL_CLI
@@ -169,6 +171,7 @@ void TrackerApp::serviceRuntimeForBlockingCommand() {
 
     processFifoRuntime();
     call(deps_.callbacks.updateNetworkRuntime);
+    call(deps_.callbacks.updateTapRuntime);
     deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);
 }
 

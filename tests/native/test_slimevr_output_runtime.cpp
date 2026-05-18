@@ -221,6 +221,16 @@ int main() {
     CHECK(ctx, udp.sent.back().endpoint.ipv4 == 0xC0A80001UL);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
 
+    const size_t sentBeforeTap = udp.sent.size();
+    CHECK(ctx, rt.sendTap(2));
+    CHECK(ctx, rt.status().tapSent == 1);
+    CHECK(ctx, rt.status().tapSendFailures == 0);
+    CHECK(ctx, rt.status().lastTapValue == 2);
+    CHECK(ctx, udp.sent.size() == sentBeforeTap + 1u);
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::Tap));
+    CHECK(ctx, udp.sent.back().data[12] == 2);
+    CHECK(ctx, udp.sent.back().data[13] == 2);
+
     rt.update(1205);
     CHECK(ctx, rt.status().rotationSent == 1);
 

@@ -268,6 +268,54 @@ public:
         uint16_t flags = FLAG_NONE;
     };
 
+    struct TapConfig {
+        bool enabled = true;
+        bool enableX = true;
+        bool enableY = true;
+        bool enableZ = true;
+        bool enableDoubleTap = true;
+        bool routeSingleTapToInt1 = true;
+        bool routeDoubleTapToInt1 = true;
+        bool latchedInterrupt = true;
+        bool maskDuringAccelSettling = true;
+        uint8_t thresholdX = 4;
+        uint8_t thresholdY = 4;
+        uint8_t thresholdZ = 4;
+        uint8_t priority = 0;
+        uint8_t shock = 2;
+        uint8_t quiet = 2;
+        uint8_t duration = 7;
+    };
+
+    struct TapRegisterSnapshot {
+        uint8_t functionsEnable = 0;
+        uint8_t tapCfg0 = 0;
+        uint8_t tapCfg1 = 0;
+        uint8_t tapCfg2 = 0;
+        uint8_t tapThs6d = 0;
+        uint8_t tapDur = 0;
+        uint8_t wakeUpThs = 0;
+        uint8_t md1Cfg = 0;
+    };
+
+    struct TapRegisterVerification {
+        bool ok = false;
+        TapRegisterSnapshot actual;
+        TapRegisterSnapshot expected;
+        TapRegisterSnapshot mask;
+    };
+
+    struct TapSource {
+        uint8_t raw = 0;
+        bool tapDetected = false;
+        bool singleTap = false;
+        bool doubleTap = false;
+        bool negative = false;
+        bool x = false;
+        bool y = false;
+        bool z = false;
+    };
+
     explicit Lsm6dsv(Lsm6dsvTransport& transport);
 
     bool begin();
@@ -321,6 +369,14 @@ public:
 
     bool configureDrdyOnInt2(bool accel, bool gyro);
 
+    bool configureTapDetection(const TapConfig& config);
+
+    bool readTapConfigRegisters(TapRegisterSnapshot& snapshot);
+
+    bool verifyTapDetection(const TapConfig& config, TapRegisterVerification& verification);
+
+    bool readTapSource(TapSource& source);
+
     static float odrHz(Odr odr);
 
     static float accelSensitivityGPerLSB(AccelFs fs);
@@ -361,6 +417,16 @@ private:
         FIFO_STATUS2    = 0x1C,
         STATUS_REG      = 0x1E,
 
+        TAP_SRC         = 0x46,
+        FUNCTIONS_ENABLE = 0x50,
+        TAP_CFG0        = 0x56,
+        TAP_CFG1        = 0x57,
+        TAP_CFG2        = 0x58,
+        TAP_THS_6D      = 0x59,
+        TAP_DUR         = 0x5A,
+        WAKE_UP_THS     = 0x5B,
+        MD1_CFG         = 0x5E,
+
         OUT_TEMP_L      = 0x20,
         OUT_TEMP_H      = 0x21,
         OUTX_L_G        = 0x22,
@@ -399,7 +465,39 @@ private:
     static constexpr uint8_t INT_CTRL_DRDY_XL = 1u << 0;
     static constexpr uint8_t INT_CTRL_DRDY_G  = 1u << 1;
 
+    static constexpr uint8_t TAP_CFG0_CONTROLLED_MASK = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 5);
+    static constexpr uint8_t TAP_CFG1_CONTROLLED_MASK = 0xFFu;
+    static constexpr uint8_t TAP_CFG2_THS_MASK = 0x1Fu;
+    static constexpr uint8_t TAP_THS_6D_THS_MASK = 0x1Fu;
+    static constexpr uint8_t TAP_DUR_CONTROLLED_MASK = 0xFFu;
+    static constexpr uint8_t WAKE_UP_THS_TAP_MASK = 1u << 7;
+    static constexpr uint8_t MD1_CFG_TAP_MASK = (1u << 3) | (1u << 6);
+    static constexpr uint8_t FUNCTIONS_ENABLE_INTERRUPTS_ENABLE = 1u << 7;
+
+    static constexpr uint8_t TAP_CFG0_LIR = 1u << 0;
+    static constexpr uint8_t TAP_CFG0_TAP_Z_EN = 1u << 1;
+    static constexpr uint8_t TAP_CFG0_TAP_Y_EN = 1u << 2;
+    static constexpr uint8_t TAP_CFG0_TAP_X_EN = 1u << 3;
+    static constexpr uint8_t TAP_CFG0_HW_FUNC_MASK_XL_SETTL = 1u << 5;
+
+    static constexpr uint8_t WAKE_UP_THS_SINGLE_DOUBLE_TAP = 1u << 7;
+
+    static constexpr uint8_t MD1_CFG_INT1_DOUBLE_TAP = 1u << 3;
+    static constexpr uint8_t MD1_CFG_INT1_SINGLE_TAP = 1u << 6;
+
+    static constexpr uint8_t TAP_SRC_Z_TAP = 1u << 0;
+    static constexpr uint8_t TAP_SRC_Y_TAP = 1u << 1;
+    static constexpr uint8_t TAP_SRC_X_TAP = 1u << 2;
+    static constexpr uint8_t TAP_SRC_TAP_SIGN = 1u << 3;
+    static constexpr uint8_t TAP_SRC_DOUBLE_TAP = 1u << 4;
+    static constexpr uint8_t TAP_SRC_SINGLE_TAP = 1u << 5;
+    static constexpr uint8_t TAP_SRC_TAP_IA = 1u << 6;
+
     static constexpr uint8_t CTRL4_DRDY_PULSED = 1u << 1;
+
+    static TapRegisterSnapshot expectedTapRegistersFor(const TapConfig& config);
+
+    static TapRegisterSnapshot tapRegisterMaskFor(const TapConfig& config);
 
     bool configureCtrl3();
 

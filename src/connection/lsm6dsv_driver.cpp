@@ -297,6 +297,145 @@ bool Lsm6dsv::configureDrdyOnInt2(bool accel, bool gyro) {
         return writeReg(Reg::INT2_CTRL, value);
     }
 
+bool Lsm6dsv::configureTapDetection(const TapConfig& config) {
+        if (!config.enabled) {
+            bool ok = true;
+            ok = writeMasked(Reg::MD1_CFG, MD1_CFG_TAP_MASK, 0x00) && ok;
+            ok = writeMasked(Reg::TAP_CFG0, TAP_CFG0_CONTROLLED_MASK, 0x00) && ok;
+            ok = writeMasked(Reg::WAKE_UP_THS, WAKE_UP_THS_TAP_MASK, 0x00) && ok;
+            if (!ok) return fail(lastError_ == Error::BusReadFailed ? Error::BusReadFailed : Error::BusWriteFailed);
+            return true;
+        }
+
+        bool ok = true;
+        const TapRegisterSnapshot expected = expectedTapRegistersFor(config);
+        const TapRegisterSnapshot mask = tapRegisterMaskFor(config);
+
+        // LSM6DSV basic interrupts (including tap/single-tap) are globally gated
+        // by FUNCTIONS_ENABLE.INTERRUPTS_ENABLE. Preserve other bits here: FIFO
+        // timestamp commonly uses the same register, so a direct write would be
+        // a regression for the high-rate FIFO path.
+        ok = writeMasked(Reg::FUNCTIONS_ENABLE, mask.functionsEnable, expected.functionsEnable) && ok;
+        ok = writeMasked(Reg::TAP_CFG1, mask.tapCfg1, expected.tapCfg1) && ok;
+        ok = writeMasked(Reg::TAP_CFG2, mask.tapCfg2, expected.tapCfg2) && ok;
+        ok = writeMasked(Reg::TAP_THS_6D, mask.tapThs6d, expected.tapThs6d) && ok;
+        ok = writeMasked(Reg::TAP_DUR, mask.tapDur, expected.tapDur) && ok;
+        ok = writeMasked(Reg::WAKE_UP_THS, mask.wakeUpThs, expected.wakeUpThs) && ok;
+        ok = writeMasked(Reg::TAP_CFG0, mask.tapCfg0, expected.tapCfg0) && ok;
+        ok = writeMasked(Reg::MD1_CFG, mask.md1Cfg, expected.md1Cfg) && ok;
+        if (!ok) return fail(lastError_ == Error::BusReadFailed ? Error::BusReadFailed : Error::BusWriteFailed);
+
+        TapSource discard;
+        (void)readTapSource(discard);
+        return true;
+    }
+
+Lsm6dsv::TapRegisterSnapshot Lsm6dsv::expectedTapRegistersFor(const TapConfig& config) {
+        TapRegisterSnapshot out;
+
+        if (!config.enabled) {
+            return out;
+        }
+
+        const uint8_t thsX = static_cast<uint8_t>(config.thresholdX & TAP_CFG2_THS_MASK);
+        const uint8_t thsY = static_cast<uint8_t>(config.thresholdY & TAP_CFG2_THS_MASK);
+        const uint8_t thsZ = static_cast<uint8_t>(config.thresholdZ & TAP_THS_6D_THS_MASK);
+        const uint8_t priority = static_cast<uint8_t>((config.priority & 0x07u) << 5);
+
+        out.functionsEnable = FUNCTIONS_ENABLE_INTERRUPTS_ENABLE;
+
+        if (config.latchedInterrupt) out.tapCfg0 |= TAP_CFG0_LIR;
+        if (config.enableZ) out.tapCfg0 |= TAP_CFG0_TAP_Z_EN;
+        if (config.enableY) out.tapCfg0 |= TAP_CFG0_TAP_Y_EN;
+        if (config.enableX) out.tapCfg0 |= TAP_CFG0_TAP_X_EN;
+        if (config.maskDuringAccelSettling) out.tapCfg0 |= TAP_CFG0_HW_FUNC_MASK_XL_SETTL;
+
+        out.tapCfg1 = static_cast<uint8_t>(priority | thsX);
+        out.tapCfg2 = thsY;
+        out.tapThs6d = thsZ;
+        out.tapDur = static_cast<uint8_t>(((config.duration & 0x0Fu) << 4) |
+                                          ((config.quiet & 0x03u) << 2) |
+                                          (config.shock & 0x03u));
+        out.wakeUpThs = static_cast<uint8_t>(config.enableDoubleTap ? WAKE_UP_THS_SINGLE_DOUBLE_TAP : 0u);
+        if (config.routeSingleTapToInt1) out.md1Cfg |= MD1_CFG_INT1_SINGLE_TAP;
+        if (config.routeDoubleTapToInt1) out.md1Cfg |= MD1_CFG_INT1_DOUBLE_TAP;
+        return out;
+    }
+
+Lsm6dsv::TapRegisterSnapshot Lsm6dsv::tapRegisterMaskFor(const TapConfig& config) {
+        TapRegisterSnapshot out;
+        out.tapCfg0 = TAP_CFG0_CONTROLLED_MASK;
+        out.wakeUpThs = WAKE_UP_THS_TAP_MASK;
+        out.md1Cfg = MD1_CFG_TAP_MASK;
+        if (config.enabled) {
+            out.functionsEnable = FUNCTIONS_ENABLE_INTERRUPTS_ENABLE;
+            out.tapCfg1 = TAP_CFG1_CONTROLLED_MASK;
+            out.tapCfg2 = TAP_CFG2_THS_MASK;
+            out.tapThs6d = TAP_THS_6D_THS_MASK;
+            out.tapDur = TAP_DUR_CONTROLLED_MASK;
+        }
+        return out;
+    }
+
+bool Lsm6dsv::readTapConfigRegisters(TapRegisterSnapshot& snapshot) {
+        if (!readReg(Reg::FUNCTIONS_ENABLE, snapshot.functionsEnable)) {
+            return fail(Error::BusReadFailed);
+        }
+
+        uint8_t b[9] = {};
+        if (!read(Reg::TAP_CFG0, b, sizeof(b))) {
+            return fail(Error::BusReadFailed);
+        }
+        snapshot.tapCfg0 = b[0];
+        snapshot.tapCfg1 = b[1];
+        snapshot.tapCfg2 = b[2];
+        snapshot.tapThs6d = b[3];
+        snapshot.tapDur = b[4];
+        snapshot.wakeUpThs = b[5];
+        snapshot.md1Cfg = b[8];
+        return true;
+    }
+
+bool Lsm6dsv::verifyTapDetection(const TapConfig& config, TapRegisterVerification& verification) {
+        verification = TapRegisterVerification{};
+        verification.expected = expectedTapRegistersFor(config);
+        verification.mask = tapRegisterMaskFor(config);
+        if (!readTapConfigRegisters(verification.actual)) {
+            return false;
+        }
+
+        const auto maskedEq = [](uint8_t actual, uint8_t expected, uint8_t mask) {
+            return (actual & mask) == (expected & mask);
+        };
+
+        verification.ok =
+            maskedEq(verification.actual.functionsEnable, verification.expected.functionsEnable, verification.mask.functionsEnable) &&
+            maskedEq(verification.actual.tapCfg0, verification.expected.tapCfg0, verification.mask.tapCfg0) &&
+            maskedEq(verification.actual.tapCfg1, verification.expected.tapCfg1, verification.mask.tapCfg1) &&
+            maskedEq(verification.actual.tapCfg2, verification.expected.tapCfg2, verification.mask.tapCfg2) &&
+            maskedEq(verification.actual.tapThs6d, verification.expected.tapThs6d, verification.mask.tapThs6d) &&
+            maskedEq(verification.actual.tapDur, verification.expected.tapDur, verification.mask.tapDur) &&
+            maskedEq(verification.actual.wakeUpThs, verification.expected.wakeUpThs, verification.mask.wakeUpThs) &&
+            maskedEq(verification.actual.md1Cfg, verification.expected.md1Cfg, verification.mask.md1Cfg);
+        return true;
+    }
+
+bool Lsm6dsv::readTapSource(TapSource& source) {
+        uint8_t raw = 0;
+        if (!readReg(Reg::TAP_SRC, raw)) {
+            return fail(Error::BusReadFailed);
+        }
+        source.raw = raw;
+        source.tapDetected = (raw & TAP_SRC_TAP_IA) != 0;
+        source.singleTap = (raw & TAP_SRC_SINGLE_TAP) != 0;
+        source.doubleTap = (raw & TAP_SRC_DOUBLE_TAP) != 0;
+        source.negative = (raw & TAP_SRC_TAP_SIGN) != 0;
+        source.x = (raw & TAP_SRC_X_TAP) != 0;
+        source.y = (raw & TAP_SRC_Y_TAP) != 0;
+        source.z = (raw & TAP_SRC_Z_TAP) != 0;
+        return true;
+    }
+
 float Lsm6dsv::odrHz(Odr odr) {
         switch (odr) {
             case Odr::PowerDown: return 0.0f;

@@ -88,6 +88,9 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  mag axis identity [save] | clear [save]");
     out.println("  mag cal start | stop | reset | status | print | apply [save]");
     out.println();
+    out.println("[tap/input]");
+    out.println("  tap status | on | off | test [single|double] | reset");
+    out.println();
     out.println("[network]");
     out.println("  net status | print | help");
     out.println("  net set ssid <ssid> [save] | set pass <password> [save] | clear pass [save]");

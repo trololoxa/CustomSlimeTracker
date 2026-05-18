@@ -93,6 +93,19 @@ Legend:
 | `mag axis ... [save]` | Configure mag axis mapping | Optional | Persist after validating orientation. |
 | `mag cal start|stop|reset|status|print|apply [save]` | Manage full ellipsoid mag calibration collector | Optional | `apply save` persists hard-iron plus full 3x3 soft-iron matrix when box coverage, directional coverage, robust inlier ratio and residual gates pass. |
 
+
+## Accumulative tap input
+
+| Command | Effect | Persisted | Notes |
+|---|---|---:|---|
+| `tap status` | Print LSM6DSV tap runtime, accumulator and register-check counters | No | Shows hardware config, physical single/double detections, pending window, suppressions, SlimeVR send counters and masked register verification. |
+| `tap on` / `tap off` | Enable/disable tap runtime for the current boot | No | Reconfigures the LSM6DSV embedded tap engine and keeps using the existing INT1 line. |
+| `tap test [2..10]` | Send one manual SlimeVR Tap packet directly | No | Verifies the server path without using the LSM6DSV detector or accumulator. Defaults to `2`. |
+| `tap inject <1..10>` | Emulate physical tap events through the accumulator | No | Useful for checking sliding-window aggregation without physically tapping the tracker. A single injected tap is intentionally suppressed by the default min count. |
+| `tap reset` | Reset tap counters | No | Does not reset SlimeVR counters. |
+
+LSM6DSV tap recognition is routed through the same physical INT1 line as FIFO events; INT2 is not required. The ISR remains lightweight, and the runtime polls/clears `TAP_SRC` from the normal loop. Hardware double-tap is disabled by default so the sensor reports physical taps one-by-one; firmware then aggregates 2..10 taps in a sliding `TRACKER_TAP_AGGREGATION_WINDOW_MS` window and sends one SlimeVR Tap packet. The driver enables `FUNCTIONS_ENABLE.INTERRUPTS_ENABLE` with a masked write and verifies it together with the tap registers; this preserves the FIFO timestamp bit in the same register. Register verification is performed after configuration and then only every `TRACKER_TAP_REGISTER_VERIFY_INTERVAL_MS` while no tap window is pending, so FIFO timing is not burdened by frequent config reads. The default tap threshold is intentionally moderate (`TRACKER_LSM6DSV_TAP_THRESHOLD=4`) so hand taps can be detected during RC1 tuning; raise it if the enclosure produces false positives.
+
 ## Stream/log/output
 
 | Command | Effect | Persisted | Notes |
@@ -135,7 +148,7 @@ Legend:
 | `net reconnect` | Restart Wi-Fi connection attempt | No | Non-blocking reconnect. |
 | `net scan [visible|hidden] [limit N]` | Blocking Wi-Fi environment scan | No | Developer diagnostic; pauses sensor processing while scan runs. |
 | `net save|load|defaults|erase` | Manage network NVS config | Yes/Runtime | Network config is stored separately from main tracker config. |
-| `slime status` | Print compact SlimeVR UDP runtime status | No | Shows server state, rotation, failures, ping, mag flags, RSSI and latest temperature. |
+| `slime status` | Print compact SlimeVR UDP runtime status | No | Shows server state, rotation, tap packet counters, failures, ping, mag flags, RSSI and latest temperature. |
 | `slime debug` | Print full SlimeVR counters/timestamps | No | Developer view with packet counters, last packet values and reconnect-hardening counters. |
 | `slime start` | Start SlimeVR UDP runtime | Runtime | Uses prepared quaternion snapshots directly and leaves local serial output off. |
 | `slime stop` | Stop SlimeVR output runtime | Runtime | Does not erase saved Wi-Fi/config. |

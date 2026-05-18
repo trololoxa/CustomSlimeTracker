@@ -84,6 +84,77 @@
 #define TRACKER_ENABLE_RUNTIME_TEST 1
 #endif
 
+#ifndef TRACKER_ENABLE_TAP_RUNTIME
+#define TRACKER_ENABLE_TAP_RUNTIME 1
+#endif
+
+// LSM6DSV tap recognition emits one physical tap event. Firmware aggregates
+// physical taps into a SlimeVR Tap packet value so the server can distinguish
+// 2..10 tap gestures. Keep hardware double-tap off by default; otherwise the
+// sensor can merge two physical taps before the firmware counter sees them.
+#ifndef TRACKER_TAP_MIN_COUNT
+#define TRACKER_TAP_MIN_COUNT 2
+#endif
+
+#ifndef TRACKER_TAP_MAX_COUNT
+#define TRACKER_TAP_MAX_COUNT 10
+#endif
+
+#ifndef TRACKER_TAP_AGGREGATION_WINDOW_MS
+#define TRACKER_TAP_AGGREGATION_WINDOW_MS 300
+#endif
+
+#ifndef TRACKER_TAP_SLIDING_WINDOW
+#define TRACKER_TAP_SLIDING_WINDOW 1
+#endif
+
+#ifndef TRACKER_TAP_POLL_INTERVAL_MS
+#define TRACKER_TAP_POLL_INTERVAL_MS 5
+#endif
+
+#ifndef TRACKER_TAP_DUPLICATE_SUPPRESS_MS
+#define TRACKER_TAP_DUPLICATE_SUPPRESS_MS 35
+#endif
+
+#ifndef TRACKER_TAP_POST_SEND_LOCKOUT_MS
+#define TRACKER_TAP_POST_SEND_LOCKOUT_MS 150
+#endif
+
+#ifndef TRACKER_TAP_HARDWARE_DOUBLE_TAP
+#define TRACKER_TAP_HARDWARE_DOUBLE_TAP 0
+#endif
+
+#ifndef TRACKER_TAP_REGISTER_VERIFY_INTERVAL_MS
+#define TRACKER_TAP_REGISTER_VERIFY_INTERVAL_MS 5000
+#endif
+
+// Backward-compatible no-op/alias for old build flags. The accumulator min
+// count controls whether single taps are sent; post-send lockout replaces the
+// old cooldown path.
+#ifndef TRACKER_TAP_SEND_SINGLE
+#define TRACKER_TAP_SEND_SINGLE 0
+#endif
+
+#ifndef TRACKER_TAP_COOLDOWN_MS
+#define TRACKER_TAP_COOLDOWN_MS TRACKER_TAP_POST_SEND_LOCKOUT_MS
+#endif
+
+#ifndef TRACKER_LSM6DSV_TAP_THRESHOLD
+#define TRACKER_LSM6DSV_TAP_THRESHOLD 4
+#endif
+
+#ifndef TRACKER_LSM6DSV_TAP_SHOCK
+#define TRACKER_LSM6DSV_TAP_SHOCK 2
+#endif
+
+#ifndef TRACKER_LSM6DSV_TAP_QUIET
+#define TRACKER_LSM6DSV_TAP_QUIET 2
+#endif
+
+#ifndef TRACKER_LSM6DSV_TAP_DURATION
+#define TRACKER_LSM6DSV_TAP_DURATION 7
+#endif
+
 namespace tracker::cfg {
 
 // ============================================================

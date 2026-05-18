@@ -26,7 +26,7 @@ Target behavior:
 - Use magnetometer data only as a gated yaw correction source.
 - Report rest-calibration, battery, temperature, RSSI, and relevant tracking state to the
   host/server.
-- Support tap/double-tap input through the LSM6DSV embedded event engine.
+- Support accumulative 2..10 tap input through the LSM6DSV embedded event engine.
 - Keep production hot paths free of debug logging, blocking work, and unnecessary output.
 
 ## 2. Release scope
@@ -39,7 +39,7 @@ Target behavior:
 - Clear setup/status commands.
 - Stable 6DoF + gated mag-yaw runtime.
 - SlimeVR rest-calibration state reporting.
-- LSM6DSV tap/double-tap event support and SlimeVR tap packet output.
+- LSM6DSV physical tap event support, firmware-side accumulation and SlimeVR tap packet output.
 - Battery/temp/RSSI telemetry when the hardware supports it.
 - Power profiles and measured power/performance trade-offs.
 - Config migration, factory reset, watchdog, and safe fallback behavior.
@@ -334,7 +334,7 @@ Must-have:
 - Dynamic SensorInfo rest-calibration state.
 - RotationData from the prepared tracking snapshot.
 - Heartbeat/ping/pong handling.
-- Tap packet for LSM6DSV tap/double-tap events.
+- Tap packet for accumulated LSM6DSV physical tap events.
 - Battery telemetry when hardware supports it.
 - Temperature telemetry.
 - Signal/RSSI telemetry.
@@ -354,22 +354,28 @@ Requirements:
 
 Use the useful hardware features without replacing the proven tracking pipeline.
 
-### 9.1 Tap/double-tap, must-have
+### 9.1 Accumulative tap input, must-have
 
 Add an embedded-event driver layer for:
 
-- Tap.
-- Double-tap.
+- LSM6DSV physical tap detection.
+- Optional hardware double-tap detection for diagnostics only.
 - Tap source axis/sign when available.
 - Interrupt/status demux with FIFO events.
+- Firmware-side aggregation of 2..10 physical taps into one SlimeVR Tap packet.
 
 Runtime requirements:
 
 - ISR only records that an interrupt happened.
 - Register reads and event parsing happen in the main loop.
-- Debounce and cooldown prevent duplicate events.
-- Very high-motion windows can suppress false tap events.
-- Double-tap sends a SlimeVR tap packet.
+- Duplicate suppression prevents one latched/source event from being counted twice.
+- A sliding aggregation window, controlled by `TRACKER_TAP_AGGREGATION_WINDOW_MS`, extends after every accepted physical tap.
+- A post-send lockout suppresses mechanical tails after a completed gesture.
+- Very high-motion windows can later suppress false tap events.
+- `FUNCTIONS_ENABLE.INTERRUPTS_ENABLE` is enabled with read-modify-write and verified with a mask so FIFO timestamp state in the same register is preserved.
+- Masked register verification runs after configuration and then at a slow interval when no tap window is pending.
+- Values below `TRACKER_TAP_MIN_COUNT` are suppressed; values above `TRACKER_TAP_MAX_COUNT` are clamped/flushed.
+- Default `TRACKER_LSM6DSV_TAP_THRESHOLD` is `4` for RC1 hand-tap usability; production tuning can raise it after enclosure testing.
 
 Commands:
 
@@ -377,8 +383,8 @@ Commands:
 tap status
 tap enable [save]
 tap disable [save]
-tap config print
-tap test
+tap test [2..10]
+tap inject <1..10>
 ```
 
 Machine log when enabled:
@@ -539,7 +545,7 @@ test runtime 1800
 Wi-Fi reconnect test
 SlimeVR server restart test
 power-cycle after calibration
-tap/double-tap test
+accumulative tap test
 mag disturbance test
 battery telemetry test when supported
 ```
@@ -581,7 +587,7 @@ Documentation rules:
 3. Add `setup status` and rest-calibration state reporting to SlimeVR SensorInfo.
 4. Add guided rest/gyro calibration.
 5. Add guided accel calibration wrapper around existing 6-position calibration.
-6. Add LSM6DSV embedded tap/double-tap driver and SlimeVR tap packet runtime.
+6. Add LSM6DSV embedded physical tap driver, accumulator and SlimeVR tap packet runtime.
 7. Add battery telemetry skeleton and optional ADC backend.
 8. Add mag calibration quality gates and mag axis/sign validation.
 9. Add minimal SoftAP provisioning if code size and stability remain acceptable.
@@ -598,7 +604,7 @@ The roadmap is complete when:
 - The tracker guides the user through required calibration.
 - The firmware reports correct rest-calibration state to SlimeVR.
 - 6DoF tracking is stable, and mag yaw only applies when trustworthy.
-- Tap/double-tap works reliably and can trigger the expected SlimeVR action.
+- Accumulated 2..10 tap gestures work reliably and can trigger the expected SlimeVR action.
 - Battery/temp/RSSI telemetry works or is clearly reported unsupported.
 - Production profile runs without debug spam or unnecessary hot-path work.
 - Power profiles are measured and documented.

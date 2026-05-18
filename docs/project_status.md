@@ -53,6 +53,7 @@ The tracker now has a working SlimeVR UDP MVP:
 - UDP discovery and server reconnect;
 - SlimeVR protocol v19 metadata;
 - `SensorInfo`, `RotationData`, heartbeat, ping/pong, RSSI and temperature telemetry;
+- LSM6DSV embedded physical tap runtime on INT1 with firmware-side 2..10 tap aggregation, `FUNCTIONS_ENABLE.INTERRUPTS_ENABLE` gating, masked register verification, SlimeVR Tap packet output and serial `tap ...` diagnostics;
 - incoming `SetConfigFlag` handling for runtime mag/yaw toggle;
 - local serial output decoupled from SlimeVR UDP;
 - `slime status` compact view and `slime debug` full counter dump;

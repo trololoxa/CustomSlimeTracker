@@ -104,6 +104,14 @@ int main() {
     CHECK(ctx, packet[43] == 0xaa);
     CHECK(ctx, packet[48] == 0x55);
 
+
+    const SlimeVRPacketWriteResult tap = writer.writeTap(packet, sizeof(packet), 2, 2);
+    CHECK(ctx, tap.ok);
+    CHECK(ctx, tap.size == SLIMEVR_PACKET_HEADER_SIZE + 2u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::Tap));
+    CHECK(ctx, packet[12] == 2);
+    CHECK(ctx, packet[13] == 2);
+
     const SlimeVRPacketWriteResult magAcc = writer.writeMagnetometerAccuracy(packet, sizeof(packet), 9, 0.5f);
     CHECK(ctx, magAcc.ok);
     CHECK(ctx, magAcc.size == SLIMEVR_PACKET_HEADER_SIZE + 5u);

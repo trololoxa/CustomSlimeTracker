@@ -160,6 +160,9 @@ public:
     SlimeVRPacketWriteResult writeBatteryLevel(uint8_t* out, size_t capacity,
                                                float voltage,
                                                float percentage);
+    SlimeVRPacketWriteResult writeTap(uint8_t* out, size_t capacity,
+                                      uint8_t sensorId,
+                                      uint8_t value);
     SlimeVRPacketWriteResult writeMagnetometerAccuracy(uint8_t* out, size_t capacity,
                                                        uint8_t sensorId,
                                                        float accuracyInfo);

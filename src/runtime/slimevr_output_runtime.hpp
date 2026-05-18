@@ -83,6 +83,9 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t signalStrengthSent = 0;
     uint32_t temperatureSent = 0;
     uint32_t magnetometerAccuracySent = 0;
+    uint32_t tapSent = 0;
+    uint32_t tapSendFailures = 0;
+    uint8_t lastTapValue = 0;
     uint32_t rotationNoSnapshot = 0;
     uint32_t rotationDuplicateSnapshot = 0;
     uint32_t packetsReceived = 0;
@@ -150,6 +153,7 @@ public:
     void restart();
     void update(uint32_t nowMs);
     void requestSensorInfoRefresh();
+    bool sendTap(uint8_t value);
 
     bool enabled() const { return enabled_; }
     bool serverFound() const { return serverFound_; }
@@ -237,6 +241,9 @@ private:
     uint32_t signalStrengthSent_ = 0;
     uint32_t temperatureSent_ = 0;
     uint32_t magnetometerAccuracySent_ = 0;
+    uint32_t tapSent_ = 0;
+    uint32_t tapSendFailures_ = 0;
+    uint8_t lastTapValue_ = 0;
     uint32_t rotationNoSnapshot_ = 0;
     uint32_t rotationDuplicateSnapshot_ = 0;
     uint32_t packetsReceived_ = 0;

@@ -11,6 +11,7 @@
 #include "runtime/slimevr_output_runtime.hpp"
 #include "runtime/gyro_temp_calibration_capture.hpp"
 #include "runtime/runtime_bias_types.hpp"
+#include "runtime/tap_runtime_controller.hpp"
 #include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/fifo_calibrations.hpp"
@@ -114,6 +115,9 @@ struct SetupReadiness {
     bool slimeServerFound = false;
     bool runtimeBiasReady = false;
     bool runtimeBiasEnabled = false;
+    bool tapReady = false;
+    bool tapEnabled = false;
+    bool tapHardwareConfigured = false;
     bool localOutputReady = false;
     bool runtimeWired = false;
 
@@ -123,7 +127,7 @@ struct SetupReadiness {
     bool magYaw() const { return tracking6dof() && magDriver && magCal && magAxis; }
     bool network() const { return wifiConfigured && wifiEnabled; }
     bool slimevr() const { return tracking6dof() && network() && localOutputReady && runtimeWired; }
-    bool production() const { return slimevr() && tempQuality() && runtimeBias() && magYaw(); }
+    bool production() const { return slimevr() && tempQuality() && runtimeBias() && magYaw() && tapReady; }
 };
 
 SetupReadiness readSetupReadiness(TrackerSerialCommandContext& ctx) {
@@ -164,6 +168,13 @@ SetupReadiness readSetupReadiness(TrackerSerialCommandContext& ctx) {
 
     r.runtimeBiasReady = r.gyroReady && r.accelReady && r.tempReady;
     r.runtimeBiasEnabled = ctx.runtimeBias && ctx.runtimeBias->enabled;
+
+    if (ctx.tapRuntime) {
+        const TapRuntimeStatus tap = ctx.tapRuntime->status();
+        r.tapEnabled = tap.enabled;
+        r.tapHardwareConfigured = tap.hardwareConfigured;
+        r.tapReady = tap.enabled && tap.hardwareConfigured;
+    }
 
     if (ctx.networkConfig) {
         const auto& n = ctx.networkConfig->data;
@@ -266,6 +277,9 @@ void printSetupStatus(TrackerSerialCommandContext& ctx) {
     printStep(s, "temperature_model", r.tempQuality(), "setup calibration");
     printStep(s, "runtime_bias", r.runtimeBias(), "setup calibration");
     s.print("runtime_bias_enabled="); s.println(yesNo(r.runtimeBiasEnabled));
+    printStep(s, "tap_input", r.tapReady, "tap status; tap on");
+    s.print("tap_enabled="); s.println(yesNo(r.tapEnabled));
+    s.print("tap_hardware_configured="); s.println(yesNo(r.tapHardwareConfigured));
     s.print("temperature_range_current=");
     if (!r.tempReady) s.println("missing");
     else if (r.tempHardExtrapolated) s.println("hard_extrapolated");
