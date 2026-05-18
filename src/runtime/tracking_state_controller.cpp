@@ -2,6 +2,7 @@
 
 #include "sensor/mag_runtime.hpp"
 #include "sensor/mag_yaw_correction.hpp"
+#include "runtime/tracker_console_suppress.hpp"
 
 namespace tracker {
 
@@ -71,7 +72,7 @@ void TrackingStateController::enterRecovery(uint32_t reasonFlags,
             sink.resetOrientation(reason, timestampUs, true, sink.resetOrientationUser);
         }
 
-        if (sink.out) {
+        if (sink.out && !trackerConsoleTrackingMessagesSuppressed(millis())) {
             sink.out->print("# TRACKING state=RECOVERING");
             if (reason && reason[0] != '\0') {
                 sink.out->print(" reason=");
@@ -114,7 +115,7 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
         recoveryStableSamples_ = 0;
         const uint64_t eventTs = quality.dtUs != 0 ? lastSampleTimestampUs : recoveryLastTimestampUs_;
 
-        if (sink.out) {
+        if (sink.out && !trackerConsoleTrackingMessagesSuppressed(millis())) {
             sink.out->println("# TRACKING state=TRACKING_6DOF reason=recovery_stable");
         }
 

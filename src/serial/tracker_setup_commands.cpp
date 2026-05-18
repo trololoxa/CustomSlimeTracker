@@ -12,6 +12,8 @@
 #include "runtime/gyro_temp_calibration_capture.hpp"
 #include "runtime/runtime_bias_types.hpp"
 #include "runtime/tap_runtime_controller.hpp"
+#include "runtime/tracker_console_suppress.hpp"
+#include "defines.h"
 #include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/fifo_calibrations.hpp"
@@ -983,6 +985,7 @@ void cmdSetupWifi(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     s.println("# SETUP WIFI");
     s.println("# Scanning visible 2.4 GHz networks. Keep SlimeVR Server open on the same LAN.");
     const int16_t seen = ctx.wifiManager->scanNetworks(results, 16, false);
+    trackerConsoleSuppressTrackingMessagesFor(TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS);
     if (seen < 0) {
         s.print("# ERR setup wifi scan failed: ");
         s.println(seen);

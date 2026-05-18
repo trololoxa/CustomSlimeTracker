@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime/tracker_console_suppress.hpp"
+
 // Magnetometer and tracking-state hooks used by the app composition layer.
 // This file is included by app/tracker_app_hooks.hpp after shared app dependencies.
 
@@ -122,7 +124,7 @@ static void trackingEmitStateEventCallback(const char* state,
 
 static TrackingStateEventSink makeTrackingEventSink() {
     TrackingStateEventSink sink;
-    sink.out = &Serial;
+    sink.out = trackerConsoleTrackingMessagesSuppressed(millis()) ? nullptr : &Serial;
     sink.confidence = g_lastOutputConfidence;
     sink.resetOrientation = trackingResetOrientationCallback;
     sink.resetOrientationUser = nullptr;

@@ -240,3 +240,22 @@ The firmware currently handles the server-to-tracker packets needed for a normal
 - packet `200` ProtocolChange: stored for diagnostics only. The firmware stays on UDP protocol v19.
 
 Use `slime status` to inspect `ping_received`, `pong_sent`, `feature_flags_received`, `set_config_flag_*`, `ack_config_sent`, `protocol_change_received`, and `unknown_packets_received`.
+
+## SlimeVR Server serial compatibility
+
+These aliases are for first-run provisioning from SlimeVR Server's Serial Console / Setup Wizard. They are intentionally kept separate from the lower-level `net`, `slime`, and `setup` commands so the firmware can later slim developer diagnostics without breaking server provisioning.
+
+| Command | Effect | Persisted | Notes |
+|---|---|---:|---|
+| `SET WIFI <ssid> <password>` | Set Wi-Fi credentials, enable Wi-Fi/discovery, save to network NVS, restart Wi-Fi and SlimeVR discovery | Yes | The tokenizer accepts quoted SSID/password values, e.g. `SET WIFI "My WiFi" "pass with spaces"`. |
+| `SET BWIFI <base64_ssid> <base64_password>` | Same as `SET WIFI`, but base64 decoded first | Yes | Compatible with safer provisioning flows that avoid quoting/encoding problems. |
+| `GET INFO` | Print SlimeVR-firmware-style tracker, vendor, sensor and battery status lines | No | Useful for SlimeVR Server serial diagnostics. Battery is a placeholder until the RC1 battery ADC step lands. |
+| `GET CONFIG` | Print SlimeVR-firmware-style build/pin config lines | No | Reports ESP32-C3/LSM6DSV-compatible metadata and current LED/INT pins. |
+| `GET TEST` | Print a compact sensor smoke-test response | No | Uses current LSM/AHRS/sample counters. |
+| `GET WIFISCAN` | Blocking Wi-Fi scan with `[WSCAN]` SlimeVR-style lines | No | Suppresses expected FIFO-recovery console noise for a short grace period after the scan reply. |
+| `REBOOT` | Reboot the tracker | No | Mirrors official firmware command name. |
+| `FRST` | Factory reset config/network NVS and reboot | Yes | Clears tracker and network config. |
+| `DELCAL` | Clear saved IMU/mag calibration state | Yes | Keeps Wi-Fi credentials. |
+| `TCAL PRINT|DEBUG|RESET|SAVE` | Compatibility wrappers for temperature-calibration inspection/reset/save | Optional | Temperature-only compatibility path. `SAVE` persists gyro temperature compensation without capturing unrelated runtime output/accel state. `RESET` changes only RAM temperature-comp slope/quality metadata, not the config object saved in NVS. |
+
+Blocking server/diagnostic commands such as Wi-Fi scans can intentionally pause sensor processing long enough to cause FIFO recovery on the next loop. During the configured grace window (`TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS`, default 3000 ms), human-facing `# WARN FIFO recovery requested` and `# TRACKING ... recovery` lines are muted so the command reply remains parseable. Machine-log events, quality counters, FIFO recovery and orientation resets still happen; only console noise is suppressed. Background magnetometer auto-heading reference events are also silent so they cannot interleave with server provisioning replies; manual `mag heading ref` still prints an explicit result.

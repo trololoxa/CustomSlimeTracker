@@ -18,6 +18,7 @@
 #include "serial/tracker_setup_commands.hpp"
 #include "serial/tracker_tap_commands.hpp"
 #include "serial/tracker_led_commands.hpp"
+#include "serial/tracker_slimevr_serial_compat_commands.hpp"
 
 namespace tracker {
 
@@ -97,14 +98,44 @@ private:
         while (*p && argc < maxArgs) {
             while (*p == ' ' || *p == '\t') ++p;
             if (*p == '\0') break;
-
             if (*p == '#') break;
 
-            argv[argc++] = p;
+            char* dst = p;
+            bool quoted = false;
+            if (*p == '"') {
+                quoted = true;
+                ++p;
+                argv[argc++] = dst;
+                while (*p) {
+                    if (*p == '\\' && p[1] != '\0') {
+                        ++p;
+                        *dst++ = *p++;
+                        continue;
+                    }
+                    if (*p == '"') {
+                        ++p;
+                        break;
+                    }
+                    *dst++ = *p++;
+                }
+                *dst = '\0';
+            } else {
+                argv[argc++] = p;
+                while (*p && *p != ' ' && *p != '\t') ++p;
+                if (*p == '\0') break;
+                *p++ = '\0';
+            }
 
-            while (*p && *p != ' ' && *p != '\t') ++p;
-            if (*p == '\0') break;
-            *p++ = '\0';
+            if (quoted) {
+                while (*p && *p != ' ' && *p != '\t') {
+                    // Treat trailing garbage after a closing quote as part of
+                    // token separation rather than another argument; this keeps
+                    // command parsing deterministic for malformed host input.
+                    ++p;
+                }
+                if (*p == '\0') break;
+                *p++ = '\0';
+            }
         }
 
         return static_cast<int>(argc);

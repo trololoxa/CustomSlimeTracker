@@ -92,6 +92,11 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  tap status | on | off | test [2..10] | inject <1..10> | reset");
     out.println("  led status | auto | on | off | identify [ms] | test <mode> | reset");
     out.println();
+    out.println("[server serial compatibility]");
+    out.println("  GET INFO | GET CONFIG | GET TEST | GET WIFISCAN");
+    out.println("  SET WIFI <ssid> <password> | SET BWIFI <b64_ssid> <b64_password>");
+    out.println("  REBOOT | FRST | DELCAL | TCAL PRINT|DEBUG|RESET|SAVE");
+    out.println();
     out.println("[network]");
     out.println("  net status | print | help");
     out.println("  net set ssid <ssid> [save] | set pass <password> [save] | clear pass [save]");

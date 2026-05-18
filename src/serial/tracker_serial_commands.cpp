@@ -10,6 +10,10 @@ void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int ar
         return;
     }
 
+    if (trackerSerialDispatchSlimeVRSerialCompatCommand(ctx, argc, argv)) {
+        return;
+    }
+
     if (trackerSerialDispatchSystemCommand(ctx, argc, argv)) {
         return;
     }

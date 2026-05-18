@@ -89,6 +89,14 @@
 #define TRACKER_ENABLE_STATUS_LED 1
 #endif
 
+#ifndef TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT
+#define TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT 1
+#endif
+
+#ifndef TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS
+#define TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS 3000UL
+#endif
+
 // ESP32-C3 SuperMini boards commonly expose the user/on-board blue LED on
 // GPIO8. Most standard blue-LED variants drive it active-low; override these
 // macros for clone boards or ESP32-C3 SuperMini Plus RGB/WS2812 variants.

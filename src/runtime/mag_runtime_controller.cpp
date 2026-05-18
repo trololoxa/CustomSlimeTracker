@@ -6,6 +6,7 @@
 #include "config/tracker_config_store.hpp"
 #include "connection/lsm6dsv_sensorhub.hpp"
 #include "runtime/output_runtime.hpp"
+#include "runtime/tracker_console_suppress.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/imu_quality.hpp"
 #include "sensor/mag_calibration.hpp"
@@ -118,17 +119,19 @@ void MagRuntimeController::resetOrientationState(const char* reason, uint64_t ti
         deps_.ahrs->rebaseTimestamp(timestampUs);
     }
 
-    Stream& out = stream();
-    out.print("# TRACKING orientation-dependent state reset");
-    if (reason && reason[0] != '\0') {
-        out.print(" reason=");
-        out.print(reason);
+    if (!trackerConsoleTrackingMessagesSuppressed(millis())) {
+        Stream& out = stream();
+        out.print("# TRACKING orientation-dependent state reset");
+        if (reason && reason[0] != '\0') {
+            out.print(" reason=");
+            out.print(reason);
+        }
+        if (timestampUs != 0) {
+            out.print(" t_us=");
+            outputPrintU64Dec(out, timestampUs);
+        }
+        out.println();
     }
-    if (timestampUs != 0) {
-        out.print(" t_us=");
-        outputPrintU64Dec(out, timestampUs);
-    }
-    out.println();
 
     if (deps_.callbacks.emitStateEvent) {
         deps_.callbacks.emitStateEvent("ORIENTATION_RESET",
@@ -247,7 +250,7 @@ bool MagRuntimeController::setHeadingReference(const char* reason, bool verbose)
 
     resetYawCorrectionRuntime();
 
-    if (verbose) {
+    if (verbose && !trackerConsoleTrackingMessagesSuppressed(millis())) {
         stream().print("# OK mag heading ref");
         if (reason && reason[0] != '\0') {
             stream().print(" reason=");
@@ -637,7 +640,9 @@ bool magTrustedForUse) {
 
     const uint32_t stableMs = nowMs - deps_.headingAutoRef->stableSinceMs;
     if (stableMs >= 3000) {
-        setHeadingReference("auto", true);
+        // Auto-reference is a background stabilization event. Keep it silent so it
+        // cannot interleave with SlimeVR Server serial setup replies.
+        setHeadingReference("auto", false);
     }
 }
 

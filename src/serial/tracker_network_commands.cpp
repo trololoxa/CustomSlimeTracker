@@ -4,6 +4,8 @@
 
 #include "config/tracker_network_config.hpp"
 #include "network/wifi_manager.hpp"
+#include "runtime/tracker_console_suppress.hpp"
+#include "defines.h"
 
 namespace tracker {
 
@@ -177,6 +179,7 @@ void runWifiScan(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     out.print("limit="); out.println(limit);
 
     const int16_t count = ctx.wifiManager->scanNetworks(results, limit, showHidden);
+    trackerConsoleSuppressTrackingMessagesFor(TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS);
     if (count < 0) {
         out.print("# ERR wifi scan failed: ");
         out.println(count);

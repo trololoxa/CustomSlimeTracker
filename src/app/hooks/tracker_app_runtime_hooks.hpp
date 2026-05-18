@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime/tracker_console_suppress.hpp"
+
 // Runtime sample-processing hooks and final TrackerAppDeps wiring.
 // This file is included by app/tracker_app_hooks.hpp after shared app dependencies.
 
@@ -7,7 +9,8 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     if (!quality.shouldRequestFifoRecovery) return;
 
     const uint32_t nowMs = millis();
-    if (!g_trackingState.recoveryActive() || nowMs - g_lastRecoveryConsolePrintMs >= RECOVERY_CONSOLE_THROTTLE_MS) {
+    if (!trackerConsoleTrackingMessagesSuppressed(nowMs) &&
+        (!g_trackingState.recoveryActive() || nowMs - g_lastRecoveryConsolePrintMs >= RECOVERY_CONSOLE_THROTTLE_MS)) {
         g_lastRecoveryConsolePrintMs = nowMs;
         Serial.print("# WARN FIFO recovery requested quality_flags=0x");
         Serial.println(quality.flags, HEX);
