@@ -106,6 +106,7 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
                                sensorId_ != config.sensorId ||
                                magSupportEnabled_ != config.magSupportEnabled ||
                                magEnabled_ != incomingMagEnabled ||
+                               batteryTelemetryEnabled_ != config.batteryTelemetryEnabled ||
                                std::strncmp(deviceName_, config.deviceName ? config.deviceName : "", sizeof(deviceName_)) != 0;
 
     const bool rotationRateChanged = rotationRateHz_ != config.rotationRateHz;
@@ -127,9 +128,17 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
     setConfigFlagUser_ = config.setConfigFlagUser;
     signalTelemetryEnabled_ = config.signalTelemetryEnabled;
     temperatureTelemetryEnabled_ = config.temperatureTelemetryEnabled;
+    batteryTelemetryEnabled_ = config.batteryTelemetryEnabled;
     telemetryIntervalMs_ = config.telemetryIntervalMs == 0 ? TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS : config.telemetryIntervalMs;
     latestTemperatureValid_ = config.latestTemperatureValid && std::isfinite(config.latestTemperatureC);
     latestTemperatureC_ = latestTemperatureValid_ ? config.latestTemperatureC : 0.0f;
+    latestBatteryValid_ = config.latestBatteryValid &&
+                          std::isfinite(config.latestBatteryVoltage) &&
+                          std::isfinite(config.latestBatteryPercentage);
+    latestBatteryVoltage_ = latestBatteryValid_ ? config.latestBatteryVoltage : 0.0f;
+    latestBatteryPercentage_ = latestBatteryValid_ ? config.latestBatteryPercentage : 0.0f;
+    if (latestBatteryPercentage_ < 0.0f) latestBatteryPercentage_ = 0.0f;
+    if (latestBatteryPercentage_ > 100.0f) latestBatteryPercentage_ = 100.0f;
     hasCompletedRestCalibration_ = incomingRestComplete;
     copyCString(deviceName_, sizeof(deviceName_), config.deviceName && config.deviceName[0] ? config.deviceName : "c3-6dsv-tracker");
 
@@ -161,6 +170,8 @@ void SlimeVROutputRuntime::resetCounters() {
     rotationSent_ = 0;
     signalStrengthSent_ = 0;
     temperatureSent_ = 0;
+    batterySent_ = 0;
+    batterySendFailures_ = 0;
     magnetometerAccuracySent_ = 0;
     tapSent_ = 0;
     tapSendFailures_ = 0;
@@ -298,6 +309,8 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.rotationSent = rotationSent_;
     s.signalStrengthSent = signalStrengthSent_;
     s.temperatureSent = temperatureSent_;
+    s.batterySent = batterySent_;
+    s.batterySendFailures = batterySendFailures_;
     s.magnetometerAccuracySent = magnetometerAccuracySent_;
     s.tapSent = tapSent_;
     s.tapSendFailures = tapSendFailures_;
@@ -330,11 +343,15 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.sensorConfig = sensorConfigFlags();
     s.signalTelemetryEnabled = signalTelemetryEnabled_;
     s.temperatureTelemetryEnabled = temperatureTelemetryEnabled_;
+    s.batteryTelemetryEnabled = batteryTelemetryEnabled_;
     s.telemetryIntervalMs = telemetryIntervalMs_;
     s.lastSignalStrength = lastSignalStrength_;
     s.lastRssiDbm = lastRssiDbm_;
     s.lastTemperatureC = latestTemperatureC_;
     s.lastTemperatureValid = latestTemperatureValid_;
+    s.lastBatteryVoltage = latestBatteryVoltage_;
+    s.lastBatteryPercentage = latestBatteryPercentage_;
+    s.lastBatteryValid = latestBatteryValid_;
     s.hasCompletedRestCalibration = hasCompletedRestCalibration_;
     s.lastPingId = lastPingId_;
     s.lastServerFeatureFlags = lastServerFeatureFlags_;
@@ -618,6 +635,7 @@ void SlimeVROutputRuntime::maybeSendTelemetry(uint32_t nowMs) {
 
     if (signalTelemetryEnabled_) sendSignalStrength(nowMs);
     if (temperatureTelemetryEnabled_) sendTemperature(nowMs);
+    if (batteryTelemetryEnabled_) sendBatteryLevel(nowMs);
     // Do not periodically send MagnetometerAccuracy as generic telemetry. The
     // server learns magnetometer support from SensorInfo.sensorConfig. Some
     // server builds treat packet 18 as active mag-calibration feedback, so
@@ -674,6 +692,23 @@ void SlimeVROutputRuntime::sendTemperature(uint32_t nowMs) {
     if (sendPacket(packet, serverEndpoint_)) {
         ++temperatureSent_;
     }
+}
+
+void SlimeVROutputRuntime::sendBatteryLevel(uint32_t nowMs) {
+    (void)nowMs;
+    if (!serverEndpoint_.valid()) return;
+    if (!latestBatteryValid_) return;
+    const SlimeVRPacketWriteResult packet = writer_.writeBatteryLevel(
+        packetBuffer_,
+        sizeof(packetBuffer_),
+        latestBatteryVoltage_,
+        latestBatteryPercentage_
+    );
+    if (sendPacket(packet, serverEndpoint_)) {
+        ++batterySent_;
+        return;
+    }
+    ++batterySendFailures_;
 }
 
 void SlimeVROutputRuntime::sendMagnetometerAccuracy(uint32_t nowMs) {

@@ -19,6 +19,7 @@ struct TrackerCommandRuntimeObjects {
     SlimeVROutputRuntime* slimevrRuntime = nullptr;
     TapRuntimeController* tapRuntime = nullptr;
     StatusLedRuntime* statusLedRuntime = nullptr;
+    BatteryRuntime* batteryRuntime = nullptr;
 
     Lsm6dsv* lsm = nullptr;
     Lsm6dsvFifoReader* fifo = nullptr;

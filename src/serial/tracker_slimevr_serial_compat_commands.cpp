@@ -10,6 +10,7 @@
 #include "network/wifi_manager.hpp"
 #include "output/slimevr_packet_writer.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
+#include "runtime/battery_runtime.hpp"
 #include "runtime/tracker_console_suppress.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/calibration.hpp"
@@ -101,19 +102,15 @@ void printCompatConfig(Stream& out) {
     out.print("SECOND_IMU="); out.println(0);
     out.print("IMU_ROTATION="); out.println(0.0f, 6);
     out.print("SECOND_IMU_ROTATION="); out.println(0.0f, 6);
-    out.print("BATTERY_MONITOR="); out.println(0);
+    out.print("BATTERY_MONITOR="); out.println(TRACKER_ENABLE_BATTERY_RUNTIME ? 1 : 0);
     out.print("BATTERY_SHIELD_RESISTANCE="); out.println(0);
-    out.print("BATTERY_SHIELD_R1="); out.println(0);
-    out.print("BATTERY_SHIELD_R2="); out.println(0);
+    out.print("BATTERY_SHIELD_R1="); out.println(TRACKER_BATTERY_R_TOP_OHMS, 0);
+    out.print("BATTERY_SHIELD_R2="); out.println(TRACKER_BATTERY_R_BOTTOM_OHMS, 0);
     out.print("PIN_IMU_SDA="); out.println(-1);
     out.print("PIN_IMU_SCL="); out.println(-1);
     out.print("PIN_IMU_INT="); out.println(cfg::PIN_LSM_INT1);
     out.print("PIN_IMU_INT_2="); out.println(-1);
-#ifdef TRACKER_BATTERY_ADC_PIN
-    out.print("PIN_BATTERY_LEVEL="); out.println(TRACKER_BATTERY_ADC_PIN);
-#else
-    out.print("PIN_BATTERY_LEVEL="); out.println(-1);
-#endif
+    out.print("PIN_BATTERY_LEVEL="); out.println(TRACKER_ENABLE_BATTERY_RUNTIME ? TRACKER_BATTERY_ADC_PIN : -1);
     out.print("LED_PIN="); out.println(TRACKER_STATUS_LED_PIN);
     out.print("LED_INVERTED="); out.println(TRACKER_STATUS_LED_ACTIVE_LOW ? 1 : 0);
 }
@@ -149,9 +146,16 @@ void printCompatInfo(TrackerSerialCommandContext& ctx, bool includeGit) {
         info(out, "Sensor[0] magnetometer: QMC6309");
     }
 
+    float batteryVoltage = 0.0f;
+    float batteryPercentage = 0.0f;
+    if (ctx.batteryRuntime) {
+        ctx.batteryRuntime->telemetry(batteryVoltage, batteryPercentage);
+    }
     out.print("[INFO ] [SerialCommands] Battery voltage: ");
-    out.print(0.0f, 3);
-    out.println(", level: 0.0%");
+    out.print(batteryVoltage, 3);
+    out.print(", level: ");
+    out.print(batteryPercentage, 1);
+    out.println("%");
 
     if (includeGit) {
         info(out, "Git commit: custom-esp32c3-lsm6dsv");

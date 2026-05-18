@@ -112,6 +112,13 @@ int main() {
     CHECK(ctx, packet[12] == 2);
     CHECK(ctx, packet[13] == 2);
 
+    const SlimeVRPacketWriteResult battery = writer.writeBatteryLevel(packet, sizeof(packet), 3.70f, 42.0f);
+    CHECK(ctx, battery.ok);
+    CHECK(ctx, battery.size == SLIMEVR_PACKET_HEADER_SIZE + 8u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::BatteryLevel));
+    CHECK_NEAR(ctx, readF32Be(packet + 12), 3.70f, 1.0e-6f);
+    CHECK_NEAR(ctx, readF32Be(packet + 16), 42.0f, 1.0e-6f);
+
     const SlimeVRPacketWriteResult magAcc = writer.writeMagnetometerAccuracy(packet, sizeof(packet), 9, 0.5f);
     CHECK(ctx, magAcc.ok);
     CHECK(ctx, magAcc.size == SLIMEVR_PACKET_HEADER_SIZE + 5u);

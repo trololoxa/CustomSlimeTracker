@@ -78,6 +78,12 @@ void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int ar
         return;
     }
 
+    if (tracker_serial_detail::eqIgnoreCase(argv[0], "battery") ||
+        tracker_serial_detail::eqIgnoreCase(argv[0], "bat")) {
+        trackerSerialDispatchBatteryCommand(ctx, argc, argv);
+        return;
+    }
+
     if (tracker_serial_detail::eqIgnoreCase(argv[0], "test")) {
         trackerSerialDispatchTestCommand(ctx, argc, argv);
         return;

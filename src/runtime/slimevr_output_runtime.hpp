@@ -52,9 +52,13 @@ struct SlimeVROutputRuntimeConfig {
     void* setConfigFlagUser = nullptr;
     bool signalTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0;
     bool temperatureTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0;
+    bool batteryTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_BATTERY_TELEMETRY != 0;
     uint32_t telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
     bool latestTemperatureValid = false;
     float latestTemperatureC = 0.0f;
+    bool latestBatteryValid = false;
+    float latestBatteryVoltage = 0.0f;
+    float latestBatteryPercentage = 0.0f;
     bool hasCompletedRestCalibration = false;
 };
 
@@ -115,11 +119,17 @@ struct SlimeVROutputRuntimeStatus {
     uint16_t sensorConfig = 0;
     bool signalTelemetryEnabled = false;
     bool temperatureTelemetryEnabled = false;
+    bool batteryTelemetryEnabled = false;
     uint32_t telemetryIntervalMs = 0;
     uint8_t lastSignalStrength = 0;
     int32_t lastRssiDbm = 0;
     float lastTemperatureC = 0.0f;
     bool lastTemperatureValid = false;
+    uint32_t batterySent = 0;
+    uint32_t batterySendFailures = 0;
+    float lastBatteryVoltage = 0.0f;
+    float lastBatteryPercentage = 0.0f;
+    bool lastBatteryValid = false;
     bool hasCompletedRestCalibration = false;
     uint32_t lastPingId = 0;
     uint32_t lastServerFeatureFlags = 0;
@@ -178,6 +188,7 @@ private:
     void maybeSendTelemetry(uint32_t nowMs);
     void sendSignalStrength(uint32_t nowMs);
     void sendTemperature(uint32_t nowMs);
+    void sendBatteryLevel(uint32_t nowMs);
     void sendMagnetometerAccuracy(uint32_t nowMs);
     void maybeSendRotation(uint32_t nowMs);
     void sendRotation(const TrackerPreparedOutputSnapshot& snapshot, uint32_t nowMs);
@@ -217,9 +228,13 @@ private:
     void* setConfigFlagUser_ = nullptr;
     bool signalTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0;
     bool temperatureTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0;
+    bool batteryTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_BATTERY_TELEMETRY != 0;
     uint32_t telemetryIntervalMs_ = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
     bool latestTemperatureValid_ = false;
     float latestTemperatureC_ = 0.0f;
+    bool latestBatteryValid_ = false;
+    float latestBatteryVoltage_ = 0.0f;
+    float latestBatteryPercentage_ = 0.0f;
     bool hasCompletedRestCalibration_ = false;
 
     uint32_t lastPingId_ = 0;
@@ -240,6 +255,8 @@ private:
     uint32_t rotationSent_ = 0;
     uint32_t signalStrengthSent_ = 0;
     uint32_t temperatureSent_ = 0;
+    uint32_t batterySent_ = 0;
+    uint32_t batterySendFailures_ = 0;
     uint32_t magnetometerAccuracySent_ = 0;
     uint32_t tapSent_ = 0;
     uint32_t tapSendFailures_ = 0;

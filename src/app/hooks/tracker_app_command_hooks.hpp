@@ -202,6 +202,7 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.slimevrRuntime = &g_slimevrRuntime;
     objects.tapRuntime = &g_tapRuntime;
     objects.statusLedRuntime = &g_statusLedRuntime;
+    objects.batteryRuntime = &g_batteryRuntime;
     objects.lsm = &lsm;
     objects.fifo = &lsmFifo;
     objects.sensorHub = &lsmHub;

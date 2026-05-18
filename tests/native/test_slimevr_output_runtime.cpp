@@ -161,6 +161,10 @@ int main() {
     cfg.magEnabled = true;
     cfg.latestTemperatureValid = true;
     cfg.latestTemperatureC = 42.5f;
+    cfg.batteryTelemetryEnabled = true;
+    cfg.latestBatteryValid = true;
+    cfg.latestBatteryVoltage = 3.80f;
+    cfg.latestBatteryPercentage = 55.0f;
     cfg.setConfigFlag = FakeConfigFlagSink::apply;
     cfg.setConfigFlagUser = &configFlagSink;
     rt.configure(cfg);
@@ -193,6 +197,7 @@ int main() {
         CHECK(ctx, st.rotationSent == 0);
         CHECK(ctx, st.signalStrengthSent == 0);
         CHECK(ctx, st.temperatureSent == 0);
+        CHECK(ctx, st.batterySent == 0);
     }
 
     rt.update(1201);
@@ -206,6 +211,10 @@ int main() {
     CHECK(ctx, st.sensorConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED);
     CHECK(ctx, st.lastTemperatureValid);
     CHECK_NEAR(ctx, st.lastTemperatureC, 42.5f, 1.0e-6f);
+    CHECK(ctx, st.batteryTelemetryEnabled);
+    CHECK(ctx, st.lastBatteryValid);
+    CHECK_NEAR(ctx, st.lastBatteryVoltage, 3.80f, 1.0e-6f);
+    CHECK_NEAR(ctx, st.lastBatteryPercentage, 55.0f, 1.0e-6f);
     CHECK(ctx, !st.hasCompletedRestCalibration);
     CHECK(ctx, st.rotationNoSnapshot == 0);
     CHECK(ctx, st.rotationDuplicateSnapshot == 0);
@@ -254,6 +263,8 @@ int main() {
     CHECK(ctx, rt.status().heartbeatSent >= 1);
     CHECK(ctx, rt.status().signalStrengthSent >= 1);
     CHECK(ctx, rt.status().temperatureSent >= 1);
+    CHECK(ctx, rt.status().batterySent >= 1);
+    CHECK(ctx, rt.status().batterySendFailures == 0);
     CHECK(ctx, rt.status().lastSignalStrength == 64);
     CHECK(ctx, rt.status().lastRssiDbm == -68);
 

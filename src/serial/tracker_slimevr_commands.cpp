@@ -6,6 +6,7 @@
 #include "config/tracker_network_config.hpp"
 #include "network/udp_transport.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
+#include "runtime/battery_runtime.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
@@ -36,6 +37,15 @@ SlimeVROutputRuntimeConfig makeConfigFromNetwork(TrackerSerialCommandContext& ct
                                 ctx.config->data.magCal.axisAlignmentValid ||
                                 ctx.config->data.magYaw.applyEnabled;
         cfg.magEnabled = cfg.magSupportEnabled && ctx.config->data.magYaw.applyEnabled;
+    }
+    cfg.batteryTelemetryEnabled = (TRACKER_SLIMEVR_ENABLE_BATTERY_TELEMETRY != 0) &&
+                                  (TRACKER_ENABLE_BATTERY_RUNTIME != 0);
+    if (ctx.batteryRuntime) {
+        float voltage = 0.0f;
+        float percentage = 0.0f;
+        cfg.latestBatteryValid = ctx.batteryRuntime->telemetry(voltage, percentage);
+        cfg.latestBatteryVoltage = voltage;
+        cfg.latestBatteryPercentage = percentage;
     }
     return cfg;
 }
@@ -82,6 +92,12 @@ void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("last_signal_strength="); out.println(s.lastSignalStrength);
     out.print("last_temperature_valid="); out.println(yn(s.lastTemperatureValid));
     out.print("last_temperature_c="); out.println(s.lastTemperatureC, 2);
+    out.print("battery_telemetry_enabled="); out.println(yn(s.batteryTelemetryEnabled));
+    out.print("battery_sent="); out.println(s.batterySent);
+    out.print("battery_send_failures="); out.println(s.batterySendFailures);
+    out.print("last_battery_valid="); out.println(yn(s.lastBatteryValid));
+    out.print("last_battery_voltage_v="); out.println(s.lastBatteryVoltage, 3);
+    out.print("last_battery_percentage="); out.println(s.lastBatteryPercentage, 1);
     out.print("last_rotation_confidence="); out.println(s.lastRotationConfidence, 4);
     out.println("# use 'slime debug' for full counters/timestamps");
 }
@@ -110,6 +126,8 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("rotation_sent="); out.println(s.rotationSent);
     out.print("signal_strength_sent="); out.println(s.signalStrengthSent);
     out.print("temperature_sent="); out.println(s.temperatureSent);
+    out.print("battery_sent="); out.println(s.batterySent);
+    out.print("battery_send_failures="); out.println(s.batterySendFailures);
     out.print("magnetometer_accuracy_sent="); out.println(s.magnetometerAccuracySent);
     out.print("tap_sent="); out.println(s.tapSent);
     out.print("tap_send_failures="); out.println(s.tapSendFailures);
@@ -120,11 +138,15 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("sensor_config=0x"); out.println(s.sensorConfig, HEX);
     out.print("signal_telemetry_enabled="); out.println(yn(s.signalTelemetryEnabled));
     out.print("temperature_telemetry_enabled="); out.println(yn(s.temperatureTelemetryEnabled));
+    out.print("battery_telemetry_enabled="); out.println(yn(s.batteryTelemetryEnabled));
     out.print("telemetry_interval_ms="); out.println(s.telemetryIntervalMs);
     out.print("last_signal_strength="); out.println(s.lastSignalStrength);
     out.print("last_rssi_dbm="); out.println(s.lastRssiDbm);
     out.print("last_temperature_valid="); out.println(yn(s.lastTemperatureValid));
     out.print("last_temperature_c="); out.println(s.lastTemperatureC, 2);
+    out.print("last_battery_valid="); out.println(yn(s.lastBatteryValid));
+    out.print("last_battery_voltage_v="); out.println(s.lastBatteryVoltage, 3);
+    out.print("last_battery_percentage="); out.println(s.lastBatteryPercentage, 1);
     out.print("rotation_no_snapshot="); out.println(s.rotationNoSnapshot);
     out.print("rotation_duplicate_snapshot="); out.println(s.rotationDuplicateSnapshot);
     out.print("rotation_rate_hz="); out.println(s.rotationRateHz);

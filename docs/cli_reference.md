@@ -161,13 +161,15 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 | `net reconnect` | Restart Wi-Fi connection attempt | No | Non-blocking reconnect. |
 | `net scan [visible|hidden] [limit N]` | Blocking Wi-Fi environment scan | No | Developer diagnostic; pauses sensor processing while scan runs. |
 | `net save|load|defaults|erase` | Manage network NVS config | Yes/Runtime | Network config is stored separately from main tracker config. |
-| `slime status` | Print compact SlimeVR UDP runtime status | No | Shows server state, rotation, tap packet counters, failures, ping, mag flags, RSSI and latest temperature. |
-| `slime debug` | Print full SlimeVR counters/timestamps | No | Developer view with packet counters, last packet values and reconnect-hardening counters. |
+| `slime status` | Print compact SlimeVR UDP runtime status | No | Shows server state, rotation, tap/battery packet counters, failures, ping, mag flags, RSSI, latest temperature and latest battery telemetry. |
+| `slime debug` | Print full SlimeVR counters/timestamps | No | Developer view with packet counters, last packet values, battery telemetry state and reconnect-hardening counters. |
 | `slime start` | Start SlimeVR UDP runtime | Runtime | Uses prepared quaternion snapshots directly and leaves local serial output off. |
 | `slime stop` | Stop SlimeVR output runtime | Runtime | Does not erase saved Wi-Fi/config. |
 | `slime reconnect` | Restart SlimeVR discovery/session | Runtime | Useful after server restart or network changes. |
 | `slime rate <hz>` | Set SlimeVR `RotationData` rate | Runtime/config | Stored in the existing outputRateHz field for compatibility, but not tied to local serial output. |
 | `slime counters reset` | Reset SlimeVR counters | Runtime | Does not restart Wi-Fi. |
+| `battery status` / `bat status` | Print ADC battery monitor state | No | Shows GPIO, raw ADC mV, computed battery voltage/percentage, present/not-present state and read-failure counters. |
+| `battery reset` / `bat reset` | Reset battery runtime counters/filter | Runtime | Does not change saved config. Next update resamples GPIO. |
 
 SlimeVR UDP is independent from the local `output`/`stream` commands. `slime start` leaves serial `Q,...` output off and reads prepared quaternion snapshots directly.
 
@@ -225,6 +227,7 @@ SlimeVR `SensorInfo.hasCompletedRestCalibration` is driven by the local rest/gyr
 ### SlimeVR telemetry notes
 
 - Temperature telemetry is sent with SlimeVR UDP packet type 20 (`sensorId + f32 temperatureC`). The server parser accepts it, but not every GUI view exposes it. Use `slime status` fields `temperature_sent`, `last_temperature_valid`, and `last_temperature_c` to verify firmware-side emission.
+- Battery telemetry is sent with SlimeVR UDP packet type 12 (`f32 voltage + f32 percentage`). The RC1 ADC backend expects `BAT+ -> R_TOP -> GPIO -> R_BOTTOM -> GND`, defaults to GPIO4 and 180 kΩ / 180 kΩ, and maps 3.30 V to 0% and 4.20 V to 100%. GPIO4 is ESP32-C3 ADC1_CH4, so no ADC2 force-use path is needed. The firmware reads it sparsely (`TRACKER_BATTERY_ADC_SAMPLE_INTERVAL_MS`, default 10000 ms), uses a small median-filtered burst (`TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT`, default 3), rejects implausible ADC millivolts, applies EMA filtering, and rejects impossible voltage steps. If the divider reads below `TRACKER_BATTERY_PRESENT_MIN_VOLTAGE`, the runtime treats the battery as absent and still reports safe 0.000 V / 0.0% telemetry.
 - Magnetometer support is advertised through `SensorInfo.sensorConfig`: bit 1 = supported, bit 0 = enabled. When mag support is enabled from firmware config, `sensor_config` should be `0x3`; `0x1` is interpreted by the current server as `Mag not supported`.
 
 ### SlimeVR incoming UDP packet handling
@@ -249,8 +252,8 @@ These aliases are for first-run provisioning from SlimeVR Server's Serial Consol
 |---|---|---:|---|
 | `SET WIFI <ssid> <password>` | Set Wi-Fi credentials, enable Wi-Fi/discovery, save to network NVS, restart Wi-Fi and SlimeVR discovery | Yes | The tokenizer accepts quoted SSID/password values, e.g. `SET WIFI "My WiFi" "pass with spaces"`. |
 | `SET BWIFI <base64_ssid> <base64_password>` | Same as `SET WIFI`, but base64 decoded first | Yes | Compatible with safer provisioning flows that avoid quoting/encoding problems. |
-| `GET INFO` | Print SlimeVR-firmware-style tracker, vendor, sensor and battery status lines | No | Useful for SlimeVR Server serial diagnostics. Battery is a placeholder until the RC1 battery ADC step lands. |
-| `GET CONFIG` | Print SlimeVR-firmware-style build/pin config lines | No | Reports ESP32-C3/LSM6DSV-compatible metadata and current LED/INT pins. |
+| `GET INFO` | Print SlimeVR-firmware-style tracker, vendor, sensor and battery status lines | No | Battery line uses the ADC runtime; absent/unreadable battery is reported as 0.000 V / 0.0%. |
+| `GET CONFIG` | Print SlimeVR-firmware-style build/pin config lines | No | Reports ESP32-C3/LSM6DSV-compatible metadata plus LED, INT and battery ADC/divider pins/values. |
 | `GET TEST` | Print a compact sensor smoke-test response | No | Uses current LSM/AHRS/sample counters. |
 | `GET WIFISCAN` | Blocking Wi-Fi scan with `[WSCAN]` SlimeVR-style lines | No | Suppresses expected FIFO-recovery console noise for a short grace period after the scan reply. |
 | `REBOOT` | Reboot the tracker | No | Mirrors official firmware command name. |

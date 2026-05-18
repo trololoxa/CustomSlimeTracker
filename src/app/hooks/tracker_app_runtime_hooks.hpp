@@ -193,6 +193,125 @@ static bool slimevrAutostartEnabledFromConfig() {
            g_networkConfig.data.credentialsValid;
 }
 
+static const char* appBatteryAdcBackendName() {
+#if defined(CONFIG_IDF_TARGET_ESP32C3) && (TRACKER_BATTERY_ADC_PIN >= 0) && (TRACKER_BATTERY_ADC_PIN <= 4)
+    return "esp32c3_adc1_mv";
+#else
+    return "arduino_analog_mv";
+#endif
+}
+
+static void appBatterySortSmall(uint16_t* values, uint8_t count) {
+    for (uint8_t i = 1; i < count; ++i) {
+        const uint16_t key = values[i];
+        uint8_t j = i;
+        while (j > 0 && values[j - 1] > key) {
+            values[j] = values[j - 1];
+            --j;
+        }
+        values[j] = key;
+    }
+}
+
+static bool appBatteryReadOneMillivolts(uint16_t& outMillivolts) {
+    const int raw = analogReadMilliVolts(TRACKER_BATTERY_ADC_PIN);
+    if (raw < 0 || raw > TRACKER_BATTERY_ADC_MAX_MV) {
+        return false;
+    }
+    outMillivolts = static_cast<uint16_t>(raw);
+    return true;
+}
+
+static bool appBatteryReadMillivolts(uint16_t& outMillivolts, void* user) {
+    (void)user;
+#if TRACKER_ENABLE_BATTERY_RUNTIME
+    constexpr uint8_t kMaxReads = 9;
+    constexpr uint8_t kConfiguredReads =
+        TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT < 1 ? 1 :
+        (TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT > kMaxReads ? kMaxReads : TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT);
+
+    uint16_t reads[kMaxReads] = {};
+    uint8_t valid = 0;
+    for (uint8_t i = 0; i < kConfiguredReads; ++i) {
+        uint16_t mv = 0;
+        if (appBatteryReadOneMillivolts(mv)) {
+            reads[valid++] = mv;
+        }
+    }
+    if (valid == 0) return false;
+
+    appBatterySortSmall(reads, valid);
+
+    // With the default three ADC1 reads, use the median. With larger override
+    // values, trim one high/low tail and average the stable center.
+    uint8_t begin = 0;
+    uint8_t end = valid;
+    if (valid >= 3) {
+        begin = 1;
+        end = valid - 1;
+    }
+
+    uint32_t sum = 0;
+    uint8_t used = 0;
+    for (uint8_t i = begin; i < end; ++i) {
+        sum += reads[i];
+        ++used;
+    }
+    if (used == 0) return false;
+    outMillivolts = static_cast<uint16_t>((sum + used / 2) / used);
+    return true;
+#else
+    outMillivolts = 0;
+    return false;
+#endif
+}
+
+static BatteryRuntimeConfig makeAppBatteryRuntimeConfig() {
+    BatteryRuntimeConfig cfg;
+    cfg.enabled = TRACKER_ENABLE_BATTERY_RUNTIME != 0;
+    cfg.adcPin = TRACKER_BATTERY_ADC_PIN;
+    cfg.rTopOhms = TRACKER_BATTERY_R_TOP_OHMS;
+    cfg.rBottomOhms = TRACKER_BATTERY_R_BOTTOM_OHMS;
+    cfg.voltageScale = TRACKER_BATTERY_VOLTAGE_SCALE;
+    cfg.voltageOffset = TRACKER_BATTERY_VOLTAGE_OFFSET;
+    cfg.emptyVoltage = TRACKER_BATTERY_EMPTY_VOLTAGE;
+    cfg.fullVoltage = TRACKER_BATTERY_FULL_VOLTAGE;
+    cfg.presentVoltageMin = TRACKER_BATTERY_PRESENT_MIN_VOLTAGE;
+    cfg.emaAlpha = TRACKER_BATTERY_ADC_EMA_ALPHA;
+    cfg.maxFilterStepVoltage = TRACKER_BATTERY_MAX_FILTER_STEP_V;
+    cfg.sampleIntervalMs = TRACKER_BATTERY_ADC_SAMPLE_INTERVAL_MS;
+    cfg.startupSamples = TRACKER_BATTERY_ADC_STARTUP_SAMPLES;
+    return cfg;
+}
+
+static void setupBatteryRuntime() {
+#if TRACKER_ENABLE_BATTERY_RUNTIME
+    pinMode(TRACKER_BATTERY_ADC_PIN, INPUT);
+#if defined(ARDUINO_ARCH_ESP32)
+    analogSetPinAttenuation(TRACKER_BATTERY_ADC_PIN, ADC_11db);
+#endif
+#endif
+    g_batteryRuntime.begin(appBatteryReadMillivolts, nullptr);
+    const BatteryRuntimeConfig cfg = makeAppBatteryRuntimeConfig();
+    g_batteryRuntime.configure(cfg);
+    g_batteryRuntime.update(millis());
+
+    Serial.print("# battery_runtime_enabled=");
+    Serial.print(cfg.enabled ? "yes" : "no");
+    Serial.print(" pin=");
+    Serial.print(cfg.adcPin);
+    Serial.print(" divider=");
+    Serial.print(cfg.rTopOhms, 0);
+    Serial.print('/');
+    Serial.print(cfg.rBottomOhms, 0);
+    Serial.print(" backend=");
+    Serial.println(appBatteryAdcBackendName());
+}
+
+static void updateBatteryRuntime() {
+    g_batteryRuntime.update(millis());
+}
+
 static bool slimevrSetConfigFlagHook(uint8_t sensorId, uint16_t configType, bool enabled, void* user) {
     (void)sensorId;
     (void)user;
@@ -224,6 +343,15 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     cfg.setConfigFlagUser = nullptr;
     cfg.latestTemperatureValid = true;
     cfg.latestTemperatureC = g_latestTempC;
+    cfg.batteryTelemetryEnabled = (TRACKER_SLIMEVR_ENABLE_BATTERY_TELEMETRY != 0) &&
+                                  (TRACKER_ENABLE_BATTERY_RUNTIME != 0);
+    {
+        float voltage = 0.0f;
+        float percentage = 0.0f;
+        cfg.latestBatteryValid = g_batteryRuntime.telemetry(voltage, percentage);
+        cfg.latestBatteryVoltage = voltage;
+        cfg.latestBatteryPercentage = percentage;
+    }
     cfg.hasCompletedRestCalibration = g_imuCal.gyroBiasValid;
     return cfg;
 }
@@ -416,6 +544,8 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.callbacks.updateTapRuntime = updateTapRuntime;
     deps.callbacks.setupStatusLedRuntime = setupStatusLedRuntime;
     deps.callbacks.updateStatusLedRuntime = updateStatusLedRuntime;
+    deps.callbacks.setupBatteryRuntime = setupBatteryRuntime;
+    deps.callbacks.updateBatteryRuntime = updateBatteryRuntime;
     deps.callbacks.setStatusLedSensorError = setStatusLedSensorError;
     deps.callbacks.resetFifoRuntimeCounters = resetFifoRuntimeCounters;
     deps.callbacks.attachFifoInterrupt = appAttachFifoInterruptCallback;

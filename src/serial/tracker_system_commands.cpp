@@ -91,6 +91,7 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("[tap/input]");
     out.println("  tap status | on | off | test [2..10] | inject <1..10> | reset");
     out.println("  led status | auto | on | off | identify [ms] | test <mode> | reset");
+    out.println("  battery status | reset");
     out.println();
     out.println("[server serial compatibility]");
     out.println("  GET INFO | GET CONFIG | GET TEST | GET WIFISCAN");

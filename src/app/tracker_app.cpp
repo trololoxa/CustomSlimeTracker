@@ -30,6 +30,7 @@ void TrackerApp::setup() {
     out.println(deps_.runtime.config->validate() ? "yes" : "no");
 
     call(deps_.callbacks.setupStatusLedRuntime);
+    call(deps_.callbacks.setupBatteryRuntime);
 
     pinMode(deps_.pins.int1, INPUT);
 
@@ -103,6 +104,7 @@ void TrackerApp::loop() {
     timing.fifoUs = micros() - sectionStartUs;
 
     sectionStartUs = micros();
+    call(deps_.callbacks.updateBatteryRuntime);
     call(deps_.callbacks.updateNetworkRuntime);
     call(deps_.callbacks.updateTapRuntime);
     call(deps_.callbacks.updateStatusLedRuntime);
@@ -177,6 +179,7 @@ void TrackerApp::serviceRuntimeForBlockingCommand() {
     if (!ready()) return;
 
     processFifoRuntime();
+    call(deps_.callbacks.updateBatteryRuntime);
     call(deps_.callbacks.updateNetworkRuntime);
     call(deps_.callbacks.updateTapRuntime);
     call(deps_.callbacks.updateStatusLedRuntime);

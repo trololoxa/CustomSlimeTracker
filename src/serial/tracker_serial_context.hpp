@@ -16,6 +16,7 @@ class TrackerWifiManager;
 class SlimeVROutputRuntime;
 class TapRuntimeController;
 class StatusLedRuntime;
+class BatteryRuntime;
 class Lsm6dsv;
 class Lsm6dsvFifoReader;
 class Lsm6dsvSensorHub;
@@ -115,6 +116,7 @@ struct TrackerSerialCommandContext {
     SlimeVROutputRuntime* slimevrRuntime = nullptr;
     TapRuntimeController* tapRuntime = nullptr;
     StatusLedRuntime* statusLedRuntime = nullptr;
+    BatteryRuntime* batteryRuntime = nullptr;
 
     Lsm6dsv* lsm = nullptr;
     Lsm6dsvFifoReader* fifo = nullptr;
