@@ -104,6 +104,17 @@ struct Ahrs6DofStats {
     uint32_t clampedLargeDt = 0;
     uint32_t normalizedCount = 0;
 
+    // Recovery/rebase diagnostics. largeDtRebaseCount counts automatic
+    // rebases after a rejected over-large dt when clampLargeDt=false.
+    // fifoRecoveryRebaseCount counts explicit recovery-timebase rebases,
+    // normally from FIFO recovery / tracking recovery. postFifoRecoverySamples
+    // is reset on each explicit recovery rebase and then counts accepted gyro
+    // prediction updates after it.
+    uint32_t largeDtRebaseCount = 0;
+    uint32_t fifoRecoveryRebaseCount = 0;
+    uint64_t lastRebaseTimestampUs = 0;
+    uint32_t postFifoRecoverySamples = 0;
+
     // Timestamp semantics:
     //   lastSeenTimestampUs       = latest timestamp observed by update(), even if rejected.
     //   lastIntegratedTimestampUs = latest timestamp that actually affected gyro integration.
@@ -215,6 +226,10 @@ struct Ahrs6DofDebugSnapshot {
     uint32_t skippedBadDt = 0;
     uint32_t startupAccelRejectedCount = 0;
     uint32_t clampedLargeDt = 0;
+    uint32_t largeDtRebaseCount = 0;
+    uint32_t fifoRecoveryRebaseCount = 0;
+    uint64_t lastRebaseTimestampUs = 0;
+    uint32_t postFifoRecoverySamples = 0;
 
     float accelNormVarianceG2 = 0.0f;
     float accelVarianceTrust = 1.0f;

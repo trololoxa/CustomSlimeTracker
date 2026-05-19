@@ -96,6 +96,9 @@ void Ahrs6Dof::rebaseTimestamp(uint64_t timestampUs) {
     stats_.lastTimestampUs = timestampUs;
     stats_.lastDtS = 0.0f;
     stats_.lastUsedDtS = 0.0f;
+    stats_.fifoRecoveryRebaseCount++;
+    stats_.lastRebaseTimestampUs = timestampUs;
+    stats_.postFifoRecoverySamples = 0;
 }
 
 Ahrs6DofAccelGate Ahrs6Dof::evaluateAccelGate(const Vec3& accelG) const {
@@ -147,6 +150,8 @@ bool Ahrs6Dof::update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG
             // the old pre-gap timestamp, so AHRS gyro prediction remains
             // permanently frozen while diagnostics still show fresh samples.
             stats_.skippedBadDt++;
+            stats_.largeDtRebaseCount++;
+            stats_.lastRebaseTimestampUs = timestampUs;
             stats_.lastIntegratedTimestampUs = timestampUs;
             stats_.lastTimestampUs = timestampUs;
             stats_.lastUsedDtS = 0.0f;
@@ -179,6 +184,9 @@ bool Ahrs6Dof::update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG
     stats_.lastGyroRadS = gyroUsed;
     stats_.lastAccelG = accelG;
     stats_.lastGyroAngleRad = gyroNormRadS * dtS;
+    if (stats_.fifoRecoveryRebaseCount > 0) {
+        stats_.postFifoRecoverySamples++;
+    }
 
     // 2. Accel gravity correction.
     applyAccelCorrection(accelG, accelNormG, dtS);
@@ -358,6 +366,10 @@ Ahrs6DofDebugSnapshot makeAhrs6DofDebugSnapshot(const Ahrs6Dof& ahrs) {
     s.accelRejectedCount = st.accelRejectedCount;
     s.skippedBadDt = st.skippedBadDt;
     s.clampedLargeDt = st.clampedLargeDt;
+    s.largeDtRebaseCount = st.largeDtRebaseCount;
+    s.fifoRecoveryRebaseCount = st.fifoRecoveryRebaseCount;
+    s.lastRebaseTimestampUs = st.lastRebaseTimestampUs;
+    s.postFifoRecoverySamples = st.postFifoRecoverySamples;
     s.startupAccelRejectedCount = st.startupAccelRejectedCount;
 
     return s;

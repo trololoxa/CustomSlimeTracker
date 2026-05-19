@@ -66,8 +66,11 @@ static void testAhrsStaticInvariants(TestContext& ctx) {
     CHECK_NEAR(ctx, up.z, 1.0f, 2.0e-4f);
 
     const uint32_t skippedBefore = ahrs.stats().skippedBadDt;
+    const uint32_t largeDtRebaseBefore = ahrs.stats().largeDtRebaseCount;
     CHECK(ctx, !ahrs.update(Vec3::zero(), Vec3::unitZ(), 2000ULL * 1000ULL));
     CHECK(ctx, ahrs.stats().skippedBadDt == skippedBefore + 1);
+    CHECK(ctx, ahrs.stats().largeDtRebaseCount == largeDtRebaseBefore + 1);
+    CHECK(ctx, ahrs.stats().lastRebaseTimestampUs == 2000ULL * 1000ULL);
     CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 2000ULL * 1000ULL);
     CHECK(ctx, ahrs.stats().lastUsedDtS == 0.0f);
 
@@ -110,9 +113,34 @@ static void testAhrsStartupAndDtPolicy(TestContext& ctx) {
     CHECK(ctx, !rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 1000));
     CHECK(ctx, !rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 101000));
     CHECK(ctx, rejectLargeDt.stats().skippedBadDt == 1);
+    CHECK(ctx, rejectLargeDt.stats().largeDtRebaseCount == 1);
+    CHECK(ctx, rejectLargeDt.stats().lastRebaseTimestampUs == 101000);
     CHECK(ctx, rejectLargeDt.stats().lastIntegratedTimestampUs == 101000);
     CHECK(ctx, rejectLargeDt.stats().lastUsedDtS == 0.0f);
     CHECK(ctx, rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 102000));
+}
+
+static void testAhrsRecoveryRebaseDiagnostics(TestContext& ctx) {
+    Ahrs6DofConfig cfg;
+    cfg.clampLargeDt = false;
+
+    Ahrs6Dof ahrs(cfg);
+    CHECK(ctx, !ahrs.update(Vec3::zero(), Vec3::unitZ(), 1000));
+    CHECK(ctx, ahrs.update(Vec3::zero(), Vec3::unitZ(), 2000));
+
+    const uint32_t updatesBefore = ahrs.stats().updateCount;
+    ahrs.rebaseTimestamp(5000);
+    CHECK(ctx, ahrs.stats().fifoRecoveryRebaseCount == 1);
+    CHECK(ctx, ahrs.stats().lastRebaseTimestampUs == 5000);
+    CHECK(ctx, ahrs.stats().postFifoRecoverySamples == 0);
+    CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 5000);
+
+    CHECK(ctx, ahrs.update(Vec3::zero(), Vec3::unitZ(), 6000));
+    CHECK(ctx, ahrs.stats().postFifoRecoverySamples == 1);
+    CHECK(ctx, ahrs.stats().updateCount == updatesBefore + 1);
+
+    CHECK(ctx, ahrs.update(Vec3::zero(), Vec3::unitZ(), 7000));
+    CHECK(ctx, ahrs.stats().postFifoRecoverySamples == 2);
 }
 
 int main() {
@@ -120,5 +148,6 @@ int main() {
     testVecMatQuat(ctx);
     testAhrsStaticInvariants(ctx);
     testAhrsStartupAndDtPolicy(ctx);
+    testAhrsRecoveryRebaseDiagnostics(ctx);
     return ctx.finish("test_core_math_ahrs");
 }

@@ -57,4 +57,15 @@ configuration, AHRS rejects that gap instead of integrating it as real rotation.
 After the rejection it rebases `lastIntegratedTimestampUs` to the current sample
 so the next normal FIFO sample resumes gyro prediction. This prevents a stale
 pre-recovery timestamp baseline from freezing quaternion updates while FIFO and
-SlimeVR packet counters continue to advance.
+SlimeVR packet counters continue to advance. `ahrs status` exposes this through
+`large_dt_rebase_count`, `last_rebase_t_us`, and `post_fifo_recovery_samples` so
+post-scan recovery can be verified without enabling high-rate logs.
+
+`net scan`, `GET WIFISCAN`, and other blocking diagnostics are tracking
+interruptions: motion made while the CPU is inside the blocking operation is not
+recoverable because the gyro history was not processed in real time. Recovery is
+expected to restore clean FIFO/AHRS operation for motion that happens after the
+command returns; it is not expected to reconstruct motion that happened during
+the scan. FIFO timestamp reconstruction also resets the sensor-hub/magnetometer
+timestamp baseline so the first post-recovery mag sample is anchored to the new
+IMU stream instead of inheriting a stale pre-recovery 60 Hz mag cadence.

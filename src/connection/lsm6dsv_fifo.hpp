@@ -328,6 +328,8 @@ private:
 
     void resetParserState();
 
+    void resetMagTimestampBaseline();
+
     void checkTagCounter(const FifoWord& w);
 
     void parseTemperatureWord(const FifoWord& w);

@@ -34,6 +34,10 @@ public:
             out.print("bad_dt_rejects="); out.println(st.skippedBadDt);
             out.print("startup_accel_rejects="); out.println(st.startupAccelRejectedCount);
             out.print("large_dt_clamps="); out.println(st.clampedLargeDt);
+            out.print("large_dt_rebase_count="); out.println(st.largeDtRebaseCount);
+            out.print("fifo_rebase_count="); out.println(st.fifoRecoveryRebaseCount);
+            out.print("last_rebase_t_us="); tracker_serial_detail::printU64Dec(out, st.lastRebaseTimestampUs); out.println();
+            out.print("post_fifo_recovery_samples="); out.println(st.postFifoRecoverySamples);
             out.print("last_accel_trust="); out.println(st.lastAccelGate.trust, 6);
             out.print("last_accel_norm_trust="); out.println(st.lastAccelGate.normTrust, 6);
             out.print("last_accel_innovation_trust="); out.println(st.lastAccelGate.innovationTrust, 6);

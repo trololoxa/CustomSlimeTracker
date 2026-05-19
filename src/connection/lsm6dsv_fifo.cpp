@@ -58,6 +58,7 @@ bool Lsm6dsvFifoReader::resetFifo() {
         stats_.lastHwTimestampUs = 0;
         stats_.lastRawTimestampTicks = 0;
         stats_.timestampWrapHigh = 0;
+        resetMagTimestampBaseline();
 
         uint8_t fifoCtrl4 = 0;
         fifoCtrl4 |= (static_cast<uint8_t>(cfg_.timestampBatch) & 0x03u) << 6;
@@ -101,6 +102,7 @@ void Lsm6dsvFifoReader::resetTimestampReconstruction(uint64_t lastTimestampUs) {
         tsHead_ = tsTail_ = tsCount_ = 0;
         waitingHead_ = waitingTail_ = waitingCount_ = 0;
         completedHead_ = completedTail_ = completedCount_ = 0;
+        resetMagTimestampBaseline();
     }
 
 bool Lsm6dsvFifoReader::readStatus(Status& s) {
@@ -384,6 +386,15 @@ void Lsm6dsvFifoReader::resetParserState() {
         waitingHead_ = waitingTail_ = waitingCount_ = 0;
         completedHead_ = completedTail_ = completedCount_ = 0;
         magHead_ = magTail_ = magCount_ = 0;
+    }
+
+void Lsm6dsvFifoReader::resetMagTimestampBaseline() {
+        stats_.lastMagTimestampUs = 0;
+        stats_.lastMagDtUs = 0;
+        stats_.minMagDtUs = 0;
+        stats_.maxMagDtUs = 0;
+        stats_.sumMagDtUs = 0.0;
+        stats_.magDtCount = 0;
     }
 
 void Lsm6dsvFifoReader::checkTagCounter(const FifoWord& w) {
