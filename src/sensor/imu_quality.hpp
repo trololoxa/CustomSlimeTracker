@@ -172,6 +172,12 @@ public:
     uint32_t lastRecoveryFlags() const;
     void clearRecoveryRequest();
 
+    // Stream recovery clears timestamp/recovery baselines after an explicit
+    // FIFO reset without losing long-running diagnostic counters. Use this
+    // after blocking commands or FIFO overrun recovery, before syncing fresh
+    // FIFO stats, so the next real sample becomes a clean timing baseline.
+    void resetStreamRecoveryState();
+
     void syncFifoStats(const Lsm6dsvFifoReader::DrainStats& stats);
 
     ImuQualityResult evaluate(const Lsm6dsv::RawSample& raw,

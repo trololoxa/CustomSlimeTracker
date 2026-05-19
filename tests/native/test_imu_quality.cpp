@@ -120,6 +120,46 @@ static void testUnknownTagAloneDoesNotRequestRecoveryByDefault(TestContext& ctx)
     CHECK(ctx, c.fifoRecoveryRequests == 0);
 }
 
+static void testStreamRecoveryResetClearsTimingBaselineButKeepsCounters(TestContext& ctx) {
+    ImuQualityConfig cfg;
+    cfg.expectedDtUs = 1000.0f;
+    ImuQualityMonitor monitor(cfg);
+    Lsm6dsvFifoReader::DrainStats stats = makeStats();
+
+    monitor.evaluate(makeRaw(100000), makeSample(100000), stats, false);
+    monitor.evaluate(makeRaw(101000), makeSample(101000), stats, false);
+
+    Lsm6dsv::RawSample overrun = makeRaw(150000,
+        Lsm6dsvFifoReader::FIFO_FLAG_TS_HARDWARE |
+        Lsm6dsvFifoReader::FIFO_FLAG_STATUS_OVR |
+        Lsm6dsvFifoReader::FIFO_FLAG_STATUS_FULL);
+    ImuQualityResult bad = monitor.evaluate(overrun, makeSample(150000), stats, false);
+    CHECK(ctx, bad.shouldRequestFifoRecovery);
+    CHECK(ctx, monitor.recoveryRequested());
+    const uint32_t samplesBefore = monitor.counters().samples;
+    const uint32_t recoveriesBefore = monitor.counters().fifoRecoveryRequests;
+
+    monitor.resetStreamRecoveryState();
+    monitor.syncFifoStats(stats);
+    CHECK(ctx, !monitor.recoveryRequested());
+    CHECK(ctx, monitor.lastRecoveryFlags() == 0);
+
+    // A post-FIFO-reset timestamp stream may restart near the preserved FIFO
+    // baseline or from a fresh hardware timestamp. It must become the new
+    // quality baseline instead of being rejected against the pre-reset stream.
+    ImuQualityResult firstAfter = monitor.evaluate(makeRaw(1000), makeSample(1000), stats, false);
+    CHECK(ctx, firstAfter.dtUs == 0);
+    CHECK(ctx, !firstAfter.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC));
+    CHECK(ctx, firstAfter.shouldUpdateAhrs);
+
+    ImuQualityResult secondAfter = monitor.evaluate(makeRaw(2000), makeSample(2000), stats, false);
+    CHECK(ctx, secondAfter.dtUs == 1000);
+    CHECK(ctx, secondAfter.shouldUpdateAhrs);
+
+    CHECK(ctx, monitor.counters().samples == samplesBefore + 2);
+    CHECK(ctx, monitor.counters().fifoRecoveryRequests == recoveriesBefore);
+}
+
 static void testFifoStatsDeltaRequestsRecovery(TestContext& ctx) {
     ImuQualityMonitor monitor;
     Lsm6dsvFifoReader::DrainStats stats = makeStats();
@@ -157,6 +197,7 @@ int main() {
     testTimestampGapAndRecovery(ctx);
     testSaturationAndAccelOutlierGates(ctx);
     testUnknownTagAloneDoesNotRequestRecoveryByDefault(ctx);
+    testStreamRecoveryResetClearsTimingBaselineButKeepsCounters(ctx);
     testFifoStatsDeltaRequestsRecovery(ctx);
     return ctx.finish("test_imu_quality");
 }

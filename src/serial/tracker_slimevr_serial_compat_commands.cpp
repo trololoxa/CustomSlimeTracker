@@ -7,6 +7,7 @@
 #include "config/tracker_config.hpp"
 #include "config/tracker_config_store.hpp"
 #include "config/tracker_network_config.hpp"
+#include "connection/lsm6dsv_fifo.hpp"
 #include "network/wifi_manager.hpp"
 #include "output/slimevr_packet_writer.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
@@ -15,6 +16,7 @@
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
+#include "sensor/imu_quality.hpp"
 #include "serial/tracker_config_commands.hpp"
 #include "serial/tracker_calibration_commands.hpp"
 #include "serial/tracker_network_commands.hpp"
@@ -93,6 +95,35 @@ void printMac(Stream& out, const uint8_t mac[6]) {
         if (i) out.print(':');
         if (mac[i] < 0x10) out.print('0');
         out.print(static_cast<unsigned int>(mac[i]), HEX);
+    }
+}
+
+
+void recoverSensorStreamAfterBlockingWifiScan(TrackerSerialCommandContext& ctx, const char* reason) {
+    trackerConsoleSuppressTrackingMessagesFor(TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS);
+
+    if (!ctx.fifo) return;
+
+    const uint64_t keepTs = ctx.fifo->stats().lastAssignedTimestampUs;
+    const bool ok = ctx.fifo->resetFifo();
+    ctx.fifo->resetTimestampReconstruction(keepTs);
+
+    if (ctx.quality) {
+        ctx.quality->resetStreamRecoveryState();
+        ctx.quality->syncFifoStats(ctx.fifo->stats());
+    }
+    if (ctx.resetFifoRuntime) {
+        ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
+    }
+
+    if (!ok) {
+        Stream& out = outFor(ctx);
+        out.print("[WARN ] [SerialCommands] [WSCAN] post-scan FIFO reset failed");
+        if (reason && reason[0] != '\0') {
+            out.print(" reason=");
+            out.print(reason);
+        }
+        out.println();
     }
 }
 
@@ -333,7 +364,7 @@ void dispatchGetWifiScan(TrackerSerialCommandContext& ctx) {
     static WifiScanResult results[32];
     info(out, "[WSCAN] Scanning for WiFi networks...");
     const int16_t seen = ctx.wifiManager->scanNetworks(results, 32, false);
-    trackerConsoleSuppressTrackingMessagesFor(TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS);
+    recoverSensorStreamAfterBlockingWifiScan(ctx, "get_wifiscan");
 
     if (seen < 0) {
         info(out, "[WSCAN] Scan failed!");

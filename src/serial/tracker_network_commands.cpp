@@ -3,8 +3,10 @@
 #include <cstring>
 
 #include "config/tracker_network_config.hpp"
+#include "connection/lsm6dsv_fifo.hpp"
 #include "network/wifi_manager.hpp"
 #include "runtime/tracker_console_suppress.hpp"
+#include "sensor/imu_quality.hpp"
 #include "defines.h"
 
 namespace tracker {
@@ -21,6 +23,34 @@ bool is(const char* a, const char* b) {
 
 constexpr uint8_t WIFI_SCAN_DEFAULT_LIMIT = 32;
 constexpr uint8_t WIFI_SCAN_MAX_LIMIT = 64;
+
+void recoverSensorStreamAfterBlockingWifiScan(TrackerSerialCommandContext& ctx, const char* reason) {
+    trackerConsoleSuppressTrackingMessagesFor(TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS);
+
+    if (!ctx.fifo) return;
+
+    const uint64_t keepTs = ctx.fifo->stats().lastAssignedTimestampUs;
+    const bool ok = ctx.fifo->resetFifo();
+    ctx.fifo->resetTimestampReconstruction(keepTs);
+
+    if (ctx.quality) {
+        ctx.quality->resetStreamRecoveryState();
+        ctx.quality->syncFifoStats(ctx.fifo->stats());
+    }
+    if (ctx.resetFifoRuntime) {
+        ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
+    }
+
+    if (!ok) {
+        Stream& out = netStream(ctx);
+        out.print("# WARN post-scan FIFO reset failed");
+        if (reason && reason[0] != '\0') {
+            out.print(" reason=");
+            out.print(reason);
+        }
+        out.println();
+    }
+}
 
 bool hasSaveArg(int argc, char** argv, int startIndex) {
     for (int i = startIndex; i < argc; ++i) {
@@ -179,7 +209,7 @@ void runWifiScan(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     out.print("limit="); out.println(limit);
 
     const int16_t count = ctx.wifiManager->scanNetworks(results, limit, showHidden);
-    trackerConsoleSuppressTrackingMessagesFor(TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS);
+    recoverSensorStreamAfterBlockingWifiScan(ctx, "net_scan");
     if (count < 0) {
         out.print("# ERR wifi scan failed: ");
         out.println(count);

@@ -48,3 +48,13 @@ heartbeat/output maintenance
 `TrackingStateController` is the single place that should summarize user-visible tracking state. CLI status and machine logs should not invent separate state models.
 
 Machine-readable logs are the source for replay/metrics. Human CLI output is for inspection and should not become a replay input format. `MAG`/`YAW` frames describe magnetometer trust and yaw correction behavior; full-mode `MAGR` frames carry raw/calibrated/body magnetometer vectors for host-side magnetometer fitting and axis-mapping regression.
+
+### AHRS recovery after multi-second timestamp gaps
+
+Blocking diagnostics such as Wi-Fi scans can pause sensor processing long enough
+for FIFO timestamps to jump by multiple seconds. With the production runtime
+configuration, AHRS rejects that gap instead of integrating it as real rotation.
+After the rejection it rebases `lastIntegratedTimestampUs` to the current sample
+so the next normal FIFO sample resumes gyro prediction. This prevents a stale
+pre-recovery timestamp baseline from freezing quaternion updates while FIFO and
+SlimeVR packet counters continue to advance.

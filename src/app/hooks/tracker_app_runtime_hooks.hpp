@@ -18,11 +18,22 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
 
     const uint64_t ts = raw.t_us != 0 ? raw.t_us : lsmFifo.stats().lastAssignedTimestampUs;
     enterTrackingRecovery(quality.flags, "fifo_recovery", ts);
-    lsmFifo.resetFifo();
+    const bool resetOk = lsmFifo.resetFifo();
     lsmFifo.resetTimestampReconstruction(ts);
-    g_quality.clearRecoveryRequest();
+    // The sample that requested recovery already came from a broken pre-reset
+    // stream. Drop prepared output so SlimeVR does not keep receiving a
+    // sequence of stale/faulted quaternions while the FIFO restarts.
+    g_preparedOutput.reset();
+    // Preserve counters, but clear timestamp baselines and recovery latch.
+    // Otherwise the next post-reset hardware timestamps can be compared
+    // against the old pre-reset stream and AHRS may stay effectively frozen.
+    g_quality.resetStreamRecoveryState();
     g_quality.syncFifoStats(lsmFifo.stats());
     resetFifoRuntimeCounters();
+
+    if (!resetOk && !trackerConsoleTrackingMessagesSuppressed(millis())) {
+        Serial.println("# ERR FIFO reset failed during recovery");
+    }
 }
 
 static GyroTempStaticFitDeps makeGyroTempStaticFitDeps() {

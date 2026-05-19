@@ -140,7 +140,18 @@ bool Ahrs6Dof::update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG
 
     if (dtS > cfg_.maxDtS) {
         if (!cfg_.clampLargeDt) {
+            // A blocking operation such as Wi-Fi scan or a FIFO overrun can
+            // leave a multi-second timestamp gap. Reject that sample, but
+            // rebase the integration timestamp to the current stream position.
+            // Otherwise every following normal sample is still compared against
+            // the old pre-gap timestamp, so AHRS gyro prediction remains
+            // permanently frozen while diagnostics still show fresh samples.
             stats_.skippedBadDt++;
+            stats_.lastIntegratedTimestampUs = timestampUs;
+            stats_.lastTimestampUs = timestampUs;
+            stats_.lastUsedDtS = 0.0f;
+            stats_.lastGyroRadS = gyroRadS;
+            stats_.lastAccelG = accelG;
             return false;
         }
         dtS = cfg_.maxDtS;

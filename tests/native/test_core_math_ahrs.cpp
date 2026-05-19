@@ -66,8 +66,14 @@ static void testAhrsStaticInvariants(TestContext& ctx) {
     CHECK_NEAR(ctx, up.z, 1.0f, 2.0e-4f);
 
     const uint32_t skippedBefore = ahrs.stats().skippedBadDt;
-    CHECK(ctx, !ahrs.update(Vec3::zero(), Vec3::unitZ(), 1000ULL * 1000ULL));
+    CHECK(ctx, !ahrs.update(Vec3::zero(), Vec3::unitZ(), 2000ULL * 1000ULL));
     CHECK(ctx, ahrs.stats().skippedBadDt == skippedBefore + 1);
+    CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 2000ULL * 1000ULL);
+    CHECK(ctx, ahrs.stats().lastUsedDtS == 0.0f);
+
+    // After a rejected multi-second gap, the next normal sample must integrate
+    // again instead of staying permanently frozen against the pre-gap baseline.
+    CHECK(ctx, ahrs.update(Vec3::zero(), Vec3::unitZ(), 2000ULL * 1000ULL + 1000ULL));
 
     CHECK(ctx, ahrs.stats().updateCount > 0);
     CHECK(ctx, ahrs.stats().accelUpdateCount > 0);
@@ -104,7 +110,9 @@ static void testAhrsStartupAndDtPolicy(TestContext& ctx) {
     CHECK(ctx, !rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 1000));
     CHECK(ctx, !rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 101000));
     CHECK(ctx, rejectLargeDt.stats().skippedBadDt == 1);
-    CHECK(ctx, rejectLargeDt.stats().lastIntegratedTimestampUs == 1000);
+    CHECK(ctx, rejectLargeDt.stats().lastIntegratedTimestampUs == 101000);
+    CHECK(ctx, rejectLargeDt.stats().lastUsedDtS == 0.0f);
+    CHECK(ctx, rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 102000));
 }
 
 int main() {

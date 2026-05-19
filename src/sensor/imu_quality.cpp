@@ -67,6 +67,14 @@ void ImuQualityMonitor::clearRecoveryRequest() {
     lastRecoveryFlags_ = 0;
 }
 
+void ImuQualityMonitor::resetStreamRecoveryState() {
+    lastSeenTimestampUs_ = 0;
+    lastAcceptedTimestampUs_ = 0;
+    recoveryRequested_ = false;
+    lastRecoveryFlags_ = 0;
+    lastStatsValid_ = false;
+}
+
 void ImuQualityMonitor::syncFifoStats(const Lsm6dsvFifoReader::DrainStats& stats) {
     lastStats_ = stats;
     lastStatsValid_ = true;
