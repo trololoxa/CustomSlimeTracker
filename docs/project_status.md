@@ -16,13 +16,13 @@ This document replaces the completed code-quality roadmap notes. It records the 
 
 ## Deliberate developer conveniences
 
-- Boot-time `sleep(2)` remains intentionally. It gives time to open Serial Monitor during development and can be removed in final production cleanup.
-- `defines.h` is the canonical compile-time defaults header. No `defines.hpp` shim is used.
-- `BOARD_LOLIN_C3_MINI_DIAG` is the normal local build/upload environment while warnings are being kept clean.
+- The boot serial settle delay is Debug-profile only (`TRACKER_ENABLE_BOOT_DELAY`). Production and Slim do not keep the old unconditional `sleep(2)`.
+- `defines.h` is now a compatibility umbrella over `src/build_config/*`; new profile/config defaults should go into the focused build-config headers.
+- `BOARD_LOLIN_C3_MINI_DEBUG` is the normal local build/upload environment while warnings are being kept clean. `BOARD_LOLIN_C3_MINI_DIAG` remains as a backward-compatible alias.
 
 ## Current quality gate
 
-Run host tests and PlatformIO builds:
+Run host tests and all profile PlatformIO builds:
 
 ```bash
 python tools/check_all.py --clean --require-pio
@@ -60,7 +60,7 @@ The tracker now has a working SlimeVR UDP MVP:
 - `slime status` compact view and `slime debug` full counter dump;
 - `test runtime <seconds>` for full Wi-Fi/server/FIFO loop-load measurement.
 
-Next optimization work should start from a `test runtime 600` baseline rather than from `test static` alone.
+Optimization work should keep using a `test runtime 600` baseline rather than `test static` alone, and firmware-size deltas should be checked with `python tools/report_firmware_size.py`.
 
 ## Current setup baseline
 

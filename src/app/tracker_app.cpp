@@ -11,23 +11,39 @@ void TrackerApp::begin(const TrackerAppDeps& deps) {
 void TrackerApp::setup() {
     if (!ready()) return;
 
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     Serial.begin(deps_.timing.serialBaud);
-    sleep(2);
+#endif
+#if TRACKER_ENABLE_BOOT_DELAY
+    delay(TRACKER_BOOT_SERIAL_SETTLE_DELAY_MS);
+#endif
+
     deps_.runtime.perf->reset(millis());
+
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     delay(deps_.timing.startupDelayMs);
+#endif
 
     Stream& out = *deps_.runtime.out;
+#if TRACKER_ENABLE_BOOT_BANNER
     out.println();
     out.println("==============================================================================");
     out.println("ESP32-C3 + LSM6DSV COMMAND TRACKER FIRMWARE");
+    out.print("# build_profile=");
+    out.print(trackerBuildProfileName());
+    out.print(" cli_level=");
+    out.println(trackerCliLevelName());
     out.println("==============================================================================");
+#endif
 
     trackerBootstrapLoadConfigAndApplyRuntime(deps_.bootstrap);
 
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     out.print("# config_loaded_from_nvs=");
     out.println(*deps_.runtime.configLoadedFromNvs ? "yes" : "no");
     out.print("# config_valid=");
     out.println(deps_.runtime.config->validate() ? "yes" : "no");
+#endif
 
     call(deps_.callbacks.setupStatusLedRuntime);
     call(deps_.callbacks.setupBatteryRuntime);
@@ -81,9 +97,13 @@ void TrackerApp::setup() {
 
     startMagFromConfig(out);
 
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     out.println("# OK INT1 attached: FIFO_WTM/FIFO_OVR/FIFO_FULL, RISING");
+#if TRACKER_ENABLE_SERIAL_CLI
     out.println("# Type: help");
+#endif
     out.println("==============================================================================");
+#endif
 }
 
 void TrackerApp::loop() {

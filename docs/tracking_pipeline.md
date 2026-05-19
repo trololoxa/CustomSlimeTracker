@@ -15,7 +15,7 @@ main.cpp
   -> CLI setup
 ```
 
-Boot-time `sleep(2)` is currently intentional developer convenience.
+The old unconditional boot-time `sleep(2)` has been replaced by the Debug-only `TRACKER_ENABLE_BOOT_DELAY` / `TRACKER_BOOT_SERIAL_SETTLE_DELAY_MS` path. Production and Slim should boot without the serial settle delay.
 
 ## Runtime loop
 

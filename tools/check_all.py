@@ -18,7 +18,11 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PIO_ENVS = ("BOARD_LOLIN_C3_MINI", "BOARD_LOLIN_C3_MINI_DIAG")
+DEFAULT_PIO_ENVS = (
+    "BOARD_LOLIN_C3_MINI_DEBUG",
+    "BOARD_LOLIN_C3_MINI_PRODUCTION",
+    "BOARD_LOLIN_C3_MINI_SLIM",
+)
 
 
 def run(cmd: Sequence[str], *, cwd: Path = ROOT) -> None:

@@ -1,0 +1,65 @@
+#pragma once
+
+// Build profile selector.
+//
+// Select one profile from platformio.ini with:
+//   -DTRACKER_BUILD_PROFILE=TRACKER_PROFILE_DEBUG
+//   -DTRACKER_BUILD_PROFILE=TRACKER_PROFILE_PRODUCTION
+//   -DTRACKER_BUILD_PROFILE=TRACKER_PROFILE_SLIM
+//
+// Keep these values as preprocessor macros: feature gates below are used in
+// #if blocks, so constexpr values would not remove code at compile time.
+
+#define TRACKER_PROFILE_DEBUG 1
+#define TRACKER_PROFILE_PRODUCTION 2
+#define TRACKER_PROFILE_SLIM 3
+
+#ifndef TRACKER_BUILD_PROFILE
+#define TRACKER_BUILD_PROFILE TRACKER_PROFILE_DEBUG
+#endif
+
+#define TRACKER_BUILD_IS_DEBUG (TRACKER_BUILD_PROFILE == TRACKER_PROFILE_DEBUG)
+#define TRACKER_BUILD_IS_PRODUCTION (TRACKER_BUILD_PROFILE == TRACKER_PROFILE_PRODUCTION)
+#define TRACKER_BUILD_IS_SLIM (TRACKER_BUILD_PROFILE == TRACKER_PROFILE_SLIM)
+
+#if !TRACKER_BUILD_IS_DEBUG && !TRACKER_BUILD_IS_PRODUCTION && !TRACKER_BUILD_IS_SLIM
+#error "Unknown TRACKER_BUILD_PROFILE. Use TRACKER_PROFILE_DEBUG, TRACKER_PROFILE_PRODUCTION or TRACKER_PROFILE_SLIM."
+#endif
+
+#define TRACKER_CLI_LEVEL_NONE 0
+#define TRACKER_CLI_LEVEL_BASIC 1
+#define TRACKER_CLI_LEVEL_FULL 2
+
+#ifndef TRACKER_CLI_LEVEL
+  #if TRACKER_BUILD_IS_SLIM
+    #define TRACKER_CLI_LEVEL TRACKER_CLI_LEVEL_NONE
+  #elif TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_CLI_LEVEL TRACKER_CLI_LEVEL_BASIC
+  #else
+    #define TRACKER_CLI_LEVEL TRACKER_CLI_LEVEL_FULL
+  #endif
+#endif
+
+#define TRACKER_CLI_IS_NONE (TRACKER_CLI_LEVEL == TRACKER_CLI_LEVEL_NONE)
+#define TRACKER_CLI_IS_BASIC (TRACKER_CLI_LEVEL == TRACKER_CLI_LEVEL_BASIC)
+#define TRACKER_CLI_IS_FULL (TRACKER_CLI_LEVEL == TRACKER_CLI_LEVEL_FULL)
+
+static inline const char* trackerBuildProfileName() {
+#if TRACKER_BUILD_IS_SLIM
+    return "Slim";
+#elif TRACKER_BUILD_IS_PRODUCTION
+    return "Production";
+#else
+    return "Debug";
+#endif
+}
+
+static inline const char* trackerCliLevelName() {
+#if TRACKER_CLI_IS_NONE
+    return "None";
+#elif TRACKER_CLI_IS_BASIC
+    return "Basic";
+#else
+    return "Full";
+#endif
+}

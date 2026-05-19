@@ -31,7 +31,7 @@ struct TrackerAppBuffers {
 
 struct TrackerAppTimingConfig {
     uint32_t serialBaud = cfg::SERIAL_BAUD;
-    uint32_t startupDelayMs = 300;
+    uint32_t startupDelayMs = TRACKER_STARTUP_DELAY_MS;
     uint16_t fifoMaxWordsPerDrainDefault = cfg::FIFO_MAX_WORDS_PER_DRAIN;
     uint8_t fifoMaxDrainRoundsPerEventDefault = cfg::FIFO_MAX_DRAIN_ROUNDS_PER_EVENT;
     uint32_t fifoNonblockingStatusPollIntervalUs = cfg::FIFO_NONBLOCKING_STATUS_POLL_INTERVAL_US;
