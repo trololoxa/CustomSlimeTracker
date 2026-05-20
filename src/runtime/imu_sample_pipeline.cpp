@@ -38,7 +38,11 @@ void imuPipelineRecordSampleProcessTime(ImuSamplePipelineDeps& deps, uint32_t dt
     if (dtUs > deps.perf.sampleProcessMaxUs) {
         deps.perf.sampleProcessMaxUs = dtUs;
     }
+#if TRACKER_ENABLE_STATIC_TEST
     deps.staticTestRunner.recordSampleProcessTime(dtUs);
+#else
+    (void)deps;
+#endif
 }
 
 void imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
@@ -69,11 +73,15 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
                                      const Lsm6dsv::Sample& scaled,
                                      const Lsm6dsv::Sample& calibrated,
                                      const ImuQualityResult& quality) {
+#if TRACKER_ENABLE_SERIAL_STREAM
     emitSerialStreamIfNeeded(deps.streamState, deps.out, raw, scaled, calibrated, deps.ahrs, quality, micros());
+#endif
     if (deps.callbacks.emitMachineLogFrame != nullptr) {
         deps.callbacks.emitMachineLogFrame(raw, calibrated, quality, deps.callbacks.user);
     }
+#if TRACKER_ENABLE_STATIC_TEST
     deps.staticTestRunner.updateSample(calibrated, quality, deps.out);
+#endif
     if (deps.gyroTempCapture != nullptr) {
         deps.gyroTempCapture->updateSample(calibrated, quality, millis());
     }

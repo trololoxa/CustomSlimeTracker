@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "defines.h"
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
 #include "connection/lsm6dsv_driver.hpp"
@@ -35,14 +36,26 @@ const char* trackerSerialSystemStreamModeName(TrackerStreamMode mode) {
 void trackerSerialPrintHelp(Stream& out) {
     out.println("==============================================================================");
     out.println("TRACKER SERIAL COMMANDS");
+    out.print("# build_profile=");
+    out.print(trackerBuildProfileName());
+    out.print(" cli_level=");
+    out.println(trackerCliLevelName());
     out.println("==============================================================================");
     out.println("[core]");
     out.println("  help | ?");
-    out.println("  status | health | setup guide | setup status | setup calibration | version | reboot | factory_reset");
+    out.println("  status | health | version | reboot | factory_reset");
+#if TRACKER_ENABLE_SETUP_COMMANDS
+    out.println("  setup guide | setup status | setup calibration");
+#endif
+
+#if TRACKER_ENABLE_CONFIG_COMMANDS
     out.println();
     out.println("[config]");
     out.println("  config print | load | save | defaults | erase | crc | nvs");
     out.println("  config spi <hz> [save]          (live SPI clock, e.g. 1000000/4000000/8000000)");
+#endif
+
+#if TRACKER_ENABLE_FULL_CLI
     out.println();
     out.println("[imu/fifo/quality]");
     out.println("  imu status | whoami | read");
@@ -50,11 +63,17 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  fifo status | stats | reset");
     out.println("  fifo watermark <words> [save] | drain <max_words> <rounds> [save]");
     out.println("  quality stats | reset");
+#endif
+
+#if TRACKER_ENABLE_SETUP_COMMANDS
     out.println();
     out.println("[guided setup]");
     out.println("  setup guide | status");
     out.println("  setup wifi                         (interactive scan/select/password/connect/save/server check)");
     out.println("  setup calibration [axis <bodyX> <bodyY> <bodyZ>]");
+#endif
+
+#if TRACKER_ENABLE_CALIBRATION_COMMANDS
     out.println();
     out.println("[calibration low-level]");
     out.println("  cal gyro | cal gyro save | cal gyro clear");
@@ -63,6 +82,9 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  cal temp print | enable [save] | disable [save]");
     out.println("  cal temp set_slope X Y Z [save] | fit_static [save] | clear [save]");
     out.println("  cal save | clear_all");
+#endif
+
+#if TRACKER_ENABLE_FULL_CLI
     out.println();
     out.println("[ahrs]");
     out.println("  ahrs status | config | reset | defaults [save]");
@@ -72,6 +94,9 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  ahrs accel_innovation <goodDeg> <badDeg> [save]");
     out.println("  ahrs accel_var <goodStdG> <badStdG> [save]");
     out.println("  ahrs gyro_gate <goodDps> <badDps> [save] | dt <minMs> <maxMs> [save]");
+#endif
+
+#if TRACKER_ENABLE_MAG_COMMANDS
     out.println();
     out.println("[mag]");
     out.println("  mag status | enable [save] | disable [save]");
@@ -87,43 +112,65 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  mag axis print | set <bodyX> <bodyY> <bodyZ> [save]");
     out.println("  mag axis identity [save] | clear [save]");
     out.println("  mag cal start | stop | reset | status | print | apply [save]");
+#endif
+
+#if TRACKER_ENABLE_TAP_RUNTIME || TRACKER_ENABLE_STATUS_LED || TRACKER_ENABLE_BATTERY_RUNTIME
     out.println();
-    out.println("[tap/input]");
+    out.println("[runtime peripherals]");
+#if TRACKER_ENABLE_TAP_RUNTIME
     out.println("  tap status | on | off | test [2..10] | inject <1..10> | reset");
+#endif
+#if TRACKER_ENABLE_STATUS_LED
     out.println("  led status | auto | on | off | identify [ms] | test <mode> | reset");
+#endif
+#if TRACKER_ENABLE_BATTERY_RUNTIME
     out.println("  battery status | reset");
+#endif
+#endif
+
+#if TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT
     out.println();
     out.println("[server serial compatibility]");
     out.println("  GET INFO | GET CONFIG | GET TEST | GET WIFISCAN");
     out.println("  SET WIFI <ssid> <password> | SET BWIFI <b64_ssid> <b64_password>");
     out.println("  REBOOT | FRST | DELCAL | TCAL PRINT|DEBUG|RESET|SAVE");
+#endif
+
+#if TRACKER_ENABLE_NETWORK_COMMANDS || TRACKER_ENABLE_SLIMEVR_COMMANDS
     out.println();
     out.println("[network]");
+#if TRACKER_ENABLE_NETWORK_COMMANDS
     out.println("  net status | print | help");
     out.println("  net set ssid <ssid> [save] | set pass <password> [save] | clear pass [save]");
     out.println("  net set name <deviceName> [save] | set server <host> [port] [save]");
     out.println("  net discovery on|off [save] | enable [save] | disable [save]");
     out.println("  net save | load | defaults | erase | reconnect | counters reset | scan [visible|hidden] [limit N]");
+#endif
+#if TRACKER_ENABLE_SLIMEVR_COMMANDS
     out.println("  slime status | debug | start | stop | reconnect | rate <hz> | counters reset");
+#endif
+#endif
+
+#if TRACKER_ENABLE_FULL_CLI || TRACKER_ENABLE_TEST_COMMANDS
     out.println();
     out.println("[output/log/test]");
+#if TRACKER_ENABLE_FULL_CLI
     out.println("  stream off | heartbeat | raw | scaled | quat | debug");
     out.println("  stream rate <hz>");
     out.println("  log off | basic | full | start [basic|full] | stop | rate <hz> | header | summary | reset");
     out.println("  bias status | on | off | reset");
-    out.println("  test static <seconds> | test runtime <seconds> | test stop | test status");
     out.println("  output mode debug | output rate <hz> | output start | output stop");
+#endif
+#if TRACKER_ENABLE_TEST_COMMANDS
+    out.println("  test static <seconds> | test runtime <seconds> | test stop | test status");
+    out.println("  # replay baseline: log full; log rate 20; log header; test static 600; log summary; log off");
+#endif
+#endif
+
     out.println("  # SlimeVR UDP autostarts when Wi-Fi config is enabled; use slime status/debug.");
-    out.println();
-    out.println("[replay capture baseline]");
-    out.println("  log full");
-    out.println("  log rate 20");
-    out.println("  log header");
-    out.println("  test static 600");
-    out.println("  log summary");
-    out.println("  log off");
     out.println("==============================================================================");
 }
+
 
 
 static const char* yesNo(bool v) {

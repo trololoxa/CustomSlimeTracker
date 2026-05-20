@@ -3,23 +3,51 @@
 #include <Arduino.h>
 #include <cstddef>
 
+#include "defines.h"
 #include "serial/tracker_serial_context.hpp"
+
+#if TRACKER_ENABLE_SERIAL_CLI
 #include "serial/tracker_system_commands.hpp"
+#if TRACKER_ENABLE_CONFIG_COMMANDS
 #include "serial/tracker_config_commands.hpp"
+#endif
+#if TRACKER_ENABLE_FULL_CLI
 #include "serial/tracker_imu_fifo_commands.hpp"
 #include "serial/tracker_ahrs_commands.hpp"
-#include "serial/tracker_calibration_commands.hpp"
-#include "serial/tracker_mag_commands.hpp"
 #include "serial/tracker_output_commands.hpp"
 #include "serial/tracker_bias_commands.hpp"
+#endif
+#if TRACKER_ENABLE_CALIBRATION_COMMANDS
+#include "serial/tracker_calibration_commands.hpp"
+#endif
+#if TRACKER_ENABLE_MAG_COMMANDS
+#include "serial/tracker_mag_commands.hpp"
+#endif
+#if TRACKER_ENABLE_TEST_COMMANDS
 #include "serial/tracker_test_commands.hpp"
+#endif
+#if TRACKER_ENABLE_NETWORK_COMMANDS
 #include "serial/tracker_network_commands.hpp"
+#endif
+#if TRACKER_ENABLE_SLIMEVR_COMMANDS
 #include "serial/tracker_slimevr_commands.hpp"
+#endif
+#if TRACKER_ENABLE_SETUP_COMMANDS
 #include "serial/tracker_setup_commands.hpp"
+#endif
+#if TRACKER_ENABLE_TAP_RUNTIME
 #include "serial/tracker_tap_commands.hpp"
+#endif
+#if TRACKER_ENABLE_STATUS_LED
 #include "serial/tracker_led_commands.hpp"
+#endif
+#if TRACKER_ENABLE_BATTERY_RUNTIME
 #include "serial/tracker_battery_commands.hpp"
+#endif
+#if TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT
 #include "serial/tracker_slimevr_serial_compat_commands.hpp"
+#endif
+#endif // TRACKER_ENABLE_SERIAL_CLI
 
 namespace tracker {
 

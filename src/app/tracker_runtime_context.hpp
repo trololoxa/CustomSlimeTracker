@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 
+#include "defines.h"
 #include "core/math.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/ahrs_6dof.hpp"
@@ -34,10 +35,19 @@
 #include "network/esp32_wifi_station.hpp"
 #include "network/esp32_udp_transport.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
+#if TRACKER_ENABLE_TAP_RUNTIME
 #include "runtime/tap_runtime_controller.hpp"
+#endif
+#if TRACKER_ENABLE_STATUS_LED
 #include "runtime/status_led_runtime.hpp"
+#endif
+#if TRACKER_ENABLE_BATTERY_RUNTIME
 #include "runtime/battery_runtime.hpp"
+#endif
+#include "serial/tracker_serial_context.hpp"
+#if TRACKER_ENABLE_SERIAL_CLI
 #include "serial/tracker_serial_commands.hpp"
+#endif
 
 using namespace tracker;
 
@@ -51,11 +61,17 @@ static Esp32WifiStationAdapter g_wifiStation;
 static TrackerWifiManager g_wifiManager;
 static Esp32UdpTransport g_udpTransport;
 static SlimeVROutputRuntime g_slimevrRuntime;
+#if TRACKER_ENABLE_TAP_RUNTIME
 static TapRuntimeController g_tapRuntime;
+#endif
+#if TRACKER_ENABLE_STATUS_LED
 static GpioStatusLedSink g_statusLedSink;
 static StatusLedRuntime g_statusLedRuntime;
-static BatteryRuntime g_batteryRuntime;
 static bool g_statusLedSensorError = false;
+#endif
+#if TRACKER_ENABLE_BATTERY_RUNTIME
+static BatteryRuntime g_batteryRuntime;
+#endif
 
 static ImuCalibration g_imuCal;
 static GyroTempCompensator g_gyroTempComp;
@@ -64,8 +80,10 @@ static Ahrs6Dof g_ahrs6dof;
 
 static TrackerSerialStreamState g_streamState;
 static TrackerSerialLogState g_logState;
+#if TRACKER_ENABLE_SERIAL_CLI
 static TrackerSerialCommandContext g_cmdCtx;
 static TrackerSerialCommandInterface<> g_cli;
+#endif
 static TrackerApp g_app;
 
 static FifoCalibrationIo g_calIo;

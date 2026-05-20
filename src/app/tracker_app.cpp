@@ -109,34 +109,55 @@ void TrackerApp::setup() {
 void TrackerApp::loop() {
     if (!ready()) return;
 
+#if TRACKER_ENABLE_LOOP_TIMING
     RuntimeLoopTimingSample timing;
     const uint32_t loopStartUs = micros();
     uint32_t sectionStartUs = 0;
-
-#if TRACKER_ENABLE_SERIAL_CLI
-    sectionStartUs = micros();
-    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
-    timing.cliUs += micros() - sectionStartUs;
 #endif
 
+#if TRACKER_ENABLE_SERIAL_CLI
+#if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
-    processFifoRuntime();
-    timing.fifoUs = micros() - sectionStartUs;
+#endif
+    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+#if TRACKER_ENABLE_LOOP_TIMING
+    timing.cliUs += micros() - sectionStartUs;
+#endif
+#endif
 
+#if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
+#endif
+    processFifoRuntime();
+#if TRACKER_ENABLE_LOOP_TIMING
+    timing.fifoUs = micros() - sectionStartUs;
+#endif
+
+#if TRACKER_ENABLE_LOOP_TIMING
+    sectionStartUs = micros();
+#endif
     call(deps_.callbacks.updateBatteryRuntime);
     call(deps_.callbacks.updateNetworkRuntime);
     call(deps_.callbacks.updateTapRuntime);
     call(deps_.callbacks.updateStatusLedRuntime);
+#if TRACKER_ENABLE_LOOP_TIMING
     timing.networkUs = micros() - sectionStartUs;
-
-#if TRACKER_ENABLE_SERIAL_CLI
-    sectionStartUs = micros();
-    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
-    timing.cliUs += micros() - sectionStartUs;
 #endif
 
+#if TRACKER_ENABLE_SERIAL_CLI && TRACKER_CLI_SECOND_POLL_ENABLED
+#if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
+#endif
+    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+#if TRACKER_ENABLE_LOOP_TIMING
+    timing.cliUs += micros() - sectionStartUs;
+#endif
+#endif
+
+#if TRACKER_ENABLE_BOOT_HEARTBEAT
+#if TRACKER_ENABLE_LOOP_TIMING
+    sectionStartUs = micros();
+#endif
     maybePrintBootHeartbeat(
         *deps_.runtime.out,
         *deps_.runtime.streamState,
@@ -148,11 +169,21 @@ void TrackerApp::loop() {
         *deps_.runtime.latestTempC,
         deps_.runtime.magState->samples
     );
+#if TRACKER_ENABLE_LOOP_TIMING
     timing.heartbeatUs = micros() - sectionStartUs;
-    timing.loopUs = micros() - loopStartUs;
+#endif
+#endif
 
+#if TRACKER_ENABLE_LOOP_TIMING
+    timing.loopUs = micros() - loopStartUs;
+#endif
+
+#if TRACKER_ENABLE_RUNTIME_TEST
+#if TRACKER_ENABLE_LOOP_TIMING
     deps_.runtime.runtimeTestRunner->recordLoopTiming(timing);
+#endif
     deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);
+#endif
 }
 
 bool TrackerApp::ready() const {
@@ -162,12 +193,19 @@ bool TrackerApp::ready() const {
            deps_.runtime.fifo != nullptr &&
            deps_.runtime.quality != nullptr &&
            deps_.runtime.ahrs != nullptr &&
+#if TRACKER_ENABLE_SERIAL_CLI
            deps_.runtime.cli != nullptr &&
+#endif
            deps_.runtime.streamState != nullptr &&
            deps_.runtime.perf != nullptr &&
            deps_.runtime.fifoEvents != nullptr &&
            deps_.runtime.fifoRuntime != nullptr &&
+#if TRACKER_ENABLE_STATIC_TEST || TRACKER_ENABLE_BOOT_HEARTBEAT
            deps_.runtime.staticTestRunner != nullptr &&
+#endif
+#if TRACKER_ENABLE_RUNTIME_TEST || TRACKER_ENABLE_BOOT_HEARTBEAT
+           deps_.runtime.runtimeTestRunner != nullptr &&
+#endif
            deps_.runtime.magState != nullptr &&
            deps_.runtime.fifoIntCount != nullptr &&
            deps_.runtime.runtimeSamples != nullptr &&
@@ -203,7 +241,9 @@ void TrackerApp::serviceRuntimeForBlockingCommand() {
     call(deps_.callbacks.updateNetworkRuntime);
     call(deps_.callbacks.updateTapRuntime);
     call(deps_.callbacks.updateStatusLedRuntime);
+#if TRACKER_ENABLE_RUNTIME_TEST
     deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);
+#endif
 }
 
 void TrackerApp::processFifoRuntime() {
@@ -223,11 +263,15 @@ void TrackerApp::startMagFromConfig(Stream& out) {
     TrackerConfig& config = *deps_.runtime.config;
     if (!config.data.magCal.driverEnabled) return;
 
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     out.println("# mag enabled in config; starting QMC6309 FIFO stream");
+#endif
     const bool ok = deps_.callbacks.setMagRuntimeEnabled != nullptr &&
                     deps_.callbacks.setMagRuntimeEnabled(true, false);
     if (!ok) {
+#if TRACKER_ENABLE_SERIAL_CONSOLE
         out.println("# WARN mag startup failed; continuing 6DoF without mag");
+#endif
         config.data.magCal.driverEnabled = false;
         config.updateCrc();
     }

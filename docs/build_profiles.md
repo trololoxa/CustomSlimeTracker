@@ -46,3 +46,38 @@ python tools/report_firmware_size.py
 
 It runs PlatformIO's `-t size` target for Debug, Production and Slim and stores
 raw reports under `build/firmware_size/`.
+
+## Why `build_src_filter` is still used
+
+Feature flags and `#if` blocks are necessary, but they are not enough for a
+firmware-size profile when code lives in separate `.cpp` files under `src/`.
+PlatformIO compiles every matching translation unit unless the source filter
+excludes it. A disabled dispatcher can therefore leave a command module compiled
+anyway, which costs build time, can leave string/data sections available to the
+linker, and can produce `-Wunused-function` warnings in Debug.
+
+The intended rule is:
+
+- use `TRACKER_ENABLE_*` flags inside shared files and headers;
+- use `build_src_filter` for whole `.cpp` modules that a profile can never use;
+- keep both layers aligned, so a module is not compiled in a profile where its
+  dispatcher/wiring is disabled.
+
+## Slim power policy
+
+Slim does not reduce IMU ODR, IMU high-performance modes or AHRS quality. It
+reduces power by removing service features and by lowering non-tracking work:
+
+- no Serial/CLI polling;
+- no LED, tap or battery runtime;
+- no server battery/temperature/RSSI telemetry by default;
+- slower Wi-Fi status polling and reconnect backoff;
+- lower SlimeVR RotationData cap (`TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX`, default
+  50 Hz in Slim);
+- fewer incoming UDP packets processed per update;
+- small network runtime scheduler interval so the Wi-Fi/UDP state machines are
+  not polled on every high-rate IMU loop iteration.
+
+These settings trade service responsiveness and packet rate, not orientation
+estimation quality. Override them in `platformio.ini` with `-D...` flags for A/B
+runtime tests.

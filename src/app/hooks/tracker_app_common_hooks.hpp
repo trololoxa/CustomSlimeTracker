@@ -13,16 +13,30 @@ static void recordFifoProcessTime(uint32_t dtUs) {
 
 static void resetLogCountersHook(void* user) {
     (void)user;
+#if TRACKER_ENABLE_MACHINE_LOG
     machineLogResetCounters(g_logCounters, g_lastBiasLogEmitUs);
+#endif
 }
 
 static void emitMachineLogHeader(Stream& out, void* user) {
     (void)user;
+#if TRACKER_ENABLE_MACHINE_LOG
     machineLogEmitHeader(out, g_logState, g_config);
+#else
+    (void)out;
+#endif
 }
 
 static void emitLogStateEvent(const char* state, const char* reason, uint64_t tUs, uint32_t flags, float confidence) {
+#if TRACKER_ENABLE_MACHINE_LOG
     machineLogEmitStateEvent(Serial, g_logState, g_logCounters, state, reason, tUs, flags, confidence);
+#else
+    (void)state;
+    (void)reason;
+    (void)tUs;
+    (void)flags;
+    (void)confidence;
+#endif
 }
 
 static void resetFifoRuntimeCounters() {

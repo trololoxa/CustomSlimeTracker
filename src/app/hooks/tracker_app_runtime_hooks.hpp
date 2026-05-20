@@ -164,7 +164,9 @@ static void processRuntimeMagSampleCallback(const Lsm6dsvFifoReader::MagRawSampl
 static void recordRuntimeFifoProcessTime(uint32_t processUs, void* user) {
     (void)user;
     recordFifoProcessTime(processUs);
+#if TRACKER_ENABLE_STATIC_TEST
     g_staticTestRunner.recordFifoProcessTime(processUs);
+#endif
 }
 
 static void appAttachFifoInterruptCallback() {
@@ -183,9 +185,9 @@ static TrackerWifiManagerConfig makeAppWifiManagerConfig() {
     cfg.ssid = g_networkConfig.data.ssid;
     cfg.password = g_networkConfig.data.password;
     cfg.hostname = g_networkConfig.data.deviceName;
-    cfg.connectTimeoutMs = 15000;
-    cfg.reconnectBackoffMs = 5000;
-    cfg.statusPollIntervalMs = 250;
+    cfg.connectTimeoutMs = TRACKER_WIFI_CONNECT_TIMEOUT_MS;
+    cfg.reconnectBackoffMs = TRACKER_WIFI_RECONNECT_BACKOFF_MS;
+    cfg.statusPollIntervalMs = TRACKER_WIFI_STATUS_POLL_INTERVAL_MS;
     return cfg;
 }
 
@@ -204,6 +206,7 @@ static bool slimevrAutostartEnabledFromConfig() {
            g_networkConfig.data.credentialsValid;
 }
 
+#if TRACKER_ENABLE_BATTERY_RUNTIME
 static const char* appBatteryAdcBackendName() {
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && (TRACKER_BATTERY_ADC_PIN >= 0) && (TRACKER_BATTERY_ADC_PIN <= 4)
     return "esp32c3_adc1_mv";
@@ -307,6 +310,7 @@ static void setupBatteryRuntime() {
     g_batteryRuntime.configure(cfg);
     g_batteryRuntime.update(millis());
 
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     Serial.print("# battery_runtime_enabled=");
     Serial.print(cfg.enabled ? "yes" : "no");
     Serial.print(" pin=");
@@ -317,11 +321,14 @@ static void setupBatteryRuntime() {
     Serial.print(cfg.rBottomOhms, 0);
     Serial.print(" backend=");
     Serial.println(appBatteryAdcBackendName());
+#endif
 }
 
 static void updateBatteryRuntime() {
     g_batteryRuntime.update(millis());
 }
+
+#endif // TRACKER_ENABLE_BATTERY_RUNTIME
 
 static bool slimevrSetConfigFlagHook(uint8_t sensorId, uint16_t configType, bool enabled, void* user) {
     (void)sensorId;
@@ -345,17 +352,20 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     cfg.sensorId = g_networkConfig.data.sensorId;
     cfg.serverPort = g_networkConfig.data.serverPort;
     cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
-    cfg.discoveryIntervalMs = 1000;
+    cfg.discoveryIntervalMs = TRACKER_SLIMEVR_DISCOVERY_INTERVAL_MS;
     cfg.rotationRateHz = g_config.data.output.outputRateHz;
-    cfg.incomingPacketsPerUpdate = 4;
+    if (cfg.rotationRateHz > TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX) {
+        cfg.rotationRateHz = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
+    }
+    cfg.incomingPacketsPerUpdate = TRACKER_SLIMEVR_INCOMING_PACKETS_PER_UPDATE;
     cfg.magSupportEnabled = slimevrMagSupportEnabledFromConfig();
     cfg.magEnabled = cfg.magSupportEnabled && g_config.data.magYaw.applyEnabled;
     cfg.setConfigFlag = slimevrSetConfigFlagHook;
     cfg.setConfigFlagUser = nullptr;
     cfg.latestTemperatureValid = true;
     cfg.latestTemperatureC = g_latestTempC;
-    cfg.batteryTelemetryEnabled = (TRACKER_SLIMEVR_ENABLE_BATTERY_TELEMETRY != 0) &&
-                                  (TRACKER_ENABLE_BATTERY_RUNTIME != 0);
+#if TRACKER_ENABLE_BATTERY_RUNTIME
+    cfg.batteryTelemetryEnabled = (TRACKER_SLIMEVR_ENABLE_BATTERY_TELEMETRY != 0);
     {
         float voltage = 0.0f;
         float percentage = 0.0f;
@@ -363,6 +373,12 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
         cfg.latestBatteryVoltage = voltage;
         cfg.latestBatteryPercentage = percentage;
     }
+#else
+    cfg.batteryTelemetryEnabled = false;
+    cfg.latestBatteryValid = false;
+    cfg.latestBatteryVoltage = 0.0f;
+    cfg.latestBatteryPercentage = 0.0f;
+#endif
     cfg.hasCompletedRestCalibration = g_imuCal.gyroBiasValid;
     return cfg;
 }
@@ -389,6 +405,7 @@ static void setupNetworkRuntime() {
     const bool slimeAutostart = slimevrAutostartEnabledFromConfig();
     g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(slimeAutostart));
 
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     Serial.print("# network_config_loaded_from_nvs=");
     Serial.println(g_networkConfigLoadedFromNvs ? "yes" : "no");
     Serial.print("# wifi_enabled=");
@@ -399,10 +416,12 @@ static void setupNetworkRuntime() {
     if (slimeAutostart) {
         Serial.println("# slimevr_autostart=yes; use: slime status");
     }
+#endif
 }
 
 
 
+#if TRACKER_ENABLE_STATUS_LED
 static TrackerStatusLedMode deriveStatusLedMode() {
     if (g_statusLedSensorError) return TrackerStatusLedMode::SensorError;
 #if !TRACKER_ENABLE_STATUS_LED
@@ -462,12 +481,14 @@ static void setupStatusLedRuntime() {
     g_statusLedRuntime.setMode(TrackerStatusLedMode::Boot, millis());
     g_statusLedRuntime.update(millis());
 
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     Serial.print("# status_led_enabled=");
     Serial.print(cfg.enabled ? "yes" : "no");
     Serial.print(" pin=");
     Serial.print(static_cast<int>(cfg.pin));
     Serial.print(" active_low=");
     Serial.println(cfg.activeLow ? "yes" : "no");
+#endif
 }
 
 static void updateStatusLedRuntime() {
@@ -483,6 +504,9 @@ static void setStatusLedSensorError() {
     g_statusLedRuntime.update(nowMs);
 }
 
+#endif // TRACKER_ENABLE_STATUS_LED
+
+#if TRACKER_ENABLE_TAP_RUNTIME
 static void setupTapRuntime() {
     g_tapRuntime.begin(lsm, g_slimevrRuntime);
 
@@ -504,21 +528,47 @@ static void setupTapRuntime() {
     cfg.duration = TRACKER_LSM6DSV_TAP_DURATION;
 
     const bool ok = g_tapRuntime.configure(cfg);
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     Serial.print("# tap_runtime_enabled=");
     Serial.print(cfg.enabled ? "yes" : "no");
     Serial.print(" hardware=");
     Serial.println(ok ? "ok" : "fail");
+#endif
 }
 
 static void updateTapRuntime() {
     g_tapRuntime.update(millis());
 }
 
+#endif // TRACKER_ENABLE_TAP_RUNTIME
+
 static void updateNetworkRuntime() {
     const uint32_t nowMs = millis();
+#if TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS > 0
+    static bool s_networkRuntimeUpdateValid = false;
+    static uint32_t s_lastNetworkRuntimeUpdateMs = 0;
+    if (s_networkRuntimeUpdateValid &&
+        static_cast<uint32_t>(nowMs - s_lastNetworkRuntimeUpdateMs) < TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS) {
+        return;
+    }
+    s_networkRuntimeUpdateValid = true;
+    s_lastNetworkRuntimeUpdateMs = nowMs;
+#endif
+
     g_wifiManager.update(nowMs);
     if (g_slimevrRuntime.enabled()) {
+#if TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS == 0
         g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(true));
+#else
+        static bool s_slimeRuntimeConfigRefreshValid = false;
+        static uint32_t s_lastSlimeRuntimeConfigRefreshMs = 0;
+        if (!s_slimeRuntimeConfigRefreshValid ||
+            static_cast<uint32_t>(nowMs - s_lastSlimeRuntimeConfigRefreshMs) >= TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS) {
+            s_slimeRuntimeConfigRefreshValid = true;
+            s_lastSlimeRuntimeConfigRefreshMs = nowMs;
+            g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(true));
+        }
+#endif
     }
     g_slimevrRuntime.update(nowMs);
 }
@@ -534,13 +584,19 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.runtime.fifo = &lsmFifo;
     deps.runtime.quality = &g_quality;
     deps.runtime.ahrs = &g_ahrs6dof;
+#if TRACKER_ENABLE_SERIAL_CLI
     deps.runtime.cli = &g_cli;
+#endif
     deps.runtime.streamState = &g_streamState;
     deps.runtime.perf = &g_perf;
     deps.runtime.fifoEvents = &g_fifoEvents;
     deps.runtime.fifoRuntime = &g_fifoRuntime;
+#if TRACKER_ENABLE_STATIC_TEST || TRACKER_ENABLE_BOOT_HEARTBEAT
     deps.runtime.staticTestRunner = &g_staticTestRunner;
+#endif
+#if TRACKER_ENABLE_RUNTIME_TEST || TRACKER_ENABLE_BOOT_HEARTBEAT
     deps.runtime.runtimeTestRunner = &g_runtimeTestRunner;
+#endif
     deps.runtime.magState = &g_magState;
     deps.runtime.fifoIntCount = &g_fifoIntCount;
     deps.runtime.runtimeSamples = &g_runtimeSamples;
@@ -548,16 +604,24 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.runtime.latestTempC = &g_latestTempC;
 
     deps.callbacks.setupMagRuntimeController = setupMagRuntimeController;
+#if TRACKER_ENABLE_SERIAL_CLI || TRACKER_ENABLE_STATIC_TEST || TRACKER_ENABLE_RUNTIME_TEST
     deps.callbacks.setupCommandInterface = setupCommandInterface;
+#endif
     deps.callbacks.setupNetworkRuntime = setupNetworkRuntime;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
+#if TRACKER_ENABLE_TAP_RUNTIME
     deps.callbacks.setupTapRuntime = setupTapRuntime;
     deps.callbacks.updateTapRuntime = updateTapRuntime;
+#endif
+#if TRACKER_ENABLE_STATUS_LED
     deps.callbacks.setupStatusLedRuntime = setupStatusLedRuntime;
     deps.callbacks.updateStatusLedRuntime = updateStatusLedRuntime;
+    deps.callbacks.setStatusLedSensorError = setStatusLedSensorError;
+#endif
+#if TRACKER_ENABLE_BATTERY_RUNTIME
     deps.callbacks.setupBatteryRuntime = setupBatteryRuntime;
     deps.callbacks.updateBatteryRuntime = updateBatteryRuntime;
-    deps.callbacks.setStatusLedSensorError = setStatusLedSensorError;
+#endif
     deps.callbacks.resetFifoRuntimeCounters = resetFifoRuntimeCounters;
     deps.callbacks.attachFifoInterrupt = appAttachFifoInterruptCallback;
     deps.callbacks.resetOrientationState = resetOrientationDependentState;

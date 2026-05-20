@@ -111,13 +111,16 @@ bool trackerBootstrapInitLsm(const TrackerBootstrapDeps& deps) {
     Lsm6dsv::Config cfg = deps.config->makeLsmConfig();
 
     if (!deps.lsm->begin(cfg)) {
+#if TRACKER_ENABLE_SERIAL_CONSOLE
         deps.out->print("# ERR LSM6DSV init failed error=");
         deps.out->print(trackerBootstrapLsmErrorName(deps.lsm->lastError()));
         deps.out->print(" who=0x");
         deps.out->println(deps.lsm->lastWhoAmI(), HEX);
+#endif
         return false;
     }
 
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     uint8_t who = 0;
     deps.lsm->readWhoAmI(who);
 
@@ -125,6 +128,7 @@ bool trackerBootstrapInitLsm(const TrackerBootstrapDeps& deps) {
     deps.out->print("# WHO_AM_I=0x"); deps.out->println(who, HEX);
     deps.out->print("# SPI_Hz="); deps.out->println(deps.lsmBus->spiHz());
     deps.out->print("# ODR_Hz="); deps.out->println(Lsm6dsv::odrHz(deps.config->data.imu.imuOdr), 3);
+#endif
     return true;
 }
 
@@ -134,10 +138,13 @@ bool trackerBootstrapInitFifo(const TrackerBootstrapDeps& deps) {
     fifoCfg.sensorHubSlave0PeriodUs = deps.config->data.magCal.driverEnabled ? deps.magHubPeriodUs : 0.0f;
 
     if (!deps.fifo->configure(fifoCfg)) {
+#if TRACKER_ENABLE_SERIAL_CONSOLE
         deps.out->println("# ERR FIFO configure failed");
+#endif
         return false;
     }
 
+#if TRACKER_ENABLE_SERIAL_CONSOLE
     Lsm6dsvFifoReader::Status st;
     deps.fifo->readStatus(st);
 
@@ -149,6 +156,7 @@ bool trackerBootstrapInitFifo(const TrackerBootstrapDeps& deps) {
     deps.out->print("# sample_period_us="); deps.out->println(fs.samplePeriodUs, 3);
     deps.out->print("# mag_fifo_parser="); deps.out->println(fifoCfg.enableSensorHubSlave0 ? "on" : "off");
     deps.out->print("# internal_freq_fine="); deps.out->println(fs.internalFreqFine);
+#endif
     return true;
 }
 

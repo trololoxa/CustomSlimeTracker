@@ -46,7 +46,13 @@ static void magControllerRecordStaticMagYawSampleCallback(float magHeadingErrorD
                                                           const MagYawCorrectionOutput& yaw,
                                                           void* user) {
     (void)user;
+#if TRACKER_ENABLE_STATIC_TEST
     g_staticTestRunner.recordMagYawSample(magHeadingErrorDeg, heading, yaw);
+#else
+    (void)magHeadingErrorDeg;
+    (void)heading;
+    (void)yaw;
+#endif
 }
 
 static MagRuntimeControllerDeps makeMagRuntimeControllerDeps() {

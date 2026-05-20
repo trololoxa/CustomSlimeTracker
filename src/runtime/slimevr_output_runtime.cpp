@@ -13,7 +13,7 @@ constexpr uint32_t SENSOR_INFO_INTERVAL_MS = 1000;
 constexpr uint32_t SERVER_SILENCE_TIMEOUT_MS = TRACKER_SLIMEVR_SERVER_SILENCE_TIMEOUT_MS;
 constexpr uint32_t SERVER_FOUND_SEND_GRACE_MS = 100;
 constexpr uint16_t ROTATION_RATE_HZ_DEFAULT = 100;
-constexpr uint16_t ROTATION_RATE_HZ_MAX = 1000;
+constexpr uint16_t ROTATION_RATE_HZ_MAX = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
 
 void copyCString(char* dst, size_t dstSize, const char* src) {
     if (!dst || dstSize == 0) return;

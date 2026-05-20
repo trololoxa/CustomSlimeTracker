@@ -27,6 +27,8 @@
 #include "defines.h"
 
 namespace tracker {
+
+#if TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT
 namespace {
 
 Stream& outFor(TrackerSerialCommandContext& ctx) {
@@ -499,6 +501,7 @@ void eraseCalibration(TrackerSerialCommandContext& ctx) {
 }
 
 } // namespace
+#endif // TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT
 
 bool trackerSerialDispatchSlimeVRSerialCompatCommand(TrackerSerialCommandContext& ctx, int argc, char** argv) {
 #if !TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT

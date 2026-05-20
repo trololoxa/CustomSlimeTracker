@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <cstddef>
 
+#include "build_config/build_profiles.hpp"
+
 namespace tracker::cfg {
 
 // FIFO / runtime loop defaults.
@@ -28,8 +30,16 @@ static constexpr uint32_t FIFO_NONBLOCKING_STATUS_POLL_INTERVAL_US = 2000UL;
 static constexpr uint32_t HEARTBEAT_PERIOD_MS = 30000UL;
 
 // Output defaults.
+#if TRACKER_BUILD_IS_SLIM
+static constexpr uint16_t OUTPUT_RATE_HZ = 50;
+#else
 static constexpr uint16_t OUTPUT_RATE_HZ = 100;
+#endif
+#if TRACKER_BUILD_IS_SLIM
+static constexpr uint16_t OUTPUT_RATE_HZ_MAX = 50;
+#else
 static constexpr uint16_t OUTPUT_RATE_HZ_MAX = 1000;
+#endif
 
 // Device calibration policy.
 static constexpr bool USE_ACCEL_6POS_CAL = true;

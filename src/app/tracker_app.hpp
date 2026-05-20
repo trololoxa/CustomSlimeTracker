@@ -13,7 +13,10 @@
 #include "runtime/mag_runtime_state.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/imu_quality.hpp"
+#include "serial/tracker_serial_context.hpp"
+#if TRACKER_ENABLE_SERIAL_CLI
 #include "serial/tracker_serial_commands.hpp"
+#endif
 #include "app/tracker_bootstrap.hpp"
 
 namespace tracker {
@@ -44,7 +47,9 @@ struct TrackerAppRuntimeObjects {
     Lsm6dsvFifoReader* fifo = nullptr;
     ImuQualityMonitor* quality = nullptr;
     Ahrs6Dof* ahrs = nullptr;
+#if TRACKER_ENABLE_SERIAL_CLI
     TrackerSerialCommandInterface<>* cli = nullptr;
+#endif
     TrackerSerialStreamState* streamState = nullptr;
     TrackerPerfCounters* perf = nullptr;
     FifoInterruptEventSource* fifoEvents = nullptr;
