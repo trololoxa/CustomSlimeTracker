@@ -13,6 +13,7 @@
 #include "build_config/feature_flags.hpp"
 #include "build_config/runtime_tuning.hpp"
 #include "build_config/network_tuning.hpp"
+#include "build_config/profile_contract.hpp"
 #include "build_config/board_pins.hpp"
 #include "build_config/tracking_tuning.hpp"
 #include "build_config/legacy_defines.hpp"

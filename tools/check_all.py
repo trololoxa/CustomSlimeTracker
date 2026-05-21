@@ -65,6 +65,11 @@ def run_replay_gate(
     run(cmd)
 
 
+def run_profile_contract_checks() -> None:
+    run([sys.executable, "tools/validate_source_filters.py"])
+    run([sys.executable, "tools/validate_profile_matrix.py"])
+
+
 def run_tool_smokes() -> None:
     out_dir = ROOT / "build" / "tool_smoke"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +154,8 @@ def main() -> int:
 
     if not args.skip_native:
         run_native_tests(args.clean)
+
+    run_profile_contract_checks()
 
     if not args.skip_tool_smoke:
         run_tool_smokes()

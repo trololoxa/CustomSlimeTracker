@@ -103,6 +103,8 @@ void RuntimeTestRunner::printStatus(Stream& out, uint32_t nowMs) const {
     out.print("runtime_loop_count="); out.println(loopCount_);
     out.print("runtime_loop_avg_us="); out.println(loopUs_.mean(), 3);
     out.print("runtime_loop_max_us="); out.println(loopUs_.max);
+    out.print("runtime_work_loops="); out.println(workLoopCount_);
+    out.print("runtime_idle_candidate_loops="); out.println(idleCandidateLoopCount_);
     out.print("runtime_network_avg_us="); out.println(networkUs_.mean(), 3);
     out.print("runtime_network_max_us="); out.println(networkUs_.max);
     out.print("runtime_fifo_avg_us="); out.println(fifoUs_.mean(), 3);
@@ -125,6 +127,14 @@ void RuntimeTestRunner::recordLoopTiming(const RuntimeLoopTimingSample& timing) 
     if (timing.loopUs > RUNTIME_TEST_SLOW_LOOP_US) ++slowLoopCount_;
     if (timing.networkUs > RUNTIME_TEST_SLOW_NETWORK_US) ++slowNetworkCount_;
     if (timing.fifoUs > RUNTIME_TEST_SLOW_FIFO_US) ++slowFifoCount_;
+    if (timing.anyWork) ++workLoopCount_;
+    else ++idleCandidateLoopCount_;
+    if (timing.fifoWorked) ++fifoWorkCount_;
+    if (timing.batteryWorked) ++batteryWorkCount_;
+    if (timing.networkWorked) ++networkWorkCount_;
+    if (timing.tapWorked) ++tapWorkCount_;
+    if (timing.ledWorked) ++ledWorkCount_;
+    if (timing.heartbeatWorked) ++heartbeatWorkCount_;
     if (deps_.latestTempC != nullptr) {
         tempEndC_ = *deps_.latestTempC;
         tempValid_ = true;
@@ -183,6 +193,14 @@ void RuntimeTestRunner::reset() {
     slowLoopCount_ = 0;
     slowNetworkCount_ = 0;
     slowFifoCount_ = 0;
+    workLoopCount_ = 0;
+    idleCandidateLoopCount_ = 0;
+    fifoWorkCount_ = 0;
+    batteryWorkCount_ = 0;
+    networkWorkCount_ = 0;
+    tapWorkCount_ = 0;
+    ledWorkCount_ = 0;
+    heartbeatWorkCount_ = 0;
     tempStartC_ = 0.0f;
     tempEndC_ = 0.0f;
     tempValid_ = false;
@@ -242,6 +260,15 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.print("slow_loop_count_gt_5000us: "); out.println(slowLoopCount_);
     out.print("slow_network_count_gt_2000us: "); out.println(slowNetworkCount_);
     out.print("slow_fifo_count_gt_20000us: "); out.println(slowFifoCount_);
+    out.print("work_loop_count: "); out.println(workLoopCount_);
+    out.print("idle_candidate_loop_count: "); out.println(idleCandidateLoopCount_);
+    out.print("idle_candidate_ratio: "); out.println(loopCount_ ? static_cast<float>(idleCandidateLoopCount_) / static_cast<float>(loopCount_) : 0.0f, 6);
+    out.print("fifo_work_count: "); out.println(fifoWorkCount_);
+    out.print("battery_work_count: "); out.println(batteryWorkCount_);
+    out.print("network_work_count: "); out.println(networkWorkCount_);
+    out.print("tap_work_count: "); out.println(tapWorkCount_);
+    out.print("led_work_count: "); out.println(ledWorkCount_);
+    out.print("heartbeat_work_count: "); out.println(heartbeatWorkCount_);
 
     out.println("------------------------------------------------------------------------------");
     out.println("Perf counter delta during test");

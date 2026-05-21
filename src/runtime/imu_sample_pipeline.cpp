@@ -38,8 +38,10 @@ void imuPipelineRecordSampleProcessTime(ImuSamplePipelineDeps& deps, uint32_t dt
     if (dtUs > deps.perf.sampleProcessMaxUs) {
         deps.perf.sampleProcessMaxUs = dtUs;
     }
-#if TRACKER_ENABLE_STATIC_TEST
-    deps.staticTestRunner.recordSampleProcessTime(dtUs);
+#if TRACKER_HAS_STATIC_TEST
+    if (deps.staticTestRunner != nullptr) {
+        deps.staticTestRunner->recordSampleProcessTime(dtUs);
+    }
 #else
     (void)deps;
 #endif
@@ -60,9 +62,9 @@ void imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
         deps.gyroTempComp,
         deps.ahrs,
         deps.trackingState.recoveryActive(),
-        deps.logState.enabled(),
-        &deps.logState.sequence,
-        &deps.logCounters,
+        deps.logState != nullptr && deps.logState->enabled(),
+        deps.logState != nullptr ? &deps.logState->sequence : nullptr,
+        deps.logCounters,
         &deps.out
     };
     runtimeBiasUpdateEstimator(biasDeps, scaled, calibrated, quality, timestampUs);
@@ -73,18 +75,24 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
                                      const Lsm6dsv::Sample& scaled,
                                      const Lsm6dsv::Sample& calibrated,
                                      const ImuQualityResult& quality) {
-#if TRACKER_ENABLE_SERIAL_STREAM
-    emitSerialStreamIfNeeded(deps.streamState, deps.out, raw, scaled, calibrated, deps.ahrs, quality, micros());
+#if TRACKER_HAS_SERIAL_STREAM
+    if (deps.streamState != nullptr) {
+        emitSerialStreamIfNeeded(*deps.streamState, deps.out, raw, scaled, calibrated, deps.ahrs, quality, micros());
+    }
 #endif
     if (deps.callbacks.emitMachineLogFrame != nullptr) {
         deps.callbacks.emitMachineLogFrame(raw, calibrated, quality, deps.callbacks.user);
     }
-#if TRACKER_ENABLE_STATIC_TEST
-    deps.staticTestRunner.updateSample(calibrated, quality, deps.out);
+#if TRACKER_HAS_STATIC_TEST
+    if (deps.staticTestRunner != nullptr) {
+        deps.staticTestRunner->updateSample(calibrated, quality, deps.out);
+    }
 #endif
+#if TRACKER_HAS_CALIBRATION_UI
     if (deps.gyroTempCapture != nullptr) {
         deps.gyroTempCapture->updateSample(calibrated, quality, millis());
     }
+#endif
     imuPipelineUpdateRuntimeGyroBiasEstimator(deps, scaled, calibrated, quality, raw.t_us);
 }
 

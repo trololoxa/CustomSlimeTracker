@@ -53,7 +53,10 @@ struct SlimeVROutputRuntimeConfig {
     bool signalTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0;
     bool temperatureTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0;
     bool batteryTelemetryEnabled = TRACKER_SLIMEVR_ENABLE_BATTERY_TELEMETRY != 0;
-    uint32_t telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
+    uint32_t telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS; // legacy/common fallback
+    uint32_t signalTelemetryIntervalMs = TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS;
+    uint32_t temperatureTelemetryIntervalMs = TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS;
+    uint32_t batteryTelemetryIntervalMs = TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS;
     bool latestTemperatureValid = false;
     float latestTemperatureC = 0.0f;
     bool latestBatteryValid = false;
@@ -121,6 +124,9 @@ struct SlimeVROutputRuntimeStatus {
     bool temperatureTelemetryEnabled = false;
     bool batteryTelemetryEnabled = false;
     uint32_t telemetryIntervalMs = 0;
+    uint32_t signalTelemetryIntervalMs = 0;
+    uint32_t temperatureTelemetryIntervalMs = 0;
+    uint32_t batteryTelemetryIntervalMs = 0;
     uint8_t lastSignalStrength = 0;
     int32_t lastRssiDbm = 0;
     float lastTemperatureC = 0.0f;
@@ -158,6 +164,12 @@ public:
                SlimeVRCopyOutputSnapshotFn copyOutputSnapshot = nullptr,
                void* copyOutputSnapshotUser = nullptr);
     void configure(const SlimeVROutputRuntimeConfig& config);
+    void updateLiveState(bool latestTemperatureValid,
+                         float latestTemperatureC,
+                         bool latestBatteryValid,
+                         float latestBatteryVoltage,
+                         float latestBatteryPercentage,
+                         bool hasCompletedRestCalibration);
     void resetCounters();
     void stop();
     void restart();
@@ -229,7 +241,10 @@ private:
     bool signalTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0;
     bool temperatureTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0;
     bool batteryTelemetryEnabled_ = TRACKER_SLIMEVR_ENABLE_BATTERY_TELEMETRY != 0;
-    uint32_t telemetryIntervalMs_ = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
+    uint32_t telemetryIntervalMs_ = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS; // legacy/common fallback
+    uint32_t signalTelemetryIntervalMs_ = TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS;
+    uint32_t temperatureTelemetryIntervalMs_ = TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS;
+    uint32_t batteryTelemetryIntervalMs_ = TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS;
     bool latestTemperatureValid_ = false;
     float latestTemperatureC_ = 0.0f;
     bool latestBatteryValid_ = false;
@@ -290,7 +305,10 @@ private:
     uint32_t lastSensorInfoMs_ = 0;
     uint32_t lastRotationAttemptMs_ = 0;
     uint32_t lastRotationMs_ = 0;
-    uint32_t lastTelemetryMs_ = 0;
+    uint32_t lastTelemetryMs_ = 0; // legacy/status only after split intervals
+    uint32_t lastSignalTelemetryMs_ = 0;
+    uint32_t lastTemperatureTelemetryMs_ = 0;
+    uint32_t lastBatteryTelemetryMs_ = 0;
     uint8_t lastSignalStrength_ = 0;
     int32_t lastRssiDbm_ = 0;
     uint32_t lastRotationSnapshotSequence_ = 0;

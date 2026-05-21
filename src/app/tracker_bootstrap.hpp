@@ -10,11 +10,15 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/calibration.hpp"
+#if TRACKER_HAS_CALIBRATION_UI
 #include "sensor/fifo_calibrations.hpp"
+#endif
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/imu_quality.hpp"
 #include "runtime/runtime_bias_types.hpp"
+#if TRACKER_HAS_SERIAL_STREAM_STATE
 #include "serial/tracker_serial_context.hpp"
+#endif
 
 namespace tracker {
 
@@ -43,13 +47,17 @@ struct TrackerBootstrapDeps {
     RuntimeGyroBiasEstimator* runtimeBias = nullptr;
     ImuQualityMonitor* quality = nullptr;
     Ahrs6Dof* ahrs = nullptr;
+#if TRACKER_HAS_SERIAL_STREAM_STATE
     TrackerSerialStreamState* streamState = nullptr;
+#endif
 
+#if TRACKER_HAS_CALIBRATION_UI
     FifoCalibrationIo* calibrationIo = nullptr;
     Lsm6dsv::RawSample* calibrationRawBuffer = nullptr;
     size_t calibrationRawBufferCapacity = 0;
     bool (*waitForCalibrationFifoEvent)(uint32_t timeoutMs, void* user) = nullptr;
     void* waitForCalibrationFifoEventUser = nullptr;
+#endif
     float latestTempC = 25.0f;
 
     TrackerBootstrapPins pins;

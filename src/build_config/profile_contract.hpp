@@ -1,0 +1,197 @@
+#pragma once
+
+#include "build_config/build_profiles.hpp"
+#include "build_config/feature_flags.hpp"
+#include "build_config/network_tuning.hpp"
+
+// Derived feature groups for application/runtime code.
+//
+// Low-level TRACKER_ENABLE_* macros describe individual modules. Code that only
+// needs to know whether a subsystem exists should prefer the TRACKER_HAS_*
+// aliases below. This keeps profile policy centralized and reduces scattered
+// combinations such as:
+//   #if TRACKER_ENABLE_STATIC_TEST || TRACKER_ENABLE_BOOT_HEARTBEAT
+// across app/runtime glue.
+
+#ifndef TRACKER_HAS_SERIAL_CONSOLE
+#define TRACKER_HAS_SERIAL_CONSOLE TRACKER_ENABLE_SERIAL_CONSOLE
+#endif
+
+#ifndef TRACKER_HAS_SERIAL_CLI
+#define TRACKER_HAS_SERIAL_CLI TRACKER_ENABLE_SERIAL_CLI
+#endif
+
+#ifndef TRACKER_HAS_BASIC_CLI
+#define TRACKER_HAS_BASIC_CLI TRACKER_ENABLE_BASIC_CLI
+#endif
+
+#ifndef TRACKER_HAS_FULL_CLI
+#define TRACKER_HAS_FULL_CLI TRACKER_ENABLE_FULL_CLI
+#endif
+
+#ifndef TRACKER_HAS_SETUP_UI
+#define TRACKER_HAS_SETUP_UI TRACKER_ENABLE_SETUP_COMMANDS
+#endif
+
+#ifndef TRACKER_HAS_CALIBRATION_UI
+#define TRACKER_HAS_CALIBRATION_UI TRACKER_ENABLE_CALIBRATION_COMMANDS
+#endif
+
+#ifndef TRACKER_HAS_TEST_UI
+#define TRACKER_HAS_TEST_UI TRACKER_ENABLE_TEST_COMMANDS
+#endif
+
+#ifndef TRACKER_HAS_SERIAL_STREAM
+#define TRACKER_HAS_SERIAL_STREAM TRACKER_ENABLE_SERIAL_STREAM
+#endif
+
+#ifndef TRACKER_HAS_SERIAL_STREAM_STATE
+#define TRACKER_HAS_SERIAL_STREAM_STATE (TRACKER_ENABLE_SERIAL_CLI || TRACKER_ENABLE_SERIAL_STREAM || TRACKER_ENABLE_BOOT_HEARTBEAT)
+#endif
+
+#ifndef TRACKER_HAS_MACHINE_LOG
+#define TRACKER_HAS_MACHINE_LOG TRACKER_ENABLE_MACHINE_LOG
+#endif
+
+#ifndef TRACKER_HAS_STATIC_TEST
+#define TRACKER_HAS_STATIC_TEST TRACKER_ENABLE_STATIC_TEST
+#endif
+
+#ifndef TRACKER_HAS_RUNTIME_TEST
+#define TRACKER_HAS_RUNTIME_TEST TRACKER_ENABLE_RUNTIME_TEST
+#endif
+
+#ifndef TRACKER_HAS_BOOT_HEARTBEAT
+#define TRACKER_HAS_BOOT_HEARTBEAT TRACKER_ENABLE_BOOT_HEARTBEAT
+#endif
+
+#ifndef TRACKER_HAS_STATIC_TEST_STATE
+#define TRACKER_HAS_STATIC_TEST_STATE (TRACKER_ENABLE_STATIC_TEST || TRACKER_ENABLE_BOOT_HEARTBEAT)
+#endif
+
+#ifndef TRACKER_HAS_RUNTIME_TEST_STATE
+#define TRACKER_HAS_RUNTIME_TEST_STATE (TRACKER_ENABLE_RUNTIME_TEST || TRACKER_ENABLE_BOOT_HEARTBEAT)
+#endif
+
+#ifndef TRACKER_HAS_RUNTIME_DIAGNOSTICS
+#define TRACKER_HAS_RUNTIME_DIAGNOSTICS (TRACKER_ENABLE_STATIC_TEST || TRACKER_ENABLE_RUNTIME_TEST || TRACKER_ENABLE_RUNTIME_POWER_DIAGNOSTICS || TRACKER_ENABLE_HOTPATH_PERF || TRACKER_ENABLE_LOOP_TIMING)
+#endif
+
+#ifndef TRACKER_HAS_PRODUCT_TELEMETRY
+#define TRACKER_HAS_PRODUCT_TELEMETRY (TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY || TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY || TRACKER_SLIMEVR_ENABLE_BATTERY_TELEMETRY)
+#endif
+
+#ifndef TRACKER_HAS_BATTERY_RUNTIME
+#define TRACKER_HAS_BATTERY_RUNTIME TRACKER_ENABLE_BATTERY_RUNTIME
+#endif
+
+#ifndef TRACKER_HAS_STATUS_LED
+#define TRACKER_HAS_STATUS_LED TRACKER_ENABLE_STATUS_LED
+#endif
+
+#ifndef TRACKER_HAS_TAP_RUNTIME
+#define TRACKER_HAS_TAP_RUNTIME TRACKER_ENABLE_TAP_RUNTIME
+#endif
+
+#ifndef TRACKER_HAS_CONSOLE_SUPPRESS
+#define TRACKER_HAS_CONSOLE_SUPPRESS TRACKER_ENABLE_CONSOLE_SUPPRESS
+#endif
+
+#ifndef TRACKER_HAS_DETAILED_RUNTIME_STATUS
+#define TRACKER_HAS_DETAILED_RUNTIME_STATUS TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
+#endif
+
+#ifndef TRACKER_HAS_DETAILED_MAG_STATUS
+#define TRACKER_HAS_DETAILED_MAG_STATUS TRACKER_ENABLE_DETAILED_MAG_STATUS
+#endif
+
+#ifndef TRACKER_HAS_FULL_CONFIG_PRINT
+#define TRACKER_HAS_FULL_CONFIG_PRINT TRACKER_ENABLE_FULL_CONFIG_PRINT
+#endif
+
+// Contract checks. These catch profile/source-filter drift at compile time
+// before it turns into linker-only undefined references or unused module builds.
+
+#if TRACKER_CLI_IS_NONE && TRACKER_ENABLE_SERIAL_CLI
+#error "TRACKER_CLI_LEVEL_NONE requires TRACKER_ENABLE_SERIAL_CLI=0."
+#endif
+
+#if !TRACKER_CLI_IS_NONE && !TRACKER_ENABLE_SERIAL_CLI
+#error "A BASIC/FULL CLI level requires TRACKER_ENABLE_SERIAL_CLI=1."
+#endif
+
+#if TRACKER_ENABLE_SERIAL_CLI && !TRACKER_ENABLE_SERIAL_CONSOLE
+#error "Serial CLI requires TRACKER_ENABLE_SERIAL_CONSOLE=1."
+#endif
+
+#if TRACKER_ENABLE_BASIC_CLI && !TRACKER_ENABLE_SERIAL_CLI
+#error "TRACKER_ENABLE_BASIC_CLI requires TRACKER_ENABLE_SERIAL_CLI=1."
+#endif
+
+#if TRACKER_ENABLE_FULL_CLI && !TRACKER_ENABLE_BASIC_CLI
+#error "TRACKER_ENABLE_FULL_CLI requires TRACKER_ENABLE_BASIC_CLI=1."
+#endif
+
+#if TRACKER_ENABLE_SETUP_COMMANDS && !TRACKER_ENABLE_SERIAL_CLI
+#error "Setup commands require the serial CLI."
+#endif
+
+#if TRACKER_ENABLE_CONFIG_COMMANDS && !TRACKER_ENABLE_SERIAL_CLI
+#error "Config commands require the serial CLI."
+#endif
+
+#if TRACKER_ENABLE_NETWORK_COMMANDS && !TRACKER_ENABLE_SERIAL_CLI
+#error "Network commands require the serial CLI."
+#endif
+
+#if TRACKER_ENABLE_SLIMEVR_COMMANDS && !TRACKER_ENABLE_SERIAL_CLI
+#error "SlimeVR commands require the serial CLI."
+#endif
+
+#if TRACKER_ENABLE_CALIBRATION_COMMANDS && !TRACKER_ENABLE_SERIAL_CLI
+#error "Calibration commands require the serial CLI. Slim should apply NVS calibration only."
+#endif
+
+#if TRACKER_ENABLE_TEST_COMMANDS && !TRACKER_ENABLE_SERIAL_CLI
+#error "Test commands require the serial CLI."
+#endif
+
+#if TRACKER_ENABLE_STATIC_TEST && !TRACKER_ENABLE_SERIAL_CLI
+#error "Static test runner is command-driven and requires the serial CLI."
+#endif
+
+#if TRACKER_ENABLE_RUNTIME_TEST && !TRACKER_ENABLE_SERIAL_CLI
+#error "Runtime test runner is command-driven and requires the serial CLI."
+#endif
+
+#if TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT && !TRACKER_ENABLE_SERIAL_CLI
+#error "SlimeVR serial compatibility commands require the serial CLI."
+#endif
+
+#if TRACKER_ENABLE_SERIAL_STREAM && !TRACKER_ENABLE_SERIAL_CONSOLE
+#error "Serial stream requires the serial console."
+#endif
+
+#if TRACKER_ENABLE_MACHINE_LOG && !TRACKER_ENABLE_SERIAL_CONSOLE
+#error "Machine log requires the serial console."
+#endif
+
+#if TRACKER_ENABLE_BOOT_HEARTBEAT && !TRACKER_ENABLE_SERIAL_CONSOLE
+#error "Boot heartbeat requires the serial console."
+#endif
+
+#if TRACKER_ENABLE_RUNTIME_POWER_DIAGNOSTICS && !TRACKER_ENABLE_RUNTIME_TEST
+#error "Runtime power diagnostics are reported by the runtime test runner."
+#endif
+
+#if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS && !TRACKER_ENABLE_SERIAL_CLI
+#error "Detailed runtime status is a CLI feature."
+#endif
+
+#if TRACKER_ENABLE_DETAILED_MAG_STATUS && !TRACKER_ENABLE_SERIAL_CLI
+#error "Detailed mag status is a CLI feature."
+#endif
+
+#if TRACKER_ENABLE_FULL_CONFIG_PRINT && !TRACKER_ENABLE_CONFIG_COMMANDS
+#error "Full config print requires config commands."
+#endif

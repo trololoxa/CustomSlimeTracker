@@ -7,14 +7,20 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "runtime/fifo_runtime_processor.hpp"
+#if TRACKER_HAS_STATIC_TEST_STATE
 #include "runtime/static_test_runner.hpp"
+#endif
+#if TRACKER_HAS_RUNTIME_TEST_STATE
 #include "runtime/runtime_test_runner.hpp"
+#endif
 #include "runtime/tracker_runtime_types.hpp"
 #include "runtime/mag_runtime_state.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/imu_quality.hpp"
+#if TRACKER_HAS_SERIAL_STREAM_STATE || TRACKER_HAS_SERIAL_CLI
 #include "serial/tracker_serial_context.hpp"
-#if TRACKER_ENABLE_SERIAL_CLI
+#endif
+#if TRACKER_HAS_SERIAL_CLI
 #include "serial/tracker_serial_commands.hpp"
 #endif
 #include "app/tracker_bootstrap.hpp"
@@ -47,15 +53,21 @@ struct TrackerAppRuntimeObjects {
     Lsm6dsvFifoReader* fifo = nullptr;
     ImuQualityMonitor* quality = nullptr;
     Ahrs6Dof* ahrs = nullptr;
-#if TRACKER_ENABLE_SERIAL_CLI
+#if TRACKER_HAS_SERIAL_CLI
     TrackerSerialCommandInterface<>* cli = nullptr;
 #endif
+#if TRACKER_HAS_SERIAL_STREAM_STATE
     TrackerSerialStreamState* streamState = nullptr;
+#endif
     TrackerPerfCounters* perf = nullptr;
     FifoInterruptEventSource* fifoEvents = nullptr;
     FifoRuntimeProcessor* fifoRuntime = nullptr;
+#if TRACKER_HAS_STATIC_TEST_STATE
     StaticTestRunner* staticTestRunner = nullptr;
+#endif
+#if TRACKER_HAS_RUNTIME_TEST_STATE
     RuntimeTestRunner* runtimeTestRunner = nullptr;
+#endif
     MagRuntimeState* magState = nullptr;
     volatile uint32_t* fifoIntCount = nullptr;
     uint32_t* runtimeSamples = nullptr;
@@ -67,13 +79,13 @@ struct TrackerAppCallbacks {
     void (*setupMagRuntimeController)() = nullptr;
     void (*setupCommandInterface)() = nullptr;
     void (*setupNetworkRuntime)() = nullptr;
-    void (*updateNetworkRuntime)() = nullptr;
+    bool (*updateNetworkRuntime)() = nullptr;
     void (*setupTapRuntime)() = nullptr;
-    void (*updateTapRuntime)() = nullptr;
+    bool (*updateTapRuntime)() = nullptr;
     void (*setupStatusLedRuntime)() = nullptr;
-    void (*updateStatusLedRuntime)() = nullptr;
+    bool (*updateStatusLedRuntime)() = nullptr;
     void (*setupBatteryRuntime)() = nullptr;
-    void (*updateBatteryRuntime)() = nullptr;
+    bool (*updateBatteryRuntime)() = nullptr;
     void (*setStatusLedSensorError)() = nullptr;
     void (*resetFifoRuntimeCounters)() = nullptr;
     void (*attachFifoInterrupt)() = nullptr;
@@ -109,7 +121,8 @@ private:
     bool ready() const;
     void fatal(const char* message);
     void call(void (*callback)());
-    void processFifoRuntime();
+    bool processFifoRuntime();
+    static bool callBool(bool (*callback)());
     void startMagFromConfig(Stream& out);
 
     TrackerAppDeps deps_;

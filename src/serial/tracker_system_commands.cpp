@@ -8,8 +8,12 @@
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/calibration.hpp"
+#include "sensor/imu_quality.hpp"
 #include "serial/tracker_serial_context.hpp"
+
+#if TRACKER_ENABLE_FULL_CLI
 #include "serial/tracker_imu_fifo_commands.hpp"
+#endif
 
 namespace tracker {
 
@@ -177,6 +181,43 @@ static const char* yesNo(bool v) {
     return v ? "yes" : "no";
 }
 
+#if !TRACKER_ENABLE_FULL_CLI
+static void trackerSerialPrintCompactFifoHealth(Stream& out, const Lsm6dsvFifoReader::DrainStats& fs) {
+    out.println("# FIFO SUMMARY");
+    out.print("fifo_words_read="); out.println(fs.fifoWordsRead);
+    out.print("imu_samples="); out.println(fs.imuSamplesProduced);
+    out.print("hw_timestamp_assigned="); out.println(fs.hwTimestampAssigned);
+    out.print("fallback_timestamp_assigned="); out.println(fs.fallbackTimestampAssigned);
+    out.print("overrun_events="); out.println(fs.overrunEvents);
+    out.print("full_events="); out.println(fs.fullEvents);
+    out.print("unknown_words="); out.println(fs.unknownWords);
+    out.print("tag_counter_jumps="); out.println(fs.tagCounterJumps);
+    out.print("gyro_saturation_count="); out.println(fs.gyroSaturationCount);
+    out.print("accel_saturation_count="); out.println(fs.accelSaturationCount);
+    out.print("latest_temp_valid="); out.println(fs.latestTempValid ? "yes" : "no");
+    out.print("latest_temp_c="); out.println(fs.latestTempC, 3);
+}
+
+static void trackerSerialPrintCompactQualityHealth(Stream& out, const ImuQualityCounters& qc) {
+    out.println("# QUALITY SUMMARY");
+    out.print("samples="); out.println(qc.samples);
+    out.print("hw_timestamp_samples="); out.println(qc.hwTimestampSamples);
+    out.print("fallback_timestamp_samples="); out.println(qc.fallbackTimestampSamples);
+    out.print("estimated_dropped_samples="); out.println(qc.estimatedDroppedSamples);
+    out.print("fifo_overrun_events="); out.println(qc.fifoOverrunEvents);
+    out.print("fifo_full_events="); out.println(qc.fifoFullEvents);
+    out.print("fifo_unknown_tag_events="); out.println(qc.fifoUnknownTagEvents);
+    out.print("gyro_saturated_samples="); out.println(qc.gyroSaturatedSamples);
+    out.print("accel_saturated_samples="); out.println(qc.accelSaturatedSamples);
+    out.print("ahrs_skipped_samples="); out.println(qc.ahrsSkippedSamples);
+    out.print("accel_correction_disabled_samples="); out.println(qc.accelCorrectionDisabledSamples);
+    out.print("fifo_recovery_requests="); out.println(qc.fifoRecoveryRequests);
+    out.print("mean_dt_us="); out.println(qc.meanDtUs(), 6);
+    out.print("min_dt_us="); out.println(qc.minDtUs, 6);
+    out.print("max_dt_us="); out.println(qc.maxDtUs, 6);
+}
+#endif
+
 void trackerSerialPrintSetupStatus(TrackerSerialCommandContext& ctx) {
     Stream& out = trackerSerialSystemStream(ctx);
     out.println("# SETUP STATUS");
@@ -262,8 +303,13 @@ void trackerSerialPrintHealth(TrackerSerialCommandContext& ctx) {
     }
 
     trackerSerialPrintStatus(ctx);
+#if TRACKER_ENABLE_FULL_CLI
     if (ctx.fifo) trackerSerialPrintFifoStats(out, ctx.fifo->stats());
     if (ctx.quality) trackerSerialPrintQualityStats(out, ctx.quality->counters());
+#else
+    if (ctx.fifo) trackerSerialPrintCompactFifoHealth(out, ctx.fifo->stats());
+    if (ctx.quality) trackerSerialPrintCompactQualityHealth(out, ctx.quality->counters());
+#endif
 }
 
 void trackerSerialFactoryReset(TrackerSerialCommandContext& ctx) {

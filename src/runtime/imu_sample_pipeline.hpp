@@ -55,10 +55,10 @@ struct ImuSamplePipelineDeps {
     RuntimeGyroBiasEstimator& runtimeBias;
     TrackingStateController& trackingState;
     PreparedOutputRuntime& preparedOutput;
-    TrackerSerialStreamState& streamState;
-    TrackerSerialLogState& logState;
-    MachineLogCounters& logCounters;
-    StaticTestRunner& staticTestRunner;
+    TrackerSerialStreamState* streamState = nullptr;
+    TrackerSerialLogState* logState = nullptr;
+    MachineLogCounters* logCounters = nullptr;
+    StaticTestRunner* staticTestRunner = nullptr;
     GyroTempCalibrationCapture* gyroTempCapture = nullptr;
     TrackerPerfCounters& perf;
     FifoCalibrationIo* calibrationIo;

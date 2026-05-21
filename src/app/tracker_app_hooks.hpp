@@ -14,17 +14,29 @@
 #include "app/tracker_hardware_context.hpp"
 #include "app/tracker_runtime_context.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
+#if TRACKER_HAS_MACHINE_LOG
 #include "runtime/machine_log_runtime.hpp"
+#endif
 #include "runtime/imu_sample_pipeline.hpp"
+#if TRACKER_ENABLE_DETAILED_MAG_STATUS
 #include "runtime/mag_status_reporter.hpp"
+#endif
+#if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
 #include "runtime/runtime_status_reporter.hpp"
+#endif
+#if TRACKER_HAS_STATIC_TEST
 #include "runtime/gyro_temp_static_fit.hpp"
+#endif
+#if TRACKER_HAS_SERIAL_CLI
 #include "app/tracker_command_wiring.hpp"
+#endif
 #include "app/tracker_bootstrap.hpp"
 
 using namespace tracker;
 
 #include "app/hooks/tracker_app_common_hooks.hpp"
 #include "app/hooks/tracker_app_mag_hooks.hpp"
+#if TRACKER_HAS_SERIAL_CLI
 #include "app/hooks/tracker_app_command_hooks.hpp"
+#endif
 #include "app/hooks/tracker_app_runtime_hooks.hpp"

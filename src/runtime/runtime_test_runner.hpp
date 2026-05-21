@@ -19,6 +19,13 @@ struct RuntimeLoopTimingSample {
     uint32_t fifoUs = 0;
     uint32_t networkUs = 0;
     uint32_t heartbeatUs = 0;
+    bool fifoWorked = false;
+    bool batteryWorked = false;
+    bool networkWorked = false;
+    bool tapWorked = false;
+    bool ledWorked = false;
+    bool heartbeatWorked = false;
+    bool anyWork = false;
 };
 
 class RuntimeTestRunner {
@@ -85,6 +92,14 @@ private:
     uint32_t slowLoopCount_ = 0;
     uint32_t slowNetworkCount_ = 0;
     uint32_t slowFifoCount_ = 0;
+    uint32_t workLoopCount_ = 0;
+    uint32_t idleCandidateLoopCount_ = 0;
+    uint32_t fifoWorkCount_ = 0;
+    uint32_t batteryWorkCount_ = 0;
+    uint32_t networkWorkCount_ = 0;
+    uint32_t tapWorkCount_ = 0;
+    uint32_t ledWorkCount_ = 0;
+    uint32_t heartbeatWorkCount_ = 0;
     float tempStartC_ = 0.0f;
     float tempEndC_ = 0.0f;
     bool tempValid_ = false;

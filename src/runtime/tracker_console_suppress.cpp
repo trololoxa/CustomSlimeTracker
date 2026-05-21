@@ -1,5 +1,7 @@
 #include "runtime/tracker_console_suppress.hpp"
 
+#if TRACKER_ENABLE_CONSOLE_SUPPRESS
+
 namespace tracker {
 namespace {
 
@@ -40,3 +42,5 @@ uint32_t trackerConsoleTrackingMessagesSuppressedUntilMs() {
 }
 
 } // namespace tracker
+
+#endif // TRACKER_ENABLE_CONSOLE_SUPPRESS

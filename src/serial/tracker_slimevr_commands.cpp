@@ -28,9 +28,16 @@ SlimeVROutputRuntimeConfig makeConfigFromNetwork(TrackerSerialCommandContext& ct
     cfg.sensorId = net.data.sensorId;
     cfg.serverPort = net.data.serverPort;
     cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
-    cfg.discoveryIntervalMs = 1000;
-    cfg.rotationRateHz = rotationRateHz == 0 ? 100 : rotationRateHz;
-    cfg.incomingPacketsPerUpdate = 4;
+    cfg.discoveryIntervalMs = TRACKER_SLIMEVR_DISCOVERY_INTERVAL_MS;
+    cfg.rotationRateHz = rotationRateHz == 0 ? ::tracker::cfg::OUTPUT_RATE_HZ : rotationRateHz;
+    if (cfg.rotationRateHz > TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX) {
+        cfg.rotationRateHz = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
+    }
+    cfg.incomingPacketsPerUpdate = TRACKER_SLIMEVR_INCOMING_PACKETS_PER_UPDATE;
+    cfg.telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
+    cfg.signalTelemetryIntervalMs = TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS;
+    cfg.temperatureTelemetryIntervalMs = TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS;
+    cfg.batteryTelemetryIntervalMs = TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS;
     if (ctx.config) {
         cfg.magSupportEnabled = ctx.config->data.magCal.driverEnabled ||
                                 ctx.config->data.magCal.calibrationValid ||
@@ -140,6 +147,9 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("temperature_telemetry_enabled="); out.println(yn(s.temperatureTelemetryEnabled));
     out.print("battery_telemetry_enabled="); out.println(yn(s.batteryTelemetryEnabled));
     out.print("telemetry_interval_ms="); out.println(s.telemetryIntervalMs);
+    out.print("signal_telemetry_interval_ms="); out.println(s.signalTelemetryIntervalMs);
+    out.print("temperature_telemetry_interval_ms="); out.println(s.temperatureTelemetryIntervalMs);
+    out.print("battery_telemetry_interval_ms="); out.println(s.batteryTelemetryIntervalMs);
     out.print("last_signal_strength="); out.println(s.lastSignalStrength);
     out.print("last_rssi_dbm="); out.println(s.lastRssiDbm);
     out.print("last_temperature_valid="); out.println(yn(s.lastTemperatureValid));

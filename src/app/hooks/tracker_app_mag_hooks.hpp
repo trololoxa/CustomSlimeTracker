@@ -5,11 +5,13 @@
 // Magnetometer and tracking-state hooks used by the app composition layer.
 // This file is included by app/tracker_app_hooks.hpp after shared app dependencies.
 
+#if TRACKER_HAS_MACHINE_LOG
 static void emitMachineLogMagFrame(const MagProcessedSample& mag,
                                    const MagHeadingSample& heading,
                                    const MagYawCorrectionOutput& yaw,
                                    uint32_t rejectFlagsForUse,
                                    bool trustedForUse);
+#endif
 
 static void magControllerResetFifoRuntimeCallback(void* user) {
     (void)user;
@@ -31,6 +33,7 @@ static void magControllerEmitStateEventCallback(const char* state,
     emitLogStateEvent(state, reason, timestampUs, flags, confidence);
 }
 
+#if TRACKER_HAS_MACHINE_LOG
 static void magControllerEmitMachineLogMagFrameCallback(const MagProcessedSample& mag,
                                                         const MagHeadingSample& heading,
                                                         const MagYawCorrectionOutput& yaw,
@@ -40,6 +43,7 @@ static void magControllerEmitMachineLogMagFrameCallback(const MagProcessedSample
     (void)user;
     emitMachineLogMagFrame(mag, heading, yaw, rejectFlagsForUse, trustedForUse);
 }
+#endif
 
 static void magControllerRecordStaticMagYawSampleCallback(float magHeadingErrorDeg,
                                                           const MagHeadingSample& heading,
@@ -59,7 +63,9 @@ static MagRuntimeControllerDeps makeMagRuntimeControllerDeps() {
     MagRuntimeControllerCallbacks callbacks;
     callbacks.resetFifoRuntime = magControllerResetFifoRuntimeCallback;
     callbacks.emitStateEvent = magControllerEmitStateEventCallback;
+#if TRACKER_HAS_MACHINE_LOG
     callbacks.emitMagFrame = magControllerEmitMachineLogMagFrameCallback;
+#endif
     callbacks.recordStaticMagYawSample = magControllerRecordStaticMagYawSampleCallback;
 
     MagRuntimeControllerDeps deps;
@@ -181,6 +187,7 @@ static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
     g_magRuntime.processRawSample(mag);
 }
 
+#if TRACKER_ENABLE_DETAILED_MAG_STATUS
 static MagStatusReporterDeps makeMagStatusReporterDeps() {
     MagStatusReporterDeps deps;
     deps.config = &g_config;
@@ -220,6 +227,49 @@ static void printMagYawCorrectionStatus(Stream& out, void* user) {
     (void)user;
     magStatusPrintYawCorrection(out, makeMagStatusReporterDeps());
 }
+#else
+static void printMagRuntimeStatus(Stream& out, void* user) {
+    (void)user;
+    out.println("# detailed mag runtime status is not compiled in this profile");
+    out.print("mag_config_enabled="); out.println(g_config.data.magCal.driverEnabled ? "yes" : "no");
+    out.print("mag_runtime_enabled="); out.println(g_magState.runtimeEnabled ? "yes" : "no");
+    out.print("mag_samples_processed="); out.println(g_magProcessor.stats().processedSamples);
+    out.print("mag_last_trusted="); out.println(g_lastMagProcessed.trusted ? "yes" : "no");
+}
+
+static void printMagProcessedStatus(Stream& out, void* user) {
+    (void)user;
+    out.println("# compact mag processed status");
+    out.print("seq="); out.println(g_lastMagProcessed.seq);
+    out.print("trusted="); out.println(g_lastMagProcessed.trusted ? "yes" : "no");
+    out.print("reject_flags=0x"); out.println(g_lastMagProcessed.rejectFlags, HEX);
+}
+
+static void printMagHeadingStatus(Stream& out, void* user) {
+    (void)user;
+    out.println("# compact mag heading status");
+    out.print("heading_ref_valid="); out.println(g_magHeadingRef.valid ? "yes" : "no");
+    out.print("auto_ref_enabled="); out.println(g_magHeadingAutoRef.enabled ? "yes" : "no");
+}
+
+static void printMagYawCorrectionStatus(Stream& out, void* user) {
+    (void)user;
+    out.println("# compact mag yaw status");
+    out.print("controller_enabled="); out.println(g_config.data.magYaw.controllerEnabled ? "yes" : "no");
+    out.print("apply_enabled="); out.println(g_config.data.magYaw.applyEnabled ? "yes" : "no");
+    out.print("last_applied="); out.println(g_lastMagYawCorrection.applied ? "yes" : "no");
+    out.print("last_reject_flags=0x"); out.println(g_lastMagYawCorrection.rejectFlags, HEX);
+}
+
+static void printMagCalibrationStatus(Stream& out, void* user) {
+    (void)user;
+    out.println("# compact mag calibration status");
+    out.print("driver_enabled="); out.println(g_config.data.magCal.driverEnabled ? "yes" : "no");
+    out.print("calibration_valid="); out.println(g_config.data.magCal.calibrationValid ? "yes" : "no");
+    out.print("axis_alignment_valid="); out.println(g_config.data.magCal.axisAlignmentValid ? "yes" : "no");
+    out.print("collected_samples="); out.println(g_magCalCollector.samples());
+}
+#endif
 
 static void resetMagYawCorrectionHook(void* user) {
     (void)user;
@@ -246,10 +296,12 @@ static bool setMagHeadingAutoReferenceEnabledHook(bool enabled, void* user) {
     return g_magRuntime.setAutoReferenceEnabled(enabled);
 }
 
+#if TRACKER_ENABLE_DETAILED_MAG_STATUS
 static void printMagCalibrationStatus(Stream& out, void* user) {
     (void)user;
     magStatusPrintCalibration(out, makeMagStatusReporterDeps());
 }
+#endif
 
 static bool startMagCalibrationHook(void* user) {
     (void)user;

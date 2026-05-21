@@ -130,16 +130,17 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
     temperatureTelemetryEnabled_ = config.temperatureTelemetryEnabled;
     batteryTelemetryEnabled_ = config.batteryTelemetryEnabled;
     telemetryIntervalMs_ = config.telemetryIntervalMs == 0 ? TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS : config.telemetryIntervalMs;
-    latestTemperatureValid_ = config.latestTemperatureValid && std::isfinite(config.latestTemperatureC);
-    latestTemperatureC_ = latestTemperatureValid_ ? config.latestTemperatureC : 0.0f;
-    latestBatteryValid_ = config.latestBatteryValid &&
-                          std::isfinite(config.latestBatteryVoltage) &&
-                          std::isfinite(config.latestBatteryPercentage);
-    latestBatteryVoltage_ = latestBatteryValid_ ? config.latestBatteryVoltage : 0.0f;
-    latestBatteryPercentage_ = latestBatteryValid_ ? config.latestBatteryPercentage : 0.0f;
-    if (latestBatteryPercentage_ < 0.0f) latestBatteryPercentage_ = 0.0f;
-    if (latestBatteryPercentage_ > 100.0f) latestBatteryPercentage_ = 100.0f;
-    hasCompletedRestCalibration_ = incomingRestComplete;
+    signalTelemetryIntervalMs_ = config.signalTelemetryIntervalMs == 0 ? telemetryIntervalMs_ : config.signalTelemetryIntervalMs;
+    temperatureTelemetryIntervalMs_ = config.temperatureTelemetryIntervalMs == 0 ? telemetryIntervalMs_ : config.temperatureTelemetryIntervalMs;
+    batteryTelemetryIntervalMs_ = config.batteryTelemetryIntervalMs == 0 ? telemetryIntervalMs_ : config.batteryTelemetryIntervalMs;
+    updateLiveState(
+        config.latestTemperatureValid,
+        config.latestTemperatureC,
+        config.latestBatteryValid,
+        config.latestBatteryVoltage,
+        config.latestBatteryPercentage,
+        incomingRestComplete
+    );
     copyCString(deviceName_, sizeof(deviceName_), config.deviceName && config.deviceName[0] ? config.deviceName : "c3-6dsv-tracker");
 
     if (!enabled_) {
@@ -156,6 +157,32 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
         if (restCalibrationChanged) {
             requestSensorInfoRefresh();
         }
+    }
+}
+
+
+void SlimeVROutputRuntime::updateLiveState(bool latestTemperatureValid,
+                                           float latestTemperatureC,
+                                           bool latestBatteryValid,
+                                           float latestBatteryVoltage,
+                                           float latestBatteryPercentage,
+                                           bool hasCompletedRestCalibration) {
+    const bool restCalibrationChanged = hasCompletedRestCalibration_ != hasCompletedRestCalibration;
+
+    latestTemperatureValid_ = latestTemperatureValid && std::isfinite(latestTemperatureC);
+    latestTemperatureC_ = latestTemperatureValid_ ? latestTemperatureC : 0.0f;
+
+    latestBatteryValid_ = latestBatteryValid &&
+                          std::isfinite(latestBatteryVoltage) &&
+                          std::isfinite(latestBatteryPercentage);
+    latestBatteryVoltage_ = latestBatteryValid_ ? latestBatteryVoltage : 0.0f;
+    latestBatteryPercentage_ = latestBatteryValid_ ? latestBatteryPercentage : 0.0f;
+    if (latestBatteryPercentage_ < 0.0f) latestBatteryPercentage_ = 0.0f;
+    if (latestBatteryPercentage_ > 100.0f) latestBatteryPercentage_ = 100.0f;
+
+    hasCompletedRestCalibration_ = hasCompletedRestCalibration;
+    if (restCalibrationChanged) {
+        requestSensorInfoRefresh();
     }
 }
 
@@ -345,6 +372,9 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.temperatureTelemetryEnabled = temperatureTelemetryEnabled_;
     s.batteryTelemetryEnabled = batteryTelemetryEnabled_;
     s.telemetryIntervalMs = telemetryIntervalMs_;
+    s.signalTelemetryIntervalMs = signalTelemetryIntervalMs_;
+    s.temperatureTelemetryIntervalMs = temperatureTelemetryIntervalMs_;
+    s.batteryTelemetryIntervalMs = batteryTelemetryIntervalMs_;
     s.lastSignalStrength = lastSignalStrength_;
     s.lastRssiDbm = lastRssiDbm_;
     s.lastTemperatureC = latestTemperatureC_;
@@ -391,6 +421,9 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastRotationAttemptMs_ = 0;
     lastRotationMs_ = 0;
     lastTelemetryMs_ = 0;
+    lastSignalTelemetryMs_ = 0;
+    lastTemperatureTelemetryMs_ = 0;
+    lastBatteryTelemetryMs_ = 0;
     lastSignalStrength_ = 0;
     lastRssiDbm_ = 0;
     lastRotationSnapshotSequence_ = 0;
@@ -629,13 +662,24 @@ void SlimeVROutputRuntime::sendHeartbeat(uint32_t nowMs) {
 
 void SlimeVROutputRuntime::maybeSendTelemetry(uint32_t nowMs) {
     if (!serverEndpoint_.valid()) return;
-    if (telemetryIntervalMs_ == 0) return;
-    if (lastTelemetryMs_ != 0 && nowMs - lastTelemetryMs_ < telemetryIntervalMs_) return;
-    lastTelemetryMs_ = nowMs;
 
-    if (signalTelemetryEnabled_) sendSignalStrength(nowMs);
-    if (temperatureTelemetryEnabled_) sendTemperature(nowMs);
-    if (batteryTelemetryEnabled_) sendBatteryLevel(nowMs);
+    if (signalTelemetryEnabled_ && signalTelemetryIntervalMs_ != 0 &&
+        (lastSignalTelemetryMs_ == 0 || nowMs - lastSignalTelemetryMs_ >= signalTelemetryIntervalMs_)) {
+        lastSignalTelemetryMs_ = nowMs;
+        sendSignalStrength(nowMs);
+    }
+
+    if (temperatureTelemetryEnabled_ && temperatureTelemetryIntervalMs_ != 0 &&
+        (lastTemperatureTelemetryMs_ == 0 || nowMs - lastTemperatureTelemetryMs_ >= temperatureTelemetryIntervalMs_)) {
+        lastTemperatureTelemetryMs_ = nowMs;
+        sendTemperature(nowMs);
+    }
+
+    if (batteryTelemetryEnabled_ && batteryTelemetryIntervalMs_ != 0 &&
+        (lastBatteryTelemetryMs_ == 0 || nowMs - lastBatteryTelemetryMs_ >= batteryTelemetryIntervalMs_)) {
+        lastBatteryTelemetryMs_ = nowMs;
+        sendBatteryLevel(nowMs);
+    }
     // Do not periodically send MagnetometerAccuracy as generic telemetry. The
     // server learns magnetometer support from SensorInfo.sensorConfig. Some
     // server builds treat packet 18 as active mag-calibration feedback, so

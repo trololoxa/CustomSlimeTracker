@@ -54,11 +54,13 @@ static bool consumeFifoInterruptEvent(uint32_t timeoutMs) {
     return g_fifoEvents.consume(timeoutMs, g_config.data.fifo.watermarkWords);
 }
 
+#if TRACKER_ENABLE_CALIBRATION_COMMANDS
 static bool waitFifoEventForCalibration(uint32_t timeoutMs, void* user) {
     (void)user;
     return consumeFifoInterruptEvent(timeoutMs);
 }
 
+#endif
 static TrackerBootstrapDeps makeTrackerBootstrapDeps() {
     TrackerBootstrapDeps deps;
     deps.out = &Serial;
@@ -74,12 +76,16 @@ static TrackerBootstrapDeps makeTrackerBootstrapDeps() {
     deps.runtimeBias = &g_runtimeBias;
     deps.quality = &g_quality;
     deps.ahrs = &g_ahrs6dof;
+#if TRACKER_HAS_SERIAL_STREAM_STATE
     deps.streamState = &g_streamState;
+#endif
+#if TRACKER_ENABLE_CALIBRATION_COMMANDS
     deps.calibrationIo = &g_calIo;
     deps.calibrationRawBuffer = g_fifoRaw;
     deps.calibrationRawBufferCapacity = FIFO_RAW_BUFFER_CAPACITY;
     deps.waitForCalibrationFifoEvent = waitFifoEventForCalibration;
     deps.waitForCalibrationFifoEventUser = nullptr;
+#endif
     deps.latestTempC = g_latestTempC;
     deps.pins.sck = PIN_LSM_SCK;
     deps.pins.miso = PIN_LSM_MISO;

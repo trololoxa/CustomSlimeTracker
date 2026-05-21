@@ -96,10 +96,14 @@ bool trackerBootstrapLoadConfigAndApplyRuntime(const TrackerBootstrapDeps& deps)
     deps.quality->setConfig(deps.config->makeQualityConfig());
     deps.quality->reset();
 
-    deps.streamState->rateHz = deps.config->data.output.outputRateHz;
-    deps.streamState->mode = deps.config->data.output.quaternionOutputEnabled
-        ? TrackerStreamMode::Quat
-        : TrackerStreamMode::Off;
+#if TRACKER_HAS_SERIAL_STREAM_STATE
+    if (deps.streamState != nullptr) {
+        deps.streamState->rateHz = deps.config->data.output.outputRateHz;
+        deps.streamState->mode = deps.config->data.output.quaternionOutputEnabled
+            ? TrackerStreamMode::Quat
+            : TrackerStreamMode::Off;
+    }
+#endif
     return true;
 }
 
@@ -111,7 +115,7 @@ bool trackerBootstrapInitLsm(const TrackerBootstrapDeps& deps) {
     Lsm6dsv::Config cfg = deps.config->makeLsmConfig();
 
     if (!deps.lsm->begin(cfg)) {
-#if TRACKER_ENABLE_SERIAL_CONSOLE
+#if TRACKER_HAS_SERIAL_CONSOLE
         deps.out->print("# ERR LSM6DSV init failed error=");
         deps.out->print(trackerBootstrapLsmErrorName(deps.lsm->lastError()));
         deps.out->print(" who=0x");
@@ -120,7 +124,7 @@ bool trackerBootstrapInitLsm(const TrackerBootstrapDeps& deps) {
         return false;
     }
 
-#if TRACKER_ENABLE_SERIAL_CONSOLE
+#if TRACKER_HAS_SERIAL_CONSOLE
     uint8_t who = 0;
     deps.lsm->readWhoAmI(who);
 
@@ -138,13 +142,13 @@ bool trackerBootstrapInitFifo(const TrackerBootstrapDeps& deps) {
     fifoCfg.sensorHubSlave0PeriodUs = deps.config->data.magCal.driverEnabled ? deps.magHubPeriodUs : 0.0f;
 
     if (!deps.fifo->configure(fifoCfg)) {
-#if TRACKER_ENABLE_SERIAL_CONSOLE
+#if TRACKER_HAS_SERIAL_CONSOLE
         deps.out->println("# ERR FIFO configure failed");
 #endif
         return false;
     }
 
-#if TRACKER_ENABLE_SERIAL_CONSOLE
+#if TRACKER_HAS_SERIAL_CONSOLE
     Lsm6dsvFifoReader::Status st;
     deps.fifo->readStatus(st);
 
@@ -161,6 +165,10 @@ bool trackerBootstrapInitFifo(const TrackerBootstrapDeps& deps) {
 }
 
 void trackerBootstrapSetupCalibrationIo(const TrackerBootstrapDeps& deps) {
+#if TRACKER_HAS_CALIBRATION_UI
+    if (deps.calibrationIo == nullptr) {
+        return;
+    }
     deps.calibrationIo->lsm = deps.lsm;
     deps.calibrationIo->fifo = deps.fifo;
     deps.calibrationIo->rawBuffer = deps.calibrationRawBuffer;
@@ -170,6 +178,9 @@ void trackerBootstrapSetupCalibrationIo(const TrackerBootstrapDeps& deps) {
     deps.calibrationIo->waitForFifoEvent = deps.waitForCalibrationFifoEvent;
     deps.calibrationIo->waitUser = deps.waitForCalibrationFifoEventUser;
     deps.calibrationIo->latestTempC = deps.latestTempC;
+#else
+    (void)deps;
+#endif
 }
 
 } // namespace tracker

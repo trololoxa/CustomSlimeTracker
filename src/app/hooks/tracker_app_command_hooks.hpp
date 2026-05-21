@@ -17,6 +17,7 @@ static void hookResetAhrsRuntime(void* user) {
     resetOrientationDependentState("ahrs_or_config_reset", lsmFifo.stats().lastAssignedTimestampUs, false);
 }
 
+#if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
 static RuntimeStatusReporterDeps makeRuntimeStatusReporterDeps() {
     RuntimeStatusReporterDeps deps;
     deps.config = &g_config;
@@ -58,6 +59,7 @@ static void printRuntimeHealth(Stream& out, void* user) {
     runtimeStatusPrintHealth(out, makeRuntimeStatusReporterDeps());
 }
 
+#endif
 
 static void printLogSummary(Stream& out, void* user) {
     (void)user;
@@ -266,15 +268,19 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.quality = &g_quality;
     objects.ahrs = &g_ahrs6dof;
     objects.runtimeBias = &g_runtimeBias;
+#if TRACKER_ENABLE_CALIBRATION_COMMANDS
     objects.calibrationIo = &g_calIo;
     objects.accelCalRunner = &g_accelCalRunner;
     objects.gyroTempCapture = &g_gyroTempCapture;
+#endif
     objects.lastMagProcessed = &g_lastMagProcessed;
     objects.lastScaledSample = &g_lastScaledSample;
     objects.lastCalibratedSample = &g_lastCalibratedSample;
     objects.lastImuSampleSequence = &g_lastImuSampleSequence;
     objects.streamState = &g_streamState;
+#if TRACKER_ENABLE_MACHINE_LOG
     objects.logState = &g_logState;
+#endif
     return objects;
 }
 
@@ -282,8 +288,10 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     TrackerCommandRuntimeHooks hooks;
     hooks.resetFifoRuntime = hookResetFifoRuntime;
     hooks.resetAhrsRuntime = hookResetAhrsRuntime;
+#if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
     hooks.printRuntimeStatus = printRuntimeStatus;
     hooks.printRuntimeHealth = printRuntimeHealth;
+#endif
     hooks.setSpiFrequency = setRuntimeSpiFrequency;
 #if TRACKER_ENABLE_MACHINE_LOG
     hooks.emitLogHeader = emitMachineLogHeader;
@@ -318,10 +326,14 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     hooks.resetMagCalibration = resetMagCalibrationHook;
     hooks.applyMagCalibration = applyMagCalibrationHook;
     hooks.printMagCalibrationStatus = printMagCalibrationStatus;
+#if TRACKER_ENABLE_STATIC_TEST
     hooks.fitGyroTempFromLastStatic = fitGyroTempFromLastStaticHook;
     hooks.fitGyroTempFromCapture = fitGyroTempFromCaptureHook;
     hooks.fitGyroTempFromCaptureRam = fitGyroTempFromCaptureRamHook;
+#endif
+#if TRACKER_ENABLE_CALIBRATION_COMMANDS
     hooks.serviceCalibrationRuntime = serviceCalibrationRuntimeHook;
+#endif
     return hooks;
 }
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstring>
+
 #include "runtime/tracker_console_suppress.hpp"
 
 // Runtime sample-processing hooks and final TrackerAppDeps wiring.
@@ -9,7 +11,8 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     if (!quality.shouldRequestFifoRecovery) return;
 
     const uint32_t nowMs = millis();
-    if (!trackerConsoleTrackingMessagesSuppressed(nowMs) &&
+    const bool consoleSuppressed = trackerConsoleTrackingMessagesSuppressed(nowMs);
+    if (!consoleSuppressed &&
         (!g_trackingState.recoveryActive() || nowMs - g_lastRecoveryConsolePrintMs >= RECOVERY_CONSOLE_THROTTLE_MS)) {
         g_lastRecoveryConsolePrintMs = nowMs;
         Serial.print("# WARN FIFO recovery requested quality_flags=0x");
@@ -36,6 +39,7 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     }
 }
 
+#if TRACKER_HAS_STATIC_TEST
 static GyroTempStaticFitDeps makeGyroTempStaticFitDeps() {
     GyroTempStaticFitDeps deps;
     deps.lastCompletedStaticTest = &g_lastCompletedStaticTest;
@@ -78,6 +82,29 @@ static bool fitGyroTempFromCaptureRamHook(const StaticRuntimeTest* capture, Stre
         out
     );
 }
+#else
+static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user) {
+    (void)persist;
+    (void)user;
+    out.println("# gyro temperature static fit is not compiled in this profile");
+    return false;
+}
+
+static bool fitGyroTempFromCaptureHook(const StaticRuntimeTest* capture, bool persist, Stream& out, void* user) {
+    (void)capture;
+    (void)persist;
+    (void)user;
+    out.println("# gyro temperature static fit is not compiled in this profile");
+    return false;
+}
+
+static bool fitGyroTempFromCaptureRamHook(const StaticRuntimeTest* capture, Stream& out, void* user) {
+    (void)capture;
+    (void)user;
+    out.println("# gyro temperature static fit is not compiled in this profile");
+    return false;
+}
+#endif
 
 static void pipelineEnterTrackingRecoveryCallback(uint32_t reasonFlags,
                                                   const char* reason,
@@ -92,6 +119,7 @@ static void pipelineUpdateTrackingRecoveryCallback(const ImuQualityResult& quali
     updateTrackingRecoveryState(quality);
 }
 
+#if TRACKER_HAS_MACHINE_LOG
 static void pipelineEmitMachineLogFrameCallback(const Lsm6dsv::RawSample& raw,
                                                 const Lsm6dsv::Sample& calibrated,
                                                 const ImuQualityResult& quality,
@@ -99,6 +127,7 @@ static void pipelineEmitMachineLogFrameCallback(const Lsm6dsv::RawSample& raw,
     (void)user;
     emitMachineLogFrame(raw, calibrated, quality);
 }
+#endif
 
 static void pipelineMaybeRecoverFifoCallback(const ImuQualityResult& quality,
                                              const Lsm6dsv::RawSample& raw,
@@ -111,7 +140,9 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
     ImuSamplePipelineCallbacks callbacks;
     callbacks.enterTrackingRecovery = pipelineEnterTrackingRecoveryCallback;
     callbacks.updateTrackingRecoveryState = pipelineUpdateTrackingRecoveryCallback;
+#if TRACKER_HAS_MACHINE_LOG
     callbacks.emitMachineLogFrame = pipelineEmitMachineLogFrameCallback;
+#endif
     callbacks.maybeRecoverFifo = pipelineMaybeRecoverFifoCallback;
     callbacks.user = nullptr;
 
@@ -126,13 +157,34 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
         g_runtimeBias,
         g_trackingState,
         g_preparedOutput,
-        g_streamState,
-        g_logState,
-        g_logCounters,
-        g_staticTestRunner,
+#if TRACKER_HAS_SERIAL_STREAM
+        &g_streamState,
+#else
+        nullptr,
+#endif
+#if TRACKER_HAS_MACHINE_LOG
+        &g_logState,
+        &g_logCounters,
+#else
+        nullptr,
+        nullptr,
+#endif
+#if TRACKER_HAS_STATIC_TEST
+        &g_staticTestRunner,
+#else
+        nullptr,
+#endif
+#if TRACKER_HAS_CALIBRATION_UI
         &g_gyroTempCapture,
+#else
+        nullptr,
+#endif
         g_perf,
+#if TRACKER_HAS_CALIBRATION_UI
         &g_calIo,
+#else
+        nullptr,
+#endif
         Serial,
         g_runtimeSamples,
         g_lastSampleTimestampUs,
@@ -164,7 +216,7 @@ static void processRuntimeMagSampleCallback(const Lsm6dsvFifoReader::MagRawSampl
 static void recordRuntimeFifoProcessTime(uint32_t processUs, void* user) {
     (void)user;
     recordFifoProcessTime(processUs);
-#if TRACKER_ENABLE_STATIC_TEST
+#if TRACKER_HAS_STATIC_TEST
     g_staticTestRunner.recordFifoProcessTime(processUs);
 #endif
 }
@@ -324,8 +376,9 @@ static void setupBatteryRuntime() {
 #endif
 }
 
-static void updateBatteryRuntime() {
+static bool updateBatteryRuntime() {
     g_batteryRuntime.update(millis());
+    return true;
 }
 
 #endif // TRACKER_ENABLE_BATTERY_RUNTIME
@@ -358,6 +411,12 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
         cfg.rotationRateHz = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
     }
     cfg.incomingPacketsPerUpdate = TRACKER_SLIMEVR_INCOMING_PACKETS_PER_UPDATE;
+    cfg.signalTelemetryEnabled = (TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0);
+    cfg.temperatureTelemetryEnabled = (TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0);
+    cfg.telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
+    cfg.signalTelemetryIntervalMs = TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS;
+    cfg.temperatureTelemetryIntervalMs = TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS;
+    cfg.batteryTelemetryIntervalMs = TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS;
     cfg.magSupportEnabled = slimevrMagSupportEnabledFromConfig();
     cfg.magEnabled = cfg.magSupportEnabled && g_config.data.magYaw.applyEnabled;
     cfg.setConfigFlag = slimevrSetConfigFlagHook;
@@ -383,6 +442,128 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     return cfg;
 }
 
+
+struct AppSlimeVRRuntimeStaticConfigCache {
+    bool valid = false;
+    bool enabled = false;
+    bool discoveryEnabled = true;
+    bool manualServerEnabled = false;
+    char deviceName[32] = {};
+    uint8_t sensorId = 0;
+    uint16_t serverPort = 0;
+    uint16_t localPort = 0;
+    uint32_t discoveryIntervalMs = 0;
+    uint16_t rotationRateHz = 0;
+    uint8_t incomingPacketsPerUpdate = 0;
+    bool magSupportEnabled = false;
+    bool magEnabled = false;
+    bool signalTelemetryEnabled = false;
+    bool temperatureTelemetryEnabled = false;
+    bool batteryTelemetryEnabled = false;
+    uint32_t telemetryIntervalMs = 0;
+    uint32_t signalTelemetryIntervalMs = 0;
+    uint32_t temperatureTelemetryIntervalMs = 0;
+    uint32_t batteryTelemetryIntervalMs = 0;
+};
+
+static AppSlimeVRRuntimeStaticConfigCache g_slimeRuntimeStaticConfigCache;
+
+static void copyAppSlimeVRDeviceName(char* dst, size_t dstSize, const char* src) {
+    if (dst == nullptr || dstSize == 0u) return;
+    const char* value = (src != nullptr && src[0] != '\0') ? src : "c3-6dsv-tracker";
+    std::strncpy(dst, value, dstSize - 1u);
+    dst[dstSize - 1u] = '\0';
+}
+
+static bool appSlimeVRRuntimeStaticConfigMatches(const SlimeVROutputRuntimeConfig& cfg) {
+    if (!g_slimeRuntimeStaticConfigCache.valid) return false;
+    char deviceName[sizeof(g_slimeRuntimeStaticConfigCache.deviceName)] = {};
+    copyAppSlimeVRDeviceName(deviceName, sizeof(deviceName), cfg.deviceName);
+
+    return g_slimeRuntimeStaticConfigCache.enabled == cfg.enabled &&
+           g_slimeRuntimeStaticConfigCache.discoveryEnabled == cfg.discoveryEnabled &&
+           g_slimeRuntimeStaticConfigCache.manualServerEnabled == cfg.manualServerEnabled &&
+           std::strncmp(g_slimeRuntimeStaticConfigCache.deviceName, deviceName, sizeof(g_slimeRuntimeStaticConfigCache.deviceName)) == 0 &&
+           g_slimeRuntimeStaticConfigCache.sensorId == cfg.sensorId &&
+           g_slimeRuntimeStaticConfigCache.serverPort == cfg.serverPort &&
+           g_slimeRuntimeStaticConfigCache.localPort == cfg.localPort &&
+           g_slimeRuntimeStaticConfigCache.discoveryIntervalMs == cfg.discoveryIntervalMs &&
+           g_slimeRuntimeStaticConfigCache.rotationRateHz == cfg.rotationRateHz &&
+           g_slimeRuntimeStaticConfigCache.incomingPacketsPerUpdate == cfg.incomingPacketsPerUpdate &&
+           g_slimeRuntimeStaticConfigCache.magSupportEnabled == cfg.magSupportEnabled &&
+           g_slimeRuntimeStaticConfigCache.magEnabled == cfg.magEnabled &&
+           g_slimeRuntimeStaticConfigCache.signalTelemetryEnabled == cfg.signalTelemetryEnabled &&
+           g_slimeRuntimeStaticConfigCache.temperatureTelemetryEnabled == cfg.temperatureTelemetryEnabled &&
+           g_slimeRuntimeStaticConfigCache.batteryTelemetryEnabled == cfg.batteryTelemetryEnabled &&
+           g_slimeRuntimeStaticConfigCache.telemetryIntervalMs == cfg.telemetryIntervalMs &&
+           g_slimeRuntimeStaticConfigCache.signalTelemetryIntervalMs == cfg.signalTelemetryIntervalMs &&
+           g_slimeRuntimeStaticConfigCache.temperatureTelemetryIntervalMs == cfg.temperatureTelemetryIntervalMs &&
+           g_slimeRuntimeStaticConfigCache.batteryTelemetryIntervalMs == cfg.batteryTelemetryIntervalMs;
+}
+
+static void appSlimeVRRuntimeStaticConfigCapture(const SlimeVROutputRuntimeConfig& cfg) {
+    g_slimeRuntimeStaticConfigCache.valid = true;
+    g_slimeRuntimeStaticConfigCache.enabled = cfg.enabled;
+    g_slimeRuntimeStaticConfigCache.discoveryEnabled = cfg.discoveryEnabled;
+    g_slimeRuntimeStaticConfigCache.manualServerEnabled = cfg.manualServerEnabled;
+    copyAppSlimeVRDeviceName(g_slimeRuntimeStaticConfigCache.deviceName,
+                             sizeof(g_slimeRuntimeStaticConfigCache.deviceName),
+                             cfg.deviceName);
+    g_slimeRuntimeStaticConfigCache.sensorId = cfg.sensorId;
+    g_slimeRuntimeStaticConfigCache.serverPort = cfg.serverPort;
+    g_slimeRuntimeStaticConfigCache.localPort = cfg.localPort;
+    g_slimeRuntimeStaticConfigCache.discoveryIntervalMs = cfg.discoveryIntervalMs;
+    g_slimeRuntimeStaticConfigCache.rotationRateHz = cfg.rotationRateHz;
+    g_slimeRuntimeStaticConfigCache.incomingPacketsPerUpdate = cfg.incomingPacketsPerUpdate;
+    g_slimeRuntimeStaticConfigCache.magSupportEnabled = cfg.magSupportEnabled;
+    g_slimeRuntimeStaticConfigCache.magEnabled = cfg.magEnabled;
+    g_slimeRuntimeStaticConfigCache.signalTelemetryEnabled = cfg.signalTelemetryEnabled;
+    g_slimeRuntimeStaticConfigCache.temperatureTelemetryEnabled = cfg.temperatureTelemetryEnabled;
+    g_slimeRuntimeStaticConfigCache.batteryTelemetryEnabled = cfg.batteryTelemetryEnabled;
+    g_slimeRuntimeStaticConfigCache.telemetryIntervalMs = cfg.telemetryIntervalMs;
+    g_slimeRuntimeStaticConfigCache.signalTelemetryIntervalMs = cfg.signalTelemetryIntervalMs;
+    g_slimeRuntimeStaticConfigCache.temperatureTelemetryIntervalMs = cfg.temperatureTelemetryIntervalMs;
+    g_slimeRuntimeStaticConfigCache.batteryTelemetryIntervalMs = cfg.batteryTelemetryIntervalMs;
+}
+
+static void updateAppSlimeVRRuntimeLiveState() {
+    bool batteryValid = false;
+    float batteryVoltage = 0.0f;
+    float batteryPercentage = 0.0f;
+#if TRACKER_ENABLE_BATTERY_RUNTIME
+    batteryValid = g_batteryRuntime.telemetry(batteryVoltage, batteryPercentage);
+#endif
+    g_slimevrRuntime.updateLiveState(
+        true,
+        g_latestTempC,
+        batteryValid,
+        batteryVoltage,
+        batteryPercentage,
+        g_imuCal.gyroBiasValid
+    );
+}
+
+static void refreshAppSlimeVRRuntimeStaticConfig(uint32_t nowMs, bool force, bool enabled) {
+#if TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS > 0
+    static bool s_slimeRuntimeConfigRefreshValid = false;
+    static uint32_t s_lastSlimeRuntimeConfigRefreshMs = 0;
+    if (!force && s_slimeRuntimeConfigRefreshValid &&
+        static_cast<uint32_t>(nowMs - s_lastSlimeRuntimeConfigRefreshMs) < TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS) {
+        return;
+    }
+    s_slimeRuntimeConfigRefreshValid = true;
+    s_lastSlimeRuntimeConfigRefreshMs = nowMs;
+#else
+    (void)nowMs;
+#endif
+
+    SlimeVROutputRuntimeConfig cfg = makeAppSlimeVRRuntimeConfig(enabled);
+    if (force || !appSlimeVRRuntimeStaticConfigMatches(cfg)) {
+        g_slimevrRuntime.configure(cfg);
+        appSlimeVRRuntimeStaticConfigCapture(cfg);
+    }
+}
+
 static bool copyPreparedOutputSnapshotForSlimeVR(TrackerPreparedOutputSnapshot& out, void* user) {
     (void)user;
     return g_preparedOutput.copy(out);
@@ -403,7 +584,7 @@ static void setupNetworkRuntime() {
     g_wifiManager.configure(makeAppWifiManagerConfig());
     g_slimevrRuntime.begin(g_udpTransport, g_wifiManager, copyPreparedOutputSnapshotForSlimeVR, nullptr);
     const bool slimeAutostart = slimevrAutostartEnabledFromConfig();
-    g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(slimeAutostart));
+    refreshAppSlimeVRRuntimeStaticConfig(millis(), true, slimeAutostart);
 
 #if TRACKER_ENABLE_SERIAL_CONSOLE
     Serial.print("# network_config_loaded_from_nvs=");
@@ -491,10 +672,11 @@ static void setupStatusLedRuntime() {
 #endif
 }
 
-static void updateStatusLedRuntime() {
+static bool updateStatusLedRuntime() {
     const uint32_t nowMs = millis();
     g_statusLedRuntime.setMode(deriveStatusLedMode(), nowMs);
     g_statusLedRuntime.update(nowMs);
+    return true;
 }
 
 static void setStatusLedSensorError() {
@@ -536,41 +718,33 @@ static void setupTapRuntime() {
 #endif
 }
 
-static void updateTapRuntime() {
+static bool updateTapRuntime() {
     g_tapRuntime.update(millis());
+    return true;
 }
 
 #endif // TRACKER_ENABLE_TAP_RUNTIME
 
-static void updateNetworkRuntime() {
+static bool updateNetworkRuntime() {
     const uint32_t nowMs = millis();
 #if TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS > 0
     static bool s_networkRuntimeUpdateValid = false;
     static uint32_t s_lastNetworkRuntimeUpdateMs = 0;
     if (s_networkRuntimeUpdateValid &&
         static_cast<uint32_t>(nowMs - s_lastNetworkRuntimeUpdateMs) < TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS) {
-        return;
+        return false;
     }
     s_networkRuntimeUpdateValid = true;
     s_lastNetworkRuntimeUpdateMs = nowMs;
 #endif
 
     g_wifiManager.update(nowMs);
+    updateAppSlimeVRRuntimeLiveState();
     if (g_slimevrRuntime.enabled()) {
-#if TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS == 0
-        g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(true));
-#else
-        static bool s_slimeRuntimeConfigRefreshValid = false;
-        static uint32_t s_lastSlimeRuntimeConfigRefreshMs = 0;
-        if (!s_slimeRuntimeConfigRefreshValid ||
-            static_cast<uint32_t>(nowMs - s_lastSlimeRuntimeConfigRefreshMs) >= TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS) {
-            s_slimeRuntimeConfigRefreshValid = true;
-            s_lastSlimeRuntimeConfigRefreshMs = nowMs;
-            g_slimevrRuntime.configure(makeAppSlimeVRRuntimeConfig(true));
-        }
-#endif
+        refreshAppSlimeVRRuntimeStaticConfig(nowMs, false, true);
     }
     g_slimevrRuntime.update(nowMs);
+    return true;
 }
 
 static TrackerAppDeps makeTrackerAppDeps() {
@@ -587,14 +761,16 @@ static TrackerAppDeps makeTrackerAppDeps() {
 #if TRACKER_ENABLE_SERIAL_CLI
     deps.runtime.cli = &g_cli;
 #endif
+#if TRACKER_HAS_SERIAL_STREAM_STATE
     deps.runtime.streamState = &g_streamState;
+#endif
     deps.runtime.perf = &g_perf;
     deps.runtime.fifoEvents = &g_fifoEvents;
     deps.runtime.fifoRuntime = &g_fifoRuntime;
-#if TRACKER_ENABLE_STATIC_TEST || TRACKER_ENABLE_BOOT_HEARTBEAT
+#if TRACKER_HAS_STATIC_TEST_STATE
     deps.runtime.staticTestRunner = &g_staticTestRunner;
 #endif
-#if TRACKER_ENABLE_RUNTIME_TEST || TRACKER_ENABLE_BOOT_HEARTBEAT
+#if TRACKER_HAS_RUNTIME_TEST_STATE
     deps.runtime.runtimeTestRunner = &g_runtimeTestRunner;
 #endif
     deps.runtime.magState = &g_magState;
@@ -604,7 +780,7 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.runtime.latestTempC = &g_latestTempC;
 
     deps.callbacks.setupMagRuntimeController = setupMagRuntimeController;
-#if TRACKER_ENABLE_SERIAL_CLI || TRACKER_ENABLE_STATIC_TEST || TRACKER_ENABLE_RUNTIME_TEST
+#if TRACKER_HAS_SERIAL_CLI
     deps.callbacks.setupCommandInterface = setupCommandInterface;
 #endif
     deps.callbacks.setupNetworkRuntime = setupNetworkRuntime;
