@@ -40,7 +40,7 @@ void emitSerialStreamIfNeeded(TrackerSerialStreamState& streamState,
                               const ImuQualityResult& quality,
                               uint32_t nowUs);
 
-void maybePrintBootHeartbeat(Stream& out,
+bool maybePrintBootHeartbeat(Stream& out,
                              const TrackerSerialStreamState& streamState,
                              bool staticTestActive,
                              uint32_t nowMs,

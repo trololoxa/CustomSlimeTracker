@@ -83,7 +83,7 @@ public:
     bool setEnabled(bool enabled);
     bool enabled() const { return config_.enabled; }
     void resetCounters();
-    void update(uint32_t nowMs);
+    bool update(uint32_t nowMs);
     bool sendManualTap(uint8_t value, uint32_t nowMs);
     bool injectPhysicalTaps(uint8_t count, uint32_t nowMs);
     TapRuntimeStatus status() const;

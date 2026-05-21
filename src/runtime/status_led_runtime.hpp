@@ -91,7 +91,7 @@ class StatusLedRuntime {
 public:
     void begin(IStatusLedSink& sink, const StatusLedRuntimeConfig& config = StatusLedRuntimeConfig{});
     void configure(const StatusLedRuntimeConfig& config);
-    void update(uint32_t nowMs);
+    bool update(uint32_t nowMs);
     void setMode(TrackerStatusLedMode mode, uint32_t nowMs);
     void setManualOverride(TrackerStatusLedMode mode, uint32_t nowMs);
     void clearManualOverride(uint32_t nowMs);

@@ -195,6 +195,8 @@ void SlimeVROutputRuntime::resetCounters() {
     heartbeatSent_ = 0;
     sensorInfoSent_ = 0;
     rotationSent_ = 0;
+    rotationSendDue_ = 0;
+    rotationRateLimited_ = 0;
     signalStrengthSent_ = 0;
     temperatureSent_ = 0;
     batterySent_ = 0;
@@ -218,6 +220,11 @@ void SlimeVROutputRuntime::resetCounters() {
     protocolChangeReceived_ = 0;
     unknownPacketsReceived_ = 0;
     sendFailures_ = 0;
+    rotationSendFailures_ = 0;
+    controlSendFailures_ = 0;
+    telemetrySendFailures_ = 0;
+    discoverySendFailures_ = 0;
+    tapTransportSendFailures_ = 0;
     udpBeginFailures_ = 0;
     serverSilenceResets_ = 0;
     wifiLostResets_ = 0;
@@ -334,6 +341,8 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.heartbeatSent = heartbeatSent_;
     s.sensorInfoSent = sensorInfoSent_;
     s.rotationSent = rotationSent_;
+    s.rotationSendDue = rotationSendDue_;
+    s.rotationRateLimited = rotationRateLimited_;
     s.signalStrengthSent = signalStrengthSent_;
     s.temperatureSent = temperatureSent_;
     s.batterySent = batterySent_;
@@ -357,6 +366,11 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.protocolChangeReceived = protocolChangeReceived_;
     s.unknownPacketsReceived = unknownPacketsReceived_;
     s.sendFailures = sendFailures_;
+    s.rotationSendFailures = rotationSendFailures_;
+    s.controlSendFailures = controlSendFailures_;
+    s.telemetrySendFailures = telemetrySendFailures_;
+    s.discoverySendFailures = discoverySendFailures_;
+    s.tapTransportSendFailures = tapTransportSendFailures_;
     s.udpBeginFailures = udpBeginFailures_;
     s.serverSilenceResets = serverSilenceResets_;
     s.wifiLostResets = wifiLostResets_;
@@ -401,6 +415,7 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.lastRotationTimestampUs = lastRotationTimestampUs_;
     s.lastRotationQualityFlags = lastRotationQualityFlags_;
     s.lastRotationConfidence = lastRotationConfidence_;
+    s.lastRotationSnapshotAgeUs = lastRotationSnapshotAgeUs_;
     return s;
 }
 
@@ -431,6 +446,7 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastRotationTimestampUs_ = 0;
     lastRotationQualityFlags_ = 0;
     lastRotationConfidence_ = 0.0f;
+    lastRotationSnapshotAgeUs_ = 0;
     lastPingId_ = 0;
     lastServerFeatureFlags_ = 0;
     lastSetConfigSensorId_ = 0;
@@ -539,7 +555,7 @@ void SlimeVROutputRuntime::handlePingPong(const uint8_t* data, size_t len) {
     const SlimeVRPacketWriteResult packet = writer_.writePingPong(packetBuffer_, sizeof(packetBuffer_), pingId);
     ++pingReceived_;
     lastPingId_ = pingId;
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
         ++pongSent_;
     }
 }
@@ -613,7 +629,7 @@ void SlimeVROutputRuntime::sendAckConfigChange(uint16_t configType) {
         sensorId_,
         configType
     );
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
         ++ackConfigSent_;
     }
 }
@@ -632,7 +648,7 @@ void SlimeVROutputRuntime::sendHandshakeTo(const UdpEndpoint& endpoint, uint32_t
     SlimeVRHandshakeInfo info;
     makeHandshakeInfo(info);
     const SlimeVRPacketWriteResult packet = writer_.writeHandshake(packetBuffer_, sizeof(packetBuffer_), info);
-    if (sendPacket(packet, endpoint)) {
+    if (sendPacket(packet, endpoint, PacketPurpose::Discovery)) {
         ++handshakesSent_;
         lastHandshakeMs_ = nowMs;
     }
@@ -645,7 +661,7 @@ void SlimeVROutputRuntime::sendSensorInfo(uint32_t nowMs) {
     info.sensorConfig = sensorConfigFlags();
     info.hasCompletedRestCalibration = hasCompletedRestCalibration_;
     const SlimeVRPacketWriteResult packet = writer_.writeSensorInfo(packetBuffer_, sizeof(packetBuffer_), info);
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
         ++sensorInfoSent_;
         lastSensorInfoMs_ = nowMs;
     }
@@ -654,7 +670,7 @@ void SlimeVROutputRuntime::sendSensorInfo(uint32_t nowMs) {
 void SlimeVROutputRuntime::sendHeartbeat(uint32_t nowMs) {
     if (!serverEndpoint_.valid()) return;
     const SlimeVRPacketWriteResult packet = writer_.writeHeartbeat(packetBuffer_, sizeof(packetBuffer_));
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
         ++heartbeatSent_;
         lastHeartbeatMs_ = nowMs;
     }
@@ -697,7 +713,7 @@ bool SlimeVROutputRuntime::sendTap(uint8_t value) {
         sensorId_,
         value
     );
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Tap)) {
         ++tapSent_;
         lastTapValue_ = value;
         return true;
@@ -717,7 +733,7 @@ void SlimeVROutputRuntime::sendSignalStrength(uint32_t nowMs) {
         sensorId_,
         signal
     );
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
         ++signalStrengthSent_;
         lastSignalStrength_ = signal;
         lastRssiDbm_ = ws.rssiDbm;
@@ -733,7 +749,7 @@ void SlimeVROutputRuntime::sendTemperature(uint32_t nowMs) {
         sensorId_,
         latestTemperatureC_
     );
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
         ++temperatureSent_;
     }
 }
@@ -748,7 +764,7 @@ void SlimeVROutputRuntime::sendBatteryLevel(uint32_t nowMs) {
         latestBatteryVoltage_,
         latestBatteryPercentage_
     );
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
         ++batterySent_;
         return;
     }
@@ -764,7 +780,7 @@ void SlimeVROutputRuntime::sendMagnetometerAccuracy(uint32_t nowMs) {
         sensorId_,
         0.0f
     );
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
         ++magnetometerAccuracySent_;
     }
 }
@@ -800,8 +816,12 @@ uint8_t SlimeVROutputRuntime::signalStrengthFromRssi(int32_t rssiDbm) {
 void SlimeVROutputRuntime::maybeSendRotation(uint32_t nowMs) {
     if (!serverEndpoint_.valid()) return;
     if (!copyOutputSnapshot_) return;
-    if (lastRotationAttemptMs_ != 0 && nowMs - lastRotationAttemptMs_ < rotationPeriodMs()) return;
+    if (lastRotationAttemptMs_ != 0 && nowMs - lastRotationAttemptMs_ < rotationPeriodMs()) {
+        ++rotationRateLimited_;
+        return;
+    }
     lastRotationAttemptMs_ = nowMs;
+    ++rotationSendDue_;
 
     TrackerPreparedOutputSnapshot snapshot;
     if (!copyOutputSnapshot_(snapshot, copyOutputSnapshotUser_) || !snapshot.valid) {
@@ -828,7 +848,7 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         SlimeVRRotationDataType::Normal
     );
 
-    if (sendPacket(packet, serverEndpoint_)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Rotation)) {
         ++rotationSent_;
         lastRotationMs_ = nowMs;
         lastRotationSnapshotSequence_ = snapshot.sequence;
@@ -836,6 +856,9 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         lastRotationTimestampUs_ = snapshot.timestampUs;
         lastRotationQualityFlags_ = snapshot.qualityFlags;
         lastRotationConfidence_ = snapshot.confidence;
+        const uint64_t nowUs = static_cast<uint64_t>(nowMs) * 1000ULL;
+        const uint64_t ageUs = nowUs >= snapshot.timestampUs ? (nowUs - snapshot.timestampUs) : 0ULL;
+        lastRotationSnapshotAgeUs_ = ageUs > 0xffffffffULL ? 0xffffffffUL : static_cast<uint32_t>(ageUs);
     }
 }
 
@@ -853,14 +876,37 @@ void SlimeVROutputRuntime::makeHandshakeInfo(SlimeVRHandshakeInfo& info) const {
     }
 }
 
-bool SlimeVROutputRuntime::sendPacket(const SlimeVRPacketWriteResult& packet, const UdpEndpoint& endpoint) {
+void SlimeVROutputRuntime::recordSendFailure(PacketPurpose purpose) {
+    ++sendFailures_;
+    switch (purpose) {
+        case PacketPurpose::Discovery:
+            ++discoverySendFailures_;
+            break;
+        case PacketPurpose::Control:
+            ++controlSendFailures_;
+            break;
+        case PacketPurpose::Telemetry:
+            ++telemetrySendFailures_;
+            break;
+        case PacketPurpose::Rotation:
+            ++rotationSendFailures_;
+            break;
+        case PacketPurpose::Tap:
+            ++tapTransportSendFailures_;
+            break;
+    }
+}
+
+bool SlimeVROutputRuntime::sendPacket(const SlimeVRPacketWriteResult& packet,
+                                      const UdpEndpoint& endpoint,
+                                      PacketPurpose purpose) {
     if (!udp_ || !packet.ok || packet.size == 0) {
-        ++sendFailures_;
+        recordSendFailure(purpose);
         ++consecutiveSendFailures_;
         return false;
     }
     if (!udp_->send(endpoint, packetBuffer_, packet.size)) {
-        ++sendFailures_;
+        recordSendFailure(purpose);
         ++consecutiveSendFailures_;
         if (consecutiveSendFailures_ >= TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD) {
             udpReopenRequested_ = true;

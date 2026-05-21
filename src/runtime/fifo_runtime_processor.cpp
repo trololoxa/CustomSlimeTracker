@@ -1,5 +1,7 @@
 #include "runtime/fifo_runtime_processor.hpp"
 
+#include "build_config/profile_contract.hpp"
+
 namespace tracker {
 
 void FifoInterruptEventSource::begin(volatile uint32_t* irqCount,
@@ -35,14 +37,18 @@ bool FifoInterruptEventSource::consume(uint32_t timeoutMs, uint16_t watermarkWor
             const uint32_t delta = current - lastHandledIrqCount_;
             if (delta > 1u) missedIrqCount_ += delta - 1u;
             lastHandledIrqCount_ = current;
+#if TRACKER_HAS_HOTPATH_PERF
             if (perf_ != nullptr) perf_->fifoIrqEvents++;
+#endif
             return true;
         }
 
         if (timeoutMs == 0u) {
             const uint32_t nowUs = micros();
             if (static_cast<uint32_t>(nowUs - lastNonblockingStatusPollUs_) < nonblockingStatusPollIntervalUs_) {
+#if TRACKER_HAS_HOTPATH_PERF
                 if (perf_ != nullptr) perf_->fifoEmptyPolls++;
+#endif
                 return false;
             }
             lastNonblockingStatusPollUs_ = nowUs;
@@ -56,17 +62,26 @@ bool FifoInterruptEventSource::consume(uint32_t timeoutMs, uint16_t watermarkWor
     // during non-blocking runtime polling. This avoids an SPI transaction on every
     // empty loop iteration while still recovering from a missed INT1 edge.
     Lsm6dsvFifoReader::Status st;
+#if TRACKER_HAS_HOTPATH_PERF
     if (perf_ != nullptr) perf_->fifoFallbackStatusPolls++;
+#endif
     if (fifo_->readStatus(st)) {
         if (st.unreadWords >= watermarkWords || st.overrun || st.full || st.overrunLatched) {
             fallbackEvents_++;
+#if TRACKER_HAS_HOTPATH_PERF
             if (perf_ != nullptr) perf_->fifoFallbackEvents++;
+#endif
             return true;
         }
     }
 
-    if (timeoutMs > 0u) waitTimeouts_++;
-    else if (perf_ != nullptr) perf_->fifoEmptyPolls++;
+    if (timeoutMs > 0u) {
+        waitTimeouts_++;
+    } else {
+#if TRACKER_HAS_HOTPATH_PERF
+        if (perf_ != nullptr) perf_->fifoEmptyPolls++;
+#endif
+    }
     return false;
 }
 
@@ -104,7 +119,9 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
     if (!ready()) return false;
     if (!eventSource_->consume(0, watermarkWords)) return false;
 
+#if TRACKER_HAS_HOTPATH_PERF
     const uint32_t fifoProcessStartUs = micros();
+#endif
     const uint8_t rounds = maxDrainRoundsPerEvent > 0u ? maxDrainRoundsPerEvent : 1u;
     const uint16_t maxWords = maxWordsPerDrain > 0u ? maxWordsPerDrain : 1u;
 
@@ -127,7 +144,9 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
 
         if (!ok) {
             out.println("# ERR FIFO drain failed");
+#if TRACKER_HAS_HOTPATH_PERF
             recordElapsed(fifoProcessStartUs);
+#endif
             return true;
         }
 
@@ -140,14 +159,18 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
                 // Remaining entries were captured before reset and may still carry
                 // latched FIFO_FULL/OVR flags. Drop them instead of causing a
                 // recovery storm from one hardware event.
+#if TRACKER_HAS_HOTPATH_PERF
                 recordElapsed(fifoProcessStartUs);
+#endif
                 return true;
             }
             checkFifoStatsDelta = false;
         }
     }
 
+#if TRACKER_HAS_HOTPATH_PERF
     recordElapsed(fifoProcessStartUs);
+#endif
     return true;
 }
 
@@ -164,7 +187,13 @@ bool FifoRuntimeProcessor::ready() const {
 }
 
 void FifoRuntimeProcessor::recordElapsed(uint32_t startUs) {
-    recordTimeCallback_(micros() - startUs, callbackUser_);
+#if TRACKER_HAS_HOTPATH_PERF
+    if (recordTimeCallback_ != nullptr) {
+        recordTimeCallback_(micros() - startUs, callbackUser_);
+    }
+#else
+    (void)startUs;
+#endif
 }
 
 } // namespace tracker

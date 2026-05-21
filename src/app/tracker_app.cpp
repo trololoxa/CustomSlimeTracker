@@ -166,7 +166,7 @@ void TrackerApp::loop() {
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
 #endif
-    maybePrintBootHeartbeat(
+    const bool heartbeatPrinted = maybePrintBootHeartbeat(
         *deps_.runtime.out,
         *deps_.runtime.streamState,
         deps_.runtime.staticTestRunner->active() || deps_.runtime.runtimeTestRunner->active(),
@@ -179,7 +179,7 @@ void TrackerApp::loop() {
     );
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.heartbeatUs = micros() - sectionStartUs;
-    timing.heartbeatWorked = true;
+    timing.heartbeatWorked = heartbeatPrinted;
 #endif
 #endif
 

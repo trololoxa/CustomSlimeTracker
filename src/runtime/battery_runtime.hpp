@@ -46,7 +46,7 @@ public:
     void begin(BatteryAdcReadMillivoltsFn readMillivolts, void* user = nullptr);
     void configure(const BatteryRuntimeConfig& config);
     void reset();
-    void update(uint32_t nowMs);
+    bool update(uint32_t nowMs);
 
     BatteryRuntimeStatus status() const { return status_; }
     bool telemetry(float& voltage, float& percentage) const;

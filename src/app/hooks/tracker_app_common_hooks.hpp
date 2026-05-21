@@ -4,11 +4,15 @@
 // This file is included by app/tracker_app_hooks.hpp after shared app dependencies.
 
 static void recordFifoProcessTime(uint32_t dtUs) {
+#if TRACKER_HAS_HOTPATH_PERF
     g_perf.fifoProcessCalls++;
     g_perf.fifoProcessSumUs += dtUs;
     if (dtUs > g_perf.fifoProcessMaxUs) {
         g_perf.fifoProcessMaxUs = dtUs;
     }
+#else
+    (void)dtUs;
+#endif
 }
 
 static void resetLogCountersHook(void* user) {

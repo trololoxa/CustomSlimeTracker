@@ -41,15 +41,15 @@
   #endif
 #endif
 
-// 0 means the app calls Wi-Fi/SlimeVR runtime every loop. Slim uses a small
-// scheduler interval to avoid spinning the network state machine thousands of
-// times per second while still keeping latency well below its RotationData
-// period.
+// Network/SlimeVR update budget. This does not affect IMU/FIFO/AHRS cadence;
+// it only avoids spinning Wi-Fi/UDP state machines on every high-rate loop.
+// The values remain well below RotationData periods (100 Hz = 10 ms, Slim
+// default 50 Hz = 20 ms) and keep ping/config handling latency small.
 #ifndef TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS 5UL
   #else
-    #define TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS 0UL
+    #define TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS 2UL
   #endif
 #endif
 
@@ -84,6 +84,20 @@
     #define TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS 250UL
   #else
     #define TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS 1000UL
+  #endif
+#endif
+
+
+// Live telemetry state is cheaper than a full runtime configure(), but it still
+// reads battery runtime state and may request SensorInfo refreshes when rest
+// calibration changes. Keep Debug immediate, and throttle Product/Slim.
+#ifndef TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS
+  #if TRACKER_BUILD_IS_DEBUG
+    #define TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS 0UL
+  #elif TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS 1000UL
+  #else
+    #define TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS 5000UL
   #endif
 #endif
 
@@ -157,5 +171,9 @@
 #endif
 
 #ifndef TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD
-#define TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD 5UL
+  #if TRACKER_BUILD_IS_SLIM
+    #define TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD 12UL
+  #else
+    #define TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD 20UL
+  #endif
 #endif

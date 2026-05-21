@@ -145,22 +145,25 @@ TrackerStatusLedMode StatusLedRuntime::effectiveMode(uint32_t nowMs) const {
     return requestedMode_;
 }
 
-void StatusLedRuntime::update(uint32_t nowMs) {
+bool StatusLedRuntime::update(uint32_t nowMs) {
     if (!configured_) {
+        const uint32_t before = writes_;
         writeOutput(false);
         lastUpdateMs_ = nowMs;
-        return;
+        return writes_ != before;
     }
 
     if (lastUpdateMs_ != 0 && nowMs - lastUpdateMs_ < config_.updateIntervalMs) {
-        return;
+        return false;
     }
     lastUpdateMs_ = nowMs;
 
+    const uint32_t before = writes_;
     const TrackerStatusLedMode mode = effectiveMode(nowMs);
     const StatusLedPattern pattern = patternFor(mode, config_);
     const uint32_t elapsed = nowMs - modeSinceMs_;
     writeOutput(patternOutputAt(pattern, elapsed));
+    return writes_ != before;
 }
 
 void StatusLedRuntime::resetCounters() {

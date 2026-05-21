@@ -166,35 +166,37 @@ void TapRuntimeController::maybeVerifyHardware(uint32_t nowMs) {
     }
 }
 
-void TapRuntimeController::update(uint32_t nowMs) {
-    if (!config_.enabled || !lsm_) return;
+bool TapRuntimeController::update(uint32_t nowMs) {
+    if (!config_.enabled || !lsm_) return false;
 
-    (void)flushAccumulator(nowMs);
+    bool worked = flushAccumulator(nowMs);
 
     if (config_.pollIntervalMs > 0 && nextPollMs_ != 0 && !timeReached(nowMs, nextPollMs_)) {
-        return;
+        return worked;
     }
     nextPollMs_ = nowMs + (config_.pollIntervalMs == 0 ? 1u : config_.pollIntervalMs);
 
     if (!status_.hardwareConfigured) {
-        (void)configureHardware();
-        if (!status_.hardwareConfigured) return;
+        worked = configureHardware() || worked;
+        if (!status_.hardwareConfigured) return worked;
     }
 
     Lsm6dsv::TapSource source;
     if (!lsm_->readTapSource(source)) {
         status_.lastReadOk = false;
         ++status_.readFailures;
-        return;
+        return true;
     }
+    worked = true;
     status_.lastReadOk = true;
     status_.lastRawSource = source.raw;
 
     if (source.tapDetected || source.singleTap || source.doubleTap) {
-        (void)handleSource(source, nowMs, false);
+        worked = handleSource(source, nowMs, false) || worked;
     }
 
     maybeVerifyHardware(nowMs);
+    return worked;
 }
 
 bool TapRuntimeController::flushAccumulator(uint32_t nowMs) {

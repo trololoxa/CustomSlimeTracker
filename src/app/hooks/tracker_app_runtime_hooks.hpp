@@ -377,8 +377,7 @@ static void setupBatteryRuntime() {
 }
 
 static bool updateBatteryRuntime() {
-    g_batteryRuntime.update(millis());
-    return true;
+    return g_batteryRuntime.update(millis());
 }
 
 #endif // TRACKER_ENABLE_BATTERY_RUNTIME
@@ -526,7 +525,20 @@ static void appSlimeVRRuntimeStaticConfigCapture(const SlimeVROutputRuntimeConfi
     g_slimeRuntimeStaticConfigCache.batteryTelemetryIntervalMs = cfg.batteryTelemetryIntervalMs;
 }
 
-static void updateAppSlimeVRRuntimeLiveState() {
+static void updateAppSlimeVRRuntimeLiveState(uint32_t nowMs, bool force = false) {
+#if TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS > 0
+    static bool s_liveStateRefreshValid = false;
+    static uint32_t s_lastLiveStateRefreshMs = 0;
+    if (!force && s_liveStateRefreshValid &&
+        static_cast<uint32_t>(nowMs - s_lastLiveStateRefreshMs) < TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS) {
+        return;
+    }
+    s_liveStateRefreshValid = true;
+    s_lastLiveStateRefreshMs = nowMs;
+#else
+    (void)nowMs;
+#endif
+
     bool batteryValid = false;
     float batteryVoltage = 0.0f;
     float batteryPercentage = 0.0f;
@@ -584,7 +596,9 @@ static void setupNetworkRuntime() {
     g_wifiManager.configure(makeAppWifiManagerConfig());
     g_slimevrRuntime.begin(g_udpTransport, g_wifiManager, copyPreparedOutputSnapshotForSlimeVR, nullptr);
     const bool slimeAutostart = slimevrAutostartEnabledFromConfig();
-    refreshAppSlimeVRRuntimeStaticConfig(millis(), true, slimeAutostart);
+    const uint32_t nowMs = millis();
+    refreshAppSlimeVRRuntimeStaticConfig(nowMs, true, slimeAutostart);
+    updateAppSlimeVRRuntimeLiveState(nowMs, true);
 
 #if TRACKER_ENABLE_SERIAL_CONSOLE
     Serial.print("# network_config_loaded_from_nvs=");
@@ -675,8 +689,7 @@ static void setupStatusLedRuntime() {
 static bool updateStatusLedRuntime() {
     const uint32_t nowMs = millis();
     g_statusLedRuntime.setMode(deriveStatusLedMode(), nowMs);
-    g_statusLedRuntime.update(nowMs);
-    return true;
+    return g_statusLedRuntime.update(nowMs);
 }
 
 static void setStatusLedSensorError() {
@@ -719,8 +732,7 @@ static void setupTapRuntime() {
 }
 
 static bool updateTapRuntime() {
-    g_tapRuntime.update(millis());
-    return true;
+    return g_tapRuntime.update(millis());
 }
 
 #endif // TRACKER_ENABLE_TAP_RUNTIME
@@ -739,7 +751,7 @@ static bool updateNetworkRuntime() {
 #endif
 
     g_wifiManager.update(nowMs);
-    updateAppSlimeVRRuntimeLiveState();
+    updateAppSlimeVRRuntimeLiveState(nowMs);
     if (g_slimevrRuntime.enabled()) {
         refreshAppSlimeVRRuntimeStaticConfig(nowMs, false, true);
     }

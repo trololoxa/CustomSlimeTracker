@@ -87,6 +87,8 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t heartbeatSent = 0;
     uint32_t sensorInfoSent = 0;
     uint32_t rotationSent = 0;
+    uint32_t rotationSendDue = 0;
+    uint32_t rotationRateLimited = 0;
     uint32_t signalStrengthSent = 0;
     uint32_t temperatureSent = 0;
     uint32_t magnetometerAccuracySent = 0;
@@ -108,6 +110,11 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t protocolChangeReceived = 0;
     uint32_t unknownPacketsReceived = 0;
     uint32_t sendFailures = 0;
+    uint32_t rotationSendFailures = 0;
+    uint32_t controlSendFailures = 0;
+    uint32_t telemetrySendFailures = 0;
+    uint32_t discoverySendFailures = 0;
+    uint32_t tapTransportSendFailures = 0;
     uint32_t udpBeginFailures = 0;
     uint32_t serverSilenceResets = 0;
     uint32_t wifiLostResets = 0;
@@ -155,6 +162,7 @@ struct SlimeVROutputRuntimeStatus {
     uint64_t lastRotationTimestampUs = 0;
     uint32_t lastRotationQualityFlags = 0;
     float lastRotationConfidence = 0.0f;
+    uint32_t lastRotationSnapshotAgeUs = 0;
 };
 
 class SlimeVROutputRuntime {
@@ -205,7 +213,16 @@ private:
     void maybeSendRotation(uint32_t nowMs);
     void sendRotation(const TrackerPreparedOutputSnapshot& snapshot, uint32_t nowMs);
     void makeHandshakeInfo(SlimeVRHandshakeInfo& info) const;
-    bool sendPacket(const SlimeVRPacketWriteResult& packet, const UdpEndpoint& endpoint);
+    enum class PacketPurpose : uint8_t {
+        Discovery,
+        Control,
+        Telemetry,
+        Rotation,
+        Tap,
+    };
+
+    bool sendPacket(const SlimeVRPacketWriteResult& packet, const UdpEndpoint& endpoint, PacketPurpose purpose);
+    void recordSendFailure(PacketPurpose purpose);
     uint32_t rotationPeriodMs() const;
     uint16_t sensorConfigFlags() const;
     static uint8_t accuracyFromConfidence(float confidence);
@@ -268,6 +285,8 @@ private:
     uint32_t heartbeatSent_ = 0;
     uint32_t sensorInfoSent_ = 0;
     uint32_t rotationSent_ = 0;
+    uint32_t rotationSendDue_ = 0;
+    uint32_t rotationRateLimited_ = 0;
     uint32_t signalStrengthSent_ = 0;
     uint32_t temperatureSent_ = 0;
     uint32_t batterySent_ = 0;
@@ -291,6 +310,11 @@ private:
     uint32_t protocolChangeReceived_ = 0;
     uint32_t unknownPacketsReceived_ = 0;
     uint32_t sendFailures_ = 0;
+    uint32_t rotationSendFailures_ = 0;
+    uint32_t controlSendFailures_ = 0;
+    uint32_t telemetrySendFailures_ = 0;
+    uint32_t discoverySendFailures_ = 0;
+    uint32_t tapTransportSendFailures_ = 0;
     uint32_t udpBeginFailures_ = 0;
     uint32_t serverSilenceResets_ = 0;
     uint32_t wifiLostResets_ = 0;
@@ -316,6 +340,7 @@ private:
     uint64_t lastRotationTimestampUs_ = 0;
     uint32_t lastRotationQualityFlags_ = 0;
     float lastRotationConfidence_ = 0.0f;
+    uint32_t lastRotationSnapshotAgeUs_ = 0;
     uint32_t nextUdpBeginRetryMs_ = 0;
     uint32_t serverFoundSendGraceUntilMs_ = 0;
 };

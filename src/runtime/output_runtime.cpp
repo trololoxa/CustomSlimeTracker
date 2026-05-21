@@ -147,7 +147,7 @@ void emitSerialStreamIfNeeded(TrackerSerialStreamState& streamState,
 #endif
 }
 
-void maybePrintBootHeartbeat(Stream& out,
+bool maybePrintBootHeartbeat(Stream& out,
                                     const TrackerSerialStreamState& streamState,
                                     bool staticTestActive,
                                     uint32_t nowMs,
@@ -166,12 +166,12 @@ void maybePrintBootHeartbeat(Stream& out,
     (void)fifoIntCount;
     (void)latestTempC;
     (void)magSamples;
-    return;
+    return false;
 #else
-    if (streamState.mode != TrackerStreamMode::Heartbeat) return;
-    if (staticTestActive) return;
+    if (streamState.mode != TrackerStreamMode::Heartbeat) return false;
+    if (staticTestActive) return false;
 
-    if (nowMs - lastHeartbeatMs < 60000UL) return;
+    if (nowMs - lastHeartbeatMs < 60000UL) return false;
     lastHeartbeatMs = nowMs;
 
     out.print("# alive uptime_s="); out.print(nowMs / 1000UL);
@@ -180,6 +180,7 @@ void maybePrintBootHeartbeat(Stream& out,
     out.print(" temp_c="); out.print(latestTempC, 2);
     out.print(" mag="); out.print(magSamples);
     out.print(" stream="); out.println("heartbeat");
+    return true;
 #endif
 }
 

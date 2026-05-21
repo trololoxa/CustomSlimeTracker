@@ -71,12 +71,12 @@ void BatteryRuntime::reset() {
     startupSamplesRemaining_ = config_.startupSamples;
 }
 
-void BatteryRuntime::update(uint32_t nowMs) {
+bool BatteryRuntime::update(uint32_t nowMs) {
     status_.enabled = config_.enabled;
     status_.configured = config_.enabled && readMillivolts_ != nullptr && config_.adcPin >= 0;
     status_.adcPin = config_.adcPin;
-    if (!status_.configured) return;
-    if (!shouldSample(nowMs)) return;
+    if (!status_.configured) return false;
+    if (!shouldSample(nowMs)) return false;
 
     uint16_t adcMv = 0;
     const bool ok = readMillivolts_(adcMv, readUser_);
@@ -93,7 +93,7 @@ void BatteryRuntime::update(uint32_t nowMs) {
             status_.voltage = 0.0f;
             status_.percentage = 0.0f;
         }
-        return;
+        return true;
     }
 
     const float batteryVoltage = batteryVoltageFromAdcMillivolts(
@@ -114,12 +114,12 @@ void BatteryRuntime::update(uint32_t nowMs) {
         filteredVoltage_ = 0.0f;
         status_.voltage = 0.0f;
         status_.percentage = 0.0f;
-        return;
+        return true;
     }
 
     if (batteryVoltage < config_.presentVoltageMin) {
         applyNoBatterySample(nowMs, adcMv, batteryVoltage);
-        return;
+        return true;
     }
 
     if (status_.filteredValid && config_.maxFilterStepVoltage > 0.0f &&
@@ -132,10 +132,11 @@ void BatteryRuntime::update(uint32_t nowMs) {
         status_.present = true;
         // Keep the previous filtered voltage/percentage. A real 1S battery
         // cannot jump by hundreds of millivolts between sparse samples.
-        return;
+        return true;
     }
 
     applySample(nowMs, adcMv, batteryVoltage);
+    return true;
 }
 
 bool BatteryRuntime::telemetry(float& voltage, float& percentage) const {

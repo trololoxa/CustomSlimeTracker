@@ -1,5 +1,7 @@
 #include "runtime/imu_sample_pipeline.hpp"
 
+#include "build_config/profile_contract.hpp"
+
 namespace tracker {
 
 void imuPipelineUpdateLatestTemperature(ImuSamplePipelineDeps& deps) {
@@ -33,6 +35,7 @@ Lsm6dsv::Sample imuPipelineMakeCalibratedSample(const ImuSamplePipelineDeps& dep
 }
 
 void imuPipelineRecordSampleProcessTime(ImuSamplePipelineDeps& deps, uint32_t dtUs) {
+#if TRACKER_HAS_HOTPATH_PERF
     deps.perf.sampleProcessCalls++;
     deps.perf.sampleProcessSumUs += dtUs;
     if (dtUs > deps.perf.sampleProcessMaxUs) {
@@ -42,8 +45,10 @@ void imuPipelineRecordSampleProcessTime(ImuSamplePipelineDeps& deps, uint32_t dt
     if (deps.staticTestRunner != nullptr) {
         deps.staticTestRunner->recordSampleProcessTime(dtUs);
     }
+#endif
 #else
     (void)deps;
+    (void)dtUs;
 #endif
 }
 
@@ -99,7 +104,9 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
 FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
                                                     const Lsm6dsv::RawSample& raw,
                                                     bool checkFifoStatsDelta) {
+#if TRACKER_HAS_HOTPATH_PERF
     const uint32_t sampleProcessStartUs = micros();
+#endif
 
     imuPipelineUpdateLatestTemperature(deps);
 
@@ -141,8 +148,10 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
             deps.callbacks.maybeRecoverFifo(quality, raw, deps.callbacks.user);
         }
 
+#if TRACKER_HAS_HOTPATH_PERF
         const uint32_t processUs = micros() - sampleProcessStartUs;
         imuPipelineRecordSampleProcessTime(deps, processUs);
+#endif
         return FifoRuntimeSampleResult::FifoRecovered;
     }
 
@@ -170,8 +179,10 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
         deps.callbacks.updateTrackingRecoveryState(quality, deps.callbacks.user);
     }
 
+#if TRACKER_HAS_HOTPATH_PERF
     const uint32_t processUs = micros() - sampleProcessStartUs;
     imuPipelineRecordSampleProcessTime(deps, processUs);
+#endif
     return FifoRuntimeSampleResult::Continue;
 }
 
