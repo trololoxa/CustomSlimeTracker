@@ -291,14 +291,28 @@ static bool appBatteryReadOneMillivolts(uint16_t& outMillivolts) {
 static bool appBatteryReadMillivolts(uint16_t& outMillivolts, void* user) {
     (void)user;
 #if TRACKER_ENABLE_BATTERY_RUNTIME
-    constexpr uint8_t kMaxReads = 9;
+    constexpr uint8_t kMaxReads = 128;
     constexpr uint8_t kConfiguredReads =
         TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT < 1 ? 1 :
         (TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT > kMaxReads ? kMaxReads : TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT);
+    constexpr uint8_t kDiscardReadsRaw =
+        TRACKER_BATTERY_ADC_DISCARD_COUNT > 8 ? 8 : TRACKER_BATTERY_ADC_DISCARD_COUNT;
+    constexpr uint8_t kDiscardReads = kConfiguredReads <= 1 ? 0 :
+        (kDiscardReadsRaw >= kConfiguredReads ? static_cast<uint8_t>(kConfiguredReads - 1) : kDiscardReadsRaw);
+
+    // High-value divider without a hardware capacitor: throw away the first
+    // few conversions after the sparse wake-up read, then use a trimmed mean
+    // of the remaining burst. This keeps the long-term EMA from chasing SAR
+    // settling noise or one-off RF/USB spikes.
+    for (uint8_t i = 0; i < kDiscardReads; ++i) {
+        uint16_t ignored = 0;
+        (void)appBatteryReadOneMillivolts(ignored);
+    }
 
     uint16_t reads[kMaxReads] = {};
     uint8_t valid = 0;
-    for (uint8_t i = 0; i < kConfiguredReads; ++i) {
+    const uint8_t readsToKeep = static_cast<uint8_t>(kConfiguredReads - kDiscardReads);
+    for (uint8_t i = 0; i < readsToKeep; ++i) {
         uint16_t mv = 0;
         if (appBatteryReadOneMillivolts(mv)) {
             reads[valid++] = mv;
@@ -308,13 +322,18 @@ static bool appBatteryReadMillivolts(uint16_t& outMillivolts, void* user) {
 
     appBatterySortSmall(reads, valid);
 
-    // With the default three ADC1 reads, use the median. With larger override
-    // values, trim one high/low tail and average the stable center.
-    uint8_t begin = 0;
-    uint8_t end = valid;
-    if (valid >= 3) {
-        begin = 1;
-        end = valid - 1;
+    uint8_t trim = 0;
+    if (valid >= 16) {
+        trim = valid / 8; // discard roughly 12.5% from each tail
+    } else if (valid >= 5) {
+        trim = 1;
+    }
+
+    uint8_t begin = trim;
+    uint8_t end = static_cast<uint8_t>(valid - trim);
+    if (begin >= end) {
+        begin = 0;
+        end = valid;
     }
 
     uint32_t sum = 0;

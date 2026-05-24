@@ -193,12 +193,21 @@
 #define TRACKER_BATTERY_ADC_STARTUP_SAMPLES 2
 #endif
 
+// Battery ADC noise filtering. The default RC1 divider is 180 kOhm /
+// 180 kOhm and has no hardware capacitor, so the ADC input is intentionally
+// sampled sparsely but in a wider burst. The first few conversions are thrown
+// away to let the SAR sampling path settle, then the sorted burst is trimmed
+// before the runtime EMA filter is applied.
 #ifndef TRACKER_BATTERY_ADC_EMA_ALPHA
-#define TRACKER_BATTERY_ADC_EMA_ALPHA 0.20f
+#define TRACKER_BATTERY_ADC_EMA_ALPHA 0.12f
 #endif
 
 #ifndef TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT
-#define TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT 3
+#define TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT 64
+#endif
+
+#ifndef TRACKER_BATTERY_ADC_DISCARD_COUNT
+#define TRACKER_BATTERY_ADC_DISCARD_COUNT 4
 #endif
 
 #ifndef TRACKER_BATTERY_ADC_MAX_MV

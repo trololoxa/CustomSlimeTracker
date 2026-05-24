@@ -53,6 +53,9 @@ void printRuntimeBuildConfig(Stream& out) {
     out.print("slime_temperature_telemetry_interval_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS);
     out.print("slime_battery_telemetry_interval_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS);
     out.print("battery_adc_sample_interval_ms: "); out.println((uint32_t)TRACKER_BATTERY_ADC_SAMPLE_INTERVAL_MS);
+    out.print("battery_adc_oversample_count: "); out.println((uint32_t)TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT);
+    out.print("battery_adc_discard_count: "); out.println((uint32_t)TRACKER_BATTERY_ADC_DISCARD_COUNT);
+    out.print("battery_adc_ema_alpha: "); out.println((float)TRACKER_BATTERY_ADC_EMA_ALPHA, 3);
     out.print("tap_poll_interval_ms: "); out.println((uint32_t)TRACKER_TAP_POLL_INTERVAL_MS);
     out.print("cli_bytes_per_loop: "); out.println((uint32_t)TRACKER_CLI_BYTES_PER_LOOP);
     out.print("cli_second_poll_enabled: "); out.println(TRACKER_CLI_SECOND_POLL_ENABLED ? "yes" : "no");

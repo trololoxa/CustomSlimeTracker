@@ -28,6 +28,7 @@ void printBatteryStatus(Stream& out, const BatteryRuntime& battery) {
 #endif
     out.print("sample_interval_ms="); out.println((uint32_t)TRACKER_BATTERY_ADC_SAMPLE_INTERVAL_MS);
     out.print("oversample_count="); out.println((uint32_t)TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT);
+    out.print("discard_count="); out.println((uint32_t)TRACKER_BATTERY_ADC_DISCARD_COUNT);
     out.print("ema_alpha="); out.println((float)TRACKER_BATTERY_ADC_EMA_ALPHA, 3);
     out.print("max_filter_step_v="); out.println((float)TRACKER_BATTERY_MAX_FILTER_STEP_V, 3);
     out.print("adc_max_mv="); out.println((uint32_t)TRACKER_BATTERY_ADC_MAX_MV);
