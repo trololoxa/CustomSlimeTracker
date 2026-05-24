@@ -162,6 +162,9 @@ static void setupRuntimeTestRunner() {
     deps.quality = &g_quality;
     deps.wifi = &g_wifiManager;
     deps.slimevr = &g_slimevrRuntime;
+#if TRACKER_ENABLE_BATTERY_RUNTIME
+    deps.battery = &g_batteryRuntime;
+#endif
     deps.trackingState = &g_trackingState;
     deps.runtimeSamples = &g_runtimeSamples;
     deps.latestTempC = &g_latestTempC;

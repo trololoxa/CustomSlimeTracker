@@ -134,9 +134,10 @@ python tools/check_all.py --require-pio
 Direct commands:
 
 ```bash
-pio run -e BOARD_LOLIN_C3_MINI
-pio run -e BOARD_LOLIN_C3_MINI_DIAG
-pio run -e BOARD_LOLIN_C3_MINI -t upload
+pio run -e BOARD_LOLIN_C3_MINI_DEBUG
+pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION
+pio run -e BOARD_LOLIN_C3_MINI_SLIM
+pio run -e BOARD_LOLIN_C3_MINI_DEBUG -t upload
 pio device monitor
 ```
 

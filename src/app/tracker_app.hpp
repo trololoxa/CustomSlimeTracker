@@ -122,6 +122,7 @@ private:
     void fatal(const char* message);
     void call(void (*callback)());
     bool processFifoRuntime();
+    bool maybeIdleYield(bool anyWork);
     static bool callBool(bool (*callback)());
     void startMagFromConfig(Stream& out);
 

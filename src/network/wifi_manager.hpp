@@ -39,14 +39,25 @@ enum class TrackerWifiState : uint8_t {
     Backoff,
 };
 
+enum class WifiPowerSaveMode : uint8_t {
+    Unknown,
+    None,
+    MinModem,
+    MaxModem,
+};
+
 const char* wifiLinkStatusName(WifiLinkStatus status);
 const char* wifiAuthTypeName(WifiAuthType auth);
 const char* trackerWifiStateName(TrackerWifiState state);
+const char* wifiPowerSaveModeName(WifiPowerSaveMode mode);
 
 struct WifiStationInfo {
     WifiLinkStatus linkStatus = WifiLinkStatus::Disconnected;
     uint32_t ipv4 = 0;          // a.b.c.d encoded as 0xAABBCCDD
     int32_t rssiDbm = 0;
+    WifiPowerSaveMode powerSaveMode = WifiPowerSaveMode::Unknown;
+    bool txPowerValid = false;
+    int8_t txPowerQuarterDbm = 0;
     uint8_t mac[6] = {0, 0, 0, 0, 0, 0};
 };
 
@@ -104,6 +115,9 @@ struct TrackerWifiManagerStatus {
 
     uint32_t ipv4 = 0;
     int32_t rssiDbm = 0;
+    WifiPowerSaveMode powerSaveMode = WifiPowerSaveMode::Unknown;
+    bool txPowerValid = false;
+    int8_t txPowerQuarterDbm = 0;
     uint8_t mac[6] = {0, 0, 0, 0, 0, 0};
 
     char ssid[33] = "";

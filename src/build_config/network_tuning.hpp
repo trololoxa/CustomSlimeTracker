@@ -17,6 +17,21 @@
 #endif
 
 
+
+// Wi-Fi power save policy for wave-5 A/B tests. Keep the default at NONE so
+// existing stable behavior is preserved until runtime tests approve modem sleep.
+#define TRACKER_WIFI_POWER_SAVE_NONE 0
+#define TRACKER_WIFI_POWER_SAVE_MIN_MODEM 1
+#define TRACKER_WIFI_POWER_SAVE_MAX_MODEM 2
+
+#ifndef TRACKER_WIFI_POWER_SAVE_MODE
+#define TRACKER_WIFI_POWER_SAVE_MODE TRACKER_WIFI_POWER_SAVE_NONE
+#endif
+
+#ifndef TRACKER_WIFI_RESTORE_POWER_SAVE_AFTER_SCAN
+#define TRACKER_WIFI_RESTORE_POWER_SAVE_AFTER_SCAN 1
+#endif
+
 #ifndef TRACKER_WIFI_CONNECT_TIMEOUT_MS
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_WIFI_CONNECT_TIMEOUT_MS 20000UL

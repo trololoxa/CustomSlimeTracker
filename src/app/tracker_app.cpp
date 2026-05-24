@@ -127,29 +127,26 @@ void TrackerApp::loop() {
 
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
+#endif
     const bool fifoWorked = processFifoRuntime();
+#if TRACKER_ENABLE_LOOP_TIMING
     timing.fifoUs = micros() - sectionStartUs;
     timing.fifoWorked = fifoWorked;
-#else
-    (void)processFifoRuntime();
 #endif
 
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
+#endif
     const bool batteryWorked = callBool(deps_.callbacks.updateBatteryRuntime);
     const bool networkWorked = callBool(deps_.callbacks.updateNetworkRuntime);
     const bool tapWorked = callBool(deps_.callbacks.updateTapRuntime);
     const bool ledWorked = callBool(deps_.callbacks.updateStatusLedRuntime);
+#if TRACKER_ENABLE_LOOP_TIMING
     timing.networkUs = micros() - sectionStartUs;
     timing.batteryWorked = batteryWorked;
     timing.networkWorked = networkWorked;
     timing.tapWorked = tapWorked;
     timing.ledWorked = ledWorked;
-#else
-    (void)callBool(deps_.callbacks.updateBatteryRuntime);
-    (void)callBool(deps_.callbacks.updateNetworkRuntime);
-    (void)callBool(deps_.callbacks.updateTapRuntime);
-    (void)callBool(deps_.callbacks.updateStatusLedRuntime);
 #endif
 
 #if TRACKER_HAS_SERIAL_CLI && TRACKER_CLI_SECOND_POLL_ENABLED
@@ -162,11 +159,12 @@ void TrackerApp::loop() {
 #endif
 #endif
 
+    bool heartbeatPrinted = false;
 #if TRACKER_HAS_BOOT_HEARTBEAT
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
 #endif
-    const bool heartbeatPrinted = maybePrintBootHeartbeat(
+    heartbeatPrinted = maybePrintBootHeartbeat(
         *deps_.runtime.out,
         *deps_.runtime.streamState,
         deps_.runtime.staticTestRunner->active() || deps_.runtime.runtimeTestRunner->active(),
@@ -183,14 +181,20 @@ void TrackerApp::loop() {
 #endif
 #endif
 
+    const bool anyWork = fifoWorked ||
+                         batteryWorked ||
+                         networkWorked ||
+                         tapWorked ||
+                         ledWorked ||
+                         heartbeatPrinted;
+    const bool idleYielded = maybeIdleYield(anyWork);
+
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.loopUs = micros() - loopStartUs;
-    timing.anyWork = timing.fifoWorked ||
-                     timing.batteryWorked ||
-                     timing.networkWorked ||
-                     timing.tapWorked ||
-                     timing.ledWorked ||
-                     timing.heartbeatWorked;
+    timing.anyWork = anyWork;
+    timing.idleYielded = idleYielded;
+#else
+    (void)idleYielded;
 #endif
 
 #if TRACKER_HAS_RUNTIME_TEST
@@ -252,6 +256,34 @@ void TrackerApp::call(void (*callback)()) {
 
 bool TrackerApp::callBool(bool (*callback)()) {
     return callback != nullptr && callback();
+}
+
+
+bool TrackerApp::maybeIdleYield(bool anyWork) {
+#if !TRACKER_ENABLE_IDLE_YIELD
+    (void)anyWork;
+    return false;
+#else
+    static uint32_t idleLoopStreak = 0;
+    if (anyWork) {
+        idleLoopStreak = 0;
+        return false;
+    }
+
+    ++idleLoopStreak;
+    if ((idleLoopStreak % TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS) != 0u) {
+        return false;
+    }
+
+#if TRACKER_IDLE_YIELD_MODE == TRACKER_IDLE_YIELD_MODE_DELAY0
+    delay(0);
+#elif TRACKER_IDLE_YIELD_MODE == TRACKER_IDLE_YIELD_MODE_DELAY1
+    delay(1);
+#else
+#error "Unsupported TRACKER_IDLE_YIELD_MODE"
+#endif
+    return true;
+#endif
 }
 
 void TrackerApp::serviceRuntimeForBlockingCommand() {

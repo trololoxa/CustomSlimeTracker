@@ -578,14 +578,15 @@ yaw_drift_rate_deg_min
 
 ## Build and diagnostics expectations
 
-Use both builds:
+Use the explicit profile builds:
 
 ```bash
-pio run -e BOARD_LOLIN_C3_MINI
-pio run -e BOARD_LOLIN_C3_MINI_DIAG
+pio run -e BOARD_LOLIN_C3_MINI_DEBUG
+pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION
+pio run -e BOARD_LOLIN_C3_MINI_SLIM
 ```
 
-The diagnostic build should stay warning-clean. If a warning appears, fix it before continuing feature work.
+The Debug build should stay warning-clean. If a warning appears, fix it before continuing feature work.
 
 Do not hide warnings by broad suppression unless the warning comes from external framework code and cannot be fixed locally.
 

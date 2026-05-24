@@ -42,6 +42,16 @@ const char* trackerWifiStateName(TrackerWifiState state) {
     return "unknown";
 }
 
+const char* wifiPowerSaveModeName(WifiPowerSaveMode mode) {
+    switch (mode) {
+        case WifiPowerSaveMode::Unknown: return "unknown";
+        case WifiPowerSaveMode::None: return "none";
+        case WifiPowerSaveMode::MinModem: return "min_modem";
+        case WifiPowerSaveMode::MaxModem: return "max_modem";
+    }
+    return "unknown";
+}
+
 void TrackerWifiManager::begin(IWifiStationAdapter& adapter) {
     adapter_ = &adapter;
     refreshInfo();
@@ -193,6 +203,9 @@ TrackerWifiManagerStatus TrackerWifiManager::status() const {
     s.connectedSinceMs = connectedSinceMs_;
     s.ipv4 = lastInfo_.ipv4;
     s.rssiDbm = lastInfo_.rssiDbm;
+    s.powerSaveMode = lastInfo_.powerSaveMode;
+    s.txPowerValid = lastInfo_.txPowerValid;
+    s.txPowerQuarterDbm = lastInfo_.txPowerQuarterDbm;
     std::memcpy(s.mac, lastInfo_.mac, sizeof(s.mac));
     copyCString(s.ssid, sizeof(s.ssid), ssid_);
     copyCString(s.hostname, sizeof(s.hostname), hostname_);

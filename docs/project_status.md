@@ -18,7 +18,7 @@ This document replaces the completed code-quality roadmap notes. It records the 
 
 - The boot serial settle delay is Debug-profile only (`TRACKER_ENABLE_BOOT_DELAY`). Production and Slim do not keep the old unconditional `sleep(2)`.
 - `defines.h` is now a compatibility umbrella over `src/build_config/*`; new profile/config defaults should go into the focused build-config headers.
-- `BOARD_LOLIN_C3_MINI_DEBUG` is the normal local build/upload environment while warnings are being kept clean. `BOARD_LOLIN_C3_MINI_DIAG` remains as a backward-compatible alias.
+- `BOARD_LOLIN_C3_MINI_DEBUG` is the normal local build/upload environment while warnings are being kept clean. The old DIAG alias was removed; use the explicit Debug/Production/Slim environments.
 
 ## Current quality gate
 

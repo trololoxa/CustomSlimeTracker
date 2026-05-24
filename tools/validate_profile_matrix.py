@@ -18,13 +18,11 @@ PLATFORMIO_INI = ROOT / "platformio.ini"
 ENV_RE = re.compile(r"^\s*\[env:([^\]]+)\]\s*$")
 EXCLUDE_RE = re.compile(r"^\s*-<([^>]+)>\s*(?:[;#].*)?$")
 PROFILE_RE = re.compile(r"TRACKER_BUILD_PROFILE=(TRACKER_PROFILE_[A-Z_]+)")
-EXTENDS_RE = re.compile(r"^\s*extends\s*=\s*(.+?)\s*(?:[;#].*)?$")
 DEFAULT_ENVS_RE = re.compile(r"^\s*default_envs\s*=\s*(.+?)\s*(?:[;#].*)?$")
 
 DEBUG_ENV = "BOARD_LOLIN_C3_MINI_DEBUG"
 PRODUCTION_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION"
 SLIM_ENV = "BOARD_LOLIN_C3_MINI_SLIM"
-DIAG_ENV = "BOARD_LOLIN_C3_MINI_DIAG"
 
 EXPECTED_PROFILE_FLAGS = {
     DEBUG_ENV: "TRACKER_PROFILE_DEBUG",
@@ -92,11 +90,10 @@ MUST_KEEP_IN_PRODUCT_PROFILES = {
 }
 
 
-def parse_platformio() -> tuple[dict[str, set[str]], dict[str, str], dict[str, str], str | None]:
+def parse_platformio() -> tuple[dict[str, set[str]], dict[str, str], str | None]:
     current_env = "<global>"
     excludes: dict[str, set[str]] = {}
     profiles: dict[str, str] = {}
-    extends: dict[str, str] = {}
     default_envs: str | None = None
 
     for line in PLATFORMIO_INI.read_text(encoding="utf-8").splitlines():
@@ -119,11 +116,8 @@ def parse_platformio() -> tuple[dict[str, set[str]], dict[str, str], dict[str, s
         if profile_match:
             profiles[current_env] = profile_match.group(1)
 
-        extends_match = EXTENDS_RE.match(line)
-        if extends_match:
-            extends[current_env] = extends_match.group(1).strip()
 
-    return excludes, profiles, extends, default_envs
+    return excludes, profiles, default_envs
 
 
 def check_required_subset(errors: list[str], env: str, actual: set[str], required: set[str]) -> None:
@@ -135,7 +129,7 @@ def check_required_subset(errors: list[str], env: str, actual: set[str], require
 
 
 def main() -> int:
-    excludes, profiles, extends, default_envs = parse_platformio()
+    excludes, profiles, default_envs = parse_platformio()
     errors: list[str] = []
 
     if default_envs != DEBUG_ENV:
@@ -146,8 +140,6 @@ def main() -> int:
         if actual != expected:
             errors.append(f"{env}: expected -DTRACKER_BUILD_PROFILE={expected}, got {actual!r}")
 
-    if extends.get(DIAG_ENV) != f"env:{DEBUG_ENV}":
-        errors.append(f"{DIAG_ENV}: expected 'extends = env:{DEBUG_ENV}', got {extends.get(DIAG_ENV)!r}")
 
     production_excludes = excludes.get(PRODUCTION_ENV, set())
     slim_excludes = excludes.get(SLIM_ENV, set())

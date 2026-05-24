@@ -2,6 +2,7 @@
 
 #include "build_config/build_profiles.hpp"
 #include "build_config/feature_flags.hpp"
+#include "build_config/runtime_tuning.hpp"
 #include "build_config/network_tuning.hpp"
 
 // Derived feature groups for application/runtime code.
@@ -202,4 +203,12 @@
 
 #if TRACKER_ENABLE_FULL_CONFIG_PRINT && !TRACKER_ENABLE_CONFIG_COMMANDS
 #error "Full config print requires config commands."
+#endif
+
+#if TRACKER_ENABLE_IDLE_YIELD && (TRACKER_IDLE_YIELD_MODE != TRACKER_IDLE_YIELD_MODE_DELAY0) && (TRACKER_IDLE_YIELD_MODE != TRACKER_IDLE_YIELD_MODE_DELAY1)
+#error "TRACKER_IDLE_YIELD_MODE must be TRACKER_IDLE_YIELD_MODE_DELAY0 or TRACKER_IDLE_YIELD_MODE_DELAY1 when idle yield is enabled."
+#endif
+
+#if TRACKER_ENABLE_IDLE_YIELD && (TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS == 0)
+#error "TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS must be greater than zero."
 #endif

@@ -7,6 +7,7 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "network/wifi_manager.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
+#include "runtime/battery_runtime.hpp"
 #include "runtime/tracker_runtime_types.hpp"
 #include "runtime/tracking_state_controller.hpp"
 #include "sensor/imu_quality.hpp"
@@ -25,6 +26,7 @@ struct RuntimeLoopTimingSample {
     bool tapWorked = false;
     bool ledWorked = false;
     bool heartbeatWorked = false;
+    bool idleYielded = false;
     bool anyWork = false;
 };
 
@@ -36,6 +38,7 @@ public:
         const ImuQualityMonitor* quality = nullptr;
         const TrackerWifiManager* wifi = nullptr;
         const SlimeVROutputRuntime* slimevr = nullptr;
+        const BatteryRuntime* battery = nullptr;
         const TrackingStateController* trackingState = nullptr;
         const uint32_t* runtimeSamples = nullptr;
         const float* latestTempC = nullptr;
@@ -71,6 +74,7 @@ private:
         Lsm6dsvFifoReader::DrainStats fifo;
         TrackerWifiManagerStatus wifi;
         SlimeVROutputRuntimeStatus slime;
+        BatteryRuntimeStatus battery;
     };
 
     bool ready() const;
@@ -81,6 +85,15 @@ private:
     static uint32_t deltaU32(uint32_t current, uint32_t start);
     static uint64_t deltaU64(uint64_t current, uint64_t start);
     static float safeRate(uint32_t delta, float durationS);
+
+    struct TempHistorySample {
+        uint32_t elapsedMs = 0;
+        float tempC = 0.0f;
+        bool valid = false;
+    };
+
+    void pushTempHistory(uint32_t nowMs);
+    bool computeTempSlope(uint32_t elapsedMs, float& fullSlopeCPerMin, float& recentSlopeCPerMin) const;
 
     Dependencies deps_;
     bool active_ = false;
@@ -100,9 +113,14 @@ private:
     uint32_t tapWorkCount_ = 0;
     uint32_t ledWorkCount_ = 0;
     uint32_t heartbeatWorkCount_ = 0;
+    uint32_t idleYieldCount_ = 0;
     float tempStartC_ = 0.0f;
     float tempEndC_ = 0.0f;
     bool tempValid_ = false;
+    uint32_t lastTempHistoryMs_ = 0;
+    TempHistorySample tempHistory_[16];
+    uint8_t tempHistoryCount_ = 0;
+    uint8_t tempHistoryNext_ = 0;
 
     Snapshot start_;
     Snapshot last_;

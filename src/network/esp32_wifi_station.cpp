@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <cstring>
 
 #include "defines.h"
@@ -14,9 +15,44 @@ void applyTrackerWifiTxPower() {
 #if TRACKER_WIFI_APPLY_TX_POWER_AFTER_BEGIN
     // Some ESP32-C3 board revisions have RF problems at maximum TX power
     // because the antenna is too close to the crystal. Keep this board policy
-    // in defines.h so other revisions can override or disable it cleanly.
+    // in build_config/network_tuning.hpp so other revisions can override or
+    // disable it cleanly.
+#ifdef TRACKER_WIFI_TX_POWER_QUARTER_DBM
+    // Numeric quarter-dBm override is used by wave-5 A/B environments. It
+    // avoids depending on Arduino enum token availability across ESP32 cores.
+    esp_wifi_set_max_tx_power(static_cast<int8_t>(TRACKER_WIFI_TX_POWER_QUARTER_DBM));
+#else
     WiFi.setTxPower(static_cast<wifi_power_t>(TRACKER_WIFI_TX_POWER));
 #endif
+#endif
+}
+
+constexpr bool trackerWifiPowerSaveEnabled() {
+    return TRACKER_WIFI_POWER_SAVE_MODE != TRACKER_WIFI_POWER_SAVE_NONE;
+}
+
+wifi_ps_type_t trackerWifiPowerSaveType() {
+#if TRACKER_WIFI_POWER_SAVE_MODE == TRACKER_WIFI_POWER_SAVE_MIN_MODEM
+    return WIFI_PS_MIN_MODEM;
+#elif TRACKER_WIFI_POWER_SAVE_MODE == TRACKER_WIFI_POWER_SAVE_MAX_MODEM
+    return WIFI_PS_MAX_MODEM;
+#else
+    return WIFI_PS_NONE;
+#endif
+}
+
+WifiPowerSaveMode mapPowerSaveMode(wifi_ps_type_t ps) {
+    switch (ps) {
+        case WIFI_PS_NONE: return WifiPowerSaveMode::None;
+        case WIFI_PS_MIN_MODEM: return WifiPowerSaveMode::MinModem;
+        case WIFI_PS_MAX_MODEM: return WifiPowerSaveMode::MaxModem;
+        default: return WifiPowerSaveMode::Unknown;
+    }
+}
+
+void applyTrackerWifiPowerSave() {
+    WiFi.setSleep(trackerWifiPowerSaveEnabled());
+    esp_wifi_set_ps(trackerWifiPowerSaveType());
 }
 
 void copyBounded(char* dst, size_t dstSize, const char* src) {
@@ -53,7 +89,7 @@ bool Esp32WifiStationAdapter::begin(const char* ssid, const char* password, cons
     if (!ssid || ssid[0] == '\0') return false;
 
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
+    WiFi.setSleep(trackerWifiPowerSaveEnabled());
 
     // Match the reference client's behavior of resetting the station before a
     // new connection attempt. Avoid delay() here; TrackerWifiManager provides
@@ -70,6 +106,7 @@ bool Esp32WifiStationAdapter::begin(const char* ssid, const char* password, cons
         WiFi.begin(ssid);
     }
     applyTrackerWifiTxPower();
+    applyTrackerWifiPowerSave();
     return true;
 }
 
@@ -111,6 +148,16 @@ WifiStationInfo Esp32WifiStationAdapter::info() const {
         out.rssiDbm = WiFi.RSSI();
     }
 
+    wifi_ps_type_t ps = WIFI_PS_NONE;
+    if (esp_wifi_get_ps(&ps) == ESP_OK) {
+        out.powerSaveMode = mapPowerSaveMode(ps);
+    }
+    int8_t txPower = 0;
+    if (esp_wifi_get_max_tx_power(&txPower) == ESP_OK) {
+        out.txPowerValid = true;
+        out.txPowerQuarterDbm = txPower;
+    }
+
     WiFi.macAddress(out.mac);
     return out;
 }
@@ -120,6 +167,7 @@ int16_t Esp32WifiStationAdapter::scanNetworks(WifiScanResult* results, uint8_t m
 
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     WiFi.scanDelete();
 
@@ -131,7 +179,12 @@ int16_t Esp32WifiStationAdapter::scanNetworks(WifiScanResult* results, uint8_t m
         WiFi.scanDelete();
         count = WiFi.scanNetworks(false, showHidden);
     }
-    if (count <= 0) return count;
+    if (count <= 0) {
+#if TRACKER_WIFI_RESTORE_POWER_SAVE_AFTER_SCAN
+        applyTrackerWifiPowerSave();
+#endif
+        return count;
+    }
 
     const uint8_t copied = static_cast<uint8_t>(count < maxResults ? count : maxResults);
     for (uint8_t i = 0; i < copied; ++i) {
@@ -147,6 +200,9 @@ int16_t Esp32WifiStationAdapter::scanNetworks(WifiScanResult* results, uint8_t m
         r.hidden = r.ssid[0] == '\0';
     }
 
+#if TRACKER_WIFI_RESTORE_POWER_SAVE_AFTER_SCAN
+    applyTrackerWifiPowerSave();
+#endif
     return count;
 }
 

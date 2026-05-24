@@ -1,5 +1,7 @@
 #include "runtime/runtime_test_runner.hpp"
 
+#include <cmath>
+
 #include "defines.h"
 
 namespace tracker {
@@ -18,6 +20,45 @@ void printAvgMax(Stream& out, const char* prefix, const RuntimeTestRunner::Stats
     out.print(prefix); out.print("_max_us="); out.println(s.max);
 }
 
+void printWifiTxPower(Stream& out, const char* key, const TrackerWifiManagerStatus& wifi) {
+    out.print(key); out.print("_quarter_dbm: ");
+    if (!wifi.txPowerValid) {
+        out.println("unknown");
+        return;
+    }
+    out.println(static_cast<int>(wifi.txPowerQuarterDbm));
+    out.print(key); out.print("_dbm: ");
+    out.println(static_cast<float>(wifi.txPowerQuarterDbm) / 4.0f, 2);
+}
+
+
+void printRuntimeBuildConfig(Stream& out) {
+    out.println("------------------------------------------------------------------------------");
+    out.println("Build/runtime config");
+    out.print("build_profile: "); out.println(trackerBuildProfileName());
+    out.print("cli_level: "); out.println(trackerCliLevelName());
+    out.print("wifi_power_save_compile: "); out.println(TRACKER_WIFI_POWER_SAVE_MODE);
+    out.print("wifi_tx_power_compile_quarter_dbm: ");
+#ifdef TRACKER_WIFI_TX_POWER_QUARTER_DBM
+    out.println(TRACKER_WIFI_TX_POWER_QUARTER_DBM);
+#else
+    out.println("enum");
+#endif
+    out.print("network_update_interval_ms: "); out.println((uint32_t)TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS);
+    out.print("slime_live_state_refresh_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS);
+    out.print("slime_runtime_config_refresh_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS);
+    out.print("slime_output_rate_max_hz: "); out.println((uint32_t)TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX);
+    out.print("slime_signal_telemetry_interval_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS);
+    out.print("slime_temperature_telemetry_interval_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS);
+    out.print("slime_battery_telemetry_interval_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS);
+    out.print("battery_adc_sample_interval_ms: "); out.println((uint32_t)TRACKER_BATTERY_ADC_SAMPLE_INTERVAL_MS);
+    out.print("tap_poll_interval_ms: "); out.println((uint32_t)TRACKER_TAP_POLL_INTERVAL_MS);
+    out.print("cli_bytes_per_loop: "); out.println((uint32_t)TRACKER_CLI_BYTES_PER_LOOP);
+    out.print("cli_second_poll_enabled: "); out.println(TRACKER_CLI_SECOND_POLL_ENABLED ? "yes" : "no");
+    out.print("idle_yield_enabled: "); out.println(TRACKER_ENABLE_IDLE_YIELD ? "yes" : "no");
+    out.print("idle_yield_mode: "); out.println((uint32_t)TRACKER_IDLE_YIELD_MODE);
+    out.print("idle_yield_every_n_idle_loops: "); out.println((uint32_t)TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS);
+}
 } // namespace
 
 void RuntimeTestRunner::Stats::reset() {
@@ -75,6 +116,7 @@ bool RuntimeTestRunner::start(uint32_t durationMs, uint32_t nowMs, Stream& out) 
         tempStartC_ = *deps_.latestTempC;
         tempEndC_ = tempStartC_;
         tempValid_ = true;
+        pushTempHistory(nowMs);
     }
 
     out.println("# RUNTIME TEST STARTED");
@@ -105,6 +147,7 @@ void RuntimeTestRunner::printStatus(Stream& out, uint32_t nowMs) const {
     out.print("runtime_loop_max_us="); out.println(loopUs_.max);
     out.print("runtime_work_loops="); out.println(workLoopCount_);
     out.print("runtime_idle_candidate_loops="); out.println(idleCandidateLoopCount_);
+    out.print("runtime_idle_yield_count="); out.println(idleYieldCount_);
     out.print("runtime_network_avg_us="); out.println(networkUs_.mean(), 3);
     out.print("runtime_network_max_us="); out.println(networkUs_.max);
     out.print("runtime_fifo_avg_us="); out.println(fifoUs_.mean(), 3);
@@ -135,6 +178,7 @@ void RuntimeTestRunner::recordLoopTiming(const RuntimeLoopTimingSample& timing) 
     if (timing.tapWorked) ++tapWorkCount_;
     if (timing.ledWorked) ++ledWorkCount_;
     if (timing.heartbeatWorked) ++heartbeatWorkCount_;
+    if (timing.idleYielded) ++idleYieldCount_;
     if (deps_.latestTempC != nullptr) {
         tempEndC_ = *deps_.latestTempC;
         tempValid_ = true;
@@ -148,6 +192,7 @@ void RuntimeTestRunner::update(uint32_t nowMs, Stream& out) {
 #if TRACKER_ENABLE_RUNTIME_TEST
     if (!active_) return;
     if ((nowMs - lastProgressMs_) >= deps_.progressPeriodMs) {
+        pushTempHistory(nowMs);
         printProgress(out, nowMs);
         lastProgressMs_ = nowMs;
         last_ = makeSnapshot();
@@ -180,6 +225,7 @@ RuntimeTestRunner::Snapshot RuntimeTestRunner::makeSnapshot() const {
     if (deps_.fifo) s.fifo = deps_.fifo->stats();
     if (deps_.wifi) s.wifi = deps_.wifi->status();
     if (deps_.slimevr) s.slime = deps_.slimevr->status();
+    if (deps_.battery) s.battery = deps_.battery->status();
     return s;
 }
 
@@ -201,9 +247,14 @@ void RuntimeTestRunner::reset() {
     tapWorkCount_ = 0;
     ledWorkCount_ = 0;
     heartbeatWorkCount_ = 0;
+    idleYieldCount_ = 0;
     tempStartC_ = 0.0f;
     tempEndC_ = 0.0f;
     tempValid_ = false;
+    lastTempHistoryMs_ = 0;
+    tempHistoryCount_ = 0;
+    tempHistoryNext_ = 0;
+    for (auto& sample : tempHistory_) sample = TempHistorySample{};
     start_ = Snapshot{};
     last_ = Snapshot{};
     loopUs_.reset();
@@ -211,6 +262,48 @@ void RuntimeTestRunner::reset() {
     fifoUs_.reset();
     networkUs_.reset();
     heartbeatUs_.reset();
+}
+
+void RuntimeTestRunner::pushTempHistory(uint32_t nowMs) {
+    if (!tempValid_) return;
+    if (lastTempHistoryMs_ != 0 && (nowMs - lastTempHistoryMs_) < 30000UL) return;
+    TempHistorySample& slot = tempHistory_[tempHistoryNext_];
+    slot.elapsedMs = nowMs - startMs_;
+    slot.tempC = tempEndC_;
+    slot.valid = true;
+    tempHistoryNext_ = static_cast<uint8_t>((tempHistoryNext_ + 1u) % 16u);
+    if (tempHistoryCount_ < 16u) ++tempHistoryCount_;
+    lastTempHistoryMs_ = nowMs;
+}
+
+bool RuntimeTestRunner::computeTempSlope(uint32_t elapsedMs, float& fullSlopeCPerMin, float& recentSlopeCPerMin) const {
+    fullSlopeCPerMin = 0.0f;
+    recentSlopeCPerMin = 0.0f;
+    if (!tempValid_ || elapsedMs == 0) return false;
+
+    const float totalMinutes = static_cast<float>(elapsedMs) / 60000.0f;
+    if (totalMinutes > 0.0f) {
+        fullSlopeCPerMin = (tempEndC_ - tempStartC_) / totalMinutes;
+    }
+
+    const uint32_t windowMs = 300000UL;
+    const uint32_t targetElapsed = elapsedMs > windowMs ? elapsedMs - windowMs : 0UL;
+    const TempHistorySample* best = nullptr;
+    for (const auto& sample : tempHistory_) {
+        if (!sample.valid) continue;
+        if (sample.elapsedMs > targetElapsed) continue;
+        if (best == nullptr || sample.elapsedMs > best->elapsedMs) best = &sample;
+    }
+
+    if (best != nullptr && elapsedMs > best->elapsedMs) {
+        const float recentMinutes = static_cast<float>(elapsedMs - best->elapsedMs) / 60000.0f;
+        if (recentMinutes > 0.0f) {
+            recentSlopeCPerMin = (tempEndC_ - best->tempC) / recentMinutes;
+        }
+    } else {
+        recentSlopeCPerMin = fullSlopeCPerMin;
+    }
+    return true;
 }
 
 void RuntimeTestRunner::printProgress(Stream& out, uint32_t nowMs) const {
@@ -231,6 +324,7 @@ void RuntimeTestRunner::printProgress(Stream& out, uint32_t nowMs) const {
 }
 
 void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
+    pushTempHistory(nowMs);
     const Snapshot end = makeSnapshot();
     const uint32_t elapsedMs = nowMs - startMs_;
     const float durationS = elapsedMs > 0 ? static_cast<float>(elapsedMs) / 1000.0f : 0.0f;
@@ -238,6 +332,8 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.println("==============================================================================");
     out.println("COMMAND RUNTIME TEST REPORT");
     out.println("==============================================================================");
+    printRuntimeBuildConfig(out);
+    out.println("------------------------------------------------------------------------------");
     out.print("stopped_by_command: "); out.println(stopRequested_ ? "yes" : "no");
     out.print("duration_s: "); out.println(durationS, 3);
     out.print("loop_count: "); out.println(loopCount_);
@@ -248,6 +344,12 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
         out.print("temp_start_c: "); out.println(tempStartC_, 2);
         out.print("temp_end_c: "); out.println(tempEndC_, 2);
         out.print("temp_delta_c: "); out.println(tempEndC_ - tempStartC_, 2);
+        float tempSlopeCPerMin = 0.0f;
+        float tempRecentSlopeCPerMin = 0.0f;
+        if (computeTempSlope(elapsedMs, tempSlopeCPerMin, tempRecentSlopeCPerMin)) {
+            out.print("temp_slope_c_per_min: "); out.println(tempSlopeCPerMin, 4);
+            out.print("temp_recent_slope_c_per_min: "); out.println(tempRecentSlopeCPerMin, 4);
+        }
     }
 
     out.println("------------------------------------------------------------------------------");
@@ -269,6 +371,7 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.print("tap_work_count: "); out.println(tapWorkCount_);
     out.print("led_work_count: "); out.println(ledWorkCount_);
     out.print("heartbeat_work_count: "); out.println(heartbeatWorkCount_);
+    out.print("idle_yield_count: "); out.println(idleYieldCount_);
 
     out.println("------------------------------------------------------------------------------");
     out.println("Perf counter delta during test");
@@ -298,6 +401,24 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.print("quality_ahrs_skipped_delta: "); out.println(deltaU32(end.quality.ahrsSkippedSamples, start_.quality.ahrsSkippedSamples));
     out.print("quality_accel_disabled_delta: "); out.println(deltaU32(end.quality.accelCorrectionDisabledSamples, start_.quality.accelCorrectionDisabledSamples));
 
+    if (deps_.battery != nullptr) {
+        out.println("------------------------------------------------------------------------------");
+        out.println("Battery runtime delta during test");
+        out.print("battery_status_enabled_start: "); out.println(yn(start_.battery.enabled));
+        out.print("battery_status_enabled_end: "); out.println(yn(end.battery.enabled));
+        out.print("battery_status_configured_start: "); out.println(yn(start_.battery.configured));
+        out.print("battery_status_configured_end: "); out.println(yn(end.battery.configured));
+        out.print("battery_samples_delta: "); out.println(deltaU32(end.battery.samples, start_.battery.samples));
+        out.print("battery_read_failures_delta: "); out.println(deltaU32(end.battery.readFailures, start_.battery.readFailures));
+        out.print("battery_invalid_samples_delta: "); out.println(deltaU32(end.battery.invalidSamples, start_.battery.invalidSamples));
+        out.print("battery_no_battery_samples_delta: "); out.println(deltaU32(end.battery.noBatterySamples, start_.battery.noBatterySamples));
+        out.print("battery_glitch_rejected_delta: "); out.println(deltaU32(end.battery.glitchRejectedSamples, start_.battery.glitchRejectedSamples));
+        out.print("battery_last_sample_age_ms_end: ");
+        out.println(end.battery.lastSampleMs == 0 ? 0UL : static_cast<unsigned long>(nowMs - end.battery.lastSampleMs));
+        out.print("battery_voltage_end_v: "); out.println(end.battery.voltage, 3);
+        out.print("battery_percentage_end: "); out.println(end.battery.percentage, 1);
+    }
+
     out.println("------------------------------------------------------------------------------");
     out.println("Wi-Fi / SlimeVR delta during test");
     out.print("wifi_connected_start: "); out.println(yn(start_.wifi.connected));
@@ -305,6 +426,10 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.print("wifi_disconnects_delta: "); out.println(deltaU32(end.wifi.disconnects, start_.wifi.disconnects));
     out.print("wifi_connect_timeouts_delta: "); out.println(deltaU32(end.wifi.connectTimeouts, start_.wifi.connectTimeouts));
     out.print("wifi_rssi_end_dbm: "); out.println(end.wifi.rssiDbm);
+    out.print("wifi_power_save_start: "); out.println(wifiPowerSaveModeName(start_.wifi.powerSaveMode));
+    out.print("wifi_power_save_end: "); out.println(wifiPowerSaveModeName(end.wifi.powerSaveMode));
+    printWifiTxPower(out, "wifi_tx_power_start", start_.wifi);
+    printWifiTxPower(out, "wifi_tx_power_end", end.wifi);
     out.print("slime_server_found_start: "); out.println(yn(start_.slime.serverFound));
     out.print("slime_server_found_end: "); out.println(yn(end.slime.serverFound));
     out.print("slime_rotation_sent_delta: "); out.println(deltaU32(end.slime.rotationSent, start_.slime.rotationSent));
