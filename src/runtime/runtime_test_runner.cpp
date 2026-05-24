@@ -45,6 +45,7 @@ void printRuntimeBuildConfig(Stream& out) {
     out.println("enum");
 #endif
     out.print("network_update_interval_ms: "); out.println((uint32_t)TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS);
+    out.print("slime_service_update_interval_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS);
     out.print("slime_live_state_refresh_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS);
     out.print("slime_runtime_config_refresh_ms: "); out.println((uint32_t)TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS);
     out.print("slime_output_rate_max_hz: "); out.println((uint32_t)TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX);
@@ -435,6 +436,8 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.print("slime_rotation_sent_delta: "); out.println(deltaU32(end.slime.rotationSent, start_.slime.rotationSent));
     out.print("slime_rotation_send_due_delta: "); out.println(deltaU32(end.slime.rotationSendDue, start_.slime.rotationSendDue));
     out.print("slime_rotation_rate_limited_delta: "); out.println(deltaU32(end.slime.rotationRateLimited, start_.slime.rotationRateLimited));
+    out.print("slime_service_updates_delta: "); out.println(deltaU32(end.slime.serviceUpdates, start_.slime.serviceUpdates));
+    out.print("slime_service_skips_delta: "); out.println(deltaU32(end.slime.serviceSkips, start_.slime.serviceSkips));
     out.print("slime_rotation_no_snapshot_delta: "); out.println(deltaU32(end.slime.rotationNoSnapshot, start_.slime.rotationNoSnapshot));
     out.print("slime_rotation_duplicate_snapshot_delta: "); out.println(deltaU32(end.slime.rotationDuplicateSnapshot, start_.slime.rotationDuplicateSnapshot));
     out.print("slime_rotation_snapshot_age_us_end: "); out.println(end.slime.lastRotationSnapshotAgeUs);

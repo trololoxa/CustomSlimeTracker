@@ -755,8 +755,7 @@ static bool updateNetworkRuntime() {
     if (g_slimevrRuntime.enabled()) {
         refreshAppSlimeVRRuntimeStaticConfig(nowMs, false, true);
     }
-    g_slimevrRuntime.update(nowMs);
-    return true;
+    return g_slimevrRuntime.update(nowMs);
 }
 
 static TrackerAppDeps makeTrackerAppDeps() {

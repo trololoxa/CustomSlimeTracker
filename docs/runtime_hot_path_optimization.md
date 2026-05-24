@@ -96,6 +96,40 @@ sample processing or FIFO batch duration. Timestamping required for correctness,
 such as FIFO drain timestamps or non-blocking FIFO fallback polling, remains
 enabled.
 
+
+## SlimeVR rotation/service split
+
+The SlimeVR runtime now separates fast RotationData scheduling from slower
+service-path work. `TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS` controls how
+often the app asks the network runtime to run at all. Inside the SlimeVR
+runtime, `TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS` throttles slower work:
+
+- incoming packet polling;
+- heartbeat / SensorInfo refresh;
+- telemetry packets;
+- discovery while the server is not found;
+- server-silence checks.
+
+RotationData remains checked on the normal network runtime cadence, so this
+change does not reduce FIFO/AHRS update rate or intentionally lower the
+quaternion send scheduler. Default service intervals are:
+
+| Profile | Service interval |
+|---|---:|
+| Debug | 5 ms |
+| Production | 10 ms |
+| Slim | 20 ms |
+
+`test runtime` reports:
+
+```text
+slime_service_updates_delta
+slime_service_skips_delta
+```
+
+These counters help confirm that the slow service path is throttled while
+RotationData stays fresh (`slime_rotation_sample_lag_end: 0`).
+
 ## Rotation scheduler diagnostics
 
 `test runtime` reports SlimeVR rotation scheduler counters:

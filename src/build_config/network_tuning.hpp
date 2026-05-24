@@ -68,6 +68,21 @@
   #endif
 #endif
 
+
+// Slow SlimeVR service cadence. RotationData is checked on the normal network
+// runtime cadence, while incoming packets, heartbeat, SensorInfo, telemetry,
+// discovery and server-silence checks can run less often. This reduces UDP
+// service-path churn without touching FIFO/AHRS cadence.
+#ifndef TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS
+  #if TRACKER_BUILD_IS_SLIM
+    #define TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS 20UL
+  #elif TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS 10UL
+  #else
+    #define TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS 5UL
+  #endif
+#endif
+
 #ifndef TRACKER_SLIMEVR_DISCOVERY_INTERVAL_MS
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_SLIMEVR_DISCOVERY_INTERVAL_MS 2000UL

@@ -46,6 +46,8 @@ Accepted result:
 - Runtime work/idle classification is meaningful.
 - SlimeVR static config and live telemetry updates are separated from the normal
   packet/runtime hot path.
+- SlimeVR RotationData scheduling is separated from slower service-path work
+  (incoming packets, heartbeat, SensorInfo, telemetry and discovery).
 - Production/Slim avoid Debug-only per-sample/per-FIFO timing overhead.
 
 ## Wave 4 — telemetry/rate tuning

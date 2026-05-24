@@ -197,6 +197,8 @@ void SlimeVROutputRuntime::resetCounters() {
     rotationSent_ = 0;
     rotationSendDue_ = 0;
     rotationRateLimited_ = 0;
+    serviceUpdates_ = 0;
+    serviceSkips_ = 0;
     signalStrengthSent_ = 0;
     temperatureSent_ = 0;
     batterySent_ = 0;
@@ -245,13 +247,16 @@ void SlimeVROutputRuntime::restart() {
     enabled_ = true;
 }
 
-void SlimeVROutputRuntime::update(uint32_t nowMs) {
-    if (!udp_ || !wifi_) return;
+bool SlimeVROutputRuntime::update(uint32_t nowMs) {
+    const SlimeVROutputState stateBefore = state_;
+    const uint32_t activityBefore = activitySignature();
+
+    if (!udp_ || !wifi_) return activityChanged(stateBefore, activityBefore);
 
     if (!enabled_) {
         if (udp_->active()) udp_->stop();
         transitionTo(SlimeVROutputState::Disabled, nowMs);
-        return;
+        return activityChanged(stateBefore, activityBefore);
     }
 
     const bool wifiConnected = wifi_->connected();
@@ -263,11 +268,11 @@ void SlimeVROutputRuntime::update(uint32_t nowMs) {
         consecutiveSendFailures_ = 0;
         udpReopenRequested_ = false;
         transitionTo(SlimeVROutputState::WaitingForWifi, nowMs);
-        return;
+        return activityChanged(stateBefore, activityBefore);
     }
 
     ensureUdp(nowMs);
-    if (!udp_->active()) return;
+    if (!udp_->active()) return activityChanged(stateBefore, activityBefore);
 
     if (udpReopenRequested_) {
         ++udpReopenRequests_;
@@ -279,15 +284,23 @@ void SlimeVROutputRuntime::update(uint32_t nowMs) {
         lastSensorInfoMs_ = 0;
         lastHeartbeatMs_ = 0;
         lastTelemetryMs_ = 0;
+        lastServiceUpdateMs_ = 0;
         transitionTo(SlimeVROutputState::UdpStarting, nowMs);
-        return;
+        return activityChanged(stateBefore, activityBefore);
     }
 
-    pollIncoming(nowMs);
+    const bool runService = serviceDue(nowMs);
+    if (runService) {
+        lastServiceUpdateMs_ = nowMs;
+        ++serviceUpdates_;
+        pollIncoming(nowMs);
+    } else {
+        ++serviceSkips_;
+    }
 
     if (serverFound_) {
         transitionTo(SlimeVROutputState::ServerFound, nowMs);
-        if (lastIncomingPacketMs_ != 0 && nowMs - lastIncomingPacketMs_ >= SERVER_SILENCE_TIMEOUT_MS) {
+        if (runService && lastIncomingPacketMs_ != 0 && nowMs - lastIncomingPacketMs_ >= SERVER_SILENCE_TIMEOUT_MS) {
             // UDP sends can continue to succeed while the server process was
             // restarted or the old association disappeared. Drop back to
             // discovery when the server has been silent long enough.
@@ -297,23 +310,30 @@ void SlimeVROutputRuntime::update(uint32_t nowMs) {
             lastSensorInfoMs_ = 0;
             lastHeartbeatMs_ = 0;
             lastTelemetryMs_ = 0;
+            lastServiceUpdateMs_ = 0;
             transitionTo(SlimeVROutputState::Discovering, nowMs);
             maybeSendDiscovery(nowMs);
-            return;
+            return activityChanged(stateBefore, activityBefore);
         }
         if (serverFoundSendGraceUntilMs_ != 0 && static_cast<int32_t>(nowMs - serverFoundSendGraceUntilMs_) < 0) {
-            return;
+            return activityChanged(stateBefore, activityBefore);
         }
         serverFoundSendGraceUntilMs_ = 0;
-        if (nowMs - lastHeartbeatMs_ >= HEARTBEAT_INTERVAL_MS) sendHeartbeat(nowMs);
-        if (nowMs - lastSensorInfoMs_ >= SENSOR_INFO_INTERVAL_MS) sendSensorInfo(nowMs);
-        maybeSendTelemetry(nowMs);
+
+        if (runService) {
+            if (nowMs - lastHeartbeatMs_ >= HEARTBEAT_INTERVAL_MS) sendHeartbeat(nowMs);
+            if (nowMs - lastSensorInfoMs_ >= SENSOR_INFO_INTERVAL_MS) sendSensorInfo(nowMs);
+            maybeSendTelemetry(nowMs);
+        }
         maybeSendRotation(nowMs);
-        return;
+        return activityChanged(stateBefore, activityBefore);
     }
 
-    transitionTo(SlimeVROutputState::Discovering, nowMs);
-    maybeSendDiscovery(nowMs);
+    if (runService) {
+        transitionTo(SlimeVROutputState::Discovering, nowMs);
+        maybeSendDiscovery(nowMs);
+    }
+    return activityChanged(stateBefore, activityBefore);
 }
 
 SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
@@ -343,6 +363,8 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.rotationSent = rotationSent_;
     s.rotationSendDue = rotationSendDue_;
     s.rotationRateLimited = rotationRateLimited_;
+    s.serviceUpdates = serviceUpdates_;
+    s.serviceSkips = serviceSkips_;
     s.signalStrengthSent = signalStrengthSent_;
     s.temperatureSent = temperatureSent_;
     s.batterySent = batterySent_;
@@ -436,6 +458,7 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastRotationAttemptMs_ = 0;
     lastRotationMs_ = 0;
     lastTelemetryMs_ = 0;
+    lastServiceUpdateMs_ = 0;
     lastSignalTelemetryMs_ = 0;
     lastTemperatureTelemetryMs_ = 0;
     lastBatteryTelemetryMs_ = 0;
@@ -509,6 +532,9 @@ void SlimeVROutputRuntime::handleIncomingPacket(const uint8_t* data,
         serverFoundSendGraceUntilMs_ = nowMs + SERVER_FOUND_SEND_GRACE_MS;
         lastHeartbeatMs_ = nowMs;
         lastTelemetryMs_ = nowMs;
+        lastSignalTelemetryMs_ = nowMs;
+        lastTemperatureTelemetryMs_ = nowMs;
+        lastBatteryTelemetryMs_ = nowMs;
         lastRotationAttemptMs_ = nowMs;
         lastSensorInfoMs_ = 0;
         return;
@@ -700,6 +726,39 @@ void SlimeVROutputRuntime::maybeSendTelemetry(uint32_t nowMs) {
     // server learns magnetometer support from SensorInfo.sensorConfig. Some
     // server builds treat packet 18 as active mag-calibration feedback, so
     // sending dummy accuracy values can disturb preview/tracker state.
+}
+
+bool SlimeVROutputRuntime::serviceDue(uint32_t nowMs) const {
+#if TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS == 0
+    (void)nowMs;
+    return true;
+#else
+    return lastServiceUpdateMs_ == 0 ||
+           static_cast<uint32_t>(nowMs - lastServiceUpdateMs_) >= TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS;
+#endif
+}
+
+uint32_t SlimeVROutputRuntime::activitySignature() const {
+    // This intentionally excludes rotationRateLimited_ and serviceSkips_: they
+    // are useful diagnostics, but they represent no packet/state work and would
+    // make every scheduler tick look busy to the app-level idle detector.
+    return handshakesSent_ + heartbeatSent_ + sensorInfoSent_ + rotationSent_ +
+           rotationSendDue_ + signalStrengthSent_ + temperatureSent_ + batterySent_ +
+           batterySendFailures_ + magnetometerAccuracySent_ + tapSent_ + tapSendFailures_ +
+           rotationNoSnapshot_ + rotationDuplicateSnapshot_ + packetsReceived_ +
+           discoveryResponses_ + heartbeatReceived_ + pingReceived_ + pongSent_ +
+           featureFlagsReceived_ + setConfigFlagReceived_ + setConfigFlagApplied_ +
+           setConfigFlagIgnored_ + ackConfigSent_ + protocolChangeReceived_ +
+           unknownPacketsReceived_ + sendFailures_ + rotationSendFailures_ +
+           controlSendFailures_ + telemetrySendFailures_ + discoverySendFailures_ +
+           tapTransportSendFailures_ + udpBeginFailures_ + serverSilenceResets_ +
+           wifiLostResets_ + udpReopenRequests_ + consecutiveSendFailures_ +
+           serviceUpdates_;
+}
+
+bool SlimeVROutputRuntime::activityChanged(SlimeVROutputState previousState,
+                                           uint32_t previousSignature) const {
+    return state_ != previousState || activitySignature() != previousSignature;
 }
 
 bool SlimeVROutputRuntime::sendTap(uint8_t value) {

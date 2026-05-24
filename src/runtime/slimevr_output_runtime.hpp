@@ -89,6 +89,8 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t rotationSent = 0;
     uint32_t rotationSendDue = 0;
     uint32_t rotationRateLimited = 0;
+    uint32_t serviceUpdates = 0;
+    uint32_t serviceSkips = 0;
     uint32_t signalStrengthSent = 0;
     uint32_t temperatureSent = 0;
     uint32_t magnetometerAccuracySent = 0;
@@ -181,7 +183,7 @@ public:
     void resetCounters();
     void stop();
     void restart();
-    void update(uint32_t nowMs);
+    bool update(uint32_t nowMs);
     void requestSensorInfoRefresh();
     bool sendTap(uint8_t value);
 
@@ -206,6 +208,9 @@ private:
     void sendSensorInfo(uint32_t nowMs);
     void sendHeartbeat(uint32_t nowMs);
     void maybeSendTelemetry(uint32_t nowMs);
+    bool serviceDue(uint32_t nowMs) const;
+    uint32_t activitySignature() const;
+    bool activityChanged(SlimeVROutputState previousState, uint32_t previousSignature) const;
     void sendSignalStrength(uint32_t nowMs);
     void sendTemperature(uint32_t nowMs);
     void sendBatteryLevel(uint32_t nowMs);
@@ -287,6 +292,8 @@ private:
     uint32_t rotationSent_ = 0;
     uint32_t rotationSendDue_ = 0;
     uint32_t rotationRateLimited_ = 0;
+    uint32_t serviceUpdates_ = 0;
+    uint32_t serviceSkips_ = 0;
     uint32_t signalStrengthSent_ = 0;
     uint32_t temperatureSent_ = 0;
     uint32_t batterySent_ = 0;
@@ -330,6 +337,7 @@ private:
     uint32_t lastRotationAttemptMs_ = 0;
     uint32_t lastRotationMs_ = 0;
     uint32_t lastTelemetryMs_ = 0; // legacy/status only after split intervals
+    uint32_t lastServiceUpdateMs_ = 0;
     uint32_t lastSignalTelemetryMs_ = 0;
     uint32_t lastTemperatureTelemetryMs_ = 0;
     uint32_t lastBatteryTelemetryMs_ = 0;
