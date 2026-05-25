@@ -115,11 +115,13 @@ void TrackerApp::loop() {
     uint32_t sectionStartUs = 0;
 #endif
 
+    bool remoteConsoleWorked = false;
 #if TRACKER_HAS_SERIAL_CLI
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
 #endif
     deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+    remoteConsoleWorked = callBool(deps_.callbacks.updateRemoteConsoleRuntime);
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.cliUs += micros() - sectionStartUs;
 #endif
@@ -186,6 +188,7 @@ void TrackerApp::loop() {
                          networkWorked ||
                          tapWorked ||
                          ledWorked ||
+                         remoteConsoleWorked ||
                          heartbeatPrinted;
     const bool idleYielded = maybeIdleYield(anyWork);
 

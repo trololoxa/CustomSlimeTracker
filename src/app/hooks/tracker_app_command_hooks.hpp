@@ -233,6 +233,20 @@ static void printRuntimeTestStatus(Stream& out, void* user) {
 #endif
 }
 
+
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+static bool setRemoteConsoleEnabledHook(bool enabled, void* user) {
+    (void)user;
+    g_wifiRemoteConsole.setEnabled(enabled);
+    return true;
+}
+
+static void printRemoteConsoleStatusHook(Stream& out, void* user) {
+    (void)user;
+    g_wifiRemoteConsole.printStatus(out);
+}
+#endif
+
 static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user);
 static bool fitGyroTempFromCaptureHook(const StaticRuntimeTest* capture, bool persist, Stream& out, void* user);
 static bool fitGyroTempFromCaptureRamHook(const StaticRuntimeTest* capture, Stream& out, void* user);
@@ -296,6 +310,10 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     hooks.printRuntimeHealth = printRuntimeHealth;
 #endif
     hooks.setSpiFrequency = setRuntimeSpiFrequency;
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    hooks.setRemoteConsoleEnabled = setRemoteConsoleEnabledHook;
+    hooks.printRemoteConsoleStatus = printRemoteConsoleStatusHook;
+#endif
 #if TRACKER_ENABLE_MACHINE_LOG
     hooks.emitLogHeader = emitMachineLogHeader;
     hooks.printLogSummary = printLogSummary;
@@ -348,9 +366,14 @@ static void setupCommandInterface() {
     setupRuntimeTestRunner();
 #endif
 #if TRACKER_ENABLE_SERIAL_CLI
-    wireTrackerCommandContext(g_cmdCtx,
-                              makeTrackerCommandRuntimeObjects(),
-                              makeTrackerCommandRuntimeHooks());
+    const TrackerCommandRuntimeObjects commandObjects = makeTrackerCommandRuntimeObjects();
+    const TrackerCommandRuntimeHooks commandHooks = makeTrackerCommandRuntimeHooks();
+    wireTrackerCommandContext(g_cmdCtx, commandObjects, commandHooks);
     g_cli.begin(g_cmdCtx);
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    TrackerSerialCommandContext remoteBaseCtx;
+    wireTrackerCommandContext(remoteBaseCtx, commandObjects, commandHooks);
+    g_wifiRemoteConsole.begin(remoteBaseCtx);
+#endif
 #endif
 }

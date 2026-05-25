@@ -18,6 +18,8 @@ Legend:
 | `version` | Print CLI protocol marker | No | Lightweight sanity check. |
 | `reboot` | Restart ESP32 | No | Flushes output before restart. |
 | `factory_reset` | Reset runtime config defaults and erase config store | Yes | Reboot recommended after success. |
+| `remote status` | Print Wi-Fi TCP console state | No | Available when `TRACKER_ENABLE_WIFI_REMOTE_CONSOLE=1`. |
+| `remote off` / `remote on` | Stop/start the Wi-Fi TCP console for the current boot | No | `remote off` closes the TCP client/server so it stops adding normal-loop work. |
 
 ## Config
 
@@ -149,6 +151,8 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 
 | Command | Effect | Persisted | Notes |
 |---|---|---:|---|
+| `remote status` | Print Wi-Fi TCP console state | No | Shows enabled/listening/client/counter state. |
+| `remote off` / `remote on` | Disable/enable the TCP CLI console for the current boot | No | Use `remote off` after cable-free setup/calibration. |
 | `net status` | Print Wi-Fi config/runtime status | No | Shows NVS load state, IP, RSSI, MAC, reconnect counters. |
 | `net print` | Print network config | No | Password is not revealed. |
 | `net set ssid <ssid> [save]` | Set Wi-Fi SSID | Optional | Use 2.4 GHz SSID for ESP32-C3. |
@@ -170,6 +174,20 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 | `slime counters reset` | Reset SlimeVR counters | Runtime | Does not restart Wi-Fi. |
 | `battery status` / `bat status` | Print ADC battery monitor state | No | Shows GPIO, raw ADC mV, computed battery voltage/percentage, present/not-present state and read-failure counters. |
 | `battery reset` / `bat reset` | Reset battery runtime counters/filter | Runtime | Does not change saved config. Next update resamples GPIO. |
+
+
+### Wi-Fi remote console
+
+Debug and Production expose the same CLI over TCP by default. The port is
+`TRACKER_REMOTE_CONSOLE_PORT` (`7777` by default):
+
+```bash
+nc <tracker-ip> 7777
+```
+
+Use it for cable-free `setup calibration`, then run `remote off` to close the
+TCP client/server for the current boot. Slim compiles this feature out. See
+`docs/wifi_remote_console.md` for details.
 
 SlimeVR UDP is independent from the local `output`/`stream` commands. `slime start` leaves serial `Q,...` output off and reads prepared quaternion snapshots directly.
 

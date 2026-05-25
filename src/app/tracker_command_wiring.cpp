@@ -47,6 +47,10 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.printRuntimeHealthUser = hooks.printRuntimeHealthUser;
     ctx.setSpiFrequency = hooks.setSpiFrequency;
     ctx.setSpiFrequencyUser = hooks.setSpiFrequencyUser;
+    ctx.setRemoteConsoleEnabled = hooks.setRemoteConsoleEnabled;
+    ctx.setRemoteConsoleEnabledUser = hooks.setRemoteConsoleEnabledUser;
+    ctx.printRemoteConsoleStatus = hooks.printRemoteConsoleStatus;
+    ctx.printRemoteConsoleStatusUser = hooks.printRemoteConsoleStatusUser;
     ctx.emitLogHeader = hooks.emitLogHeader;
     ctx.emitLogHeaderUser = hooks.emitLogHeaderUser;
     ctx.printLogSummary = hooks.printLogSummary;

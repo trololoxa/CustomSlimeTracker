@@ -44,6 +44,9 @@
 #include "network/wifi_manager.hpp"
 #include "network/esp32_wifi_station.hpp"
 #include "network/esp32_udp_transport.hpp"
+#if TRACKER_HAS_WIFI_REMOTE_CONSOLE
+#include "network/wifi_remote_console.hpp"
+#endif
 #include "runtime/slimevr_output_runtime.hpp"
 #if TRACKER_HAS_TAP_RUNTIME
 #include "runtime/tap_runtime_controller.hpp"
@@ -72,6 +75,9 @@ static bool g_networkConfigLoadedFromNvs = false;
 static Esp32WifiStationAdapter g_wifiStation;
 static TrackerWifiManager g_wifiManager;
 static Esp32UdpTransport g_udpTransport;
+#if TRACKER_HAS_WIFI_REMOTE_CONSOLE
+static WifiRemoteConsoleRuntime g_wifiRemoteConsole;
+#endif
 static SlimeVROutputRuntime g_slimevrRuntime;
 #if TRACKER_HAS_TAP_RUNTIME
 static TapRuntimeController g_tapRuntime;

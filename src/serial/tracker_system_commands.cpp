@@ -143,6 +143,9 @@ void trackerSerialPrintHelp(Stream& out) {
 #if TRACKER_ENABLE_NETWORK_COMMANDS || TRACKER_ENABLE_SLIMEVR_COMMANDS
     out.println();
     out.println("[network]");
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    out.println("  remote status | on | off        (TCP CLI console for cable-free setup)");
+#endif
 #if TRACKER_ENABLE_NETWORK_COMMANDS
     out.println("  net status | print | help");
     out.println("  net set ssid <ssid> [save] | set pass <password> [save] | clear pass [save]");
@@ -348,6 +351,45 @@ bool trackerSerialDispatchSystemCommand(TrackerSerialCommandContext& ctx, int ar
         }
         return true;
     }
+
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    if (trackerSerialSystemIs(argv[0], "remote")) {
+        if (argc < 2 || trackerSerialSystemIs(argv[1], "status")) {
+            if (ctx.printRemoteConsoleStatus) {
+                ctx.printRemoteConsoleStatus(out, ctx.printRemoteConsoleStatusUser);
+            } else {
+                out.println("# REMOTE CONSOLE STATUS");
+                out.println("remote_console_compiled=yes");
+                out.println("remote_console_wired=no");
+            }
+            return true;
+        }
+
+        if (trackerSerialSystemIs(argv[1], "off") || trackerSerialSystemIs(argv[1], "disable")) {
+            if (!ctx.setRemoteConsoleEnabled) {
+                tracker_serial_detail::printErr(out, "remote console control hook missing");
+                return true;
+            }
+            tracker_serial_detail::printOk(out, "remote console off");
+            out.flush();
+            ctx.setRemoteConsoleEnabled(false, ctx.setRemoteConsoleEnabledUser);
+            return true;
+        }
+
+        if (trackerSerialSystemIs(argv[1], "on") || trackerSerialSystemIs(argv[1], "enable")) {
+            if (!ctx.setRemoteConsoleEnabled) {
+                tracker_serial_detail::printErr(out, "remote console control hook missing");
+                return true;
+            }
+            ctx.setRemoteConsoleEnabled(true, ctx.setRemoteConsoleEnabledUser);
+            tracker_serial_detail::printOk(out, "remote console on");
+            return true;
+        }
+
+        tracker_serial_detail::printErr(out, "usage: remote status|on|off");
+        return true;
+    }
+#endif
 
     if (trackerSerialSystemIs(argv[0], "status")) {
         trackerSerialPrintStatus(ctx);

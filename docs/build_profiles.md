@@ -20,8 +20,8 @@ build command.
 
 Debug is the full development profile. It keeps the serial console, full CLI,
 static/runtime tests, serial stream, machine log, boot heartbeat, LED runtime,
-tap runtime, battery runtime, SlimeVR serial compatibility and all diagnostic
-commands enabled. It is the only profile that keeps the boot serial settle delay.
+tap runtime, battery runtime, Wi-Fi remote console, SlimeVR serial compatibility
+and all diagnostic commands enabled. It is the only profile that keeps the boot serial settle delay.
 
 Use Debug for:
 
@@ -34,7 +34,8 @@ Use Debug for:
 ## Production
 
 Production keeps user-facing functionality: Wi-Fi/NVS setup, SlimeVR networking,
-basic CLI, calibration/config commands, battery runtime and server telemetry. It
+basic CLI, Wi-Fi remote console for cable-free calibration, calibration/config
+commands, battery runtime and server telemetry. It
 excludes developer-only diagnostics such as machine log, serial stream, static
 tests, runtime tests and boot heartbeat.
 
@@ -49,14 +50,15 @@ Production keeps a compact config/network summary for service checks.
 
 Slim assumes the tracker has already been provisioned and calibrated in NVS. It
 keeps the tracking pipeline, Wi-Fi manager, UDP transport and SlimeVR quaternion
-output path, while disabling serial console/CLI, boot banner, LED, tap runtime,
-battery runtime and optional telemetry by default.
+output path, while disabling serial console/CLI, Wi-Fi remote console, boot banner, LED, tap
+runtime, battery runtime and optional telemetry by default.
 
 Slim does not reduce IMU ODR, IMU high-performance modes or AHRS quality. It
 reduces power/size by removing service features and by lowering non-tracking
 work:
 
 - no Serial/CLI polling;
+- no TCP remote console;
 - no LED, tap or battery runtime;
 - no server battery/temperature/RSSI telemetry by default;
 - slower Wi-Fi status polling and reconnect backoff;

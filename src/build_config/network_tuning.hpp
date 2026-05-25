@@ -56,6 +56,25 @@
   #endif
 #endif
 
+
+// TCP remote CLI console. It reuses the serial CLI parser over Wi-Fi for
+// cable-free setup/calibration. Debug and Production enable the feature by
+// default through feature_flags.hpp; Slim keeps it compiled out. Runtime
+// command `remote off` stops the TCP server/client for the current boot.
+#ifndef TRACKER_REMOTE_CONSOLE_PORT
+#define TRACKER_REMOTE_CONSOLE_PORT 7777
+#endif
+
+#ifndef TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP
+  #if TRACKER_BUILD_IS_DEBUG
+    #define TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP 32
+  #elif TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP 16
+  #else
+    #define TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP 0
+  #endif
+#endif
+
 // Network/SlimeVR update budget. This does not affect IMU/FIFO/AHRS cadence;
 // it only avoids spinning Wi-Fi/UDP state machines on every high-rate loop.
 // The values remain well below RotationData periods (100 Hz = 10 ms, Slim

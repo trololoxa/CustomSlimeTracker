@@ -47,6 +47,7 @@ PRODUCTION_REQUIRED_EXCLUDES = {
 
 SLIM_REQUIRED_EXCLUDES = PRODUCTION_REQUIRED_EXCLUDES | {
     "app/tracker_command_wiring.cpp",
+    "network/wifi_remote_console.cpp",
     "runtime/battery_runtime.cpp",
     "runtime/status_led_runtime.cpp",
     "runtime/tap_accumulator.cpp",

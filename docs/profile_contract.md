@@ -43,6 +43,7 @@ Avoid open-coded combinations in app/runtime glue when a derived alias exists:
 - CLI command families require `TRACKER_ENABLE_SERIAL_CLI=1`.
 - `TRACKER_ENABLE_SERIAL_CLI=1` requires `TRACKER_ENABLE_SERIAL_CONSOLE=1`.
 - full CLI requires basic CLI.
+- Wi-Fi remote console requires the CLI dispatcher and a non-zero TCP port/input budget.
 - machine log, serial stream and boot heartbeat require the serial console.
 - runtime power diagnostics require the runtime test runner.
 - full config print requires config commands.

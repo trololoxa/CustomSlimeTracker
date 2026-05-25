@@ -31,7 +31,7 @@ Additional Slim-only excludes:
 
 | Source | Reason |
 |---|---|
-| `app/tracker_command_wiring.cpp` | No serial CLI in Slim. |
+| `app/tracker_command_wiring.cpp`, `network/wifi_remote_console.cpp` | No serial CLI in Slim. |
 | `runtime/battery_runtime.cpp` | No battery ADC runtime/telemetry in Slim. |
 | `runtime/status_led_runtime.cpp` | No status LED runtime in Slim. |
 | `runtime/tap_accumulator.cpp` | No tap runtime in Slim. |

@@ -151,6 +151,12 @@ struct TrackerSerialCommandContext {
     bool (*setSpiFrequency)(uint32_t hz, void* user) = nullptr;
     void* setSpiFrequencyUser = nullptr;
 
+    bool (*setRemoteConsoleEnabled)(bool enabled, void* user) = nullptr;
+    void* setRemoteConsoleEnabledUser = nullptr;
+
+    void (*printRemoteConsoleStatus)(Stream& out, void* user) = nullptr;
+    void* printRemoteConsoleStatusUser = nullptr;
+
     void (*emitLogHeader)(Stream& out, void* user) = nullptr;
     void* emitLogHeaderUser = nullptr;
 

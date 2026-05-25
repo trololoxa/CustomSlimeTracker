@@ -59,6 +59,12 @@ struct TrackerCommandRuntimeHooks {
     decltype(TrackerSerialCommandContext::setSpiFrequency) setSpiFrequency = nullptr;
     void* setSpiFrequencyUser = nullptr;
 
+    decltype(TrackerSerialCommandContext::setRemoteConsoleEnabled) setRemoteConsoleEnabled = nullptr;
+    void* setRemoteConsoleEnabledUser = nullptr;
+
+    decltype(TrackerSerialCommandContext::printRemoteConsoleStatus) printRemoteConsoleStatus = nullptr;
+    void* printRemoteConsoleStatusUser = nullptr;
+
     decltype(TrackerSerialCommandContext::emitLogHeader) emitLogHeader = nullptr;
     void* emitLogHeaderUser = nullptr;
 

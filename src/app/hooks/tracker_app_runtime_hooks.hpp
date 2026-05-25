@@ -756,6 +756,17 @@ static bool updateTapRuntime() {
 
 #endif // TRACKER_ENABLE_TAP_RUNTIME
 
+
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+static bool updateRemoteConsoleRuntime() {
+    return g_wifiRemoteConsole.update(
+        g_wifiManager.connected(),
+        millis(),
+        TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP
+    );
+}
+#endif
+
 static bool updateNetworkRuntime() {
     const uint32_t nowMs = millis();
 #if TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS > 0
@@ -815,6 +826,9 @@ static TrackerAppDeps makeTrackerAppDeps() {
 #endif
     deps.callbacks.setupNetworkRuntime = setupNetworkRuntime;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    deps.callbacks.updateRemoteConsoleRuntime = updateRemoteConsoleRuntime;
+#endif
 #if TRACKER_ENABLE_TAP_RUNTIME
     deps.callbacks.setupTapRuntime = setupTapRuntime;
     deps.callbacks.updateTapRuntime = updateTapRuntime;
