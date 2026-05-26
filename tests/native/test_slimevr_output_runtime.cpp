@@ -77,6 +77,20 @@ struct FakeSnapshotSource {
 };
 
 
+
+static uint32_t readU32BeLocal(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) |
+           (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) |
+           static_cast<uint32_t>(p[3]);
+}
+
+static float readF32BeLocal(const uint8_t* p) {
+    union { uint32_t u; float f; } v{};
+    v.u = readU32BeLocal(p);
+    return v.f;
+}
+
 static std::vector<uint8_t> makeServerPacket(uint8_t type, std::initializer_list<uint8_t> payload) {
     std::vector<uint8_t> packet(12, 0);
     packet[3] = type;
@@ -267,6 +281,9 @@ int main() {
     CHECK(ctx, rt.status().batterySendFailures == 0);
     CHECK(ctx, rt.status().lastSignalStrength == 64);
     CHECK(ctx, rt.status().lastRssiDbm == -68);
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::BatteryLevel));
+    CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 12), 3.80f, 1.0e-6f);
+    CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 16), 0.55f, 1.0e-6f);
 
     udp.incoming = makeServerPacket(static_cast<uint8_t>(SlimeVRReceivePacketType::HeartBeat0), {});
     udp.incomingRemote = UdpEndpoint{0xC0A80001UL, 6969};

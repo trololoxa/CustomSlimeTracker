@@ -237,3 +237,9 @@
 #ifndef TRACKER_BATTERY_PRESENT_MIN_VOLTAGE
 #define TRACKER_BATTERY_PRESENT_MIN_VOLTAGE 1.00f
 #endif
+
+// Plausible maximum for a single Li-ion/LiPo cell at BAT+. Values above this
+// are treated as ADC/glitch/out-of-range samples and do not update telemetry.
+#ifndef TRACKER_BATTERY_PRESENT_MAX_VOLTAGE
+#define TRACKER_BATTERY_PRESENT_MAX_VOLTAGE 4.35f
+#endif

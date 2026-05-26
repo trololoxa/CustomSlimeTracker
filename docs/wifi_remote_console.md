@@ -68,3 +68,6 @@ and simple client/byte counters.
 - Blocking setup/calibration commands read from the same active TCP stream. The
   app does not poll the remote-console parser from the blocking calibration
   service hook, so prompt input is not stolen recursively.
+- `setup calibration` keeps an already connected Wi-Fi link during the
+  temperature stage. It does not issue a forced `net reconnect` when Wi-Fi is
+  already connected, because that would drop the remote TCP console session.

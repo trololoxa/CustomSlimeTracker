@@ -16,6 +16,7 @@ struct BatteryRuntimeConfig {
     float emptyVoltage = 3.30f;
     float fullVoltage = 4.20f;
     float presentVoltageMin = 1.00f;
+    float presentVoltageMax = 4.35f;
     float emaAlpha = 0.25f;
     float maxFilterStepVoltage = 0.0f;
     uint32_t sampleIntervalMs = 1000;

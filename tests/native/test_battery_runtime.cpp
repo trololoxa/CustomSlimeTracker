@@ -76,27 +76,28 @@ int main() {
     CHECK_NEAR(ctx, st.voltage, 3.75f, 1.0e-6f);
     CHECK_NEAR(ctx, st.percentage, 50.0f, 1.0e-4f);
 
-    adc.millivolts = 0; // Battery absent / divider pulled to ground.
+    adc.millivolts = 0; // One low ADC glitch must not collapse an existing estimate.
     rt.update(2001);
     st = rt.status();
-    CHECK(ctx, !st.present);
-    CHECK(ctx, !st.filteredValid);
+    CHECK(ctx, st.present);
+    CHECK(ctx, st.filteredValid);
     CHECK(ctx, st.noBatterySamples == 1u);
-    CHECK_NEAR(ctx, st.voltage, 0.0f, 1.0e-6f);
-    CHECK_NEAR(ctx, st.percentage, 0.0f, 1.0e-6f);
+    CHECK(ctx, st.glitchRejectedSamples == 1u);
+    CHECK_NEAR(ctx, st.voltage, 3.75f, 1.0e-6f);
+    CHECK_NEAR(ctx, st.percentage, 50.0f, 1.0e-4f);
     CHECK(ctx, rt.telemetry(voltage, percentage));
-    CHECK_NEAR(ctx, voltage, 0.0f, 1.0e-6f);
-    CHECK_NEAR(ctx, percentage, 0.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, voltage, 3.75f, 1.0e-6f);
+    CHECK_NEAR(ctx, percentage, 50.0f, 1.0e-4f);
 
     adc.ok = false;
     rt.update(3001);
     st = rt.status();
     CHECK(ctx, !st.lastReadOk);
     CHECK(ctx, st.readFailures == 1u);
-    CHECK(ctx, !st.present);
+    CHECK(ctx, st.present);
     CHECK(ctx, rt.telemetry(voltage, percentage));
-    CHECK_NEAR(ctx, voltage, 0.0f, 1.0e-6f);
-    CHECK_NEAR(ctx, percentage, 0.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, voltage, 3.75f, 1.0e-6f);
+    CHECK_NEAR(ctx, percentage, 50.0f, 1.0e-4f);
 
     adc.ok = true;
     adc.millivolts = 1900; // 3.80 V valid again.
@@ -112,12 +113,27 @@ int main() {
     CHECK_NEAR(ctx, voltage, 3.80f, 1.0e-6f);
 
     adc.ok = true;
-    adc.millivolts = 5000; // Implausibly high after divider -> invalid, safe 0%.
+    adc.millivolts = 5000; // Implausibly high after divider -> rejected, previous estimate kept.
     rt.update(7001);
     st = rt.status();
     CHECK(ctx, st.invalidSamples == 1u);
-    CHECK(ctx, !st.present);
+    CHECK(ctx, st.glitchRejectedSamples == 2u);
+    CHECK(ctx, st.present);
     CHECK(ctx, rt.telemetry(voltage, percentage));
+    CHECK_NEAR(ctx, voltage, 3.80f, 1.0e-6f);
+    CHECK_NEAR(ctx, percentage, 55.55556f, 1.0e-4f);
+
+    BatteryRuntime absent;
+    absent.begin(FakeAdc::read, &adc);
+    absent.configure(baseConfig());
+    adc.ok = true;
+    adc.millivolts = 0;
+    absent.update(1);
+    st = absent.status();
+    CHECK(ctx, !st.present);
+    CHECK(ctx, !st.filteredValid);
+    CHECK(ctx, st.noBatterySamples == 1u);
+    CHECK(ctx, absent.telemetry(voltage, percentage));
     CHECK_NEAR(ctx, voltage, 0.0f, 1.0e-6f);
     CHECK_NEAR(ctx, percentage, 0.0f, 1.0e-6f);
 

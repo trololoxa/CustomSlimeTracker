@@ -1176,6 +1176,14 @@ bool setupMaybeStartWifiHeating(TrackerSerialCommandContext& ctx) {
         return true;
     }
 
+    if (ctx.wifiManager && ctx.wifiManager->connected()) {
+        // Do not force a reconnect here. A remote TCP console user is connected
+        // through the same Wi-Fi link, and the old unconditional `net reconnect`
+        // dropped telnet/nc at the beginning of the temperature stage.
+        s.println("# setup calibration: Wi-Fi already connected; keeping current link for heat source");
+        return true;
+    }
+
     s.println("# setup calibration: enabling Wi-Fi during static warm-up for realistic tracker heating");
     char* enable[] = { const_cast<char*>("net"), const_cast<char*>("enable") };
     dispatchNetwork(ctx, 2, enable);

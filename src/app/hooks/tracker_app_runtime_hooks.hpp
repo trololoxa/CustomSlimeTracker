@@ -362,6 +362,7 @@ static BatteryRuntimeConfig makeAppBatteryRuntimeConfig() {
     cfg.emptyVoltage = TRACKER_BATTERY_EMPTY_VOLTAGE;
     cfg.fullVoltage = TRACKER_BATTERY_FULL_VOLTAGE;
     cfg.presentVoltageMin = TRACKER_BATTERY_PRESENT_MIN_VOLTAGE;
+    cfg.presentVoltageMax = TRACKER_BATTERY_PRESENT_MAX_VOLTAGE;
     cfg.emaAlpha = TRACKER_BATTERY_ADC_EMA_ALPHA;
     cfg.maxFilterStepVoltage = TRACKER_BATTERY_MAX_FILTER_STEP_V;
     cfg.sampleIntervalMs = TRACKER_BATTERY_ADC_SAMPLE_INTERVAL_MS;

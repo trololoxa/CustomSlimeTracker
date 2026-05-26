@@ -40,6 +40,9 @@ void BatteryRuntime::configure(const BatteryRuntimeConfig& config) {
     if (!std::isfinite(config_.presentVoltageMin) || config_.presentVoltageMin < 0.0f) {
         config_.presentVoltageMin = 1.00f;
     }
+    if (!std::isfinite(config_.presentVoltageMax) || config_.presentVoltageMax <= config_.presentVoltageMin + 0.05f) {
+        config_.presentVoltageMax = 4.35f;
+    }
     if (!std::isfinite(config_.emaAlpha) || config_.emaAlpha <= 0.0f) config_.emaAlpha = 0.25f;
     if (config_.emaAlpha > 1.0f) config_.emaAlpha = 1.0f;
     if (!std::isfinite(config_.maxFilterStepVoltage) || config_.maxFilterStepVoltage < 0.0f) {
@@ -104,11 +107,20 @@ bool BatteryRuntime::update(uint32_t nowMs) {
         config_.voltageOffset
     );
 
-    if (!std::isfinite(batteryVoltage) || batteryVoltage < 0.0f || batteryVoltage > 8.0f) {
+    if (!std::isfinite(batteryVoltage) || batteryVoltage < 0.0f || batteryVoltage > config_.presentVoltageMax) {
         ++status_.invalidSamples;
         status_.lastAdcMillivolts = adcMv;
         status_.lastAdcVoltage = static_cast<float>(adcMv) / 1000.0f;
         status_.lastSampleMs = nowMs;
+        status_.lastReadOk = true;
+        if (status_.filteredValid) {
+            ++status_.glitchRejectedSamples;
+            status_.present = true;
+            // Keep the previous filtered estimate. With a 1S Li-ion cell the
+            // BAT+ node should not exceed the configured plausible maximum;
+            // ADC/RF spikes must not turn into 100%+ battery telemetry.
+            return true;
+        }
         status_.present = false;
         status_.filteredValid = false;
         filteredVoltage_ = 0.0f;
@@ -118,6 +130,19 @@ bool BatteryRuntime::update(uint32_t nowMs) {
     }
 
     if (batteryVoltage < config_.presentVoltageMin) {
+        if (status_.filteredValid) {
+            ++status_.noBatterySamples;
+            ++status_.glitchRejectedSamples;
+            status_.lastAdcMillivolts = adcMv;
+            status_.lastAdcVoltage = static_cast<float>(adcMv) / 1000.0f;
+            status_.lastSampleMs = nowMs;
+            status_.lastReadOk = true;
+            status_.present = true;
+            // A real soldered battery/divider should not disappear for one
+            // sparse ADC sample. Preserve the filtered value instead of
+            // dropping to 0% on one low conversion.
+            return true;
+        }
         applyNoBatterySample(nowMs, adcMv, batteryVoltage);
         return true;
     }

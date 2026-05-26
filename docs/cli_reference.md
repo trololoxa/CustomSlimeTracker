@@ -186,8 +186,10 @@ nc <tracker-ip> 7777
 ```
 
 Use it for cable-free `setup calibration`, then run `remote off` to close the
-TCP client/server for the current boot. Slim compiles this feature out. See
-`docs/wifi_remote_console.md` for details.
+TCP client/server for the current boot. During `setup calibration`, the
+firmware keeps an already connected Wi-Fi link instead of forcing a reconnect
+at the temperature stage, so the TCP console should stay attached. Slim
+compiles this feature out. See `docs/wifi_remote_console.md` for details.
 
 SlimeVR UDP is independent from the local `output`/`stream` commands. `slime start` leaves serial `Q,...` output off and reads prepared quaternion snapshots directly.
 

@@ -32,6 +32,8 @@ void printBatteryStatus(Stream& out, const BatteryRuntime& battery) {
     out.print("ema_alpha="); out.println((float)TRACKER_BATTERY_ADC_EMA_ALPHA, 3);
     out.print("max_filter_step_v="); out.println((float)TRACKER_BATTERY_MAX_FILTER_STEP_V, 3);
     out.print("adc_max_mv="); out.println((uint32_t)TRACKER_BATTERY_ADC_MAX_MV);
+    out.print("present_min_v="); out.println((float)TRACKER_BATTERY_PRESENT_MIN_VOLTAGE, 3);
+    out.print("present_max_v="); out.println((float)TRACKER_BATTERY_PRESENT_MAX_VOLTAGE, 3);
     out.print("last_read_ok="); out.println(s.lastReadOk ? "yes" : "no");
     out.print("present="); out.println(s.present ? "yes" : "no");
     out.print("filtered_valid="); out.println(s.filteredValid ? "yes" : "no");
