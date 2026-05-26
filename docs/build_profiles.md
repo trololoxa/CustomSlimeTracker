@@ -18,10 +18,12 @@ build command.
 
 ## Debug
 
-Debug is the full development profile. It keeps the serial console, full CLI,
-static/runtime tests, serial stream, machine log, boot heartbeat, LED runtime,
-tap runtime, battery runtime, Wi-Fi remote console, SlimeVR serial compatibility
-and all diagnostic commands enabled. It is the only profile that keeps the boot serial settle delay.
+Debug is the full development profile. It keeps an explicit `build_src_filter = +<*>`
+so local/inherited source filters cannot accidentally drop core translation units.
+It keeps the serial console, full CLI, static/runtime tests, serial stream,
+machine log, boot heartbeat, LED runtime, tap runtime, battery runtime, Wi-Fi
+remote console, SlimeVR serial compatibility and all diagnostic commands enabled.
+It is the only profile that keeps the boot serial settle delay.
 
 Use Debug for:
 
@@ -116,3 +118,13 @@ The intended rule is:
 - use `build_src_filter` for whole `.cpp` modules that a profile can never use;
 - keep both layers aligned, so a module is not compiled in a profile where its
   dispatcher/wiring is disabled.
+
+### SlimeVR runtime link unit
+
+PlatformIO builds compile the SlimeVR output runtime through
+`src/slimevr_output_runtime_link_unit.cpp`. The original nested file
+`src/runtime/slimevr_output_runtime.cpp` remains as a native-test/non-PlatformIO
+wrapper, but PlatformIO defines
+`TRACKER_SLIMEVR_OUTPUT_RUNTIME_DISABLE_STANDALONE_TU=1` so only the root link
+unit emits the implementation. This avoids `undefined reference to
+SlimeVROutputRuntime...` after branch merges or source-filter drift.
