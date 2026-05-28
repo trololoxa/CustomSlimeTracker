@@ -49,7 +49,7 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  help | ?");
     out.println("  status | health | version | reboot | factory_reset");
 #if TRACKER_ENABLE_SETUP_COMMANDS
-    out.println("  setup guide | setup status | setup calibration");
+    out.println("  setup guide | setup status | setup calibration [nomag|6dof]");
 #endif
 
 #if TRACKER_ENABLE_CONFIG_COMMANDS
@@ -74,7 +74,7 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("[guided setup]");
     out.println("  setup guide | status");
     out.println("  setup wifi                         (interactive scan/select/password/connect/save/server check)");
-    out.println("  setup calibration [axis <bodyX> <bodyY> <bodyZ>]");
+    out.println("  setup calibration [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
 #endif
 
 #if TRACKER_ENABLE_CALIBRATION_COMMANDS
@@ -165,7 +165,7 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  stream off | heartbeat | raw | scaled | quat | debug");
     out.println("  stream rate <hz>");
     out.println("  log off | basic | full | start [basic|full] | stop | rate <hz> | header | summary | reset");
-    out.println("  bias status | on | off | reset");
+    out.println("  bias status | on [save] | off [save] | save | reset");
     out.println("  output mode debug | output rate <hz> | output start | output stop");
 #endif
 #if TRACKER_ENABLE_TEST_COMMANDS

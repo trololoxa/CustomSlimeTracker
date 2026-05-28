@@ -232,22 +232,22 @@ void printSetupGuide(Stream& s) {
     s.println("# SETUP GUIDE");
     s.println("# New tracker path:");
     s.println("#   1) setup wifi");
-    s.println("#   2) setup calibration [resume|full] [axis <bodyX> <bodyY> <bodyZ>]");
+    s.println("#   2) setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
     s.println("#   3) setup status");
     s.println();
     s.println("setup wifi");
     s.println("  Interactive Wi-Fi provisioning: scan, choose network, enter password,");
     s.println("  connect, save to NVS, start SlimeVR discovery and enable autostart.");
     s.println();
-    s.println("setup calibration [resume|full] [axis <bodyX> <bodyY> <bodyZ>]");
+    s.println("setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
     s.println("  Default/resume mode skips already valid stages and saves each completed");
     s.println("  missing stage to NVS immediately, so a failed mag stage does not force");
     s.println("  another 15-minute temperature calibration on the next run.");
     s.println("  full mode intentionally recalibrates every stage transactionally.");
     s.println("  Blocking guided production calibration. It services FIFO, magnetometer,");
     s.println("  Wi-Fi and SlimeVR while it performs rest gyro, gyro temperature model,");
-    s.println("  auto-detected accel 6-position, mag hard/soft collection, mag axis");
-    s.println("  alignment and production tracking enable/save.");
+    s.println("  auto-detected accel 6-position, optional mag hard/soft collection, mag axis");
+    s.println("  alignment and production tracking enable/save. Use nomag/6dof for a dead or absent magnetometer.");
     s.println();
     s.println("setup status");
     s.println("  Readiness checklist for tracking, mag-yaw, temperature model and SlimeVR.");
@@ -273,9 +273,15 @@ void printSetupStatus(TrackerSerialCommandContext& ctx) {
     s.print("wifi_connected="); s.println(yesNo(r.wifiConnected));
     printStep(s, "rest_gyro", r.gyroReady, "setup calibration");
     printStep(s, "accel_6pos", r.accelReady, "setup calibration");
-    printStep(s, "mag_driver", r.magDriver, "setup calibration");
-    printStep(s, "mag_hard_soft", r.magCal, "setup calibration");
-    printStep(s, "mag_axis", r.magAxis, "setup calibration axis <bodyX> <bodyY> <bodyZ>");
+    if (r.magDriver) {
+        printStep(s, "mag_driver", r.magDriver, "setup calibration nomag");
+        printStep(s, "mag_hard_soft", r.magCal, "setup calibration");
+        printStep(s, "mag_axis", r.magAxis, "setup calibration axis <bodyX> <bodyY> <bodyZ>");
+    } else {
+        s.println("mag_driver=disabled");
+        s.println("mag_hard_soft=disabled");
+        s.println("mag_axis=disabled");
+    }
     printStep(s, "temperature_model", r.tempQuality(), "setup calibration");
     printStep(s, "runtime_bias", r.runtimeBias(), "setup calibration");
     s.print("runtime_bias_enabled="); s.println(yesNo(r.runtimeBiasEnabled));
@@ -300,7 +306,11 @@ void printSetupStatus(TrackerSerialCommandContext& ctx) {
     s.print("runtime_bias_enabled="); s.println(yesNo(r.runtimeBiasEnabled));
 
     if (!r.production()) {
-        s.println("# Use setup guide for the full first-run sequence.");
+        if (r.tracking6dof() && r.slimevr() && !r.magDriver) {
+            s.println("# 6DoF setup is ready; mag is disabled/optional, so full production_ready remains no.");
+        } else {
+            s.println("# Use setup guide for the full first-run sequence.");
+        }
     }
 }
 
@@ -1291,7 +1301,9 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
                                          bool collectMagDuringAccel) {
     Stream& s = out(ctx);
     s.println();
-    s.println("# SETUP CALIBRATION STEP 3/6: ACCEL 6-POS + MAG COLLECTION");
+    s.println(collectMagDuringAccel
+        ? "# SETUP CALIBRATION STEP 3/6: ACCEL 6-POS + MAG COLLECTION"
+        : "# SETUP CALIBRATION STEP 3/6: ACCEL 6-POS");
     s.println("# You do NOT need to know the IMU axis labels.");
     s.println("# For each capture, place the tracker on any uncaptured physical side, let it fully settle, then press Enter.");
     s.println("# The firmware waits for a contiguous still window, detects which accel side is up, and rejects duplicates/diagonal positions.");
@@ -1664,10 +1676,36 @@ bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
     return setupSetAxisMapping(ctx, tokens[0], tokens[1], tokens[2]);
 }
 
-bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx) {
+bool setupDisableMagFor6Dof(TrackerSerialCommandContext& ctx) {
+    Stream& s = out(ctx);
+    if (!ctx.config) {
+        tracker_serial_detail::printErr(s, "setup calibration failed: config is not available");
+        return false;
+    }
+
+    if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+    if (ctx.setMagRuntimeEnabled) {
+        (void)ctx.setMagRuntimeEnabled(false, false, ctx.setMagRuntimeEnabledUser);
+    }
+    if (ctx.setMagYawCorrectionApplyEnabled) {
+        (void)ctx.setMagYawCorrectionApplyEnabled(false, false, ctx.setMagYawCorrectionApplyEnabledUser);
+    }
+    if (ctx.resetMagYawCorrection) ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
+
+    ctx.config->data.magCal.driverEnabled = false;
+    ctx.config->data.magYaw.applyEnabled = false;
+    ctx.config->updateCrc();
+    if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
+    s.println("# setup calibration: magnetometer disabled for 6DoF-only tracker");
+    return true;
+}
+
+bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx, bool noMag) {
     Stream& s = out(ctx);
     s.println();
-    s.println("# SETUP CALIBRATION STEP 6/6: ENABLE PRODUCTION TRACKING FEATURES");
+    s.println(noMag
+        ? "# SETUP CALIBRATION STEP 6/6: ENABLE 6DOF TRACKING FEATURES"
+        : "# SETUP CALIBRATION STEP 6/6: ENABLE PRODUCTION TRACKING FEATURES");
 
     if (!ctx.config) {
         tracker_serial_detail::printErr(s, "setup calibration failed: config is not available");
@@ -1684,7 +1722,9 @@ bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx) {
     if (ctx.setRuntimeGyroBiasEnabled) {
         (void)ctx.setRuntimeGyroBiasEnabled(true, ctx.setRuntimeGyroBiasEnabledUser);
     }
-    if (ctx.setMagYawCorrectionApplyEnabled) {
+    if (noMag) {
+        if (!setupDisableMagFor6Dof(ctx)) return false;
+    } else if (ctx.setMagYawCorrectionApplyEnabled) {
         if (!ctx.setMagYawCorrectionApplyEnabled(true, false, ctx.setMagYawCorrectionApplyEnabledUser)) {
             tracker_serial_detail::printErr(s, "setup calibration failed: mag yaw apply enable failed");
             return false;
@@ -1697,18 +1737,26 @@ bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx) {
     if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
 
     const SetupReadiness r = readSetupReadiness(ctx);
-    if (!r.production()) {
-        s.println("# WARN setup calibration finished in RAM, but production_ready is still no; run setup status for missing items");
+    const bool ready = noMag
+        ? (r.tracking6dof() && r.tempQuality() && r.runtimeBias())
+        : r.production();
+    if (!ready) {
+        s.println(noMag
+            ? "# WARN setup calibration finished in RAM, but 6dof_ready is still no; run setup status for missing items"
+            : "# WARN setup calibration finished in RAM, but production_ready is still no; run setup status for missing items");
     } else {
-        tracker_serial_detail::printOk(s, "setup calibration features enabled in RAM");
+        tracker_serial_detail::printOk(s, noMag
+            ? "6DoF tracking features enabled in RAM"
+            : "setup calibration features enabled in RAM");
     }
     if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
     printSetupStatus(ctx);
-    return r.tracking6dof() && r.magYaw() && r.tempQuality();
+    return ready;
 }
 
 struct SetupCalibrationOptions {
     bool full = false;
+    bool noMag = false;
     const char* axisX = nullptr;
     const char* axisY = nullptr;
     const char* axisZ = nullptr;
@@ -1722,7 +1770,7 @@ bool parseSetupCalibrationOptions(TrackerSerialCommandContext& ctx,
     for (int i = 2; i < argc; ++i) {
         if (is(argv[i], "axis")) {
             if (i + 3 >= argc) {
-                tracker_serial_detail::printErr(s, "usage: setup calibration [resume|full] [axis <bodyX> <bodyY> <bodyZ>]");
+                tracker_serial_detail::printErr(s, "usage: setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
                 return false;
             }
             opt.axisX = argv[i + 1];
@@ -1733,13 +1781,17 @@ bool parseSetupCalibrationOptions(TrackerSerialCommandContext& ctx,
             opt.full = true;
         } else if (is(argv[i], "resume") || is(argv[i], "continue") || is(argv[i], "missing") || is(argv[i], "auto")) {
             opt.full = false;
+        } else if (is(argv[i], "nomag") || is(argv[i], "no-mag") || is(argv[i], "6dof") ||
+                   is(argv[i], "sixdof") || is(argv[i], "without-mag")) {
+            opt.noMag = true;
         } else if (is(argv[i], "help") || is(argv[i], "?")) {
-            s.println("setup calibration [resume|full] [axis <bodyX> <bodyY> <bodyZ>]");
+            s.println("setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
             s.println("  resume/default: skip valid stages and save every newly completed stage to NVS");
             s.println("  full: recalibrate all stages transactionally and save once at the end");
+            s.println("  nomag/6dof: skip mag hard/soft + mag axis, disable mag yaw, save 6DoF config");
             return false;
         } else {
-            tracker_serial_detail::printErr(s, "usage: setup calibration [resume|full] [axis <bodyX> <bodyY> <bodyZ>]");
+            tracker_serial_detail::printErr(s, "usage: setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
             return false;
         }
     }
@@ -1755,11 +1807,12 @@ bool setupCheckpointCommit(TrackerSerialCommandContext& ctx, const char* stageNa
 }
 
 void cmdSetupCalibrationFull(TrackerSerialCommandContext& ctx,
+                             bool noMag,
                              const char* axisX,
                              const char* axisY,
                              const char* axisZ) {
     Stream& s = out(ctx);
-    s.println("# SETUP CALIBRATION FULL");
+    s.println(noMag ? "# SETUP CALIBRATION FULL 6DOF/NOMAG" : "# SETUP CALIBRATION FULL");
     s.println("# Full mode recalibrates every stage transactionally and writes NVS only once at the end.");
     s.println("# Use plain 'setup calibration' to resume missing stages and skip already saved work.");
 
@@ -1782,24 +1835,31 @@ void cmdSetupCalibrationFull(TrackerSerialCommandContext& ctx,
     axisAuto.reset();
     SetupMagAxisDynamicCollector& axisDynamic = g_setupMagAxisDynamicCollector;
     axisDynamic.reset();
-    if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto, true)) { fail("accel_mag_faces"); return; }
-    if (!setupRunMagMotionAndApply(ctx, axisDynamic, false)) { fail("mag_hard_soft"); return; }
-    if (!setupRunAxisAlignment(ctx, axisAuto, axisDynamic, axisX, axisY, axisZ)) { fail("mag_axis"); return; }
-    if (!setupEnableProductionTracking(ctx)) { fail("enable_tracking"); return; }
+    if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto, !noMag)) { fail(noMag ? "accel_6pos" : "accel_mag_faces"); return; }
+    if (!noMag) {
+        if (!setupRunMagMotionAndApply(ctx, axisDynamic, false)) { fail("mag_hard_soft"); return; }
+        if (!setupRunAxisAlignment(ctx, axisAuto, axisDynamic, axisX, axisY, axisZ)) { fail("mag_axis"); return; }
+    } else {
+        s.println("# skip mag_hard_soft: nomag/6dof requested");
+        s.println("# skip mag_axis: nomag/6dof requested");
+    }
+    if (!setupEnableProductionTracking(ctx, noMag)) { fail("enable_tracking"); return; }
 
     if (!tx.commit(ctx)) { fail("commit_save"); return; }
 
-    tracker_serial_detail::printOk(s, "setup calibration complete: tracker calibration saved to NVS");
+    tracker_serial_detail::printOk(s, noMag ? "setup calibration complete: 6DoF tracker calibration saved to NVS" : "setup calibration complete: tracker calibration saved to NVS");
     printSetupStatus(ctx);
 }
 
 void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
+                               bool noMag,
                                const char* axisX,
                                const char* axisY,
                                const char* axisZ) {
     Stream& s = out(ctx);
-    s.println("# SETUP CALIBRATION RESUME");
+    s.println(noMag ? "# SETUP CALIBRATION RESUME 6DOF/NOMAG" : "# SETUP CALIBRATION RESUME");
     s.println("# Resume mode skips stages that are already valid and saves each newly completed stage to NVS immediately.");
+    if (noMag) s.println("# nomag/6dof: mag hard/soft and mag axis stages will be skipped and mag yaw will be disabled.");
     s.println("# Use 'setup calibration full' to intentionally recalibrate everything from scratch.");
 
     if (!ctx.calibrationIo || !ctx.imuCal || !ctx.accelCalRunner || !ctx.config || !ctx.configStore) {
@@ -1837,8 +1897,8 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
 
     // Re-read readiness after rest/temp commits because they may update runtime/config state.
     r = readSetupReadiness(ctx);
-    const bool needMagCollection = !r.magCal;
-    const bool needAxisAssist = !r.magAxis || (axisX && axisY && axisZ);
+    const bool needMagCollection = !noMag && !r.magCal;
+    const bool needAxisAssist = !noMag && (!r.magAxis || (axisX && axisY && axisZ));
     bool magCollectionStartedDuringAccel = false;
 
     if (r.accelReady) {
@@ -1855,29 +1915,34 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
         if (!setupCheckpointCommit(ctx, "accel_6pos")) { tx.rollback(ctx, "accel_6pos_commit"); return; }
     }
 
-    r = readSetupReadiness(ctx);
-    if (r.magCal) {
-        s.println("# skip mag_hard_soft: already valid in RAM/NVS");
+    if (noMag) {
+        s.println("# skip mag_hard_soft: nomag/6dof requested");
+        s.println("# skip mag_axis: nomag/6dof requested");
     } else {
-        SetupCalibrationTransaction& tx = g_setupCalibrationTx;
-        tx.begin(ctx);
-        axisDynamic.reset();
-        const bool startFreshMagCalibration = !magCollectionStartedDuringAccel;
-        if (!setupRunMagMotionAndApply(ctx, axisDynamic, startFreshMagCalibration)) { tx.rollback(ctx, "mag_hard_soft"); return; }
-        if (!setupCheckpointCommit(ctx, "mag_hard_soft")) { tx.rollback(ctx, "mag_hard_soft_commit"); return; }
-    }
-
-    r = readSetupReadiness(ctx);
-    if (r.magAxis && !(axisX && axisY && axisZ)) {
-        s.println("# skip mag_axis: already valid in RAM/NVS");
-    } else {
-        SetupCalibrationTransaction& tx = g_setupCalibrationTx;
-        tx.begin(ctx);
-        if (axisDynamic.intervalCount == 0 && !axisAuto.count && !(axisX && axisY && axisZ)) {
-            (void)setupRunMagAxisMotionOnly(ctx, axisDynamic);
+        r = readSetupReadiness(ctx);
+        if (r.magCal) {
+            s.println("# skip mag_hard_soft: already valid in RAM/NVS");
+        } else {
+            SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+            tx.begin(ctx);
+            axisDynamic.reset();
+            const bool startFreshMagCalibration = !magCollectionStartedDuringAccel;
+            if (!setupRunMagMotionAndApply(ctx, axisDynamic, startFreshMagCalibration)) { tx.rollback(ctx, "mag_hard_soft"); return; }
+            if (!setupCheckpointCommit(ctx, "mag_hard_soft")) { tx.rollback(ctx, "mag_hard_soft_commit"); return; }
         }
-        if (!setupRunAxisAlignment(ctx, axisAuto, axisDynamic, axisX, axisY, axisZ)) { tx.rollback(ctx, "mag_axis"); return; }
-        if (!setupCheckpointCommit(ctx, "mag_axis")) { tx.rollback(ctx, "mag_axis_commit"); return; }
+
+        r = readSetupReadiness(ctx);
+        if (r.magAxis && !(axisX && axisY && axisZ)) {
+            s.println("# skip mag_axis: already valid in RAM/NVS");
+        } else {
+            SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+            tx.begin(ctx);
+            if (axisDynamic.intervalCount == 0 && !axisAuto.count && !(axisX && axisY && axisZ)) {
+                (void)setupRunMagAxisMotionOnly(ctx, axisDynamic);
+            }
+            if (!setupRunAxisAlignment(ctx, axisAuto, axisDynamic, axisX, axisY, axisZ)) { tx.rollback(ctx, "mag_axis"); return; }
+            if (!setupCheckpointCommit(ctx, "mag_axis")) { tx.rollback(ctx, "mag_axis_commit"); return; }
+        }
     }
 
     // Always refresh feature toggles in RAM/NVS. This is quick and makes resume
@@ -1885,11 +1950,11 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
     {
         SetupCalibrationTransaction& tx = g_setupCalibrationTx;
         tx.begin(ctx);
-        if (!setupEnableProductionTracking(ctx)) { tx.rollback(ctx, "enable_tracking"); return; }
+        if (!setupEnableProductionTracking(ctx, noMag)) { tx.rollback(ctx, "enable_tracking"); return; }
         if (!setupCheckpointCommit(ctx, "enable_tracking")) { tx.rollback(ctx, "enable_tracking_commit"); return; }
     }
 
-    tracker_serial_detail::printOk(s, "setup calibration resume complete: all currently missing stages are saved to NVS");
+    tracker_serial_detail::printOk(s, noMag ? "setup calibration resume complete: 6DoF stages saved to NVS" : "setup calibration resume complete: all currently missing stages are saved to NVS");
     printSetupStatus(ctx);
 }
 
@@ -1898,9 +1963,9 @@ void cmdSetupCalibration(TrackerSerialCommandContext& ctx, int argc, char** argv
     if (!parseSetupCalibrationOptions(ctx, argc, argv, opt)) return;
 
     if (opt.full) {
-        cmdSetupCalibrationFull(ctx, opt.axisX, opt.axisY, opt.axisZ);
+        cmdSetupCalibrationFull(ctx, opt.noMag, opt.axisX, opt.axisY, opt.axisZ);
     } else {
-        cmdSetupCalibrationResume(ctx, opt.axisX, opt.axisY, opt.axisZ);
+        cmdSetupCalibrationResume(ctx, opt.noMag, opt.axisX, opt.axisY, opt.axisZ);
     }
 }
 
