@@ -267,7 +267,7 @@ void startSlimeRuntime(TrackerSerialCommandContext& ctx) {
 }
 
 bool setWifiCredentials(TrackerSerialCommandContext& ctx, const char* ssid, const char* password) {
-    if (!ctx.networkConfig || !ctx.wifiManager) return false;
+    if (!ctx.networkConfig) return false;
     if (!ssid || ssid[0] == '\0' || std::strlen(ssid) > 32) return false;
     if (password && std::strlen(password) > 64) return false;
 
@@ -281,7 +281,9 @@ bool setWifiCredentials(TrackerSerialCommandContext& ctx, const char* ssid, cons
     if (ctx.wifiManager) ctx.wifiManager->reset();
     applyWifiConfig(ctx);
     const bool saved = saveNetworkConfig(ctx);
-    startSlimeRuntime(ctx);
+    if (ctx.wifiManager && ctx.slimevrRuntime) {
+        startSlimeRuntime(ctx);
+    }
     return saved;
 }
 
@@ -325,7 +327,7 @@ void dispatchSet(TrackerSerialCommandContext& ctx, int argc, char** argv) {
             return;
         }
         if (setWifiCredentials(ctx, argv[2], argv[3])) {
-            info(out, "CMD SET WIFI OK: New wifi credentials set, reconnecting");
+            info(out, "CMD SET WIFI OK: New wifi credentials saved to NVS, reconnecting");
         } else {
             error(out, "CMD SET WIFI ERROR: failed to set or save credentials");
         }
@@ -346,7 +348,7 @@ void dispatchSet(TrackerSerialCommandContext& ctx, int argc, char** argv) {
             return;
         }
         if (setWifiCredentials(ctx, ssid, argc >= 4 ? pass : "")) {
-            info(out, "CMD SET BWIFI OK: New wifi credentials set, reconnecting");
+            info(out, "CMD SET BWIFI OK: New wifi credentials saved to NVS, reconnecting");
         } else {
             error(out, "CMD SET BWIFI ERROR: failed to set or save credentials");
         }

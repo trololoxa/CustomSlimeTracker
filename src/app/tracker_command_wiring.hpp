@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "serial/tracker_serial_context.hpp"
+#include "runtime/tracker_health_state.hpp"
 
 namespace tracker {
 
@@ -20,6 +21,7 @@ struct TrackerCommandRuntimeObjects {
     TapRuntimeController* tapRuntime = nullptr;
     StatusLedRuntime* statusLedRuntime = nullptr;
     BatteryRuntime* batteryRuntime = nullptr;
+    TrackerHealthState* health = nullptr;
 
     Lsm6dsv* lsm = nullptr;
     Lsm6dsvFifoReader* fifo = nullptr;

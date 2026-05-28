@@ -267,6 +267,7 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.networkConfigLoadedFromNvs = &g_networkConfigLoadedFromNvs;
     objects.wifiManager = &g_wifiManager;
     objects.slimevrRuntime = &g_slimevrRuntime;
+    objects.health = &g_trackerHealth;
 #if TRACKER_ENABLE_TAP_RUNTIME
     objects.tapRuntime = &g_tapRuntime;
 #endif

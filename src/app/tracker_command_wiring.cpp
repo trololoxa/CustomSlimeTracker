@@ -18,6 +18,7 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.tapRuntime = objects.tapRuntime;
     ctx.statusLedRuntime = objects.statusLedRuntime;
     ctx.batteryRuntime = objects.batteryRuntime;
+    ctx.health = objects.health;
     ctx.lsm = objects.lsm;
     ctx.fifo = objects.fifo;
     ctx.sensorHub = objects.sensorHub;

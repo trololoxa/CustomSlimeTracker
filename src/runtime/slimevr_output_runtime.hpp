@@ -8,6 +8,7 @@
 #include "network/wifi_manager.hpp"
 #include "output/slimevr_packet_writer.hpp"
 #include "runtime/tracker_runtime_types.hpp"
+#include "runtime/tracker_health_state.hpp"
 
 namespace tracker {
 
@@ -96,9 +97,12 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t magnetometerAccuracySent = 0;
     uint32_t tapSent = 0;
     uint32_t tapSendFailures = 0;
+    uint32_t trackerErrorSent = 0;
+    uint32_t trackerErrorSendFailures = 0;
     uint8_t lastTapValue = 0;
     uint32_t rotationNoSnapshot = 0;
     uint32_t rotationDuplicateSnapshot = 0;
+    uint32_t rotationSuppressedByError = 0;
     uint32_t packetsReceived = 0;
     uint32_t discoveryResponses = 0;
     uint32_t heartbeatReceived = 0;
@@ -165,6 +169,11 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t lastRotationQualityFlags = 0;
     float lastRotationConfidence = 0.0f;
     uint32_t lastRotationSnapshotAgeUs = 0;
+    bool trackerErrorActive = false;
+    bool trackerDegradedNoImu = false;
+    uint8_t trackerErrorCode = 0;
+    uint32_t trackerHealthRevision = 0;
+    char trackerErrorMessage[64] = {};
 };
 
 class SlimeVROutputRuntime {
@@ -180,6 +189,7 @@ public:
                          float latestBatteryVoltage,
                          float latestBatteryPercentage,
                          bool hasCompletedRestCalibration);
+    void setTrackerHealth(const TrackerHealthSnapshot& health);
     void resetCounters();
     void stop();
     void restart();
@@ -215,6 +225,8 @@ private:
     void sendTemperature(uint32_t nowMs);
     void sendBatteryLevel(uint32_t nowMs);
     void sendMagnetometerAccuracy(uint32_t nowMs);
+    void maybeSendTrackerError(uint32_t nowMs);
+    void maybeRecordRotationSuppressedByError(uint32_t nowMs);
     void maybeSendRotation(uint32_t nowMs);
     void sendRotation(const TrackerPreparedOutputSnapshot& snapshot, uint32_t nowMs);
     void makeHandshakeInfo(SlimeVRHandshakeInfo& info) const;
@@ -224,6 +236,7 @@ private:
         Telemetry,
         Rotation,
         Tap,
+        ErrorReport,
     };
 
     bool sendPacket(const SlimeVRPacketWriteResult& packet, const UdpEndpoint& endpoint, PacketPurpose purpose);
@@ -273,6 +286,8 @@ private:
     float latestBatteryVoltage_ = 0.0f;
     float latestBatteryPercentage_ = 0.0f;
     bool hasCompletedRestCalibration_ = false;
+    TrackerHealthSnapshot trackerHealth_;
+    uint32_t lastTrackerErrorMs_ = 0;
 
     uint32_t lastPingId_ = 0;
     uint32_t lastServerFeatureFlags_ = 0;
@@ -301,9 +316,12 @@ private:
     uint32_t magnetometerAccuracySent_ = 0;
     uint32_t tapSent_ = 0;
     uint32_t tapSendFailures_ = 0;
+    uint32_t trackerErrorSent_ = 0;
+    uint32_t trackerErrorSendFailures_ = 0;
     uint8_t lastTapValue_ = 0;
     uint32_t rotationNoSnapshot_ = 0;
     uint32_t rotationDuplicateSnapshot_ = 0;
+    uint32_t rotationSuppressedByError_ = 0;
     uint32_t packetsReceived_ = 0;
     uint32_t discoveryResponses_ = 0;
     uint32_t heartbeatReceived_ = 0;

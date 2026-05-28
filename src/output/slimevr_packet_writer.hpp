@@ -163,6 +163,10 @@ public:
     SlimeVRPacketWriteResult writeTap(uint8_t* out, size_t capacity,
                                       uint8_t sensorId,
                                       uint8_t value);
+    SlimeVRPacketWriteResult writeError(uint8_t* out, size_t capacity,
+                                        uint8_t sensorId,
+                                        uint8_t errorCode,
+                                        const char* message);
     SlimeVRPacketWriteResult writeMagnetometerAccuracy(uint8_t* out, size_t capacity,
                                                        uint8_t sensorId,
                                                        float accuracyInfo);

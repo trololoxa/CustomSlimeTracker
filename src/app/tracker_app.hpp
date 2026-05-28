@@ -14,6 +14,7 @@
 #include "runtime/runtime_test_runner.hpp"
 #endif
 #include "runtime/tracker_runtime_types.hpp"
+#include "runtime/tracker_health_state.hpp"
 #include "runtime/mag_runtime_state.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/imu_quality.hpp"
@@ -73,6 +74,7 @@ struct TrackerAppRuntimeObjects {
     uint32_t* runtimeSamples = nullptr;
     uint32_t* lastHeartbeatMs = nullptr;
     float* latestTempC = nullptr;
+    TrackerHealthState* health = nullptr;
 };
 
 struct TrackerAppCallbacks {
@@ -88,6 +90,7 @@ struct TrackerAppCallbacks {
     void (*setupBatteryRuntime)() = nullptr;
     bool (*updateBatteryRuntime)() = nullptr;
     void (*setStatusLedSensorError)() = nullptr;
+    void (*publishHealthState)(const TrackerHealthSnapshot& health) = nullptr;
     void (*resetFifoRuntimeCounters)() = nullptr;
     void (*attachFifoInterrupt)() = nullptr;
     void (*resetOrientationState)(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase) = nullptr;
@@ -120,7 +123,14 @@ public:
 
 private:
     bool ready() const;
-    void fatal(const char* message);
+    bool initLsmWithRetries();
+    bool initFifoWithRetries();
+    void beginSensorStartupRecovery(TrackerHealthFaultCode code, const char* message);
+    bool updateSensorStartupRecovery(uint32_t nowMs);
+    void finishSensorStartupRecoverySuccess();
+    void setupSensorRuntime();
+    void enterFatalDegraded(TrackerHealthFaultCode code, const char* message);
+    void publishHealthState();
     void call(void (*callback)());
     bool processFifoRuntime();
     bool maybeIdleYield(bool anyWork);
@@ -128,6 +138,14 @@ private:
     void startMagFromConfig(Stream& out);
 
     TrackerAppDeps deps_;
+    bool sensorRuntimeReady_ = false;
+    bool sensorStartupRecoveryActive_ = false;
+    bool sensorStartupHardFailed_ = false;
+    TrackerHealthFaultCode pendingSensorFaultCode_ = TrackerHealthFaultCode::None;
+    uint32_t sensorStartupRecoveryStartedMs_ = 0;
+    uint32_t nextSensorStartupRecoveryMs_ = 0;
+    uint16_t sensorStartupRecoveryAttempts_ = 0;
+    char pendingSensorFaultMessage_[64] = {};
 };
 
 } // namespace tracker

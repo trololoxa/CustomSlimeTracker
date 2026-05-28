@@ -359,5 +359,39 @@ int main() {
     CHECK(ctx, rt.status().unknownPacketsReceived == 1);
     CHECK(ctx, rt.status().lastUnknownPacketType == 0xFE);
 
+    TrackerHealthState health;
+    health.enterDegradedNoImu(TrackerHealthFaultCode::LsmInitFailed, "LSM6DSV init failed after retries");
+    rt.setTrackerHealth(health.snapshot());
+    const SlimeVROutputRuntimeStatus beforeFaultUpdate = rt.status();
+    const size_t sentBeforeFaultUpdate = udp.sent.size();
+    snapshots.snapshot.sequence = 99;
+    rt.update(7200);
+    const SlimeVROutputRuntimeStatus faultStatus = rt.status();
+    CHECK(ctx, faultStatus.trackerErrorActive);
+    CHECK(ctx, faultStatus.trackerDegradedNoImu);
+    CHECK(ctx, faultStatus.trackerErrorCode == static_cast<uint8_t>(TrackerHealthFaultCode::LsmInitFailed));
+    CHECK(ctx, std::strcmp(faultStatus.trackerErrorMessage, "LSM6DSV init failed after retries") == 0);
+    CHECK(ctx, faultStatus.rotationSent == beforeFaultUpdate.rotationSent);
+    CHECK(ctx, faultStatus.rotationSuppressedByError > beforeFaultUpdate.rotationSuppressedByError);
+    CHECK(ctx, faultStatus.trackerErrorSent == beforeFaultUpdate.trackerErrorSent + 1u);
+
+    bool sawOnlineSensorInfo = false;
+    bool sawErrorPacket = false;
+    for (size_t i = sentBeforeFaultUpdate; i < udp.sent.size(); ++i) {
+        const auto& pkt = udp.sent[i].data;
+        if (pkt.size() >= SLIMEVR_PACKET_HEADER_SIZE + 8u &&
+            pkt[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo)) {
+            sawOnlineSensorInfo = sawOnlineSensorInfo ||
+                (pkt[12] == 2 && pkt[13] == static_cast<uint8_t>(SlimeVRSensorState::Online));
+        }
+        if (pkt.size() >= SLIMEVR_PACKET_HEADER_SIZE + 3u &&
+            pkt[3] == static_cast<uint8_t>(SlimeVRSendPacketType::Error)) {
+            sawErrorPacket = sawErrorPacket ||
+                (pkt[12] == 2 && pkt[13] == static_cast<uint8_t>(TrackerHealthFaultCode::LsmInitFailed));
+        }
+    }
+    CHECK(ctx, sawOnlineSensorInfo);
+    CHECK(ctx, sawErrorPacket);
+
     return ctx.finish("slimevr_output_runtime");
 }

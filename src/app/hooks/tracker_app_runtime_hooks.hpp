@@ -601,6 +601,10 @@ static bool copyPreparedOutputSnapshotForSlimeVR(TrackerPreparedOutputSnapshot& 
     return g_preparedOutput.copy(out);
 }
 
+static void publishTrackerHealthState(const TrackerHealthSnapshot& health) {
+    g_slimevrRuntime.setTrackerHealth(health);
+}
+
 static void setupNetworkRuntime() {
     TrackerNetworkConfig loaded;
     if (g_networkConfigStore.load(loaded)) {
@@ -615,6 +619,7 @@ static void setupNetworkRuntime() {
     g_wifiManager.begin(g_wifiStation);
     g_wifiManager.configure(makeAppWifiManagerConfig());
     g_slimevrRuntime.begin(g_udpTransport, g_wifiManager, copyPreparedOutputSnapshotForSlimeVR, nullptr);
+    g_slimevrRuntime.setTrackerHealth(g_trackerHealth.snapshot());
     const bool slimeAutostart = slimevrAutostartEnabledFromConfig();
     const uint32_t nowMs = millis();
     refreshAppSlimeVRRuntimeStaticConfig(nowMs, true, slimeAutostart);
@@ -638,7 +643,7 @@ static void setupNetworkRuntime() {
 
 #if TRACKER_ENABLE_STATUS_LED
 static TrackerStatusLedMode deriveStatusLedMode() {
-    if (g_statusLedSensorError) return TrackerStatusLedMode::SensorError;
+    if (g_trackerHealth.fatalActive()) return TrackerStatusLedMode::SensorError;
 #if !TRACKER_ENABLE_STATUS_LED
     return TrackerStatusLedMode::Disabled;
 #else
@@ -713,7 +718,6 @@ static bool updateStatusLedRuntime() {
 }
 
 static void setStatusLedSensorError() {
-    g_statusLedSensorError = true;
     const uint32_t nowMs = millis();
     g_statusLedRuntime.setMode(TrackerStatusLedMode::SensorError, nowMs);
     g_statusLedRuntime.update(nowMs);
@@ -820,12 +824,14 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.runtime.runtimeSamples = &g_runtimeSamples;
     deps.runtime.lastHeartbeatMs = &g_lastHeartbeatMs;
     deps.runtime.latestTempC = &g_latestTempC;
+    deps.runtime.health = &g_trackerHealth;
 
     deps.callbacks.setupMagRuntimeController = setupMagRuntimeController;
 #if TRACKER_HAS_SERIAL_CLI
     deps.callbacks.setupCommandInterface = setupCommandInterface;
 #endif
     deps.callbacks.setupNetworkRuntime = setupNetworkRuntime;
+    deps.callbacks.publishHealthState = publishTrackerHealthState;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
     deps.callbacks.updateRemoteConsoleRuntime = updateRemoteConsoleRuntime;

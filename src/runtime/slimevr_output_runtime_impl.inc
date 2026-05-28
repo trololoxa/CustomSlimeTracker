@@ -10,6 +10,7 @@ namespace {
 constexpr uint32_t UDP_BEGIN_RETRY_MS = 1000;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 5000;
 constexpr uint32_t SENSOR_INFO_INTERVAL_MS = 1000;
+constexpr uint32_t TRACKER_ERROR_INTERVAL_MS = 30000;
 constexpr uint32_t SERVER_SILENCE_TIMEOUT_MS = TRACKER_SLIMEVR_SERVER_SILENCE_TIMEOUT_MS;
 constexpr uint32_t SERVER_FOUND_SEND_GRACE_MS = 100;
 constexpr uint16_t ROTATION_RATE_HZ_DEFAULT = 100;
@@ -18,8 +19,10 @@ constexpr uint16_t ROTATION_RATE_HZ_MAX = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
 void copyCString(char* dst, size_t dstSize, const char* src) {
     if (!dst || dstSize == 0) return;
     if (!src) src = "";
-    std::strncpy(dst, src, dstSize - 1);
-    dst[dstSize - 1] = '\0';
+    const size_t len = std::strlen(src);
+    const size_t n = len < (dstSize - 1u) ? len : (dstSize - 1u);
+    if (n != 0u) std::memcpy(dst, src, n);
+    dst[n] = '\0';
 }
 
 
@@ -190,6 +193,21 @@ void SlimeVROutputRuntime::requestSensorInfoRefresh() {
     lastSensorInfoMs_ = 0;
 }
 
+void SlimeVROutputRuntime::setTrackerHealth(const TrackerHealthSnapshot& health) {
+    const bool changed = trackerHealth_.revision != health.revision ||
+                         trackerHealth_.fatalActive != health.fatalActive ||
+                         trackerHealth_.degradedNoImu != health.degradedNoImu ||
+                         trackerHealth_.faultCode != health.faultCode ||
+                         std::strncmp(trackerHealth_.message, health.message, sizeof(trackerHealth_.message)) != 0;
+    trackerHealth_ = health;
+    trackerHealth_.message[sizeof(trackerHealth_.message) - 1u] = '\0';
+    if (changed) {
+        requestSensorInfoRefresh();
+        lastTrackerErrorMs_ = 0;
+        lastRotationAttemptMs_ = 0;
+    }
+}
+
 void SlimeVROutputRuntime::resetCounters() {
     handshakesSent_ = 0;
     heartbeatSent_ = 0;
@@ -206,9 +224,12 @@ void SlimeVROutputRuntime::resetCounters() {
     magnetometerAccuracySent_ = 0;
     tapSent_ = 0;
     tapSendFailures_ = 0;
+    trackerErrorSent_ = 0;
+    trackerErrorSendFailures_ = 0;
     lastTapValue_ = 0;
     rotationNoSnapshot_ = 0;
     rotationDuplicateSnapshot_ = 0;
+    rotationSuppressedByError_ = 0;
     packetsReceived_ = 0;
     discoveryResponses_ = 0;
     heartbeatReceived_ = 0;
@@ -324,8 +345,13 @@ bool SlimeVROutputRuntime::update(uint32_t nowMs) {
             if (nowMs - lastHeartbeatMs_ >= HEARTBEAT_INTERVAL_MS) sendHeartbeat(nowMs);
             if (nowMs - lastSensorInfoMs_ >= SENSOR_INFO_INTERVAL_MS) sendSensorInfo(nowMs);
             maybeSendTelemetry(nowMs);
+            maybeSendTrackerError(nowMs);
         }
-        maybeSendRotation(nowMs);
+        if (trackerHealth_.fatalActive) {
+            maybeRecordRotationSuppressedByError(nowMs);
+        } else {
+            maybeSendRotation(nowMs);
+        }
         return activityChanged(stateBefore, activityBefore);
     }
 
@@ -372,9 +398,12 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.magnetometerAccuracySent = magnetometerAccuracySent_;
     s.tapSent = tapSent_;
     s.tapSendFailures = tapSendFailures_;
+    s.trackerErrorSent = trackerErrorSent_;
+    s.trackerErrorSendFailures = trackerErrorSendFailures_;
     s.lastTapValue = lastTapValue_;
     s.rotationNoSnapshot = rotationNoSnapshot_;
     s.rotationDuplicateSnapshot = rotationDuplicateSnapshot_;
+    s.rotationSuppressedByError = rotationSuppressedByError_;
     s.packetsReceived = packetsReceived_;
     s.discoveryResponses = discoveryResponses_;
     s.heartbeatReceived = heartbeatReceived_;
@@ -438,6 +467,11 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.lastRotationQualityFlags = lastRotationQualityFlags_;
     s.lastRotationConfidence = lastRotationConfidence_;
     s.lastRotationSnapshotAgeUs = lastRotationSnapshotAgeUs_;
+    s.trackerErrorActive = trackerHealth_.fatalActive;
+    s.trackerDegradedNoImu = trackerHealth_.degradedNoImu;
+    s.trackerErrorCode = static_cast<uint8_t>(trackerHealth_.faultCode);
+    s.trackerHealthRevision = trackerHealth_.revision;
+    copyCString(s.trackerErrorMessage, sizeof(s.trackerErrorMessage), trackerHealth_.message);
     return s;
 }
 
@@ -462,6 +496,7 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastSignalTelemetryMs_ = 0;
     lastTemperatureTelemetryMs_ = 0;
     lastBatteryTelemetryMs_ = 0;
+    lastTrackerErrorMs_ = 0;
     lastSignalStrength_ = 0;
     lastRssiDbm_ = 0;
     lastRotationSnapshotSequence_ = 0;
@@ -537,6 +572,7 @@ void SlimeVROutputRuntime::handleIncomingPacket(const uint8_t* data,
         lastBatteryTelemetryMs_ = nowMs;
         lastRotationAttemptMs_ = nowMs;
         lastSensorInfoMs_ = 0;
+        lastTrackerErrorMs_ = 0;
         return;
     }
 
@@ -684,8 +720,14 @@ void SlimeVROutputRuntime::sendSensorInfo(uint32_t nowMs) {
     if (!serverEndpoint_.valid()) return;
     SlimeVRSensorInfo info;
     info.sensorId = sensorId_;
+    // Keep SensorInfo online even in firmware-fault/degraded mode. SlimeVR
+    // Server treats Offline as a tracker disconnect state; repeatedly sending
+    // Offline while the UDP session is healthy makes the GUI flap between OK
+    // and disconnected. Firmware faults are reported with the Error packet
+    // instead, and RotationData stays suppressed until the IMU path recovers.
+    info.sensorState = SlimeVRSensorState::Online;
     info.sensorConfig = sensorConfigFlags();
-    info.hasCompletedRestCalibration = hasCompletedRestCalibration_;
+    info.hasCompletedRestCalibration = !trackerHealth_.degradedNoImu && hasCompletedRestCalibration_;
     const SlimeVRPacketWriteResult packet = writer_.writeSensorInfo(packetBuffer_, sizeof(packetBuffer_), info);
     if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
         ++sensorInfoSent_;
@@ -745,6 +787,7 @@ uint32_t SlimeVROutputRuntime::activitySignature() const {
     return handshakesSent_ + heartbeatSent_ + sensorInfoSent_ + rotationSent_ +
            rotationSendDue_ + signalStrengthSent_ + temperatureSent_ + batterySent_ +
            batterySendFailures_ + magnetometerAccuracySent_ + tapSent_ + tapSendFailures_ +
+           trackerErrorSent_ + trackerErrorSendFailures_ +
            rotationNoSnapshot_ + rotationDuplicateSnapshot_ + packetsReceived_ +
            discoveryResponses_ + heartbeatReceived_ + pingReceived_ + pongSent_ +
            featureFlagsReceived_ + setConfigFlagReceived_ + setConfigFlagApplied_ +
@@ -848,6 +891,34 @@ void SlimeVROutputRuntime::sendMagnetometerAccuracy(uint32_t nowMs) {
     if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
         ++magnetometerAccuracySent_;
     }
+}
+
+void SlimeVROutputRuntime::maybeSendTrackerError(uint32_t nowMs) {
+    if (!trackerHealth_.fatalActive) return;
+    if (!serverEndpoint_.valid()) return;
+    if (lastTrackerErrorMs_ != 0 && nowMs - lastTrackerErrorMs_ < TRACKER_ERROR_INTERVAL_MS) return;
+
+    const SlimeVRPacketWriteResult packet = writer_.writeError(
+        packetBuffer_,
+        sizeof(packetBuffer_),
+        sensorId_,
+        static_cast<uint8_t>(trackerHealth_.faultCode),
+        trackerHealth_.message
+    );
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::ErrorReport)) {
+        ++trackerErrorSent_;
+        lastTrackerErrorMs_ = nowMs;
+        return;
+    }
+    ++trackerErrorSendFailures_;
+}
+
+void SlimeVROutputRuntime::maybeRecordRotationSuppressedByError(uint32_t nowMs) {
+    if (lastRotationAttemptMs_ != 0 && nowMs - lastRotationAttemptMs_ < rotationPeriodMs()) {
+        return;
+    }
+    lastRotationAttemptMs_ = nowMs;
+    ++rotationSuppressedByError_;
 }
 
 uint32_t SlimeVROutputRuntime::rotationPeriodMs() const {
@@ -958,6 +1029,9 @@ void SlimeVROutputRuntime::recordSendFailure(PacketPurpose purpose) {
             break;
         case PacketPurpose::Tap:
             ++tapTransportSendFailures_;
+            break;
+        case PacketPurpose::ErrorReport:
+            ++controlSendFailures_;
             break;
     }
 }

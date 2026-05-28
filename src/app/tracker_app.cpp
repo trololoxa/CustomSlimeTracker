@@ -2,7 +2,21 @@
 
 #include "runtime/output_runtime.hpp"
 
+#include <cstring>
+
 namespace tracker {
+
+namespace {
+
+constexpr uint8_t SENSOR_INIT_ATTEMPTS = 5;
+constexpr uint32_t SENSOR_INIT_RETRY_DELAY_MS = 80;
+constexpr uint8_t FIFO_INIT_ATTEMPTS = 3;
+constexpr uint32_t FIFO_INIT_RETRY_DELAY_MS = 50;
+constexpr uint32_t SENSOR_STARTUP_RECOVERY_INTERVAL_MS = 5000;
+constexpr uint32_t SENSOR_STARTUP_HARD_FAIL_DELAY_MS = 60000;
+constexpr uint32_t SENSOR_STARTUP_HARD_FAIL_RECOVERY_INTERVAL_MS = 30000;
+
+} // namespace
 
 void TrackerApp::begin(const TrackerAppDeps& deps) {
     deps_ = deps;
@@ -10,6 +24,9 @@ void TrackerApp::begin(const TrackerAppDeps& deps) {
 
 void TrackerApp::setup() {
     if (!ready()) return;
+
+    sensorRuntimeReady_ = false;
+    deps_.runtime.health->reset();
 
 #if TRACKER_HAS_SERIAL_CONSOLE
     Serial.begin(deps_.timing.serialBaud);
@@ -50,55 +67,39 @@ void TrackerApp::setup() {
 
     pinMode(deps_.pins.int1, INPUT);
 
-    if (!trackerBootstrapInitLsm(deps_.bootstrap)) {
-        fatal("# fatal: LSM init failed");
+    if (!initLsmWithRetries()) {
+        beginSensorStartupRecovery(TrackerHealthFaultCode::LsmInitFailed,
+                                   "LSM6DSV init failed after retries");
+    } else if (!initFifoWithRetries()) {
+        beginSensorStartupRecovery(TrackerHealthFaultCode::FifoInitFailed,
+                                   "FIFO init failed after retries");
+    } else {
+        setupSensorRuntime();
+        sensorRuntimeReady_ = true;
     }
 
-    if (!trackerBootstrapInitFifo(deps_.bootstrap)) {
-        fatal("# fatal: FIFO init failed");
-    }
-
-    deps_.runtime.fifoEvents->begin(
-        deps_.runtime.fifoIntCount,
-        deps_.runtime.fifo,
-        deps_.runtime.perf,
-        deps_.timing.fifoNonblockingStatusPollIntervalUs
-    );
-
-    deps_.runtime.fifoRuntime->begin(
-        deps_.runtime.fifoEvents,
-        deps_.runtime.fifo,
-        deps_.buffers.fifoRaw,
-        deps_.buffers.fifoRawCapacity,
-        deps_.buffers.magRaw,
-        deps_.buffers.magRawCapacity,
-        deps_.callbacks.processRawSample,
-        deps_.callbacks.processMagSample,
-        deps_.callbacks.recordFifoProcessTime,
-        deps_.callbacks.fifoCallbackUser
-    );
-
-    trackerBootstrapSetupCalibrationIo(deps_.bootstrap);
-    call(deps_.callbacks.setupMagRuntimeController);
     call(deps_.callbacks.setupNetworkRuntime);
-    call(deps_.callbacks.setupTapRuntime);
-    call(deps_.callbacks.setupCommandInterface);
-    call(deps_.callbacks.resetFifoRuntimeCounters);
-    call(deps_.callbacks.attachFifoInterrupt);
+    publishHealthState();
 
-    deps_.runtime.fifo->resetFifo();
-    deps_.runtime.fifo->resetTimestampReconstruction(0);
-    deps_.runtime.quality->reset();
-    deps_.runtime.quality->syncFifoStats(deps_.runtime.fifo->stats());
-    deps_.runtime.ahrs->reset();
-    if (deps_.callbacks.resetOrientationState != nullptr) {
-        deps_.callbacks.resetOrientationState("startup", 0, false);
+    if (sensorRuntimeReady_) {
+        call(deps_.callbacks.setupTapRuntime);
     }
-
-    startMagFromConfig(out);
+    call(deps_.callbacks.setupCommandInterface);
 
 #if TRACKER_HAS_SERIAL_CONSOLE
-    out.println("# OK INT1 attached: FIFO_WTM/FIFO_OVR/FIFO_FULL, RISING");
+    if (sensorRuntimeReady_) {
+        out.println("# OK INT1 attached: FIFO_WTM/FIFO_OVR/FIFO_FULL, RISING");
+    } else if (sensorStartupRecoveryActive_) {
+        out.print("# WARN sensor_startup_recovery=pending code=");
+        out.print(trackerHealthFaultCodeName(pendingSensorFaultCode_));
+        out.print(" message=");
+        out.println(pendingSensorFaultMessage_);
+    } else {
+        out.print("# WARN tracker_degraded_no_imu=yes code=");
+        out.print(trackerHealthFaultCodeName(deps_.runtime.health->faultCode()));
+        out.print(" message=");
+        out.println(deps_.runtime.health->message());
+    }
 #if TRACKER_HAS_SERIAL_CLI
     out.println("# Type: help");
 #endif
@@ -130,7 +131,8 @@ void TrackerApp::loop() {
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
 #endif
-    const bool fifoWorked = processFifoRuntime();
+    const bool sensorRecoveryWorked = updateSensorStartupRecovery(millis());
+    const bool fifoWorked = sensorRuntimeReady_ ? processFifoRuntime() : false;
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.fifoUs = micros() - sectionStartUs;
     timing.fifoWorked = fifoWorked;
@@ -141,7 +143,7 @@ void TrackerApp::loop() {
 #endif
     const bool batteryWorked = callBool(deps_.callbacks.updateBatteryRuntime);
     const bool networkWorked = callBool(deps_.callbacks.updateNetworkRuntime);
-    const bool tapWorked = callBool(deps_.callbacks.updateTapRuntime);
+    const bool tapWorked = sensorRuntimeReady_ ? callBool(deps_.callbacks.updateTapRuntime) : false;
     const bool ledWorked = callBool(deps_.callbacks.updateStatusLedRuntime);
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.networkUs = micros() - sectionStartUs;
@@ -183,7 +185,8 @@ void TrackerApp::loop() {
 #endif
 #endif
 
-    const bool anyWork = fifoWorked ||
+    const bool anyWork = sensorRecoveryWorked ||
+                         fifoWorked ||
                          batteryWorked ||
                          networkWorked ||
                          tapWorked ||
@@ -235,6 +238,7 @@ bool TrackerApp::ready() const {
            deps_.runtime.runtimeSamples != nullptr &&
            deps_.runtime.lastHeartbeatMs != nullptr &&
            deps_.runtime.latestTempC != nullptr &&
+           deps_.runtime.health != nullptr &&
            deps_.buffers.fifoRaw != nullptr &&
            deps_.buffers.fifoRawCapacity > 0u &&
            deps_.buffers.magRaw != nullptr &&
@@ -244,12 +248,171 @@ bool TrackerApp::ready() const {
            deps_.callbacks.recordFifoProcessTime != nullptr;
 }
 
-void TrackerApp::fatal(const char* message) {
-    if (deps_.runtime.out != nullptr) deps_.runtime.out->println(message);
+bool TrackerApp::initLsmWithRetries() {
+    for (uint8_t attempt = 1; attempt <= SENSOR_INIT_ATTEMPTS; ++attempt) {
+        if (trackerBootstrapInitLsm(deps_.bootstrap)) return true;
+#if TRACKER_HAS_SERIAL_CONSOLE
+        if (attempt < SENSOR_INIT_ATTEMPTS && deps_.runtime.out) {
+            deps_.runtime.out->print("# WARN LSM init retry ");
+            deps_.runtime.out->print(attempt);
+            deps_.runtime.out->print('/');
+            deps_.runtime.out->println(SENSOR_INIT_ATTEMPTS);
+        }
+#endif
+        if (attempt < SENSOR_INIT_ATTEMPTS) delay(SENSOR_INIT_RETRY_DELAY_MS);
+    }
+    return false;
+}
+
+bool TrackerApp::initFifoWithRetries() {
+    for (uint8_t attempt = 1; attempt <= FIFO_INIT_ATTEMPTS; ++attempt) {
+        if (trackerBootstrapInitFifo(deps_.bootstrap)) return true;
+#if TRACKER_HAS_SERIAL_CONSOLE
+        if (attempt < FIFO_INIT_ATTEMPTS && deps_.runtime.out) {
+            deps_.runtime.out->print("# WARN FIFO init retry ");
+            deps_.runtime.out->print(attempt);
+            deps_.runtime.out->print('/');
+            deps_.runtime.out->println(FIFO_INIT_ATTEMPTS);
+        }
+#endif
+        if (attempt < FIFO_INIT_ATTEMPTS) delay(FIFO_INIT_RETRY_DELAY_MS);
+    }
+    return false;
+}
+
+void TrackerApp::beginSensorStartupRecovery(TrackerHealthFaultCode code, const char* message) {
+    sensorStartupRecoveryActive_ = true;
+    sensorStartupHardFailed_ = false;
+    pendingSensorFaultCode_ = code;
+    const char* safe = message ? message : "sensor startup failed";
+    std::strncpy(pendingSensorFaultMessage_, safe, sizeof(pendingSensorFaultMessage_) - 1u);
+    pendingSensorFaultMessage_[sizeof(pendingSensorFaultMessage_) - 1u] = '\0';
+    sensorStartupRecoveryStartedMs_ = millis();
+    // Initial blocking retries have just failed. Do not immediately publish a
+    // fatal SlimeVR state: keep CLI/Wi-Fi alive and prove the sensor stays dead
+    // across a longer non-blocking recovery window first.
+    nextSensorStartupRecoveryMs_ = sensorStartupRecoveryStartedMs_ + SENSOR_STARTUP_RECOVERY_INTERVAL_MS;
+    sensorStartupRecoveryAttempts_ = 0;
+
+#if TRACKER_HAS_SERIAL_CONSOLE
+    if (deps_.runtime.out != nullptr) {
+        deps_.runtime.out->print("# WARN sensor_startup_recovery=pending code=");
+        deps_.runtime.out->print(trackerHealthFaultCodeName(code));
+        deps_.runtime.out->print(" hard_fail_after_ms=");
+        deps_.runtime.out->println(SENSOR_STARTUP_HARD_FAIL_DELAY_MS);
+    }
+#endif
     call(deps_.callbacks.setStatusLedSensorError);
-    while (true) {
-        (void)callBool(deps_.callbacks.updateStatusLedRuntime);
-        delay(20);
+}
+
+bool TrackerApp::updateSensorStartupRecovery(uint32_t nowMs) {
+    if (sensorRuntimeReady_ || !sensorStartupRecoveryActive_) return false;
+    if (static_cast<int32_t>(nowMs - nextSensorStartupRecoveryMs_) < 0) return false;
+
+    ++sensorStartupRecoveryAttempts_;
+
+    bool ok = false;
+    if (pendingSensorFaultCode_ == TrackerHealthFaultCode::LsmInitFailed) {
+        ok = trackerBootstrapInitLsm(deps_.bootstrap) && trackerBootstrapInitFifo(deps_.bootstrap);
+    } else if (pendingSensorFaultCode_ == TrackerHealthFaultCode::FifoInitFailed) {
+        ok = trackerBootstrapInitFifo(deps_.bootstrap);
+        if (!ok) {
+            // A FIFO configure failure after a nominally successful LSM init can
+            // still be an SPI/IMU transient. Re-probe the LSM before the next
+            // FIFO attempt so startup recovery can heal from a late sensor reset.
+            (void)trackerBootstrapInitLsm(deps_.bootstrap);
+        }
+    }
+
+    if (ok) {
+        finishSensorStartupRecoverySuccess();
+        return true;
+    }
+
+    const uint32_t elapsedMs = nowMs - sensorStartupRecoveryStartedMs_;
+    if (!sensorStartupHardFailed_ && elapsedMs >= SENSOR_STARTUP_HARD_FAIL_DELAY_MS) {
+        sensorStartupHardFailed_ = true;
+        enterFatalDegraded(pendingSensorFaultCode_, pendingSensorFaultMessage_);
+    }
+
+    const uint32_t interval = sensorStartupHardFailed_
+        ? SENSOR_STARTUP_HARD_FAIL_RECOVERY_INTERVAL_MS
+        : SENSOR_STARTUP_RECOVERY_INTERVAL_MS;
+    nextSensorStartupRecoveryMs_ = nowMs + interval;
+    return true;
+}
+
+void TrackerApp::finishSensorStartupRecoverySuccess() {
+    setupSensorRuntime();
+    sensorRuntimeReady_ = true;
+    sensorStartupRecoveryActive_ = false;
+    sensorStartupHardFailed_ = false;
+    pendingSensorFaultCode_ = TrackerHealthFaultCode::None;
+    pendingSensorFaultMessage_[0] = '\0';
+    if (deps_.runtime.health != nullptr) {
+        deps_.runtime.health->reset();
+    }
+    publishHealthState();
+    call(deps_.callbacks.setupTapRuntime);
+#if TRACKER_HAS_SERIAL_CONSOLE
+    if (deps_.runtime.out != nullptr) {
+        deps_.runtime.out->print("# OK sensor startup recovered attempts=");
+        deps_.runtime.out->println(sensorStartupRecoveryAttempts_);
+    }
+#endif
+}
+
+void TrackerApp::setupSensorRuntime() {
+    deps_.runtime.fifoEvents->begin(
+        deps_.runtime.fifoIntCount,
+        deps_.runtime.fifo,
+        deps_.runtime.perf,
+        deps_.timing.fifoNonblockingStatusPollIntervalUs
+    );
+
+    deps_.runtime.fifoRuntime->begin(
+        deps_.runtime.fifoEvents,
+        deps_.runtime.fifo,
+        deps_.buffers.fifoRaw,
+        deps_.buffers.fifoRawCapacity,
+        deps_.buffers.magRaw,
+        deps_.buffers.magRawCapacity,
+        deps_.callbacks.processRawSample,
+        deps_.callbacks.processMagSample,
+        deps_.callbacks.recordFifoProcessTime,
+        deps_.callbacks.fifoCallbackUser
+    );
+
+    trackerBootstrapSetupCalibrationIo(deps_.bootstrap);
+    call(deps_.callbacks.setupMagRuntimeController);
+    call(deps_.callbacks.resetFifoRuntimeCounters);
+    call(deps_.callbacks.attachFifoInterrupt);
+
+    deps_.runtime.fifo->resetFifo();
+    deps_.runtime.fifo->resetTimestampReconstruction(0);
+    deps_.runtime.quality->reset();
+    deps_.runtime.quality->syncFifoStats(deps_.runtime.fifo->stats());
+    deps_.runtime.ahrs->reset();
+    if (deps_.callbacks.resetOrientationState != nullptr) {
+        deps_.callbacks.resetOrientationState("startup", 0, false);
+    }
+
+    startMagFromConfig(*deps_.runtime.out);
+}
+
+void TrackerApp::enterFatalDegraded(TrackerHealthFaultCode code, const char* message) {
+    deps_.runtime.health->enterDegradedNoImu(code, message);
+    if (deps_.runtime.out != nullptr) {
+        deps_.runtime.out->print("# fatal_degraded: ");
+        deps_.runtime.out->println(message ? message : "");
+    }
+    call(deps_.callbacks.setStatusLedSensorError);
+    publishHealthState();
+}
+
+void TrackerApp::publishHealthState() {
+    if (deps_.callbacks.publishHealthState != nullptr && deps_.runtime.health != nullptr) {
+        deps_.callbacks.publishHealthState(deps_.runtime.health->snapshot());
     }
 }
 
@@ -292,10 +455,17 @@ bool TrackerApp::maybeIdleYield(bool anyWork) {
 void TrackerApp::serviceRuntimeForBlockingCommand() {
     if (!ready()) return;
 
-    (void)processFifoRuntime();
+    if (!sensorRuntimeReady_) {
+        (void)updateSensorStartupRecovery(millis());
+    }
+    if (sensorRuntimeReady_) {
+        (void)processFifoRuntime();
+    }
     (void)callBool(deps_.callbacks.updateBatteryRuntime);
     (void)callBool(deps_.callbacks.updateNetworkRuntime);
-    (void)callBool(deps_.callbacks.updateTapRuntime);
+    if (sensorRuntimeReady_) {
+        (void)callBool(deps_.callbacks.updateTapRuntime);
+    }
     (void)callBool(deps_.callbacks.updateStatusLedRuntime);
 #if TRACKER_HAS_RUNTIME_TEST
     deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);

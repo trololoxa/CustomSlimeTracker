@@ -112,6 +112,15 @@ int main() {
     CHECK(ctx, packet[12] == 2);
     CHECK(ctx, packet[13] == 2);
 
+    const SlimeVRPacketWriteResult err = writer.writeError(packet, sizeof(packet), 2, 1, "LSM6DSV init failed");
+    CHECK(ctx, err.ok);
+    CHECK(ctx, err.size == SLIMEVR_PACKET_HEADER_SIZE + 2u + 1u + std::strlen("LSM6DSV init failed"));
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::Error));
+    CHECK(ctx, packet[12] == 2);
+    CHECK(ctx, packet[13] == 1);
+    CHECK(ctx, packet[14] == std::strlen("LSM6DSV init failed"));
+    CHECK(ctx, std::memcmp(packet + 15, "LSM6DSV init failed", std::strlen("LSM6DSV init failed")) == 0);
+
     const SlimeVRPacketWriteResult battery = writer.writeBatteryLevel(packet, sizeof(packet), 3.70f, 42.0f);
     CHECK(ctx, battery.ok);
     CHECK(ctx, battery.size == SLIMEVR_PACKET_HEADER_SIZE + 8u);

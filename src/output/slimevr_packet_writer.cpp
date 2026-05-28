@@ -217,6 +217,19 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writeTap(uint8_t* out, size_t capa
     return finish(cursor);
 }
 
+SlimeVRPacketWriteResult SlimeVRPacketWriter::writeError(uint8_t* out, size_t capacity,
+                                                         uint8_t sensorId,
+                                                         uint8_t errorCode,
+                                                         const char* message) {
+    BufferCursor cursor{out, out, capacity};
+    if (writePacketHeader(cursor, SlimeVRSendPacketType::Error)) {
+        cursor.writeU8(sensorId);
+        cursor.writeU8(errorCode);
+        cursor.writeByteString(message);
+    }
+    return finish(cursor);
+}
+
 SlimeVRPacketWriteResult SlimeVRPacketWriter::writeMagnetometerAccuracy(uint8_t* out, size_t capacity,
                                                                          uint8_t sensorId,
                                                                          float accuracyInfo) {

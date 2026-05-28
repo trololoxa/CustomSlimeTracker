@@ -80,10 +80,17 @@ void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("server_ip="); out.println(s.serverIpv4 ? udpIpv4ToCString(s.serverIpv4, ipBuf, sizeof(ipBuf)) : "0.0.0.0");
     out.print("server_port="); out.println(s.serverPort);
     out.print("rotation_sent="); out.println(s.rotationSent);
+    out.print("rotation_suppressed_by_error="); out.println(s.rotationSuppressedByError);
     out.print("rotation_rate_hz="); out.println(s.rotationRateHz);
     out.print("tap_sent="); out.println(s.tapSent);
     out.print("tap_send_failures="); out.println(s.tapSendFailures);
     out.print("last_tap_value="); out.println(s.lastTapValue);
+    out.print("tracker_error_active="); out.println(yn(s.trackerErrorActive));
+    out.print("tracker_degraded_no_imu="); out.println(yn(s.trackerDegradedNoImu));
+    out.print("tracker_error_code="); out.println(s.trackerErrorCode);
+    out.print("tracker_error_message="); out.println(s.trackerErrorMessage);
+    out.print("tracker_error_sent="); out.println(s.trackerErrorSent);
+    out.print("tracker_error_send_failures="); out.println(s.trackerErrorSendFailures);
     out.print("send_failures="); out.println(s.sendFailures);
     out.print("udp_begin_failures="); out.println(s.udpBeginFailures);
     out.print("server_silence_resets="); out.println(s.serverSilenceResets);
@@ -123,6 +130,11 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("server_ip="); out.println(s.serverIpv4 ? udpIpv4ToCString(s.serverIpv4, ipBuf, sizeof(ipBuf)) : "0.0.0.0");
     out.print("server_port="); out.println(s.serverPort);
     out.print("sensor_id="); out.println(s.sensorId);
+    out.print("tracker_error_active="); out.println(yn(s.trackerErrorActive));
+    out.print("tracker_degraded_no_imu="); out.println(yn(s.trackerDegradedNoImu));
+    out.print("tracker_error_code="); out.println(s.trackerErrorCode);
+    out.print("tracker_health_revision="); out.println(s.trackerHealthRevision);
+    out.print("tracker_error_message="); out.println(s.trackerErrorMessage);
     out.print("protocol_version="); out.println(s.protocolVersion);
     out.print("board_type="); out.println(s.boardType);
     out.print("imu_type="); out.println(s.imuType);
@@ -138,6 +150,8 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("magnetometer_accuracy_sent="); out.println(s.magnetometerAccuracySent);
     out.print("tap_sent="); out.println(s.tapSent);
     out.print("tap_send_failures="); out.println(s.tapSendFailures);
+    out.print("tracker_error_sent="); out.println(s.trackerErrorSent);
+    out.print("tracker_error_send_failures="); out.println(s.trackerErrorSendFailures);
     out.print("last_tap_value="); out.println(s.lastTapValue);
     out.println("# note: mag support is advertised via SensorInfo.sensor_config; packet 18 is not sent as periodic telemetry");
     out.print("mag_support_enabled="); out.println(yn(s.magSupportEnabled));
@@ -159,6 +173,7 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("last_battery_percentage="); out.println(s.lastBatteryPercentage, 1);
     out.print("rotation_no_snapshot="); out.println(s.rotationNoSnapshot);
     out.print("rotation_duplicate_snapshot="); out.println(s.rotationDuplicateSnapshot);
+    out.print("rotation_suppressed_by_error="); out.println(s.rotationSuppressedByError);
     out.print("rotation_rate_hz="); out.println(s.rotationRateHz);
     out.print("prepared_output_available="); out.println(yn(s.preparedOutputAvailable));
     out.print("next_packet_number="); out.println(s.nextPacketNumber);

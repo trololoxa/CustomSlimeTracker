@@ -28,6 +28,7 @@
 #include "runtime/runtime_test_runner.hpp"
 #endif
 #include "runtime/tracker_runtime_types.hpp"
+#include "runtime/tracker_health_state.hpp"
 #include "runtime/fifo_runtime_processor.hpp"
 #include "runtime/runtime_bias_types.hpp"
 #include "runtime/mag_runtime_state.hpp"
@@ -79,13 +80,13 @@ static Esp32UdpTransport g_udpTransport;
 static WifiRemoteConsoleRuntime g_wifiRemoteConsole;
 #endif
 static SlimeVROutputRuntime g_slimevrRuntime;
+static TrackerHealthState g_trackerHealth;
 #if TRACKER_HAS_TAP_RUNTIME
 static TapRuntimeController g_tapRuntime;
 #endif
 #if TRACKER_HAS_STATUS_LED
 static GpioStatusLedSink g_statusLedSink;
 static StatusLedRuntime g_statusLedRuntime;
-static bool g_statusLedSensorError = false;
 #endif
 #if TRACKER_HAS_BATTERY_RUNTIME
 static BatteryRuntime g_batteryRuntime;
