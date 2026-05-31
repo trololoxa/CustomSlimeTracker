@@ -49,6 +49,21 @@ void trackerBootstrapMigrateRuntimeConfigForPerformance(TrackerConfig& config) {
         config.data.fifo.watermarkWords = cfg::FIFO_WATERMARK_WORDS;
     }
 
+#if TRACKER_BUILD_IS_SLIM
+    // Slim has no CLI, so do not preserve a high-latency FIFO watermark from a
+    // previous Debug/Production NVS profile. Keep the hardware FIFO watermark
+    // at or below the Slim default so prepared quaternion snapshots refresh
+    // with enough margin for the build-forced 125 TPS SlimeVR target.
+    if (config.data.fifo.watermarkWords == 0u ||
+        config.data.fifo.watermarkWords > cfg::FIFO_WATERMARK_WORDS) {
+        config.data.fifo.watermarkWords = cfg::FIFO_WATERMARK_WORDS;
+    }
+    if (config.data.output.outputRateHz == 0u ||
+        config.data.output.outputRateHz > cfg::OUTPUT_RATE_HZ_MAX) {
+        config.data.output.outputRateHz = cfg::OUTPUT_RATE_HZ;
+    }
+#endif
+
     config.sanitize();
     config.updateCrc();
 }

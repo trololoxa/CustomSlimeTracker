@@ -23,6 +23,17 @@ void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int ar
         return;
     }
 
+#if TRACKER_ENABLE_RUNTIME_PROFILER
+    if (tracker_serial_detail::eqIgnoreCase(argv[0], "perf")) {
+        trackerSerialDispatchPerfCommand(ctx, argc, argv);
+        return;
+    }
+    if (tracker_serial_detail::eqIgnoreCase(argv[0], "motion")) {
+        trackerSerialDispatchMotionCommand(ctx, argc, argv);
+        return;
+    }
+#endif
+
 #if TRACKER_ENABLE_CONFIG_COMMANDS
     if (tracker_serial_detail::eqIgnoreCase(argv[0], "config")) {
         trackerSerialDispatchConfigCommand(ctx, argc, argv);

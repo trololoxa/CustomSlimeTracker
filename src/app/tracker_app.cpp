@@ -23,19 +23,36 @@ void TrackerApp::begin(const TrackerAppDeps& deps) {
 }
 
 void TrackerApp::setup() {
-    if (!ready()) return;
+#if TRACKER_HAS_SERIAL_CONSOLE
+    Serial.begin(deps_.timing.serialBaud);
+#endif
+
+    if (!ready()) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+        delay(50);
+        Serial.println();
+        Serial.println("# FATAL tracker_app_ready=no");
+        Serial.println("# FATAL tracker app dependencies are incomplete; firmware will idle instead of reset-looping");
+#endif
+        return;
+    }
 
     sensorRuntimeReady_ = false;
     deps_.runtime.health->reset();
 
-#if TRACKER_HAS_SERIAL_CONSOLE
-    Serial.begin(deps_.timing.serialBaud);
-#endif
 #if TRACKER_ENABLE_BOOT_DELAY
     delay(TRACKER_BOOT_SERIAL_SETTLE_DELAY_MS);
 #endif
 
     deps_.runtime.perf->reset(millis());
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (deps_.runtime.runtimeProfiler != nullptr) {
+        deps_.runtime.runtimeProfiler->begin(millis());
+    }
+    if (deps_.runtime.motionDiagnostics != nullptr) {
+        deps_.runtime.motionDiagnostics->begin(millis());
+    }
+#endif
 
 #if TRACKER_HAS_SERIAL_CONSOLE
     delay(deps_.timing.startupDelayMs);
@@ -108,7 +125,10 @@ void TrackerApp::setup() {
 }
 
 void TrackerApp::loop() {
-    if (!ready()) return;
+    if (!ready()) {
+        delay(10);
+        return;
+    }
 
 #if TRACKER_ENABLE_LOOP_TIMING
     RuntimeLoopTimingSample timing;
@@ -116,13 +136,35 @@ void TrackerApp::loop() {
     uint32_t sectionStartUs = 0;
 #endif
 
+#if TRACKER_HAS_RUNTIME_PROFILER
+    const uint32_t profilerNowMs = millis();
+    RuntimeProfiler* profiler = deps_.runtime.runtimeProfiler;
+    const bool profilerActive = profiler != nullptr && profiler->enabled();
+    const uint32_t profilerLoopStartUs = profilerActive ? micros() : 0;
+    uint32_t profilerSectionStartUs = 0;
+#endif
+
     bool remoteConsoleWorked = false;
 #if TRACKER_HAS_SERIAL_CLI
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
 #endif
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) profilerSectionStartUs = micros();
+#endif
     deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Cli, micros() - profilerSectionStartUs, false, profilerNowMs);
+        profilerSectionStartUs = micros();
+    }
+#endif
     remoteConsoleWorked = callBool(deps_.callbacks.updateRemoteConsoleRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::RemoteConsole, micros() - profilerSectionStartUs, remoteConsoleWorked, profilerNowMs);
+    }
+#endif
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.cliUs += micros() - sectionStartUs;
 #endif
@@ -131,8 +173,16 @@ void TrackerApp::loop() {
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
 #endif
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) profilerSectionStartUs = micros();
+#endif
     const bool sensorRecoveryWorked = updateSensorStartupRecovery(millis());
     const bool fifoWorked = sensorRuntimeReady_ ? processFifoRuntime() : false;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Fifo, micros() - profilerSectionStartUs, sensorRecoveryWorked || fifoWorked, profilerNowMs);
+    }
+#endif
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.fifoUs = micros() - sectionStartUs;
     timing.fifoWorked = fifoWorked;
@@ -141,10 +191,36 @@ void TrackerApp::loop() {
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
 #endif
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) profilerSectionStartUs = micros();
+#endif
     const bool batteryWorked = callBool(deps_.callbacks.updateBatteryRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Battery, micros() - profilerSectionStartUs, batteryWorked, profilerNowMs);
+        profilerSectionStartUs = micros();
+    }
+#endif
     const bool networkWorked = callBool(deps_.callbacks.updateNetworkRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Network, micros() - profilerSectionStartUs, networkWorked, profilerNowMs);
+        profilerSectionStartUs = micros();
+    }
+#endif
     const bool tapWorked = sensorRuntimeReady_ ? callBool(deps_.callbacks.updateTapRuntime) : false;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Tap, micros() - profilerSectionStartUs, tapWorked, profilerNowMs);
+        profilerSectionStartUs = micros();
+    }
+#endif
     const bool ledWorked = callBool(deps_.callbacks.updateStatusLedRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Led, micros() - profilerSectionStartUs, ledWorked, profilerNowMs);
+    }
+#endif
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.networkUs = micros() - sectionStartUs;
     timing.batteryWorked = batteryWorked;
@@ -157,7 +233,15 @@ void TrackerApp::loop() {
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
 #endif
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) profilerSectionStartUs = micros();
+#endif
     deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Cli, micros() - profilerSectionStartUs, false, profilerNowMs);
+    }
+#endif
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.cliUs += micros() - sectionStartUs;
 #endif
@@ -179,6 +263,11 @@ void TrackerApp::loop() {
         *deps_.runtime.latestTempC,
         deps_.runtime.magState->samples
     );
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Heartbeat, micros() - sectionStartUs, heartbeatPrinted, profilerNowMs);
+    }
+#endif
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.heartbeatUs = micros() - sectionStartUs;
     timing.heartbeatWorked = heartbeatPrinted;
@@ -193,7 +282,15 @@ void TrackerApp::loop() {
                          ledWorked ||
                          remoteConsoleWorked ||
                          heartbeatPrinted;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) profilerSectionStartUs = micros();
+#endif
     const bool idleYielded = maybeIdleYield(anyWork);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::IdleYield, micros() - profilerSectionStartUs, idleYielded, profilerNowMs);
+    }
+#endif
 
 #if TRACKER_ENABLE_LOOP_TIMING
     timing.loopUs = micros() - loopStartUs;
@@ -201,6 +298,11 @@ void TrackerApp::loop() {
     timing.idleYielded = idleYielded;
 #else
     (void)idleYielded;
+#endif
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Loop, micros() - profilerLoopStartUs, anyWork, profilerNowMs);
+    }
 #endif
 
 #if TRACKER_HAS_RUNTIME_TEST
@@ -225,6 +327,11 @@ bool TrackerApp::ready() const {
            deps_.runtime.streamState != nullptr &&
 #endif
            deps_.runtime.perf != nullptr &&
+#if TRACKER_HAS_RUNTIME_PROFILER
+           // Runtime profiler/motion diagnostics are optional diagnostic sinks.
+           // They must never make the tracker unbootable if profile/source-filter
+           // wiring drifts; the loop and commands already null-check them.
+#endif
            deps_.runtime.fifoEvents != nullptr &&
            deps_.runtime.fifoRuntime != nullptr &&
 #if TRACKER_HAS_STATIC_TEST_STATE

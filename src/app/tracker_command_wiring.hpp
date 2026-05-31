@@ -32,6 +32,8 @@ struct TrackerCommandRuntimeObjects {
     ImuQualityMonitor* quality = nullptr;
     Ahrs6Dof* ahrs = nullptr;
     RuntimeGyroBiasEstimator* runtimeBias = nullptr;
+    RuntimeProfiler* runtimeProfiler = nullptr;
+    RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
 
     FifoCalibrationIo* calibrationIo = nullptr;
     FifoAccel6PosCalibrationRunner* accelCalRunner = nullptr;

@@ -25,14 +25,15 @@ runtime and SlimeVR UDP output stay compiled unless explicitly listed here.
 
 Slim excludes everything above plus all serial command modules and UI-only
 runtime helpers. Slim assumes Wi-Fi/server/calibration data already exists in
-NVS and only keeps the autonomous tracking + SlimeVR quaternion path.
+NVS and only keeps the autonomous tracking + SlimeVR path: RotationData,
+PingPong responses, SignalStrength/RSSI, Temperature and BatteryLevel.
 
 Additional Slim-only excludes:
 
 | Source | Reason |
 |---|---|
 | `app/tracker_command_wiring.cpp`, `network/wifi_remote_console.cpp` | No serial CLI in Slim. |
-| `runtime/battery_runtime.cpp` | No battery ADC runtime/telemetry in Slim. |
+| `runtime/battery_runtime.cpp` | Kept in Slim to feed SlimeVR BatteryLevel telemetry; battery CLI remains excluded. |
 | `runtime/status_led_runtime.cpp` | No status LED runtime in Slim. |
 | `runtime/tap_accumulator.cpp` | No tap runtime in Slim. |
 | `runtime/tap_runtime_controller.cpp` | No tap runtime in Slim. |

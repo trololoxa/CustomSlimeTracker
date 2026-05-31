@@ -180,6 +180,9 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
         nullptr,
 #endif
         g_perf,
+#if TRACKER_HAS_RUNTIME_PROFILER
+        &g_motionDiagnostics,
+#endif
 #if TRACKER_HAS_CALIBRATION_UI
         &g_calIo,
 #else
@@ -425,9 +428,16 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     cfg.serverPort = g_networkConfig.data.serverPort;
     cfg.localPort = SLIMEVR_DISCOVERY_LOCAL_PORT;
     cfg.discoveryIntervalMs = TRACKER_SLIMEVR_DISCOVERY_INTERVAL_MS;
+#if TRACKER_SLIMEVR_FORCE_ROTATION_RATE_HZ > 0
+    cfg.rotationRateHz = TRACKER_SLIMEVR_FORCE_ROTATION_RATE_HZ;
+#else
     cfg.rotationRateHz = g_config.data.output.outputRateHz;
+#endif
     if (cfg.rotationRateHz > TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX) {
         cfg.rotationRateHz = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
+    }
+    if (cfg.rotationRateHz == 0u) {
+        cfg.rotationRateHz = cfg::OUTPUT_RATE_HZ;
     }
     cfg.incomingPacketsPerUpdate = TRACKER_SLIMEVR_INCOMING_PACKETS_PER_UPDATE;
     cfg.signalTelemetryEnabled = (TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0);
@@ -811,6 +821,10 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.runtime.streamState = &g_streamState;
 #endif
     deps.runtime.perf = &g_perf;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    deps.runtime.runtimeProfiler = &g_runtimeProfiler;
+    deps.runtime.motionDiagnostics = &g_motionDiagnostics;
+#endif
     deps.runtime.fifoEvents = &g_fifoEvents;
     deps.runtime.fifoRuntime = &g_fifoRuntime;
 #if TRACKER_HAS_STATIC_TEST_STATE

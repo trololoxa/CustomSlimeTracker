@@ -14,7 +14,11 @@ static constexpr uint8_t LEGACY_FIFO_WATERMARK_WORDS = 48;
 // 23 Hz because samples arrived in large FIFO batches. A 12-word watermark
 // keeps FIFO/AHRS latency low enough for a real ~100 Hz RotationData stream
 // while the runtime test still shows no drops/recovery on the target board.
+#if TRACKER_BUILD_IS_SLIM
+static constexpr uint8_t FIFO_WATERMARK_WORDS = 9;
+#else
 static constexpr uint8_t FIFO_WATERMARK_WORDS = 12;
+#endif
 static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN = 384;
 static constexpr uint8_t FIFO_MAX_DRAIN_ROUNDS_PER_EVENT = 6;
 static constexpr uint8_t FIFO_MAX_WAITING_SAMPLES_BEFORE_FALLBACK = 32;
@@ -31,12 +35,12 @@ static constexpr uint32_t HEARTBEAT_PERIOD_MS = 30000UL;
 
 // Output defaults.
 #if TRACKER_BUILD_IS_SLIM
-static constexpr uint16_t OUTPUT_RATE_HZ = 50;
+static constexpr uint16_t OUTPUT_RATE_HZ = 125;
 #else
 static constexpr uint16_t OUTPUT_RATE_HZ = 100;
 #endif
 #if TRACKER_BUILD_IS_SLIM
-static constexpr uint16_t OUTPUT_RATE_HZ_MAX = 50;
+static constexpr uint16_t OUTPUT_RATE_HZ_MAX = 125;
 #else
 static constexpr uint16_t OUTPUT_RATE_HZ_MAX = 1000;
 #endif

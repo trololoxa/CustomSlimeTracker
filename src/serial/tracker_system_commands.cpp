@@ -48,6 +48,10 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("[core]");
     out.println("  help | ?");
     out.println("  status | health | version | reboot | factory_reset");
+#if TRACKER_ENABLE_RUNTIME_PROFILER
+    out.println("  perf status | top | on | off | reset");
+    out.println("  motion status | on | off | reset");
+#endif
 #if TRACKER_ENABLE_SETUP_COMMANDS
     out.println("  setup guide | setup status | setup calibration [nomag|6dof]");
 #endif

@@ -88,6 +88,11 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
     if (deps.callbacks.emitMachineLogFrame != nullptr) {
         deps.callbacks.emitMachineLogFrame(raw, calibrated, quality, deps.callbacks.user);
     }
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (deps.motionDiagnostics != nullptr && deps.motionDiagnostics->enabled()) {
+        deps.motionDiagnostics->recordSample(raw, calibrated, quality, millis());
+    }
+#endif
 #if TRACKER_HAS_STATIC_TEST
     if (deps.staticTestRunner != nullptr) {
         deps.staticTestRunner->updateSample(calibrated, quality, deps.out);

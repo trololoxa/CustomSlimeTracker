@@ -10,6 +10,9 @@
 #include "runtime/output_runtime.hpp"
 #include "runtime/runtime_bias_types.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
+#if TRACKER_HAS_RUNTIME_PROFILER
+#include "runtime/runtime_motion_diagnostics.hpp"
+#endif
 #include "runtime/static_test_runner.hpp"
 #include "runtime/gyro_temp_calibration_capture.hpp"
 #include "runtime/tracker_runtime_types.hpp"
@@ -61,6 +64,9 @@ struct ImuSamplePipelineDeps {
     StaticTestRunner* staticTestRunner = nullptr;
     GyroTempCalibrationCapture* gyroTempCapture = nullptr;
     TrackerPerfCounters& perf;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
+#endif
     FifoCalibrationIo* calibrationIo;
     Stream& out;
     uint32_t& runtimeSamples;

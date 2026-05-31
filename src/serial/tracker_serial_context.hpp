@@ -18,6 +18,8 @@ class TapRuntimeController;
 class StatusLedRuntime;
 class BatteryRuntime;
 class TrackerHealthState;
+class RuntimeProfiler;
+class RuntimeMotionDiagnostics;
 class Lsm6dsv;
 class Lsm6dsvFifoReader;
 class Lsm6dsvSensorHub;
@@ -136,6 +138,8 @@ struct TrackerSerialCommandContext {
 
     TrackerSerialStreamState* streamState = nullptr;
     TrackerSerialLogState* logState = nullptr;
+    RuntimeProfiler* runtimeProfiler = nullptr;
+    RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
 
     // Optional hooks supplied by main.cpp.
     void (*resetFifoRuntime)(void* user) = nullptr;

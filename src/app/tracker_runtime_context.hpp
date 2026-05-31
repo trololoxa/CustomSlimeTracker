@@ -32,6 +32,10 @@
 #include "runtime/fifo_runtime_processor.hpp"
 #include "runtime/runtime_bias_types.hpp"
 #include "runtime/mag_runtime_state.hpp"
+#if TRACKER_HAS_RUNTIME_PROFILER
+#include "runtime/runtime_profiler.hpp"
+#include "runtime/runtime_motion_diagnostics.hpp"
+#endif
 #if TRACKER_HAS_MACHINE_LOG
 #include "runtime/machine_log_runtime.hpp"
 #endif
@@ -123,6 +127,10 @@ static float g_lastOutputConfidence = 0.0f;
 static uint32_t g_lastQualityFlags = 0;
 
 static TrackerPerfCounters g_perf;
+#if TRACKER_HAS_RUNTIME_PROFILER
+static RuntimeProfiler g_runtimeProfiler;
+static RuntimeMotionDiagnostics g_motionDiagnostics;
+#endif
 static FifoInterruptEventSource g_fifoEvents;
 static FifoRuntimeProcessor g_fifoRuntime;
 

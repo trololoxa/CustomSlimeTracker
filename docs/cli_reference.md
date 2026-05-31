@@ -203,6 +203,36 @@ That command scans visible networks, asks for a numbered selection and password,
 
 `SensorInfo.sensor_config` advertises magnetometer support/enabled state. The firmware intentionally does not send periodic dummy `MagnetometerAccuracy` packets; packet 18 is only sent if a real mag-calibration/accuracy workflow starts using it.
 
+## Live performance and motion diagnostics
+
+These commands are compiled only when `TRACKER_ENABLE_RUNTIME_PROFILER=1` (Debug by default, plus the service `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` environment). Production and Slim exclude the profiler/motion source files in `platformio.ini`, so a clean product/control build does not carry these commands. Use them from USB serial or the Wi-Fi remote console when a tracker drops SlimeVR TPS.
+
+Safety behavior: `perf` and `motion` are runtime-only diagnostics. `motion` does not touch the per-sample hot path until `motion on` is issued, and missing diagnostic pointers are treated as unavailable commands/status rather than as a boot failure.
+
+| Command | Effect | Persisted | Notes |
+|---|---|---:|---|
+| `perf on` / `perf off` | Enable/disable rolling loop-section profiler | Runtime | Off by default; enabling resets the timing window. |
+| `perf status` | Print loop-section timing plus temperature/system, Wi-Fi, quality and SlimeVR counters | No | Shows all measured sections (`loop`, `cli`, `remote`, `fifo`, `battery`, `network`, `tap`, `led`, `heartbeat`, `idle_yield`), not only the top offender. |
+| `perf top` | Print highest average/max section summary plus correlation blocks | No | Shortcut for TPS-drop triage. |
+| `perf reset` | Reset profiler window | Runtime | Does not reset firmware counters outside the profiler. |
+| `motion on` / `motion off` | Enable/disable per-sample motion diagnostics | Runtime | Intended for ankle/fast-motion tests. |
+| `motion status` | Print motion window plus FIFO/quality/bias/SlimeVR correlation | No | Reports dt, sample rate, gyro/accel norms, saturation, accel outliers, AHRS skips and runtime-bias rejects. SlimeVR packet counters are printed both as absolute totals and as deltas/rates since `motion on`/`motion reset`, so `slime_rotation_sent_rate_hz` is a window rate rather than a boot-total rate. |
+| `motion reset` | Reset motion diagnostic window | Runtime | Keeps current enabled/disabled state. |
+
+Recommended ankle test sequence:
+
+```text
+perf on
+motion on
+# capture once while TPS is normal
+perf status
+motion status
+# capture again when TPS drops
+perf status
+motion status
+slime debug
+```
+
 ## Bias and tests
 
 | Command | Effect | Persisted | Notes |
@@ -282,3 +312,28 @@ These aliases are for first-run provisioning from SlimeVR Server's Serial Consol
 | `TCAL PRINT|DEBUG|RESET|SAVE` | Compatibility wrappers for temperature-calibration inspection/reset/save | Optional | Temperature-only compatibility path. `SAVE` persists gyro temperature compensation without capturing unrelated runtime output/accel state. `RESET` changes only RAM temperature-comp slope/quality metadata, not the config object saved in NVS. |
 
 Blocking server/diagnostic commands such as Wi-Fi scans can intentionally pause sensor processing long enough to cause FIFO recovery on the next loop. During the configured grace window (`TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS`, default 3000 ms), human-facing `# WARN FIFO recovery requested` and `# TRACKING ... recovery` lines are muted so the command reply remains parseable. Machine-log events, quality counters, FIFO recovery and orientation resets still happen; only console noise is suppressed. Background magnetometer auto-heading reference events are also silent so they cannot interleave with server provisioning replies; manual `mag heading ref` still prints an explicit result. Treat `net scan`/`GET WIFISCAN` as a tracking interruption: movement during the blocking scan is lost, while movement after recovery should resume normally. Verify recovery with `ahrs status`: after a scan, `last_integrated_t_us` should advance again, `bad_dt_rejects` should not grow continuously, and `post_fifo_recovery_samples` should increase as new samples are integrated.
+
+
+## Live diagnostics profile note
+
+The `perf` and `motion` commands are compiled in Debug and in the service
+`BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` environment. They are intentionally absent
+from normal Production and Slim so release builds do not carry live diagnostic
+code, strings or per-loop instrumentation hooks. Slim also disables both serial
+CLI and Wi-Fi remote console; its remaining SlimeVR packet set is RotationData,
+PingPong responses, SignalStrength/RSSI, Temperature and BatteryLevel.
+
+Recommended wearable diagnostic build:
+
+```bash
+pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG -t upload
+```
+
+Typical session over serial or telnet:
+
+```text
+perf on
+motion on
+perf status
+motion status
+```

@@ -286,6 +286,10 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.quality = &g_quality;
     objects.ahrs = &g_ahrs6dof;
     objects.runtimeBias = &g_runtimeBias;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    objects.runtimeProfiler = &g_runtimeProfiler;
+    objects.motionDiagnostics = &g_motionDiagnostics;
+#endif
 #if TRACKER_ENABLE_CALIBRATION_COMMANDS
     objects.calibrationIo = &g_calIo;
     objects.accelCalRunner = &g_accelCalRunner;

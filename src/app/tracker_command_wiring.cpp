@@ -28,6 +28,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.quality = objects.quality;
     ctx.ahrs = objects.ahrs;
     ctx.runtimeBias = objects.runtimeBias;
+    ctx.runtimeProfiler = objects.runtimeProfiler;
+    ctx.motionDiagnostics = objects.motionDiagnostics;
     ctx.calibrationIo = objects.calibrationIo;
     ctx.accelCalRunner = objects.accelCalRunner;
     ctx.gyroTempCapture = objects.gyroTempCapture;

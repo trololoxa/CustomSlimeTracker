@@ -8,6 +8,10 @@
 
 #if TRACKER_ENABLE_SERIAL_CLI
 #include "serial/tracker_system_commands.hpp"
+#if TRACKER_ENABLE_RUNTIME_PROFILER
+#include "serial/tracker_perf_commands.hpp"
+#include "serial/tracker_motion_commands.hpp"
+#endif
 #if TRACKER_ENABLE_CONFIG_COMMANDS
 #include "serial/tracker_config_commands.hpp"
 #endif

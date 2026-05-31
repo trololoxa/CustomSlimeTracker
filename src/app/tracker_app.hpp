@@ -15,6 +15,10 @@
 #endif
 #include "runtime/tracker_runtime_types.hpp"
 #include "runtime/tracker_health_state.hpp"
+#if TRACKER_HAS_RUNTIME_PROFILER
+#include "runtime/runtime_profiler.hpp"
+#include "runtime/runtime_motion_diagnostics.hpp"
+#endif
 #include "runtime/mag_runtime_state.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/imu_quality.hpp"
@@ -61,6 +65,10 @@ struct TrackerAppRuntimeObjects {
     TrackerSerialStreamState* streamState = nullptr;
 #endif
     TrackerPerfCounters* perf = nullptr;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    RuntimeProfiler* runtimeProfiler = nullptr;
+    RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
+#endif
     FifoInterruptEventSource* fifoEvents = nullptr;
     FifoRuntimeProcessor* fifoRuntime = nullptr;
 #if TRACKER_HAS_STATIC_TEST_STATE
