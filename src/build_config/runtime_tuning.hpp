@@ -154,6 +154,13 @@
 #endif
 
 // Tap runtime tuning.
+// SlimeVR packet 13 accepts an explicit tap count byte.  Keep the transport
+// range independent from the physical-gesture filter so CLI tests can send
+// a single tap while runtime gesture recognition still defaults to double tap.
+#ifndef TRACKER_TAP_PACKET_MIN_VALUE
+#define TRACKER_TAP_PACKET_MIN_VALUE 1
+#endif
+
 #ifndef TRACKER_TAP_MIN_COUNT
 #define TRACKER_TAP_MIN_COUNT 2
 #endif
@@ -191,7 +198,10 @@
 #endif
 
 #ifndef TRACKER_LSM6DSV_TAP_THRESHOLD
-#define TRACKER_LSM6DSV_TAP_THRESHOLD 3
+// LSM6DSV single-tap app-note examples use threshold 2 at +/-8 g (about
+// 500 mg).  Runtime still requires TRACKER_TAP_MIN_COUNT taps before sending,
+// so this improves physical detection without making one accidental tap fire.
+#define TRACKER_LSM6DSV_TAP_THRESHOLD 2
 #endif
 
 #ifndef TRACKER_LSM6DSV_TAP_SHOCK

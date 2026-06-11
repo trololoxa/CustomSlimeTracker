@@ -92,8 +92,22 @@ def test_sources() -> list[pathlib.Path]:
     return sorted(p for p in TEST_DIR.glob("test_*.cpp") if p.name != "test_common.hpp")
 
 
+def object_id_for(source: pathlib.Path) -> pathlib.Path:
+    """Return a stable project-relative id for an object file name.
+
+    pathlib treats joining OBJ_DIR with an absolute source-derived path as an
+    absolute path again.  On POSIX that escaped to /__mnt__... .o; on Windows
+    the same pattern can escape to the drive root as .obj files.
+    """
+    try:
+        return source.resolve().relative_to(ROOT)
+    except ValueError:
+        return pathlib.Path(*[part for part in source.parts if part not in (source.anchor, source.drive)])
+
+
 def object_path_for(source: pathlib.Path) -> pathlib.Path:
-    safe_name = "__".join(source.with_suffix("").parts) + object_suffix()
+    source_id = object_id_for(source).with_suffix("")
+    safe_name = "__".join(part for part in source_id.parts if part) + object_suffix()
     return OBJ_DIR / safe_name
 
 

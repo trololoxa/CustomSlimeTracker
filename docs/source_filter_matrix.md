@@ -14,7 +14,7 @@ runtime and SlimeVR UDP output stay compiled unless explicitly listed here.
 | `runtime/runtime_status_reporter.cpp` | Detailed runtime dump is debug-heavy. | Compact `status`/`health` paths. |
 | `runtime/runtime_test_runner.cpp` | Runtime tests are Debug-only. | None in Production. |
 | `runtime/static_test_runner.cpp` | Static tests are Debug-only. | None in Production. |
-| `runtime/gyro_temp_static_fit.cpp` | Static-test temperature fit is Debug-only. | Stored NVS temp compensation is still applied. |
+| `runtime/gyro_temp_static_fit.cpp` | Gyro temperature fit is kept in Production for guided setup; Slim excludes it. | Stored NVS temp compensation is still applied. |
 | `serial/tracker_ahrs_commands.cpp` | Developer AHRS commands. | Basic status only. |
 | `serial/tracker_bias_commands.cpp` | Developer bias commands. | Calibration/config commands remain. |
 | `serial/tracker_imu_fifo_commands.cpp` | Low-level FIFO/IMU debug commands. | Compact FIFO/quality health output. |

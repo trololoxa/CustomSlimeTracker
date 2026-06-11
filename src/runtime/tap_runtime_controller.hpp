@@ -10,7 +10,7 @@ namespace tracker {
 
 class SlimeVROutputRuntime;
 
-constexpr uint8_t TRACKER_TAP_VALUE_MIN = TRACKER_TAP_MIN_COUNT;
+constexpr uint8_t TRACKER_TAP_VALUE_MIN = TRACKER_TAP_PACKET_MIN_VALUE;
 constexpr uint8_t TRACKER_TAP_VALUE_MAX = TRACKER_TAP_MAX_COUNT;
 
 struct TapRuntimeConfig {

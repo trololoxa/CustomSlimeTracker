@@ -505,6 +505,13 @@ struct SetupMagAxisDynamicResult {
     uint16_t usedIntervals = 0;
 };
 
+// The dynamic solver rejects candidates with fewer than ten usable
+// gyro+mag intervals. Collect a little more than the hard minimum so the
+// later quality gates can survive noisy intervals instead of falling through
+// to the manual axis prompt.
+constexpr uint16_t kSetupMagAxisDynamicSolverMinIntervals = 10;
+constexpr uint16_t kSetupMagAxisDynamicTargetIntervals = 18;
+
 struct SetupMagAxisDynamicCollector {
     static constexpr uint16_t kMaxIntervals = 160;
 
@@ -775,7 +782,7 @@ bool setupAutoSolveMagAxisDynamic(const SetupMagAxisDynamicCollector& c,
                                   const TrackerConfig& config,
                                   SetupMagAxisDynamicResult& result) {
     result = SetupMagAxisDynamicResult{};
-    if (c.intervalCount < 10 || !config.data.magCal.calibrationValid) return false;
+    if (c.intervalCount < kSetupMagAxisDynamicSolverMinIntervals || !config.data.magCal.calibrationValid) return false;
 
     const uint8_t perms[6][3] = {
         {0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0},
@@ -822,7 +829,7 @@ bool setupAutoSolveMagAxisDynamic(const SetupMagAxisDynamicCollector& c,
     result.usedIntervals = bestUsed;
 
     const float separation = second - best;
-    result.valid = bestUsed >= 10 && best < 0.75f && bestDir < 0.55f && separation > 0.08f;
+    result.valid = bestUsed >= kSetupMagAxisDynamicSolverMinIntervals && best < 0.75f && bestDir < 0.55f && separation > 0.08f;
     return result.valid;
 }
 
@@ -1436,6 +1443,7 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
 
     drainSetupInput(ctx);
     axisDynamic.reset();
+    bool magCalibrationApplied = false;
 
     for (uint8_t round = 1; round <= 4; ++round) {
         s.print("# setup mag motion round=");
@@ -1462,6 +1470,8 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
                 s.print((nowMs - startMs) / 1000UL);
                 s.print(" axis_intervals=");
                 s.print(axisDynamic.intervalCount);
+                s.print(" target_intervals=");
+                s.print(kSetupMagAxisDynamicTargetIntervals);
                 s.print(" mag_samples=");
                 s.print(axisDynamic.magSamplesSeen);
                 s.print(" imu_samples=");
@@ -1475,32 +1485,59 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
     setup_mag_motion_round_done:
         s.print("# setup mag dynamic_axis_intervals="); s.println(axisDynamic.intervalCount);
         s.print("# setup mag dynamic_axis_dropped="); s.println(axisDynamic.droppedIntervals);
-        if (ctx.applyMagCalibration && ctx.applyMagCalibration(false, ctx.applyMagCalibrationUser)) {
-            if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+
+        if (!magCalibrationApplied) {
+            if (ctx.applyMagCalibration && ctx.applyMagCalibration(false, ctx.applyMagCalibrationUser)) {
+                magCalibrationApplied = true;
+                if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+                tracker_serial_detail::printOk(s, "mag hard/soft calibration accepted in RAM");
+            } else {
+                if (ctx.printMagCalibrationStatus) {
+                    ctx.printMagCalibrationStatus(s, ctx.printMagCalibrationStatusUser);
+                }
+
+                if (round >= 4) break;
+
+                char line[8];
+                if (!readSetupLine(ctx,
+                                   "# Mag calibration still lacks enough valid coverage. Press Enter to continue collecting, or type q then Enter to abort.",
+                                   line,
+                                   sizeof(line),
+                                   300000UL)) {
+                    if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+                    tracker_serial_detail::printErr(s, "setup calibration aborted while waiting to continue mag calibration");
+                    return false;
+                }
+                if (line[0] == 'q' || line[0] == 'Q') {
+                    if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+                    tracker_serial_detail::printErr(s, "setup calibration aborted by user during mag calibration");
+                    return false;
+                }
+                continue;
+            }
+        }
+
+        if (axisDynamic.intervalCount >= kSetupMagAxisDynamicTargetIntervals) {
             return true;
         }
 
-        if (ctx.printMagCalibrationStatus) {
-            ctx.printMagCalibrationStatus(s, ctx.printMagCalibrationStatusUser);
+        if (round < 4) {
+            s.print("# setup mag hard/soft is ready; continuing automatically for gyro-assisted axis intervals ");
+            s.print(axisDynamic.intervalCount);
+            s.print('/');
+            s.println(kSetupMagAxisDynamicTargetIntervals);
+            continue;
         }
+    }
 
-        if (round >= 4) break;
-
-        char line[8];
-        if (!readSetupLine(ctx,
-                           "# Mag calibration still lacks enough valid coverage. Press Enter to continue collecting, or type q then Enter to abort.",
-                           line,
-                           sizeof(line),
-                           300000UL)) {
-            if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
-            tracker_serial_detail::printErr(s, "setup calibration aborted while waiting to continue mag calibration");
-            return false;
+    if (magCalibrationApplied) {
+        if (axisDynamic.intervalCount < kSetupMagAxisDynamicSolverMinIntervals) {
+            s.print("# WARN mag hard/soft accepted, but gyro-assisted axis data is sparse: intervals=");
+            s.print(axisDynamic.intervalCount);
+            s.print(" solver_min=");
+            s.println(kSetupMagAxisDynamicSolverMinIntervals);
         }
-        if (line[0] == 'q' || line[0] == 'Q') {
-            if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
-            tracker_serial_detail::printErr(s, "setup calibration aborted by user during mag calibration");
-            return false;
-        }
+        return true;
     }
 
     if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
@@ -1532,7 +1569,13 @@ bool setupRunMagAxisMotionOnly(TrackerSerialCommandContext& ctx,
             if (c == '\n' || c == '\r') {
                 s.print("# setup mag axis motion intervals=");
                 s.println(axisDynamic.intervalCount);
-                return axisDynamic.intervalCount > 0;
+                if (axisDynamic.intervalCount >= kSetupMagAxisDynamicTargetIntervals) {
+                    return true;
+                }
+                s.print("# WARN mag axis motion needs more gyro+mag intervals before auto-solve: ");
+                s.print(axisDynamic.intervalCount);
+                s.print('/');
+                s.println(kSetupMagAxisDynamicTargetIntervals);
             }
         }
         const uint32_t nowMs = millis();
@@ -1553,7 +1596,7 @@ bool setupRunMagAxisMotionOnly(TrackerSerialCommandContext& ctx,
     }
     s.print("# setup mag axis motion intervals=");
     s.println(axisDynamic.intervalCount);
-    return axisDynamic.intervalCount > 0;
+    return axisDynamic.intervalCount >= kSetupMagAxisDynamicSolverMinIntervals;
 }
 
 bool setupSetAxisIdentity(TrackerSerialCommandContext& ctx) {
@@ -1648,6 +1691,10 @@ bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
 
         s.print("# WARN automatic mag axis alignment failed. dynamic_intervals=");
         s.print(axisDynamic.intervalCount);
+        s.print(" solver_min=");
+        s.print(kSetupMagAxisDynamicSolverMinIntervals);
+        s.print(" target=");
+        s.print(kSetupMagAxisDynamicTargetIntervals);
         s.print(" static_faces=");
         s.println(axisAuto.count);
     }
@@ -1937,7 +1984,7 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
         } else {
             SetupCalibrationTransaction& tx = g_setupCalibrationTx;
             tx.begin(ctx);
-            if (axisDynamic.intervalCount == 0 && !axisAuto.count && !(axisX && axisY && axisZ)) {
+            if (axisDynamic.intervalCount < kSetupMagAxisDynamicSolverMinIntervals && !axisAuto.count && !(axisX && axisY && axisZ)) {
                 (void)setupRunMagAxisMotionOnly(ctx, axisDynamic);
             }
             if (!setupRunAxisAlignment(ctx, axisAuto, axisDynamic, axisX, axisY, axisZ)) { tx.rollback(ctx, "mag_axis"); return; }

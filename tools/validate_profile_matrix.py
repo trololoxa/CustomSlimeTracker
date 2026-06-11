@@ -37,7 +37,6 @@ PRODUCTION_REQUIRED_EXCLUDES = {
     "runtime/runtime_status_reporter.cpp",
     "runtime/runtime_test_runner.cpp",
     "runtime/static_test_runner.cpp",
-    "runtime/gyro_temp_static_fit.cpp",
     "serial/tracker_ahrs_commands.cpp",
     "serial/tracker_bias_commands.cpp",
     "serial/tracker_imu_fifo_commands.cpp",
@@ -47,6 +46,7 @@ PRODUCTION_REQUIRED_EXCLUDES = {
 
 SLIM_REQUIRED_EXCLUDES = PRODUCTION_REQUIRED_EXCLUDES | {
     "app/tracker_command_wiring.cpp",
+    "runtime/gyro_temp_static_fit.cpp",
     "network/wifi_remote_console.cpp",
     "runtime/status_led_runtime.cpp",
     "runtime/tap_accumulator.cpp",

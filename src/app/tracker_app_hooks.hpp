@@ -24,7 +24,7 @@
 #if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
 #include "runtime/runtime_status_reporter.hpp"
 #endif
-#if TRACKER_HAS_STATIC_TEST
+#if TRACKER_HAS_GYRO_TEMP_FIT
 #include "runtime/gyro_temp_static_fit.hpp"
 #endif
 #if TRACKER_HAS_SERIAL_CLI

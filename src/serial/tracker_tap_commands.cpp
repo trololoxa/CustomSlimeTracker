@@ -38,7 +38,7 @@ void printMaskedReg(Stream& out, const char* name, uint8_t actual, uint8_t expec
 void printTapHelp(Stream& out) {
     out.println("tap status");
     out.println("tap on | off");
-    out.println("tap test [2..10]       - send one SlimeVR Tap packet directly");
+    out.println("tap test [1..10]       - send one SlimeVR Tap packet directly");
     out.println("tap inject <1..10>     - emulate physical taps through accumulator");
     out.println("tap reset");
 }
@@ -136,7 +136,7 @@ void trackerSerialDispatchTapCommand(TrackerSerialCommandContext& ctx, int argc,
     if (tracker_serial_detail::eqIgnoreCase(argv[1], "test")) {
         const uint8_t value = parseTapCount(argc >= 3 ? argv[2] : nullptr);
         if (value < TRACKER_TAP_VALUE_MIN || value > TRACKER_TAP_VALUE_MAX) {
-            tracker_serial_detail::printErr(out, "usage: tap test [2..10]");
+            tracker_serial_detail::printErr(out, "usage: tap test [1..10]");
             return;
         }
         const bool ok = ctx.tapRuntime->sendManualTap(value, millis());

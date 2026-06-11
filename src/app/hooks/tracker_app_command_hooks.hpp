@@ -355,6 +355,8 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
 #if TRACKER_ENABLE_STATIC_TEST
     hooks.fitGyroTempFromLastStatic = fitGyroTempFromLastStaticHook;
     hooks.fitGyroTempFromCapture = fitGyroTempFromCaptureHook;
+#endif
+#if TRACKER_HAS_GYRO_TEMP_FIT
     hooks.fitGyroTempFromCaptureRam = fitGyroTempFromCaptureRamHook;
 #endif
 #if TRACKER_ENABLE_CALIBRATION_COMMANDS

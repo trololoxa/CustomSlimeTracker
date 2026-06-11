@@ -1,6 +1,7 @@
 #include "test_common.hpp"
 
 #include "runtime/tap_accumulator.hpp"
+#include "runtime/tap_runtime_controller.hpp"
 
 using namespace tracker;
 
@@ -17,6 +18,10 @@ static TapAccumulatorConfig testConfig() {
 
 int main() {
     TestContext ctx;
+
+    CHECK(ctx, TRACKER_TAP_VALUE_MIN == 1);
+    CHECK(ctx, TRACKER_TAP_MIN_COUNT == 2);
+    CHECK(ctx, TapRuntimeConfig{}.minCount == 2);
 
     {
         TapAccumulator a;

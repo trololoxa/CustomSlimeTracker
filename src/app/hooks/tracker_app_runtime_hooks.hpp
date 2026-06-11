@@ -39,11 +39,13 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     }
 }
 
-#if TRACKER_HAS_STATIC_TEST
+#if TRACKER_HAS_GYRO_TEMP_FIT
 static GyroTempStaticFitDeps makeGyroTempStaticFitDeps() {
     GyroTempStaticFitDeps deps;
+#if TRACKER_HAS_STATIC_TEST_STATE
     deps.lastCompletedStaticTest = &g_lastCompletedStaticTest;
     deps.lastCompletedStaticTestValid = g_lastCompletedStaticTestValid;
+#endif
     deps.gyroTempComp = &g_gyroTempComp;
     deps.imuCal = &g_imuCal;
     deps.runtimeBias = &g_runtimeBias;
@@ -54,8 +56,14 @@ static GyroTempStaticFitDeps makeGyroTempStaticFitDeps() {
 
 static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user) {
     (void)user;
+#if TRACKER_HAS_STATIC_TEST_STATE
     GyroTempStaticFitDeps deps = makeGyroTempStaticFitDeps();
     return fitGyroTempFromLastStatic(deps, persist, out);
+#else
+    (void)persist;
+    out.println("# gyro temperature static-test history is not compiled in this profile");
+    return false;
+#endif
 }
 
 static bool fitGyroTempFromCaptureHook(const StaticRuntimeTest* capture, bool persist, Stream& out, void* user) {
@@ -86,7 +94,7 @@ static bool fitGyroTempFromCaptureRamHook(const StaticRuntimeTest* capture, Stre
 static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user) {
     (void)persist;
     (void)user;
-    out.println("# gyro temperature static fit is not compiled in this profile");
+    out.println("# gyro temperature fit is not compiled in this profile");
     return false;
 }
 
@@ -94,14 +102,14 @@ static bool fitGyroTempFromCaptureHook(const StaticRuntimeTest* capture, bool pe
     (void)capture;
     (void)persist;
     (void)user;
-    out.println("# gyro temperature static fit is not compiled in this profile");
+    out.println("# gyro temperature fit is not compiled in this profile");
     return false;
 }
 
 static bool fitGyroTempFromCaptureRamHook(const StaticRuntimeTest* capture, Stream& out, void* user) {
     (void)capture;
     (void)user;
-    out.println("# gyro temperature static fit is not compiled in this profile");
+    out.println("# gyro temperature fit is not compiled in this profile");
     return false;
 }
 #endif
