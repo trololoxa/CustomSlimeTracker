@@ -126,6 +126,19 @@ void TrackerWifiManager::reset() {
     lastInfo_ = WifiStationInfo{};
 }
 
+void TrackerWifiManager::suspend() {
+    if (adapter_ && state_ != TrackerWifiState::Disabled) {
+        adapter_->disconnect();
+    }
+    state_ = TrackerWifiState::Disabled;
+    linkStatus_ = WifiLinkStatus::Disconnected;
+    connectedSinceMs_ = 0;
+    connectStartedMs_ = 0;
+    nextRetryMs_ = 0;
+    lastPollMs_ = 0;
+    lastInfo_ = WifiStationInfo{};
+}
+
 void TrackerWifiManager::update(uint32_t nowMs) {
     if (!adapter_) return;
 

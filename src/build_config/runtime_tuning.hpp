@@ -58,6 +58,30 @@
 #define TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS 16UL
 #endif
 
+// Optional motion-triggered light sleep. This is intentionally disabled by
+// default: it takes exclusive ownership of the shared INT1/FIFO pin while
+// sleeping. Enable with TRACKER_ENABLE_MOTION_LIGHT_SLEEP=1 only on ESP32
+// builds where PIN_LSM_INT1 is connected directly to LSM6DSV INT1.
+#ifndef TRACKER_MOTION_LIGHT_SLEEP_SERVER_ABSENCE_MS
+#define TRACKER_MOTION_LIGHT_SLEEP_SERVER_ABSENCE_MS 60000UL
+#endif
+
+// LSM6DSV WAKE_UP_THS register code. The driver selects the 62.5 mg/code
+// resolution; 12 is about 750 mg and avoids waking from small desk noise.
+#ifndef TRACKER_MOTION_LIGHT_SLEEP_WAKE_THRESHOLD
+#define TRACKER_MOTION_LIGHT_SLEEP_WAKE_THRESHOLD 12u
+#endif
+
+// LSM6DSV WAKE_UP_DUR low two bits. Zero gives the shortest qualified event;
+// raise it only after measuring false wakes on the actual tracker enclosure.
+#ifndef TRACKER_MOTION_LIGHT_SLEEP_WAKE_DURATION
+#define TRACKER_MOTION_LIGHT_SLEEP_WAKE_DURATION 0u
+#endif
+
+#ifndef TRACKER_MOTION_LIGHT_SLEEP_ACCEL_ODR
+#define TRACKER_MOTION_LIGHT_SLEEP_ACCEL_ODR 60
+#endif
+
 #ifndef TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS
 #define TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS 3000UL
 #endif

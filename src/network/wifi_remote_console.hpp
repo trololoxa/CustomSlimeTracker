@@ -29,6 +29,9 @@ public:
     void begin(const TrackerSerialCommandContext& baseContext);
     bool update(bool wifiConnected, uint32_t nowMs, size_t maxBytesPerUpdate);
     void setEnabled(bool enabled);
+    // Closes sockets before Wi-Fi is disabled while keeping the user's enabled
+    // preference for the subsequent light-sleep resume.
+    void suspend();
     bool enabled() const { return enabled_; }
     WifiRemoteConsoleStatus status() const;
     void printStatus(Stream& out) const;

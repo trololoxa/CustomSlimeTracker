@@ -4,6 +4,11 @@
 
 #include <cstring>
 
+#if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
+#include <driver/gpio.h>
+#include <esp_sleep.h>
+#endif
+
 namespace tracker {
 
 namespace {
@@ -38,6 +43,10 @@ void TrackerApp::setup() {
     }
 
     sensorRuntimeReady_ = false;
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    motionLightSleep_.setServerAbsenceTimeoutMs(TRACKER_MOTION_LIGHT_SLEEP_SERVER_ABSENCE_MS);
+    motionLightSleepManualRequested_ = false;
+#endif
     deps_.runtime.health->reset();
 
 #if TRACKER_ENABLE_BOOT_DELAY
@@ -227,6 +236,15 @@ void TrackerApp::loop() {
     timing.networkWorked = networkWorked;
     timing.tapWorked = tapWorked;
     timing.ledWorked = ledWorked;
+#endif
+
+#if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
+    // Light sleep is deliberately entered after the network state machine has
+    // observed the current server state, but before the next ordinary loop
+    // section. The call blocks until physical motion wakes the tracker.
+    if (maybeEnterMotionLightSleep()) {
+        return;
+    }
 #endif
 
 #if TRACKER_HAS_SERIAL_CLI && TRACKER_CLI_SECOND_POLL_ENABLED
@@ -531,6 +549,195 @@ bool TrackerApp::callBool(bool (*callback)()) {
     return callback != nullptr && callback();
 }
 
+
+
+
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+bool TrackerApp::motionLightSleepBlocked() const {
+    if (!sensorRuntimeReady_ || sensorStartupRecoveryActive_) return true;
+#if TRACKER_HAS_STATIC_TEST_STATE
+    if (deps_.runtime.staticTestRunner != nullptr && deps_.runtime.staticTestRunner->active()) return true;
+#endif
+#if TRACKER_HAS_RUNTIME_TEST_STATE
+    if (deps_.runtime.runtimeTestRunner != nullptr && deps_.runtime.runtimeTestRunner->active()) return true;
+#endif
+    // These hooks own the non-IMU resources that must be quiesced before the
+    // shared INT1 line is repurposed as a level wake source.
+    return deps_.bootstrap.lsm == nullptr ||
+           deps_.pins.int1 < 0 ||
+           deps_.callbacks.prepareMotionLightSleepRuntime == nullptr;
+}
+
+bool TrackerApp::requestMotionLightSleep() {
+    if (motionLightSleepBlocked()) return false;
+    motionLightSleepManualRequested_ = true;
+    return true;
+}
+
+bool TrackerApp::maybeEnterMotionLightSleep() {
+    if (motionLightSleepBlocked()) {
+        motionLightSleep_.reset();
+        motionLightSleepManualRequested_ = false;
+        return false;
+    }
+
+    // A serial command only queues the request. This method is reached after
+    // cli->poll() has returned, so ending/restarting Serial cannot corrupt the
+    // active command parser frame.
+    if (motionLightSleepManualRequested_) {
+        motionLightSleepManualRequested_ = false;
+        motionLightSleep_.noteSleepAttempted();
+        return enterMotionLightSleep();
+    }
+
+    const bool serverFound = deps_.callbacks.serverFoundForMotionSleep != nullptr &&
+                             deps_.callbacks.serverFoundForMotionSleep();
+    if (!motionLightSleep_.shouldEnter(serverFound, millis())) {
+        return false;
+    }
+
+    // Always start a fresh timeout after a wake attempt, including an instant
+    // wake caused by motion that happened while the IMU was being armed.
+    motionLightSleep_.noteSleepAttempted();
+    return enterMotionLightSleep();
+}
+
+bool TrackerApp::enterMotionLightSleep() {
+    if (deps_.bootstrap.lsm == nullptr || deps_.pins.int1 < 0) {
+        return false;
+    }
+
+#if TRACKER_HAS_SERIAL_CONSOLE
+    if (deps_.runtime.out != nullptr) {
+        deps_.runtime.out->println("# motion_light_sleep=enter");
+        deps_.runtime.out->flush();
+    }
+#endif
+
+    // The motion wake source owns the shared INT1 line while asleep. Stop the
+    // FIFO ISR first, then stop subsystems that can issue sensor-hub/Wi-Fi I/O.
+    call(deps_.callbacks.detachFifoInterrupt);
+    call(deps_.callbacks.prepareMotionLightSleepRuntime);
+    sensorRuntimeReady_ = false;
+
+    Lsm6dsv::MotionWakeConfig wake;
+    wake.enabled = true;
+    wake.routeToInt1 = true;
+    wake.latchedInterrupt = true;
+    wake.maskDuringAccelSettling = true;
+#if TRACKER_MOTION_LIGHT_SLEEP_ACCEL_ODR == 30
+    wake.accelOdr = Lsm6dsv::Odr::Hz30;
+#else
+    wake.accelOdr = Lsm6dsv::Odr::Hz60;
+#endif
+    wake.accelFs = Lsm6dsv::AccelFs::G2;
+    wake.accelMode = Lsm6dsv::AccelMode::LowPower1;
+    wake.threshold = TRACKER_MOTION_LIGHT_SLEEP_WAKE_THRESHOLD;
+    wake.duration = TRACKER_MOTION_LIGHT_SLEEP_WAKE_DURATION;
+
+    const bool imuReady = deps_.bootstrap.lsm->configureMotionWake(wake);
+    if (!imuReady) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+        if (deps_.runtime.out != nullptr) {
+            deps_.runtime.out->println("# ERR motion_light_sleep=arm_failed");
+        }
+#endif
+        resumeFromMotionLightSleep();
+        return true;
+    }
+
+    // Read once after arm to clear an old latched source before level wake is
+    // enabled. A new motion in the small race window simply causes an instant,
+    // safe wake and full normal-path reinitialization.
+    Lsm6dsv::MotionWakeSource source;
+    (void)deps_.bootstrap.lsm->readMotionWakeSource(source);
+
+    const gpio_num_t wakePin = static_cast<gpio_num_t>(deps_.pins.int1);
+    pinMode(deps_.pins.int1, INPUT);
+    const esp_err_t gpioResult = gpio_wakeup_enable(wakePin, GPIO_INTR_HIGH_LEVEL);
+    const esp_err_t sleepResult = gpioResult == ESP_OK ? esp_sleep_enable_gpio_wakeup() : gpioResult;
+    if (sleepResult != ESP_OK) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+        if (deps_.runtime.out != nullptr) {
+            deps_.runtime.out->print("# ERR motion_light_sleep=gpio_wake_failed err=");
+            deps_.runtime.out->println(static_cast<int>(sleepResult));
+        }
+#endif
+        resumeFromMotionLightSleep();
+        return true;
+    }
+
+#if TRACKER_HAS_SERIAL_CONSOLE
+    Serial.flush();
+    Serial.end();
+#endif
+
+    (void)esp_light_sleep_start();
+    // esp_sleep_enable_gpio_wakeup() has no matching global disable API on
+    // the Arduino-ESP32 / ESP-IDF version used by this project. Disabling
+    // the only armed pin is sufficient: later light-sleep entries have no
+    // GPIO wake source until gpio_wakeup_enable() is called again.
+    (void)gpio_wakeup_disable(wakePin);
+
+    resumeFromMotionLightSleep();
+    return true;
+}
+
+void TrackerApp::resumeFromMotionLightSleep() {
+#if TRACKER_HAS_SERIAL_CONSOLE
+    Serial.begin(deps_.timing.serialBaud);
+#endif
+
+    // Clear the latched event before reinitializing. trackerBootstrapInitLsm()
+    // also performs the full reset/configure sequence, which removes the
+    // motion route and restores the normal high-rate FIFO configuration.
+    if (deps_.bootstrap.lsm != nullptr) {
+        Lsm6dsv::MotionWakeSource source;
+        (void)deps_.bootstrap.lsm->readMotionWakeSource(source);
+        Lsm6dsv::MotionWakeConfig disableWake;
+        disableWake.enabled = false;
+        (void)deps_.bootstrap.lsm->configureMotionWake(disableWake);
+    }
+
+    sensorRuntimeReady_ = false;
+    sensorStartupRecoveryActive_ = false;
+    sensorStartupHardFailed_ = false;
+    pendingSensorFaultCode_ = TrackerHealthFaultCode::None;
+    pendingSensorFaultMessage_[0] = '\0';
+
+    if (initLsmWithRetries() && initFifoWithRetries()) {
+        setupSensorRuntime();
+        sensorRuntimeReady_ = true;
+    } else {
+        beginSensorStartupRecovery(TrackerHealthFaultCode::LsmInitFailed,
+                                   "LSM6DSV resume init failed after motion wake");
+    }
+
+    call(deps_.callbacks.setupBatteryRuntime);
+    call(deps_.callbacks.setupStatusLedRuntime);
+    // Preserve unsaved, runtime-applied network settings and connection
+    // counters. The first boot uses setupNetworkRuntime(); a wake uses the
+    // dedicated resume hook instead of reloading NVS.
+    if (deps_.callbacks.resumeNetworkRuntime != nullptr) {
+        call(deps_.callbacks.resumeNetworkRuntime);
+    } else {
+        call(deps_.callbacks.setupNetworkRuntime);
+    }
+    if (sensorRuntimeReady_) {
+        call(deps_.callbacks.setupTapRuntime);
+    }
+    call(deps_.callbacks.setupCommandInterface);
+    publishHealthState();
+
+#if TRACKER_HAS_SERIAL_CONSOLE
+    if (deps_.runtime.out != nullptr) {
+        deps_.runtime.out->println(sensorRuntimeReady_
+            ? "# motion_light_sleep=wake_resume_ok"
+            : "# motion_light_sleep=wake_resume_sensor_recovery");
+    }
+#endif
+}
+#endif // TRACKER_HAS_MOTION_LIGHT_SLEEP
 
 bool TrackerApp::maybeIdleYield(bool anyWork) {
 #if !TRACKER_ENABLE_IDLE_YIELD

@@ -48,6 +48,9 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("[core]");
     out.println("  help | ?");
     out.println("  status | health | version | reboot | factory_reset");
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    out.println("  sleep                              (enter motion light sleep; move tracker to wake)");
+#endif
 #if TRACKER_ENABLE_RUNTIME_PROFILER
     out.println("  perf status | top | on | off | reset");
     out.println("  motion status | on | off | reset");

@@ -17,6 +17,13 @@ static void hookResetAhrsRuntime(void* user) {
     resetOrientationDependentState("ahrs_or_config_reset", lsmFifo.stats().lastAssignedTimestampUs, false);
 }
 
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+static bool requestMotionLightSleepHook(void* user) {
+    (void)user;
+    return g_app.requestMotionLightSleep();
+}
+#endif
+
 #if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
 static RuntimeStatusReporterDeps makeRuntimeStatusReporterDeps() {
     RuntimeStatusReporterDeps deps;
@@ -361,6 +368,9 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
 #endif
 #if TRACKER_ENABLE_CALIBRATION_COMMANDS
     hooks.serviceCalibrationRuntime = serviceCalibrationRuntimeHook;
+#endif
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    hooks.requestMotionLightSleep = requestMotionLightSleepHook;
 #endif
     return hooks;
 }

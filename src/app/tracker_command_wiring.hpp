@@ -161,6 +161,11 @@ struct TrackerCommandRuntimeHooks {
 
     decltype(TrackerSerialCommandContext::serviceCalibrationRuntime) serviceCalibrationRuntime = nullptr;
     void* serviceCalibrationRuntimeUser = nullptr;
+
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    decltype(TrackerSerialCommandContext::requestMotionLightSleep) requestMotionLightSleep = nullptr;
+    void* requestMotionLightSleepUser = nullptr;
+#endif
 };
 
 void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,

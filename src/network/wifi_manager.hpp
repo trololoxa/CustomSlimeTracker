@@ -131,6 +131,10 @@ public:
     void resetCounters();
     void reset();
 
+    // Stop an active association for a temporary platform power state while
+    // retaining the configured SSID/password and diagnostic counters.
+    void suspend();
+
     void update(uint32_t nowMs);
 
     bool connected() const;

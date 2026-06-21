@@ -23,6 +23,13 @@ void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int ar
         return;
     }
 
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    if (tracker_serial_detail::eqIgnoreCase(argv[0], "sleep")) {
+        trackerSerialDispatchMotionLightSleepCommand(ctx, argc, argv);
+        return;
+    }
+#endif
+
 #if TRACKER_ENABLE_RUNTIME_PROFILER
     if (tracker_serial_detail::eqIgnoreCase(argv[0], "perf")) {
         trackerSerialDispatchPerfCommand(ctx, argc, argv);

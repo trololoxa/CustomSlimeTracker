@@ -436,6 +436,91 @@ bool Lsm6dsv::readTapSource(TapSource& source) {
         return true;
     }
 
+
+bool Lsm6dsv::configureMotionWake(const MotionWakeConfig& config) {
+    if (config.threshold > WAKE_UP_THS_MOTION_MASK ||
+        config.duration > WAKE_UP_DUR_MOTION_MASK ||
+        config.accelOdr == Odr::PowerDown) {
+        return fail(Error::InvalidConfig);
+    }
+
+    if (!config.enabled) {
+        bool ok = true;
+        ok = writeMasked(Reg::MD1_CFG, MD1_CFG_INT1_WAKE_UP, 0x00) && ok;
+        ok = writeMasked(Reg::TAP_CFG0,
+                         static_cast<uint8_t>(TAP_CFG0_LIR | TAP_CFG0_SLOPE_FDS),
+                         0x00) && ok;
+        ok = writeMasked(Reg::WAKE_UP_THS, WAKE_UP_THS_MOTION_MASK, 0x00) && ok;
+        ok = writeMasked(Reg::WAKE_UP_DUR, WAKE_UP_DUR_MOTION_MASK, 0x00) && ok;
+        MotionWakeSource discard;
+        (void)readMotionWakeSource(discard);
+        if (!ok) return fail(lastError_ == Error::BusReadFailed ? Error::BusReadFailed : Error::BusWriteFailed);
+        return true;
+    }
+
+    // INT1 is shared with the FIFO path in this tracker. Do not leave any
+    // FIFO/DRDY/tap source armed while GPIO light-sleep wake is level-based.
+    TapConfig tapsOff;
+    tapsOff.enabled = false;
+
+    bool ok = true;
+    ok = disableFifo() && ok;
+    ok = configureDrdyOnInt1(false, false) && ok;
+    ok = configureTapDetection(tapsOff) && ok;
+    ok = setAccelFullScale(config.accelFs) && ok;
+    ok = setAccelOdr(config.accelOdr, config.accelMode) && ok;
+    ok = setGyroOdr(Odr::PowerDown) && ok;
+    ok = writeMasked(Reg::FUNCTIONS_ENABLE,
+                     FUNCTIONS_ENABLE_INTERRUPTS_ENABLE,
+                     FUNCTIONS_ENABLE_INTERRUPTS_ENABLE) && ok;
+
+    // Use the high-pass wake-up path and set WU_INACT_THS_W=011 so the
+    // configured threshold has the documented 62.5 mg/code resolution.
+    uint8_t tapCfg0 = 0;
+    if (config.latchedInterrupt) tapCfg0 |= TAP_CFG0_LIR;
+    if (config.highPassFilter) tapCfg0 |= TAP_CFG0_SLOPE_FDS;
+    if (config.maskDuringAccelSettling) tapCfg0 |= TAP_CFG0_HW_FUNC_MASK_XL_SETTL;
+    ok = writeMasked(Reg::TAP_CFG0,
+                     static_cast<uint8_t>(TAP_CFG0_LIR |
+                                          TAP_CFG0_SLOPE_FDS |
+                                          TAP_CFG0_HW_FUNC_MASK_XL_SETTL),
+                     tapCfg0) && ok;
+    ok = writeMasked(Reg::INACTIVITY_DUR,
+                     INACTIVITY_DUR_WU_THS_WEIGHT_MASK,
+                     INACTIVITY_DUR_WU_THS_WEIGHT_62_5MG) && ok;
+    ok = writeMasked(Reg::WAKE_UP_THS,
+                     WAKE_UP_THS_MOTION_MASK,
+                     static_cast<uint8_t>(config.threshold & WAKE_UP_THS_MOTION_MASK)) && ok;
+    ok = writeMasked(Reg::WAKE_UP_DUR,
+                     WAKE_UP_DUR_MOTION_MASK,
+                     static_cast<uint8_t>(config.duration & WAKE_UP_DUR_MOTION_MASK)) && ok;
+    ok = writeMasked(Reg::MD1_CFG,
+                     MD1_CFG_INT1_WAKE_UP,
+                     config.routeToInt1 ? MD1_CFG_INT1_WAKE_UP : 0x00) && ok;
+
+    if (!ok) return fail(lastError_ == Error::BusReadFailed ? Error::BusReadFailed : Error::BusWriteFailed);
+
+    // Let the low-power accelerometer settle before its source/latch is used
+    // by ESP32 GPIO wake, then clear any stale condition from the old runtime.
+    bus_.delayMs(10);
+    MotionWakeSource discard;
+    return readMotionWakeSource(discard);
+}
+
+bool Lsm6dsv::readMotionWakeSource(MotionWakeSource& source) {
+    uint8_t raw = 0;
+    if (!readReg(Reg::WAKE_UP_SRC, raw)) {
+        return fail(Error::BusReadFailed);
+    }
+
+    source.raw = raw;
+    source.z = (raw & WAKE_UP_SRC_Z) != 0;
+    source.y = (raw & WAKE_UP_SRC_Y) != 0;
+    source.x = (raw & WAKE_UP_SRC_X) != 0;
+    source.wakeUp = (raw & WAKE_UP_SRC_IA) != 0;
+    return true;
+}
+
 float Lsm6dsv::odrHz(Odr odr) {
         switch (odr) {
             case Odr::PowerDown: return 0.0f;

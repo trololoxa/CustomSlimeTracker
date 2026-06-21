@@ -2,6 +2,11 @@
 
 #include <Arduino.h>
 #include <cstdint>
+
+// This context has feature-gated fields. It must include the canonical feature
+// contract itself; otherwise translation units that include it indirectly can
+// compile a different struct layout (and silently drop optional callbacks).
+#include "defines.h"
 #include "connection/lsm6dsv_driver.hpp"
 #include "serial/tracker_serial_parse.hpp"
 #include "serial/tracker_serial_print.hpp"
@@ -266,6 +271,13 @@ struct TrackerSerialCommandContext {
     // tests and host-only command dispatch can still build.
     bool (*serviceCalibrationRuntime)(void* user) = nullptr;
     void* serviceCalibrationRuntimeUser = nullptr;
+
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    // Queues a deferred platform sleep transition. It must not enter sleep
+    // synchronously from the CLI parser callback.
+    bool (*requestMotionLightSleep)(void* user) = nullptr;
+    void* requestMotionLightSleepUser = nullptr;
+#endif
 };
 
 

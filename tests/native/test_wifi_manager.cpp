@@ -166,6 +166,31 @@ int main() {
         wifi.begin(fake);
         wifi.configure(enabledConfig());
         wifi.update(0);
+        CHECK(ctx, wifi.state() == TrackerWifiState::Connecting);
+        const TrackerWifiManagerStatus before = wifi.status();
+
+        wifi.suspend();
+        const TrackerWifiManagerStatus suspended = wifi.status();
+        CHECK(ctx, suspended.state == TrackerWifiState::Disabled);
+        CHECK(ctx, suspended.desiredEnabled);
+        CHECK(ctx, suspended.credentialsValid);
+        CHECK(ctx, std::strcmp(suspended.ssid, "test-net") == 0);
+        CHECK(ctx, suspended.attempts == before.attempts);
+        CHECK(ctx, suspended.connectTimeouts == before.connectTimeouts);
+        CHECK(ctx, suspended.disconnects == before.disconnects);
+        CHECK(ctx, fake.disconnectCalls == 1);
+
+        wifi.update(1);
+        CHECK(ctx, wifi.state() == TrackerWifiState::Connecting);
+        CHECK(ctx, fake.beginCalls == 2);
+    }
+
+    {
+        FakeWifiAdapter fake;
+        TrackerWifiManager wifi;
+        wifi.begin(fake);
+        wifi.configure(enabledConfig());
+        wifi.update(0);
         CHECK(ctx, fake.beginCalls == 1);
 
         TrackerWifiManagerConfig cfg = enabledConfig();

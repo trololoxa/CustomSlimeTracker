@@ -18,6 +18,7 @@ Legend:
 | `version` | Print CLI protocol marker | No | Lightweight sanity check. |
 | `reboot` | Restart ESP32 | No | Flushes output before restart. |
 | `factory_reset` | Reset runtime config defaults and erase config store | Yes | Reboot recommended after success. |
+| `sleep` | Queue motion-triggered ESP32 light sleep | No | Compiled only with `TRACKER_ENABLE_MOTION_LIGHT_SLEEP=1`; serial/FIFO/Wi-Fi/mag are stopped after the current CLI poll returns, and a qualifying LSM6DSV motion event wakes the tracker. |
 | `remote status` | Print Wi-Fi TCP console state | No | Available when `TRACKER_ENABLE_WIFI_REMOTE_CONSOLE=1`. |
 | `remote off` / `remote on` | Stop/start the Wi-Fi TCP console for the current boot | No | `remote off` closes the TCP client/server so it stops adding normal-loop work. |
 

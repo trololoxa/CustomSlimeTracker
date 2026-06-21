@@ -8,6 +8,9 @@
 
 #if TRACKER_ENABLE_SERIAL_CLI
 #include "serial/tracker_system_commands.hpp"
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+#include "serial/tracker_sleep_commands.hpp"
+#endif
 #if TRACKER_ENABLE_RUNTIME_PROFILER
 #include "serial/tracker_perf_commands.hpp"
 #include "serial/tracker_motion_commands.hpp"

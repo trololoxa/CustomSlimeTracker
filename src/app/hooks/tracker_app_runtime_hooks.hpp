@@ -236,6 +236,10 @@ static void appAttachFifoInterruptCallback() {
     attachInterrupt(digitalPinToInterrupt(PIN_LSM_INT1), onFifoInt1, RISING);
 }
 
+static void appDetachFifoInterruptCallback() {
+    detachInterrupt(digitalPinToInterrupt(PIN_LSM_INT1));
+}
+
 static bool appSetMagRuntimeEnabledCallback(bool enabled, bool persist) {
     return setMagRuntimeEnabledHook(enabled, persist, nullptr);
 }
@@ -623,15 +627,7 @@ static void publishTrackerHealthState(const TrackerHealthSnapshot& health) {
     g_slimevrRuntime.setTrackerHealth(health);
 }
 
-static void setupNetworkRuntime() {
-    TrackerNetworkConfig loaded;
-    if (g_networkConfigStore.load(loaded)) {
-        g_networkConfig = loaded;
-        g_networkConfigLoadedFromNvs = true;
-    } else {
-        g_networkConfig.resetDefaults();
-        g_networkConfigLoadedFromNvs = false;
-    }
+static void startNetworkRuntimeFromCurrentConfig(bool printStartup) {
     g_networkConfig.sanitize();
 
     g_wifiManager.begin(g_wifiStation);
@@ -644,18 +640,42 @@ static void setupNetworkRuntime() {
     updateAppSlimeVRRuntimeLiveState(nowMs, true);
 
 #if TRACKER_ENABLE_SERIAL_CONSOLE
-    Serial.print("# network_config_loaded_from_nvs=");
-    Serial.println(g_networkConfigLoadedFromNvs ? "yes" : "no");
-    Serial.print("# wifi_enabled=");
-    Serial.println(g_networkConfig.data.wifiEnabled ? "yes" : "no");
-    if (g_networkConfig.data.wifiEnabled) {
-        Serial.println("# wifi connection is non-blocking; use: net status");
+    if (printStartup) {
+        Serial.print("# network_config_loaded_from_nvs=");
+        Serial.println(g_networkConfigLoadedFromNvs ? "yes" : "no");
+        Serial.print("# wifi_enabled=");
+        Serial.println(g_networkConfig.data.wifiEnabled ? "yes" : "no");
+        if (g_networkConfig.data.wifiEnabled) {
+            Serial.println("# wifi connection is non-blocking; use: net status");
+        }
+        if (slimeAutostart) {
+            Serial.println("# slimevr_autostart=yes; use: slime status");
+        }
     }
-    if (slimeAutostart) {
-        Serial.println("# slimevr_autostart=yes; use: slime status");
-    }
+#else
+    (void)printStartup;
 #endif
 }
+
+static void setupNetworkRuntime() {
+    TrackerNetworkConfig loaded;
+    if (g_networkConfigStore.load(loaded)) {
+        g_networkConfig = loaded;
+        g_networkConfigLoadedFromNvs = true;
+    } else {
+        g_networkConfig.resetDefaults();
+        g_networkConfigLoadedFromNvs = false;
+    }
+    startNetworkRuntimeFromCurrentConfig(true);
+}
+
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+static void resumeNetworkRuntime() {
+    // A motion wake is a transient platform event, not a configuration load:
+    // retain unsaved `net` / `slime` runtime choices and existing counters.
+    startNetworkRuntimeFromCurrentConfig(false);
+}
+#endif
 
 
 
@@ -811,6 +831,35 @@ static bool updateNetworkRuntime() {
     return g_slimevrRuntime.update(nowMs);
 }
 
+
+#if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
+static bool serverFoundForMotionLightSleep() {
+    return g_slimevrRuntime.serverFound();
+}
+
+static void prepareMotionLightSleepRuntime() {
+    // Do not call g_magRuntime.setEnabled(false, ...): that would mutate the
+    // user's persistent mag configuration. This is a transient power state.
+    (void)qmc.suspend();
+    (void)lsmHub.stopMaster();
+    g_magState.runtimeEnabled = false;
+    g_magState.fifoArmed = false;
+    g_preparedOutput.reset();
+
+#if TRACKER_ENABLE_STATUS_LED
+    g_statusLedRuntime.setMode(TrackerStatusLedMode::Off, millis());
+    g_statusLedRuntime.update(millis());
+#endif
+
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    g_wifiRemoteConsole.suspend();
+#endif
+    g_slimevrRuntime.stop();
+    g_wifiManager.suspend();
+    g_wifiStation.radioOff();
+}
+#endif
+
 static TrackerAppDeps makeTrackerAppDeps() {
     TrackerAppDeps deps;
 
@@ -853,6 +902,9 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.callbacks.setupCommandInterface = setupCommandInterface;
 #endif
     deps.callbacks.setupNetworkRuntime = setupNetworkRuntime;
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    deps.callbacks.resumeNetworkRuntime = resumeNetworkRuntime;
+#endif
     deps.callbacks.publishHealthState = publishTrackerHealthState;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
@@ -873,6 +925,11 @@ static TrackerAppDeps makeTrackerAppDeps() {
 #endif
     deps.callbacks.resetFifoRuntimeCounters = resetFifoRuntimeCounters;
     deps.callbacks.attachFifoInterrupt = appAttachFifoInterruptCallback;
+    deps.callbacks.detachFifoInterrupt = appDetachFifoInterruptCallback;
+#if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
+    deps.callbacks.serverFoundForMotionSleep = serverFoundForMotionLightSleep;
+    deps.callbacks.prepareMotionLightSleepRuntime = prepareMotionLightSleepRuntime;
+#endif
     deps.callbacks.resetOrientationState = resetOrientationDependentState;
     deps.callbacks.setMagRuntimeEnabled = appSetMagRuntimeEnabledCallback;
     deps.callbacks.processRawSample = processRuntimeRawSampleCallback;

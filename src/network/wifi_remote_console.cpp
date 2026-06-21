@@ -3,8 +3,11 @@
 namespace tracker {
 
 void WifiRemoteConsoleRuntime::begin(const TrackerSerialCommandContext& baseContext) {
+    const bool firstBegin = !configured_;
     configured_ = true;
-    enabled_ = TRACKER_ENABLE_WIFI_REMOTE_CONSOLE != 0;
+    if (firstBegin) {
+        enabled_ = TRACKER_ENABLE_WIFI_REMOTE_CONSOLE != 0;
+    }
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
     baseContext_ = baseContext;
     baseContext_.io = nullptr;
@@ -68,6 +71,13 @@ bool WifiRemoteConsoleRuntime::update(bool wifiConnected, uint32_t nowMs, size_t
     }
 
     return worked;
+#endif
+}
+
+void WifiRemoteConsoleRuntime::suspend() {
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    stopClient();
+    stopServer();
 #endif
 }
 

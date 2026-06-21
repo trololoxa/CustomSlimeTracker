@@ -114,6 +114,11 @@ void Esp32WifiStationAdapter::disconnect() {
     WiFi.disconnect(false, false);
 }
 
+void Esp32WifiStationAdapter::radioOff() {
+    WiFi.disconnect(false, false);
+    WiFi.mode(WIFI_OFF);
+}
+
 WifiStationInfo Esp32WifiStationAdapter::info() const {
     WifiStationInfo out;
 

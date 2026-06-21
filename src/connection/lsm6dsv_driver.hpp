@@ -316,6 +316,30 @@ public:
         bool z = false;
     };
 
+    // Hardware wake-up interrupt configuration used by the optional motion
+    // light-sleep path. It uses the regular wake-up engine, not embedded
+    // significant-motion, so gyro and FIFO can remain fully powered down.
+    struct MotionWakeConfig {
+        bool enabled = true;
+        bool routeToInt1 = true;
+        bool latchedInterrupt = true;
+        bool highPassFilter = true;
+        bool maskDuringAccelSettling = true;
+        Odr accelOdr = Odr::Hz60;
+        AccelFs accelFs = AccelFs::G2;
+        AccelMode accelMode = AccelMode::LowPower1;
+        uint8_t threshold = 12;
+        uint8_t duration = 0;
+    };
+
+    struct MotionWakeSource {
+        uint8_t raw = 0;
+        bool wakeUp = false;
+        bool x = false;
+        bool y = false;
+        bool z = false;
+    };
+
     explicit Lsm6dsv(Lsm6dsvTransport& transport);
 
     bool begin();
@@ -377,6 +401,14 @@ public:
 
     bool readTapSource(TapSource& source);
 
+    // Configure/disable LSM6DSV wake-up on INT1. Enabling this path disables
+    // FIFO batching and direct DRDY routing as a safety measure because the
+    // tracker shares one physical INT1 line between FIFO and wake-up.
+    bool configureMotionWake(const MotionWakeConfig& config);
+
+    // Reading WAKE_UP_SRC clears a latched wake-up condition on LSM6DSV.
+    bool readMotionWakeSource(MotionWakeSource& source);
+
     static float odrHz(Odr odr);
 
     static float accelSensitivityGPerLSB(AccelFs fs);
@@ -417,14 +449,17 @@ private:
         FIFO_STATUS2    = 0x1C,
         STATUS_REG      = 0x1E,
 
+        WAKE_UP_SRC     = 0x45,
         TAP_SRC         = 0x46,
         FUNCTIONS_ENABLE = 0x50,
+        INACTIVITY_DUR  = 0x54,
         TAP_CFG0        = 0x56,
         TAP_CFG1        = 0x57,
         TAP_CFG2        = 0x58,
         TAP_THS_6D      = 0x59,
         TAP_DUR         = 0x5A,
         WAKE_UP_THS     = 0x5B,
+        WAKE_UP_DUR     = 0x5C,
         MD1_CFG         = 0x5E,
 
         OUT_TEMP_L      = 0x20,
@@ -471,13 +506,20 @@ private:
     static constexpr uint8_t TAP_THS_6D_THS_MASK = 0x1Fu;
     static constexpr uint8_t TAP_DUR_CONTROLLED_MASK = 0xFFu;
     static constexpr uint8_t WAKE_UP_THS_TAP_MASK = 1u << 7;
+    static constexpr uint8_t WAKE_UP_THS_MOTION_MASK = 0x3Fu;
+    static constexpr uint8_t WAKE_UP_DUR_MOTION_MASK = 0x03u;
+    // WU_INACT_THS_W=011: 62.5 mg per WAKE_UP_THS code.
+    static constexpr uint8_t INACTIVITY_DUR_WU_THS_WEIGHT_MASK = 0x38u;
+    static constexpr uint8_t INACTIVITY_DUR_WU_THS_WEIGHT_62_5MG = 0x18u;
     static constexpr uint8_t MD1_CFG_TAP_MASK = (1u << 3) | (1u << 6);
+    static constexpr uint8_t MD1_CFG_INT1_WAKE_UP = 1u << 5;
     static constexpr uint8_t FUNCTIONS_ENABLE_INTERRUPTS_ENABLE = 1u << 7;
 
     static constexpr uint8_t TAP_CFG0_LIR = 1u << 0;
     static constexpr uint8_t TAP_CFG0_TAP_Z_EN = 1u << 1;
     static constexpr uint8_t TAP_CFG0_TAP_Y_EN = 1u << 2;
     static constexpr uint8_t TAP_CFG0_TAP_X_EN = 1u << 3;
+    static constexpr uint8_t TAP_CFG0_SLOPE_FDS = 1u << 4;
     static constexpr uint8_t TAP_CFG0_HW_FUNC_MASK_XL_SETTL = 1u << 5;
 
     static constexpr uint8_t WAKE_UP_THS_SINGLE_DOUBLE_TAP = 1u << 7;
@@ -492,6 +534,11 @@ private:
     static constexpr uint8_t TAP_SRC_DOUBLE_TAP = 1u << 4;
     static constexpr uint8_t TAP_SRC_SINGLE_TAP = 1u << 5;
     static constexpr uint8_t TAP_SRC_TAP_IA = 1u << 6;
+
+    static constexpr uint8_t WAKE_UP_SRC_Z = 1u << 0;
+    static constexpr uint8_t WAKE_UP_SRC_Y = 1u << 1;
+    static constexpr uint8_t WAKE_UP_SRC_X = 1u << 2;
+    static constexpr uint8_t WAKE_UP_SRC_IA = 1u << 3;
 
     static constexpr uint8_t CTRL4_DRDY_PULSED = 1u << 1;
 

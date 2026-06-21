@@ -117,6 +117,10 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.fitGyroTempFromCaptureRamUser = hooks.fitGyroTempFromCaptureRamUser;
     ctx.serviceCalibrationRuntime = hooks.serviceCalibrationRuntime;
     ctx.serviceCalibrationRuntimeUser = hooks.serviceCalibrationRuntimeUser;
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    ctx.requestMotionLightSleep = hooks.requestMotionLightSleep;
+    ctx.requestMotionLightSleepUser = hooks.requestMotionLightSleepUser;
+#endif
 }
 
 } // namespace tracker

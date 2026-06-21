@@ -24,3 +24,8 @@ This inventory is the current ownership map. It is intentionally compact; update
 ## Experimental/future code policy
 
 If a module is exploratory and not production-ready, keep it out of production command paths. Future research code should go under an explicit experimental area or behind compile-time flags, and commands must return `NOT_IMPLEMENTED` rather than pretending to be active.
+
+## Motion light sleep
+
+- `runtime/motion_light_sleep_controller.*` — host-testable continuous server-absence timeout policy used by the optional LSM6DSV motion light-sleep lifecycle.
+- `connection/lsm6dsv_driver.*` — LSM6DSV wake-up INT1 configuration and wake-source clear helper.

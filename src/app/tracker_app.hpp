@@ -7,6 +7,9 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "runtime/fifo_runtime_processor.hpp"
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+#include "runtime/motion_light_sleep_controller.hpp"
+#endif
 #if TRACKER_HAS_STATIC_TEST_STATE
 #include "runtime/static_test_runner.hpp"
 #endif
@@ -89,6 +92,11 @@ struct TrackerAppCallbacks {
     void (*setupMagRuntimeController)() = nullptr;
     void (*setupCommandInterface)() = nullptr;
     void (*setupNetworkRuntime)() = nullptr;
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    // Rebuild radio/UDP state after light sleep without reloading NVS and
+    // discarding unsaved runtime network changes.
+    void (*resumeNetworkRuntime)() = nullptr;
+#endif
     bool (*updateNetworkRuntime)() = nullptr;
     bool (*updateRemoteConsoleRuntime)() = nullptr;
     void (*setupTapRuntime)() = nullptr;
@@ -101,6 +109,14 @@ struct TrackerAppCallbacks {
     void (*publishHealthState)(const TrackerHealthSnapshot& health) = nullptr;
     void (*resetFifoRuntimeCounters)() = nullptr;
     void (*attachFifoInterrupt)() = nullptr;
+    void (*detachFifoInterrupt)() = nullptr;
+
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    // Light-sleep composition hooks. They intentionally do not change
+    // persistent/NVS settings: resume reuses the same runtime configuration.
+    bool (*serverFoundForMotionSleep)() = nullptr;
+    void (*prepareMotionLightSleepRuntime)() = nullptr;
+#endif
     void (*resetOrientationState)(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase) = nullptr;
     bool (*setMagRuntimeEnabled)(bool enabled, bool persist) = nullptr;
     FifoRuntimeSampleCallback processRawSample = nullptr;
@@ -129,6 +145,13 @@ public:
     // without recursively polling the serial parser.
     void serviceRuntimeForBlockingCommand();
 
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    // Queue a manual sleep request. It is intentionally serviced only after
+    // the serial dispatcher has returned, so Serial/CLI are never torn down
+    // recursively from inside a command callback.
+    bool requestMotionLightSleep();
+#endif
+
 private:
     bool ready() const;
     bool initLsmWithRetries();
@@ -142,6 +165,12 @@ private:
     void call(void (*callback)());
     bool processFifoRuntime();
     bool maybeIdleYield(bool anyWork);
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    bool maybeEnterMotionLightSleep();
+    bool enterMotionLightSleep();
+    void resumeFromMotionLightSleep();
+    bool motionLightSleepBlocked() const;
+#endif
     static bool callBool(bool (*callback)());
     void startMagFromConfig(Stream& out);
 
@@ -154,6 +183,10 @@ private:
     uint32_t nextSensorStartupRecoveryMs_ = 0;
     uint16_t sensorStartupRecoveryAttempts_ = 0;
     char pendingSensorFaultMessage_[64] = {};
+#if TRACKER_HAS_MOTION_LIGHT_SLEEP
+    MotionLightSleepController motionLightSleep_{TRACKER_MOTION_LIGHT_SLEEP_SERVER_ABSENCE_MS};
+    bool motionLightSleepManualRequested_ = false;
+#endif
 };
 
 } // namespace tracker
