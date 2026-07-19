@@ -81,6 +81,18 @@ void WifiRemoteConsoleRuntime::suspend() {
 #endif
 }
 
+bool WifiRemoteConsoleRuntime::writeDiagnosticLine(const char* line) {
+#if !TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    (void)line;
+    return false;
+#else
+    if (!line || !configured_ || !enabled_ || !client_ || !client_.connected()) {
+        return false;
+    }
+    return client_.println(line) > 0;
+#endif
+}
+
 void WifiRemoteConsoleRuntime::setEnabled(bool enabled) {
     enabled_ = enabled && (TRACKER_ENABLE_WIFI_REMOTE_CONSOLE != 0);
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE

@@ -32,6 +32,9 @@ public:
     // Closes sockets before Wi-Fi is disabled while keeping the user's enabled
     // preference for the subsequent light-sleep resume.
     void suspend();
+    // Best-effort asynchronous diagnostic output for the active telnet client.
+    // It intentionally does not create a client or change console enable state.
+    bool writeDiagnosticLine(const char* line);
     bool enabled() const { return enabled_; }
     WifiRemoteConsoleStatus status() const;
     void printStatus(Stream& out) const;

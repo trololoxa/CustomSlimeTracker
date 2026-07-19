@@ -21,6 +21,7 @@ void TapRuntimeController::begin(Lsm6dsv& lsm, SlimeVROutputRuntime& slimevr) {
     accumulator_.reset();
     nextPollMs_ = 0;
     nextRegisterVerifyMs_ = 0;
+    lastReadFailureDiagnosticMs_ = 0;
     if (config_.enabled) {
         (void)configureHardware();
     }
@@ -53,11 +54,14 @@ void TapRuntimeController::resetCounters() {
     status_.lastRegisterReadOk = lastRegisterReadOk;
     status_.lastRegisterVerification = lastVerification;
     accumulator_.reset();
+    diagnosticEvents_ = 0;
 }
 
 TapRuntimeStatus TapRuntimeController::status() const {
     TapRuntimeStatus out = status_;
     out.enabled = config_.enabled;
+    out.diagnosticLogging = diagnosticLogging_;
+    out.diagnosticEvents = diagnosticEvents_;
 
     const TapAccumulatorStatus a = accumulator_.status();
     out.pendingCount = a.pendingCount;
@@ -118,17 +122,24 @@ bool TapRuntimeController::configureHardware() {
     status_.lastReadOk = ok;
     if (!ok) {
         ++status_.configureFailures;
+        emitDiagnostic(TapDiagnosticKind::HardwareConfigureFailed, 0);
         return false;
     }
 
     nextPollMs_ = 0;
     nextRegisterVerifyMs_ = 0;
+    lastReadFailureDiagnosticMs_ = 0;
     if (config_.enabled) {
-        return verifyHardware(0, true);
+        const bool verifyOk = verifyHardware(0, true);
+        if (verifyOk) {
+            emitDiagnostic(TapDiagnosticKind::HardwareConfigured, 0);
+        }
+        return verifyOk;
     }
 
     status_.registerVerifyOk = false;
     status_.lastRegisterReadOk = false;
+    emitDiagnostic(TapDiagnosticKind::HardwareDisabled, 0);
     return ok;
 }
 
@@ -144,12 +155,14 @@ bool TapRuntimeController::verifyHardware(uint32_t nowMs, bool force) {
         status_.registerVerifyOk = false;
         status_.hardwareConfigured = false;
         ++status_.registerVerifyFailures;
+        emitDiagnostic(TapDiagnosticKind::RegisterVerifyFailed, nowMs);
     } else {
         status_.lastRegisterVerification = verification;
         status_.registerVerifyOk = verification.ok;
         if (!verification.ok) {
             ++status_.registerMismatchCount;
             status_.hardwareConfigured = false;
+            emitDiagnostic(TapDiagnosticKind::RegisterVerifyFailed, nowMs);
         }
     }
 
@@ -183,13 +196,25 @@ bool TapRuntimeController::update(uint32_t nowMs) {
 
     Lsm6dsv::TapSource source;
     if (!lsm_->readTapSource(source)) {
+        const bool wasReadOk = status_.lastReadOk;
         status_.lastReadOk = false;
         ++status_.readFailures;
+        if (wasReadOk || lastReadFailureDiagnosticMs_ == 0 ||
+            timeReached(nowMs, lastReadFailureDiagnosticMs_ + 1000u)) {
+            lastReadFailureDiagnosticMs_ = nowMs;
+            emitDiagnostic(TapDiagnosticKind::SourceReadFailed, nowMs);
+        }
         return true;
     }
     worked = true;
     status_.lastReadOk = true;
     status_.lastRawSource = source.raw;
+
+    // `TAP_SRC` is normally zero. Log every nonzero source byte because it
+    // is the decisive evidence for whether the hardware engine sees impact.
+    if (source.raw != 0) {
+        emitDiagnostic(TapDiagnosticKind::SourceObserved, nowMs, &source);
+    }
 
     if (source.tapDetected || source.singleTap || source.doubleTap) {
         worked = handleSource(source, nowMs, false) || worked;
@@ -200,7 +225,21 @@ bool TapRuntimeController::update(uint32_t nowMs) {
 }
 
 bool TapRuntimeController::flushAccumulator(uint32_t nowMs) {
-    return handleAccumulatorAction(accumulator_.update(nowMs), nowMs);
+    const TapAccumulatorStatus before = accumulator_.status();
+    const TapAccumulatorAction action = accumulator_.update(nowMs);
+    const TapAccumulatorStatus after = accumulator_.status();
+
+    if (after.windowsFlushed != before.windowsFlushed &&
+        !action.send &&
+        after.suppressedBelowMin != before.suppressedBelowMin) {
+        emitDiagnostic(TapDiagnosticKind::SuppressedBelowMin,
+                       nowMs,
+                       nullptr,
+                       0,
+                       0,
+                       before.pendingCount);
+    }
+    return handleAccumulatorAction(action, nowMs, false);
 }
 
 bool TapRuntimeController::sendManualTap(uint8_t value, uint32_t nowMs) {
@@ -208,7 +247,8 @@ bool TapRuntimeController::sendManualTap(uint8_t value, uint32_t nowMs) {
     status_.lastEventMs = nowMs;
     status_.lastPhysicalCount = value;
     status_.lastValue = value;
-    return sendTap(value, nowMs);
+    emitDiagnostic(TapDiagnosticKind::PacketReady, nowMs, nullptr, value, value, 0, true);
+    return sendTap(value, nowMs, true);
 }
 
 bool TapRuntimeController::injectPhysicalTaps(uint8_t count, uint32_t nowMs) {
@@ -245,20 +285,46 @@ bool TapRuntimeController::handleSource(const Lsm6dsv::TapSource& source, uint32
 
     status_.lastEventMs = nowMs;
     status_.lastPhysicalCount = physicalCount;
+    emitDiagnostic(TapDiagnosticKind::PhysicalTap, nowMs, &source, physicalCount, 0, accumulator_.status().pendingCount, manual);
 
+    const TapAccumulatorStatus before = accumulator_.status();
     const TapAccumulatorAction action = accumulator_.recordPhysicalTaps(physicalCount, nowMs);
-    const bool sent = handleAccumulatorAction(action, nowMs);
-    if (manual && !sent) {
-        // Keep manual injection deterministic: caller can inspect pending_count
-        // while the normal sliding-window deadline remains in effect.
+    const TapAccumulatorStatus after = accumulator_.status();
+
+    if (after.suppressedDuplicate != before.suppressedDuplicate) {
+        emitDiagnostic(TapDiagnosticKind::SuppressedDuplicate,
+                       nowMs,
+                       &source,
+                       physicalCount,
+                       0,
+                       after.pendingCount,
+                       manual);
+    } else if (after.suppressedLockout != before.suppressedLockout) {
+        emitDiagnostic(TapDiagnosticKind::SuppressedLockout,
+                       nowMs,
+                       &source,
+                       physicalCount,
+                       0,
+                       after.pendingCount,
+                       manual);
+    } else if (!action.send && after.pendingCount != before.pendingCount) {
+        emitDiagnostic(TapDiagnosticKind::AccumulatorQueued,
+                       nowMs,
+                       &source,
+                       physicalCount,
+                       0,
+                       after.pendingCount,
+                       manual);
     }
-    return sent;
+
+    return handleAccumulatorAction(action, nowMs, manual);
 }
 
-bool TapRuntimeController::handleAccumulatorAction(const TapAccumulatorAction& action, uint32_t nowMs) {
+bool TapRuntimeController::handleAccumulatorAction(const TapAccumulatorAction& action, uint32_t nowMs, bool manual) {
     if (!action.send) return false;
     status_.lastValue = action.value;
-    return sendTap(action.value, nowMs);
+    emitDiagnostic(TapDiagnosticKind::PacketReady, nowMs, nullptr, 0, action.value, 0, manual);
+    return sendTap(action.value, nowMs, manual);
 }
 
 uint8_t TapRuntimeController::normalizeTapValue(uint8_t value) {
@@ -269,10 +335,11 @@ uint8_t TapRuntimeController::normalizeTapValue(uint8_t value) {
     return value;
 }
 
-bool TapRuntimeController::sendTap(uint8_t value, uint32_t nowMs) {
+bool TapRuntimeController::sendTap(uint8_t value, uint32_t nowMs, bool manual) {
     if (!slimevr_ || !slimevr_->serverFound()) {
         ++status_.noServer;
         status_.lastSentOk = false;
+        emitDiagnostic(TapDiagnosticKind::SlimeVrNoServer, nowMs, nullptr, 0, value, 0, manual);
         return false;
     }
 
@@ -281,10 +348,43 @@ bool TapRuntimeController::sendTap(uint8_t value, uint32_t nowMs) {
     if (ok) {
         ++status_.sent;
         status_.lastSentMs = nowMs;
+        emitDiagnostic(TapDiagnosticKind::SlimeVrSent, nowMs, nullptr, 0, value, 0, manual);
     } else {
         ++status_.sendFailures;
+        emitDiagnostic(TapDiagnosticKind::SlimeVrSendFailed, nowMs, nullptr, 0, value, 0, manual);
     }
     return ok;
+}
+
+void TapRuntimeController::emitDiagnostic(TapDiagnosticKind kind,
+                                          uint32_t nowMs,
+                                          const Lsm6dsv::TapSource* source,
+                                          uint8_t physicalCount,
+                                          uint8_t packetValue,
+                                          uint8_t pendingCount,
+                                          bool manual) {
+    if (!diagnosticLogging_ || !diagnosticSink_) return;
+
+    TapDiagnosticEvent event;
+    event.kind = kind;
+    event.atMs = nowMs;
+    event.physicalCount = physicalCount;
+    event.packetValue = packetValue;
+    event.pendingCount = pendingCount;
+    event.manual = manual;
+    if (source) {
+        event.rawSource = source->raw;
+        event.tapDetected = source->tapDetected;
+        event.singleTap = source->singleTap;
+        event.doubleTap = source->doubleTap;
+        event.negative = source->negative;
+        event.x = source->x;
+        event.y = source->y;
+        event.z = source->z;
+    }
+
+    ++diagnosticEvents_;
+    diagnosticSink_(event, diagnosticSinkUser_);
 }
 
 } // namespace tracker

@@ -38,6 +38,9 @@ void printMaskedReg(Stream& out, const char* name, uint8_t actual, uint8_t expec
 void printTapHelp(Stream& out) {
     out.println("tap status");
     out.println("tap on | off");
+#if TRACKER_ENABLE_TAP_DIAGNOSTICS
+    out.println("tap log on | off | status - emit physical tap diagnostics to Serial/telnet");
+#endif
     out.println("tap test [1..10]       - send one SlimeVR Tap packet directly");
     out.println("tap inject <1..10>     - emulate physical taps through accumulator");
     out.println("tap reset");
@@ -53,6 +56,10 @@ void printTapStatus(Stream& out, const TapRuntimeController& tap) {
     out.print("last_physical_count="); out.println(s.lastPhysicalCount);
     out.print("last_value="); out.println(s.lastValue);
     out.print("last_sent_ok="); out.println(s.lastSentOk ? "yes" : "no");
+#if TRACKER_ENABLE_TAP_DIAGNOSTICS
+    out.print("diagnostic_logging="); out.println(s.diagnosticLogging ? "yes" : "no");
+    out.print("diagnostic_events="); out.println(s.diagnosticEvents);
+#endif
     out.print("single_detected="); out.println(s.singleDetected);
     out.print("double_detected="); out.println(s.doubleDetected);
     out.print("tap_detected_no_type="); out.println(s.tapDetectedNoType);
@@ -119,6 +126,35 @@ void trackerSerialDispatchTapCommand(TrackerSerialCommandContext& ctx, int argc,
         out.print("# "); out.println(ok ? "OK tap runtime enabled" : "WARN tap runtime enable failed");
         return;
     }
+
+#if TRACKER_ENABLE_TAP_DIAGNOSTICS
+    if (tracker_serial_detail::eqIgnoreCase(argv[1], "log")) {
+        if (argc < 3 || tracker_serial_detail::eqIgnoreCase(argv[2], "status")) {
+            const TapRuntimeStatus s = ctx.tapRuntime->status();
+            out.print("# tap_log="); out.println(s.diagnosticLogging ? "on" : "off");
+            out.print("# tap_log_events="); out.println(s.diagnosticEvents);
+            return;
+        }
+        if (tracker_serial_detail::eqIgnoreCase(argv[2], "on") ||
+            tracker_serial_detail::eqIgnoreCase(argv[2], "enable")) {
+            ctx.tapRuntime->setDiagnosticLogging(true);
+            const TapRuntimeConfig cfg = ctx.tapRuntime->config();
+            out.print("# OK tap log enabled poll_ms="); out.print(cfg.pollIntervalMs);
+            out.print(" threshold="); out.print(cfg.threshold);
+            out.print(" min_count="); out.print(cfg.minCount);
+            out.print(" window_ms="); out.println(cfg.aggregationWindowMs);
+            return;
+        }
+        if (tracker_serial_detail::eqIgnoreCase(argv[2], "off") ||
+            tracker_serial_detail::eqIgnoreCase(argv[2], "disable")) {
+            ctx.tapRuntime->setDiagnosticLogging(false);
+            out.println("# OK tap log disabled");
+            return;
+        }
+        tracker_serial_detail::printErr(out, "usage: tap log on|off|status");
+        return;
+    }
+#endif
 
     if (tracker_serial_detail::eqIgnoreCase(argv[1], "off") ||
         tracker_serial_detail::eqIgnoreCase(argv[1], "disable")) {

@@ -33,6 +33,46 @@ struct TapRuntimeConfig {
     uint8_t duration = TRACKER_LSM6DSV_TAP_DURATION;
 };
 
+enum class TapDiagnosticKind : uint8_t {
+    HardwareConfigured,
+    HardwareDisabled,
+    HardwareConfigureFailed,
+    RegisterVerifyFailed,
+    SourceReadFailed,
+    SourceObserved,
+    PhysicalTap,
+    AccumulatorQueued,
+    SuppressedDuplicate,
+    SuppressedLockout,
+    SuppressedBelowMin,
+    PacketReady,
+    SlimeVrSent,
+    SlimeVrNoServer,
+    SlimeVrSendFailed,
+};
+
+// Produced only from the normal loop, never from an ISR. `rawSource` and the
+// decoded flags come directly from LSM6DSV TAP_SRC, so field evidence can
+// distinguish a detector/configuration issue from accumulator or UDP output.
+struct TapDiagnosticEvent {
+    TapDiagnosticKind kind = TapDiagnosticKind::HardwareConfigured;
+    uint32_t atMs = 0;
+    uint8_t rawSource = 0;
+    uint8_t physicalCount = 0;
+    uint8_t packetValue = 0;
+    uint8_t pendingCount = 0;
+    bool manual = false;
+    bool tapDetected = false;
+    bool singleTap = false;
+    bool doubleTap = false;
+    bool negative = false;
+    bool x = false;
+    bool y = false;
+    bool z = false;
+};
+
+using TapDiagnosticSink = void (*)(const TapDiagnosticEvent& event, void* user);
+
 struct TapRuntimeStatus {
     bool enabled = false;
     bool hardwareConfigured = false;
@@ -74,6 +114,9 @@ struct TapRuntimeStatus {
     uint32_t registerMismatchCount = 0;
     uint32_t lastRegisterVerifyMs = 0;
     Lsm6dsv::TapRegisterVerification lastRegisterVerification;
+
+    bool diagnosticLogging = false;
+    uint32_t diagnosticEvents = 0;
 };
 
 class TapRuntimeController {
@@ -82,10 +125,17 @@ public:
     bool configure(const TapRuntimeConfig& config);
     bool setEnabled(bool enabled);
     bool enabled() const { return config_.enabled; }
+    TapRuntimeConfig config() const { return config_; }
     void resetCounters();
     bool update(uint32_t nowMs);
     bool sendManualTap(uint8_t value, uint32_t nowMs);
     bool injectPhysicalTaps(uint8_t count, uint32_t nowMs);
+    void setDiagnosticLogging(bool enabled) { diagnosticLogging_ = enabled; }
+    bool diagnosticLogging() const { return diagnosticLogging_; }
+    void setDiagnosticSink(TapDiagnosticSink sink, void* user = nullptr) {
+        diagnosticSink_ = sink;
+        diagnosticSinkUser_ = user;
+    }
     TapRuntimeStatus status() const;
 
 private:
@@ -94,8 +144,15 @@ private:
     void maybeVerifyHardware(uint32_t nowMs);
     bool flushAccumulator(uint32_t nowMs);
     bool handleSource(const Lsm6dsv::TapSource& source, uint32_t nowMs, bool manual);
-    bool handleAccumulatorAction(const TapAccumulatorAction& action, uint32_t nowMs);
-    bool sendTap(uint8_t value, uint32_t nowMs);
+    bool handleAccumulatorAction(const TapAccumulatorAction& action, uint32_t nowMs, bool manual);
+    bool sendTap(uint8_t value, uint32_t nowMs, bool manual);
+    void emitDiagnostic(TapDiagnosticKind kind,
+                        uint32_t nowMs,
+                        const Lsm6dsv::TapSource* source = nullptr,
+                        uint8_t physicalCount = 0,
+                        uint8_t packetValue = 0,
+                        uint8_t pendingCount = 0,
+                        bool manual = false);
     Lsm6dsv::TapConfig makeHardwareConfig() const;
     TapAccumulatorConfig makeAccumulatorConfig() const;
     static uint8_t normalizeTapValue(uint8_t value);
@@ -107,6 +164,11 @@ private:
     TapAccumulator accumulator_;
     uint32_t nextPollMs_ = 0;
     uint32_t nextRegisterVerifyMs_ = 0;
+    uint32_t lastReadFailureDiagnosticMs_ = 0;
+    bool diagnosticLogging_ = false;
+    uint32_t diagnosticEvents_ = 0;
+    TapDiagnosticSink diagnosticSink_ = nullptr;
+    void* diagnosticSinkUser_ = nullptr;
 };
 
 } // namespace tracker

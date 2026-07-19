@@ -221,6 +221,14 @@
 #error "Runtime profiler is a live serial/telnet diagnostic and requires serial CLI."
 #endif
 
+#if TRACKER_ENABLE_TAP_DIAGNOSTICS && !TRACKER_ENABLE_TAP_RUNTIME
+#error "Tap diagnostics require TRACKER_ENABLE_TAP_RUNTIME=1."
+#endif
+
+#if TRACKER_ENABLE_TAP_DIAGNOSTICS && !TRACKER_ENABLE_SERIAL_CLI
+#error "Tap diagnostics are controlled through the serial/telnet CLI and require TRACKER_ENABLE_SERIAL_CLI=1."
+#endif
+
 #if TRACKER_ENABLE_HOTPATH_PERF && !TRACKER_HAS_RUNTIME_DIAGNOSTICS
 #error "Hot-path perf counters require a diagnostics-capable profile."
 #endif

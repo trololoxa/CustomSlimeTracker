@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdio>
 #include <cstring>
 
 #include "runtime/tracker_console_suppress.hpp"
@@ -764,7 +765,80 @@ static void setStatusLedSensorError() {
 #endif // TRACKER_ENABLE_STATUS_LED
 
 #if TRACKER_ENABLE_TAP_RUNTIME
+#if TRACKER_ENABLE_TAP_DIAGNOSTICS
+static const char* tapDiagnosticKindName(TapDiagnosticKind kind) {
+    switch (kind) {
+        case TapDiagnosticKind::HardwareConfigured: return "hardware_configured";
+        case TapDiagnosticKind::HardwareDisabled: return "hardware_disabled";
+        case TapDiagnosticKind::HardwareConfigureFailed: return "hardware_config_failed";
+        case TapDiagnosticKind::RegisterVerifyFailed: return "register_verify_failed";
+        case TapDiagnosticKind::SourceReadFailed: return "tap_src_read_failed";
+        case TapDiagnosticKind::SourceObserved: return "tap_src";
+        case TapDiagnosticKind::PhysicalTap: return "physical_tap";
+        case TapDiagnosticKind::AccumulatorQueued: return "queued";
+        case TapDiagnosticKind::SuppressedDuplicate: return "suppressed_duplicate";
+        case TapDiagnosticKind::SuppressedLockout: return "suppressed_lockout";
+        case TapDiagnosticKind::SuppressedBelowMin: return "suppressed_below_min";
+        case TapDiagnosticKind::PacketReady: return "packet_ready";
+        case TapDiagnosticKind::SlimeVrSent: return "slimevr_sent";
+        case TapDiagnosticKind::SlimeVrNoServer: return "slimevr_no_server";
+        case TapDiagnosticKind::SlimeVrSendFailed: return "slimevr_send_failed";
+    }
+    return "unknown";
+}
+
+static void emitTapDiagnosticLine(const char* line) {
+#if TRACKER_ENABLE_SERIAL_CONSOLE
+    Serial.println(line);
+#endif
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    (void)g_wifiRemoteConsole.writeDiagnosticLine(line);
+#endif
+}
+
+static void onTapDiagnostic(const TapDiagnosticEvent& event, void*) {
+    char line[240] = {};
+    const char* const kind = tapDiagnosticKindName(event.kind);
+    if (event.kind == TapDiagnosticKind::SourceObserved ||
+        event.kind == TapDiagnosticKind::PhysicalTap ||
+        event.kind == TapDiagnosticKind::AccumulatorQueued ||
+        event.kind == TapDiagnosticKind::SuppressedDuplicate ||
+        event.kind == TapDiagnosticKind::SuppressedLockout) {
+        std::snprintf(line,
+                      sizeof(line),
+                      "# TAP_LOG ms=%lu event=%s raw=0x%02X tap=%u single=%u double=%u sign=%u x=%u y=%u z=%u physical=%u pending=%u manual=%u",
+                      static_cast<unsigned long>(event.atMs),
+                      kind,
+                      static_cast<unsigned int>(event.rawSource),
+                      event.tapDetected ? 1u : 0u,
+                      event.singleTap ? 1u : 0u,
+                      event.doubleTap ? 1u : 0u,
+                      event.negative ? 1u : 0u,
+                      event.x ? 1u : 0u,
+                      event.y ? 1u : 0u,
+                      event.z ? 1u : 0u,
+                      static_cast<unsigned int>(event.physicalCount),
+                      static_cast<unsigned int>(event.pendingCount),
+                      event.manual ? 1u : 0u);
+    } else {
+        std::snprintf(line,
+                      sizeof(line),
+                      "# TAP_LOG ms=%lu event=%s value=%u pending=%u physical=%u manual=%u",
+                      static_cast<unsigned long>(event.atMs),
+                      kind,
+                      static_cast<unsigned int>(event.packetValue),
+                      static_cast<unsigned int>(event.pendingCount),
+                      static_cast<unsigned int>(event.physicalCount),
+                      event.manual ? 1u : 0u);
+    }
+    emitTapDiagnosticLine(line);
+}
+#endif // TRACKER_ENABLE_TAP_DIAGNOSTICS
+
 static void setupTapRuntime() {
+#if TRACKER_ENABLE_TAP_DIAGNOSTICS
+    g_tapRuntime.setDiagnosticSink(onTapDiagnostic, nullptr);
+#endif
     g_tapRuntime.begin(lsm, g_slimevrRuntime);
 
     TapRuntimeConfig cfg;

@@ -489,3 +489,17 @@ The firmware now exposes SlimeVR Server serial-compatibility commands for initia
 ## Motion light sleep
 
 See [motion_light_sleep.md](motion_light_sleep.md) for the opt-in GPIO10/INT1 light-sleep bench procedure and its host-test coverage.
+
+## Tap detector diagnostic capture
+
+For a physical tap investigation, keep the tracker connected to SlimeVR and open either USB Serial or the Wi-Fi remote console. Run:
+
+```text
+tap reset
+tap log on
+tap status
+```
+
+Tap the enclosure several times, then run `tap status` and `slime status`. `tap log` emits only nonzero `TAP_SRC`, decoded single/double/axis bits, accumulator queue or suppression decisions, and the final SlimeVR send result; it deliberately does not print the idle 5 ms polls. The same `# TAP_LOG ...` lines are mirrored to Serial and the active remote-console/telnet client. Use `tap log off` after the capture.
+
+Interpretation: no `event=tap_src` means the LSM6DSV hardware engine did not report an event; `tap_src` without `physical_tap` indicates an unexpected source-bit pattern; `suppressed_below_min`, `suppressed_duplicate`, or `suppressed_lockout` identifies firmware gesture filtering; `slimevr_no_server` / `slimevr_send_failed` identifies the output path.
