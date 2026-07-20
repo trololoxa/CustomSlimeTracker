@@ -86,6 +86,8 @@ struct ImuSamplePipelineDeps {
 
 void imuPipelineUpdateLatestTemperature(ImuSamplePipelineDeps& deps);
 Vec3 imuPipelineCurrentGyroBiasRadS(const ImuSamplePipelineDeps& deps, float tempC);
+Lsm6dsv::Sample imuPipelineMakeSensorFrameCalibratedSample(const ImuSamplePipelineDeps& deps,
+                                                           const Lsm6dsv::Sample& scaled);
 Lsm6dsv::Sample imuPipelineMakeCalibratedSample(const ImuSamplePipelineDeps& deps,
                                                 const Lsm6dsv::Sample& scaled);
 void imuPipelineRecordSampleProcessTime(ImuSamplePipelineDeps& deps, uint32_t dtUs);

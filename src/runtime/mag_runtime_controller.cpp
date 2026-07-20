@@ -30,6 +30,8 @@ MagRuntimeConfig MagRuntimeController::runtimeConfig() const {
     c.hardIron = magCal.hardIron;
     c.softIron = magCal.softIron;
     c.magToImu = magCal.magToImu;
+    c.sensorToDeviceValid = deps_.config->data.frame.sensorToDeviceValid;
+    c.sensorToDevice = deps_.config->data.frame.sensorToDevice;
 
     c.expectedFieldNorm = magCal.expectedFieldNorm;
     c.minTrustNorm = magCal.minTrustNorm;

@@ -7,6 +7,7 @@
 #include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/fifo_calibrations.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
+#include "runtime/runtime_gyro_bias_controller.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
@@ -56,8 +57,11 @@ public:
                 ctx.imuCal->accelBiasG = Vec3::zero();
                 ctx.imuCal->accelScale = Mat3::identity();
             }
+            if (ctx.gyroTempComp) ctx.gyroTempComp->clearAll();
+            if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
             if (ctx.config) {
                 ctx.config->data.gyroCal = TrackerGyroCalibrationConfig{};
+                ctx.config->data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
                 ctx.config->data.gyroCalMeta = TrackerGyroCalibrationMetaPersisted{};
                 ctx.config->data.accelCal = TrackerAccelCalibrationConfig{};
                 ctx.config->data.accelCalQuality = TrackerAccelCalibrationQualityPersisted{};
@@ -97,8 +101,11 @@ private:
                 ctx.imuCal->gyroBiasValid = false;
                 ctx.imuCal->gyroBiasRadS = Vec3::zero();
             }
+            if (ctx.gyroTempComp) ctx.gyroTempComp->clearAll();
+            if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
             if (ctx.config) {
                 ctx.config->data.gyroCal = TrackerGyroCalibrationConfig{};
+                ctx.config->data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
                 ctx.config->data.gyroCalMeta = TrackerGyroCalibrationMetaPersisted{};
                 ctx.config->updateCrc();
             }
@@ -137,6 +144,7 @@ private:
             ctx.calibrationIo->latestTempC
         );
 
+        if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
         if (ctx.config) {
             ctx.config->captureFromImuCalibration(*ctx.imuCal);
             ctx.config->noteGyroBiasCalibrationCaptured(millis());
@@ -277,7 +285,8 @@ private:
             const auto s = ctx.gyroTempComp->snapshot(currentTempC);
 
             out.println("# GYRO TEMP COMP");
-            out.print("temp_comp_valid="); out.println(s.valid ? "yes" : "no");
+            out.print("gyro_bias_model_valid="); out.println(s.valid ? "yes" : "no");
+            out.print("temp_comp_valid="); out.println(s.temperatureModelValid ? "yes" : "no");
             out.print("temp_comp_enabled="); out.println(s.enabled ? "yes" : "no");
             out.print("temp_learning_enabled="); out.println(s.learningEnabled ? "yes" : "no");
 
@@ -379,12 +388,15 @@ private:
         if (is(argv[2], "clear")) {
             const bool saveRequested = argc >= 4 && is(argv[3], "save");
 
-            ctx.gyroTempComp->setSlopeRadSPerC(Vec3::zero());
+            ctx.gyroTempComp->invalidateTemperatureModel();
+            if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
 
             if (ctx.config) {
                 ctx.config->data.gyroCal.tempCompValid = false;
                 ctx.config->data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
                 ctx.config->data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
+                ctx.config->data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
+                ctx.config->data.gyroCalMeta.tempModelSampleCount = 0;
                 ctx.config->sanitize();
                 ctx.config->updateCrc();
 

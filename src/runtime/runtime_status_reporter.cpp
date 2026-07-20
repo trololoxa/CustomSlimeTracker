@@ -42,7 +42,8 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
     const GyroTempCompSnapshot tempSnap = deps.gyroTempComp
         ? deps.gyroTempComp->snapshot(deps.latestTempC)
         : GyroTempCompSnapshot{};
-    out.print("gyro_temp_valid="); out.println(tempSnap.valid ? "yes" : "no");
+    out.print("gyro_bias_model_valid="); out.println(tempSnap.valid ? "yes" : "no");
+    out.print("gyro_temp_valid="); out.println(tempSnap.temperatureModelValid ? "yes" : "no");
     out.print("gyro_temp_enabled="); out.println(tempSnap.enabled ? "yes" : "no");
     out.print("gyro_temp_range_valid="); out.println(tempSnap.hasCalibratedRange ? "yes" : "no");
     out.print("gyro_temp_out_of_range="); out.println(tempSnap.tempOutOfRange ? "yes" : "no");

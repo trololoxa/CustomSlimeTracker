@@ -218,7 +218,6 @@ void runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
                                        const Lsm6dsv::Sample& calibrated,
                                        const ImuQualityResult& quality,
                                        uint64_t timestampUs) {
-    (void)scaled;
     RuntimeGyroBiasEstimator& bias = deps.bias;
     if (!bias.enabled) return;
 
@@ -244,7 +243,8 @@ void runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
                            quality.has(imu_quality_flags::GYRO_NEAR_SATURATION) ||
                            quality.has(imu_quality_flags::ACCEL_NEAR_SATURATION);
 
-    const bool finiteBad = !calibrated.gyro_rad_s.isFinite() ||
+    const bool finiteBad = !scaled.gyro_rad_s.isFinite() ||
+                           !calibrated.gyro_rad_s.isFinite() ||
                            !calibrated.accel_g.isFinite() ||
                            !std::isfinite(calibrated.temp_c);
 
@@ -269,7 +269,13 @@ void runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
     const Ahrs6DofStats& ast = deps.ahrs.stats();
     if (sampleTempGate.nearOutOfRange) bias.tempCautiousSamples++;
 
-    bias.calibratedGyroRadS.push(calibrated.gyro_rad_s);
+    // runtimeTrimRadS is persisted only in RAM but shares the same native
+    // sensor frame as the static/temperature bias.  Derive the residual from
+    // the unrotated scaled gyro so a non-identity sensorToDevice transform
+    // cannot mix coordinate frames inside the estimator.
+    const Vec3 sensorResidualRadS = scaled.gyro_rad_s -
+        runtimeBiasCurrentGyroBiasRadS(bias, deps.imuCal, deps.gyroTempComp, calibrated.temp_c);
+    bias.calibratedGyroRadS.push(sensorResidualRadS);
     bias.accelNormG.push(calibrated.accel_g.norm());
     bias.accelTrust.push(ast.lastAccelGate.trust);
     bias.tempC.push(calibrated.temp_c);

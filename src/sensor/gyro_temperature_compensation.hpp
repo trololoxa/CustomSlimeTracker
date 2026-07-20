@@ -53,6 +53,7 @@ struct GyroTempCompConfig {
 
 struct GyroTempCompSnapshot {
     bool valid = false;
+    bool temperatureModelValid = false;
     bool enabled = false;
     bool learningEnabled = false;
 
@@ -91,7 +92,12 @@ class GyroTempCompensator {
 public:
     explicit GyroTempCompensator(const GyroTempCompConfig& config = GyroTempCompConfig{});
 
+    // Legacy name retained for source compatibility.  reset() now means
+    // "replace the static bias and invalidate any previous temperature model".
     void reset(const Vec3& referenceBiasRadS, float referenceTempC);
+    void setStaticBias(const Vec3& referenceBiasRadS, float referenceTempC);
+    void clearAll();
+    void invalidateTemperatureModel();
     void setModel(const Vec3& referenceBiasRadS,
                   float referenceTempC,
                   const Vec3& slopeRadSPerC);
@@ -113,6 +119,7 @@ public:
     void setSlopeRadSPerC(const Vec3& slopeRadSPerC);
 
     bool valid() const;
+    bool temperatureModelValid() const;
 
     Vec3 referenceBiasRadS() const;
     Vec3 referenceBiasDps() const;
@@ -134,6 +141,7 @@ public:
 private:
     GyroTempCompConfig cfg_;
     bool valid_ = false;
+    bool temperatureModelValid_ = false;
 
     Vec3 referenceBiasRadS_ = Vec3::zero();
     float referenceTempC_ = 25.0f;
@@ -141,6 +149,8 @@ private:
 
     uint32_t learnAccepted_ = 0;
     uint32_t learnRejected_ = 0;
+
+    void clearQualityMetadata();
 };
 
 } // namespace tracker

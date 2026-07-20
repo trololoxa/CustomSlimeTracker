@@ -7,11 +7,44 @@ namespace tracker {
 GyroTempCompensator::GyroTempCompensator(const GyroTempCompConfig& config)
     : cfg_(config) {}
 
+void GyroTempCompensator::clearQualityMetadata() {
+    cfg_.calibratedTempMinC = 0.0f;
+    cfg_.calibratedTempMaxC = 0.0f;
+    cfg_.fitQuality = 0.0f;
+    cfg_.fitResidualBeforeDps = 0.0f;
+    cfg_.fitResidualAfterDps = 0.0f;
+}
+
 void GyroTempCompensator::reset(const Vec3& referenceBiasRadS, float referenceTempC) {
+    setStaticBias(referenceBiasRadS, referenceTempC);
+}
+
+void GyroTempCompensator::setStaticBias(const Vec3& referenceBiasRadS, float referenceTempC) {
     referenceBiasRadS_ = referenceBiasRadS;
     referenceTempC_ = referenceTempC;
     slopeRadSPerC_ = Vec3::zero();
-    valid_ = true;
+    valid_ = referenceBiasRadS.isFinite() && std::isfinite(referenceTempC);
+    temperatureModelValid_ = false;
+    clearQualityMetadata();
+    learnAccepted_ = 0;
+    learnRejected_ = 0;
+}
+
+void GyroTempCompensator::clearAll() {
+    valid_ = false;
+    temperatureModelValid_ = false;
+    referenceBiasRadS_ = Vec3::zero();
+    referenceTempC_ = 25.0f;
+    slopeRadSPerC_ = Vec3::zero();
+    clearQualityMetadata();
+    learnAccepted_ = 0;
+    learnRejected_ = 0;
+}
+
+void GyroTempCompensator::invalidateTemperatureModel() {
+    temperatureModelValid_ = false;
+    slopeRadSPerC_ = Vec3::zero();
+    clearQualityMetadata();
     learnAccepted_ = 0;
     learnRejected_ = 0;
 }
@@ -22,7 +55,12 @@ void GyroTempCompensator::setModel(const Vec3& referenceBiasRadS,
     referenceBiasRadS_ = referenceBiasRadS;
     referenceTempC_ = referenceTempC;
     slopeRadSPerC_ = slopeRadSPerC;
-    valid_ = referenceBiasRadS.isFinite() && std::isfinite(referenceTempC) && slopeRadSPerC.isFinite();
+    valid_ = referenceBiasRadS.isFinite() && std::isfinite(referenceTempC);
+    temperatureModelValid_ = valid_ && slopeRadSPerC.isFinite();
+    if (!temperatureModelValid_) {
+        slopeRadSPerC_ = Vec3::zero();
+        clearQualityMetadata();
+    }
 }
 
 void GyroTempCompensator::adjustReferenceBias(const Vec3& deltaRadS) {
@@ -60,15 +98,24 @@ void GyroTempCompensator::setLearningEnabled(bool enabled) {
 }
 
 void GyroTempCompensator::setSlopeDpsPerC(const Vec3& slopeDpsPerC) {
-    slopeRadSPerC_ = slopeDpsPerC * MATH_DEG_TO_RAD;
+    setSlopeRadSPerC(slopeDpsPerC * MATH_DEG_TO_RAD);
 }
 
 void GyroTempCompensator::setSlopeRadSPerC(const Vec3& slopeRadSPerC) {
+    if (!valid_ || !slopeRadSPerC.isFinite()) {
+        invalidateTemperatureModel();
+        return;
+    }
     slopeRadSPerC_ = slopeRadSPerC;
+    temperatureModelValid_ = true;
 }
 
 bool GyroTempCompensator::valid() const {
     return valid_;
+}
+
+bool GyroTempCompensator::temperatureModelValid() const {
+    return valid_ && temperatureModelValid_;
 }
 
 Vec3 GyroTempCompensator::referenceBiasRadS() const {
@@ -96,7 +143,7 @@ Vec3 GyroTempCompensator::biasAt(float tempC) const {
         return Vec3::zero();
     }
 
-    if (!cfg_.enabled) {
+    if (!cfg_.enabled || !temperatureModelValid_) {
         return referenceBiasRadS_;
     }
 
@@ -111,7 +158,7 @@ Vec3 GyroTempCompensator::correctedGyro(const Vec3& rawGyroRadS, float tempC) co
 bool GyroTempCompensator::learnFromStationaryMean(const Vec3& rawGyroMeanRadS,
                                                   float tempC,
                                                   bool stationaryGate) {
-    if (!valid_ || !cfg_.learningEnabled || !stationaryGate || !rawGyroMeanRadS.isFinite()) {
+    if (!valid_ || !temperatureModelValid_ || !cfg_.learningEnabled || !stationaryGate || !rawGyroMeanRadS.isFinite()) {
         learnRejected_++;
         return false;
     }
@@ -147,6 +194,7 @@ bool GyroTempCompensator::learnFromStationaryMean(const Vec3& rawGyroMeanRadS,
 GyroTempCompSnapshot GyroTempCompensator::snapshot(float currentTempC) const {
     GyroTempCompSnapshot s;
     s.valid = valid_;
+    s.temperatureModelValid = temperatureModelValid();
     s.enabled = cfg_.enabled;
     s.learningEnabled = cfg_.learningEnabled;
     s.referenceTempC = referenceTempC_;
@@ -167,7 +215,7 @@ GyroTempCompSnapshot GyroTempCompensator::snapshot(float currentTempC) const {
     s.fitResidualAfterDps = cfg_.fitResidualAfterDps;
     s.softExtrapolationMarginC = cfg_.softExtrapolationMarginC;
     s.hardExtrapolationMarginC = cfg_.hardExtrapolationMarginC;
-    s.hasCalibratedRange = cfg_.calibratedTempMaxC > cfg_.calibratedTempMinC;
+    s.hasCalibratedRange = s.temperatureModelValid && cfg_.calibratedTempMaxC > cfg_.calibratedTempMinC;
     if (s.hasCalibratedRange && std::isfinite(currentTempC)) {
         if (currentTempC < cfg_.calibratedTempMinC) {
             s.tempDistanceToRangeC = cfg_.calibratedTempMinC - currentTempC;

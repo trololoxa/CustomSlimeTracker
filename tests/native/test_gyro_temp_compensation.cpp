@@ -29,7 +29,7 @@ static void testBiasAtAndCorrectedGyro(TestContext& ctx) {
 
 static void testSnapshotRangeAndMetadata(TestContext& ctx) {
     GyroTempCompensator comp;
-    comp.reset(Vec3(0.0f, 0.0f, 0.0f), 25.0f);
+    comp.setModel(Vec3(0.0f, 0.0f, 0.0f), 25.0f, Vec3::zero());
     comp.setQualityMetadata(20.0f, 35.0f, 0.75f, 0.20f, 0.05f);
 
     GyroTempCompSnapshot inside = comp.snapshot(30.0f);
@@ -62,7 +62,7 @@ static void testLearningAcceptRejectCounters(TestContext& ctx) {
     cfg.maxResidualMeanDpsForLearning = 0.30f;
 
     GyroTempCompensator comp(cfg);
-    comp.reset(Vec3::zero(), 30.0f);
+    comp.setModel(Vec3::zero(), 30.0f, Vec3::zero());
 
     // Too little temperature leverage: reject.
     CHECK(ctx, !comp.learnFromStationaryMean(Vec3(0.01f, 0.0f, 0.0f) * MATH_DEG_TO_RAD, 31.0f, true));

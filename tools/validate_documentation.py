@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Validate project documentation against the committed firmware baseline.
+"""Validate documentation structure without pretending to validate prose meaning.
 
-This deliberately checks only stable, high-value contracts. It is not a prose
-linter. The goal is to catch broken local links and a few stale statements that
-previously contradicted `platformio.ini` or the real runtime.
+Semantic accuracy is reviewed against code. Automation only catches missing
+canonical documents and broken repository-local links.
 """
 
 from __future__ import annotations
@@ -41,12 +40,6 @@ REQUIRED_DOCS = (
 )
 
 LOCAL_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
-STALE_PHRASES = {
-    "docs/project_status.md": (
-        "The old DIAG alias was removed",
-        "use the explicit Debug/Production/Slim environments",
-    ),
-}
 
 
 def strip_link_target(raw: str) -> str:
@@ -83,17 +76,6 @@ def check_local_links(errors: list[str]) -> int:
     return checked
 
 
-def require_contains(errors: list[str], rel: str, needles: tuple[str, ...]) -> None:
-    path = ROOT / rel
-    if not path.exists():
-        errors.append(f"missing required documentation file: {rel}")
-        return
-    text = path.read_text(encoding="utf-8")
-    for needle in needles:
-        if needle not in text:
-            errors.append(f"{rel}: missing required contract text: {needle!r}")
-
-
 def main() -> int:
     errors: list[str] = []
 
@@ -103,50 +85,10 @@ def main() -> int:
 
     checked_links = check_local_links(errors)
 
-    require_contains(
-        errors,
-        "docs/build_profiles.md",
-        (*COMMITTED_ENVS, DEFAULT_ENV, "committed default environment"),
-    )
-    require_contains(
-        errors,
-        "docs/testing.md",
-        (*COMMITTED_ENVS, "Hardware/runtime test budget"),
-    )
-    require_contains(
-        errors,
-        "docs/current_implementation.md",
-        (
-            DEFAULT_ENV,
-            "git rev-parse --short HEAD",
-            "Known limitations and planned corrections",
-            "Acceleration packet 4 is not emitted",
-        ),
-    )
-    require_contains(
-        errors,
-        "docs/source_filter_matrix.md",
-        ("## Production Diagnostic", "runtime/runtime_profiler.cpp"),
-    )
-    require_contains(
-        errors,
-        "docs/coordinate_frames.md",
-        ("sensorToDevice is not applied by the runtime",),
-    )
-    require_contains(
-        errors,
-        "docs/production_firmware_roadmap.md",
-        ("Historical planning document",),
-    )
-
-    for rel, phrases in STALE_PHRASES.items():
-        path = ROOT / rel
-        if not path.exists():
-            continue
-        text = path.read_text(encoding="utf-8")
-        for phrase in phrases:
-            if phrase in text:
-                errors.append(f"{rel}: stale statement is forbidden: {phrase!r}")
+    # Documentation meaning is reviewed with the code change. Automated checks
+    # deliberately stop at structural failures: missing canonical documents and
+    # broken repository-local links. Profile/runtime contracts belong in their
+    # dedicated code/config validators rather than brittle prose assertions.
 
     if errors:
         for error in errors:

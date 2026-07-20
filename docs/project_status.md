@@ -84,11 +84,12 @@ Optimization work should keep using a `test runtime 600` baseline rather than `t
 The following limitations are confirmed in the current code and are deliberately
 recorded before behavior-changing patches begin:
 
-- persisted `sensorToDevice`/mounting fields are validated and printed but the
-  sensor-to-device transform is not applied in the runtime sample path;
-- gyro/temperature calibration clear/replace operations need explicit model
-  invalidation semantics, and temperature capture needs a stricter continuous
-  stationary-window gate;
+- persisted `sensorToDevice` is validated as a proper rotation and applied to
+  calibrated gyro, accel and IMU-aligned magnetometer data; mounting/body offsets
+  remain server-side;
+- gyro/temperature clear and replacement now have explicit model invalidation
+  semantics; temperature capture still needs a stricter continuous stationary
+  window gate;
 - FIFO recovery rebases timestamps but has no dedicated large-error tilt
   reacquisition mode after missed motion;
 - prepared output contains quaternion only: no timestamp-coherent linear

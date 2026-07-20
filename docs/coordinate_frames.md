@@ -73,20 +73,21 @@ gyro_rad_s in sensor/body frame
 accel_g in sensor/body frame
 ```
 
-### Current frame limitation
+### Active sensor-to-device boundary
 
-`TrackerFrameConfigPersisted` stores a `sensorToDevice` matrix and validates it
-on load, but **sensorToDevice is not applied by the runtime** sample pipeline in
-the current baseline. The gyro and calibrated accelerometer therefore enter
-`Ahrs6Dof` in the LSM6DSV sensor frame. The prepared quaternion snapshot is the
-resulting `q_world_from_sensor`; the SlimeVR packet writer only normalizes it and
-does not perform a board/device-axis conversion.
+`TrackerFrameConfigPersisted` stores a `sensorToDevice` matrix. Runtime enables
+it only as a finite proper rotation: orthonormal axes and determinant near +1.
+Finite legacy non-rotations remain loadable but are ignored until sanitize/save
+replaces them with disabled identity, preserving unrelated NVS calibration.
+Gyro bias and accel matrix calibration remain in the native LSM6DSV frame; the
+validated rotation is applied afterwards. QMC6309 data receives the same
+rotation after `magToImu`, so gyro, accel and magnetometer agree in device frame
+before AHRS/heading processing.
 
-This is a known correctness gap, not an intended mounting policy. A frame
-foundation change must apply one orthonormal sensor-to-device transform
-consistently to gyro, accel and the already `magToImu`-aligned magnetometer. It
-must also transform future linear acceleration at the same boundary. SlimeVR
-body-part mounting, recenter and skeleton offsets remain server-owned.
+When `sensorToDeviceValid=false`, the transform is identity and behavior remains
+compatible with the previous baseline. Future linear acceleration must be
+created after this same boundary. SlimeVR body-part mounting, recenter and
+skeleton offsets remain server-owned.
 
 ## Magnetometer frame
 
@@ -97,7 +98,9 @@ raw mag frame
   -> hard iron subtraction
   -> full 3x3 soft-iron ellipsoid correction matrix
   -> magToImu matrix
-  -> IMU/body frame
+  -> native IMU frame
+  -> sensorToDevice rotation
+  -> device frame
 ```
 
 The soft-iron matrix is produced by the mag ellipsoid calibration stage. It can

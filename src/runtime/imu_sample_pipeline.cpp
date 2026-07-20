@@ -1,6 +1,7 @@
 #include "runtime/imu_sample_pipeline.hpp"
 
 #include "build_config/profile_contract.hpp"
+#include "sensor/frame_transform.hpp"
 
 namespace tracker {
 
@@ -18,19 +19,33 @@ Vec3 imuPipelineCurrentGyroBiasRadS(const ImuSamplePipelineDeps& deps, float tem
     return runtimeBiasCurrentGyroBiasRadS(deps.runtimeBias, deps.imuCal, deps.gyroTempComp, tempC);
 }
 
-Lsm6dsv::Sample imuPipelineMakeCalibratedSample(const ImuSamplePipelineDeps& deps,
-                                                const Lsm6dsv::Sample& scaled) {
+Lsm6dsv::Sample imuPipelineMakeSensorFrameCalibratedSample(const ImuSamplePipelineDeps& deps,
+                                                           const Lsm6dsv::Sample& scaled) {
     Lsm6dsv::Sample calibrated = scaled;
     calibrated.temp_c = deps.latestTempC;
 
     if (runtimeBiasHasBaseGyroBiasModel(deps.imuCal, deps.gyroTempComp)) {
+        // Persistent and runtime gyro-bias state is stored in the native
+        // sensor frame. Subtract it before rotating into the device frame.
         calibrated.gyro_rad_s = scaled.gyro_rad_s - imuPipelineCurrentGyroBiasRadS(deps, deps.latestTempC);
     }
 
     if (deps.imuCal.accelCalValid) {
+        // The six-side correction matrix is also defined in sensor frame.
         calibrated.accel_g = deps.imuCal.applyAccel(scaled.accel_g);
     }
+    return calibrated;
+}
 
+Lsm6dsv::Sample imuPipelineMakeCalibratedSample(const ImuSamplePipelineDeps& deps,
+                                                const Lsm6dsv::Sample& scaled) {
+    Lsm6dsv::Sample calibrated = imuPipelineMakeSensorFrameCalibratedSample(deps, scaled);
+    const SensorToDeviceFrame frame = makeSensorToDeviceFrame(
+        deps.config.data.frame.sensorToDeviceValid,
+        deps.config.data.frame.sensorToDevice
+    );
+    calibrated.gyro_rad_s = frame.apply(calibrated.gyro_rad_s);
+    calibrated.accel_g = frame.apply(calibrated.accel_g);
     return calibrated;
 }
 
@@ -93,14 +108,21 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
         deps.motionDiagnostics->recordSample(raw, calibrated, quality, millis());
     }
 #endif
+#if TRACKER_HAS_STATIC_TEST || TRACKER_HAS_CALIBRATION_UI
+    // Temperature models are stored in native sensor frame. Keep calibration
+    // captures in that frame even when normal AHRS/output operates in device
+    // frame, otherwise a configured board rotation would be learned as bias.
+    const Lsm6dsv::Sample sensorFrameCalibrated =
+        imuPipelineMakeSensorFrameCalibratedSample(deps, scaled);
+#endif
 #if TRACKER_HAS_STATIC_TEST
     if (deps.staticTestRunner != nullptr) {
-        deps.staticTestRunner->updateSample(calibrated, quality, deps.out);
+        deps.staticTestRunner->updateSample(sensorFrameCalibrated, quality, deps.out);
     }
 #endif
 #if TRACKER_HAS_CALIBRATION_UI
     if (deps.gyroTempCapture != nullptr) {
-        deps.gyroTempCapture->updateSample(calibrated, quality, millis());
+        deps.gyroTempCapture->updateSample(sensorFrameCalibrated, quality, millis());
     }
 #endif
     imuPipelineUpdateRuntimeGyroBiasEstimator(deps, scaled, calibrated, quality, raw.t_us);

@@ -214,7 +214,7 @@ void FifoGyroStartupCalibrator::applyResultToCalibration(
     imuCal.gyroBiasValid = true;
 
     if (tempComp) {
-        tempComp->reset(result.gyroBiasRadS, referenceTempC);
+        tempComp->setStaticBias(result.gyroBiasRadS, referenceTempC);
     }
 }
 

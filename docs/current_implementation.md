@@ -127,19 +127,22 @@ feature is already implemented.
 ### Frame pipeline
 
 Persistent config contains `sensorToDevice`, `mountingOffset` and output-frame
-fields, but `sensorToDevice` is not applied by the runtime tracking path yet.
-The current AHRS therefore operates in the calibrated IMU sensor frame. A future
-frame-foundation patch must apply one explicit sensor-to-device transform to
-gyro, accel and magnetometer data before adding acceleration-based server
-features. Body mounting and recenter remain server-owned.
+fields. `sensorToDevice` is now runtime-gated as a proper right-handed rotation
+and applied after gyro/accel calibration and after magnetic `magToImu` alignment.
+Finite legacy non-rotations remain loadable but are ignored and sanitized on save.
+The default remains disabled/identity, so existing trackers retain their previous
+orientation until a valid transform is configured.
+The current AHRS therefore operates in the device frame whenever a valid
+transform is configured, and in the legacy sensor frame when the transform is
+disabled. Body mounting and recenter remain server-owned.
 
 ### Calibration lifecycle and temperature capture
 
 The static temperature fit is mathematically implemented, but its capture path
-still needs a stricter continuous stationary-window contract. The gyro and
-temperature clear/replace operations also need explicit invalidation semantics
-so a new static bias cannot leave stale temperature metadata looking valid.
-These corrections must precede background/online temperature-model learning.
+still needs a stricter continuous stationary-window contract. Gyro static-bias replacement now invalidates the dependent temperature model,
+while temperature clear preserves the static bias and removes slope/range
+metadata. Both paths reset the volatile runtime trim. The remaining calibration
+work is the stricter continuous stationary-window capture contract.
 
 ### Recovery
 

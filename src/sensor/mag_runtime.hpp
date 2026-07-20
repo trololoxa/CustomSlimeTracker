@@ -29,6 +29,8 @@ struct MagRuntimeConfig {
     Vec3 hardIron = Vec3::zero();
     Mat3 softIron = Mat3::identity();
     Mat3 magToImu = Mat3::identity();
+    bool sensorToDeviceValid = false;
+    Mat3 sensorToDevice = Mat3::identity();
 
     float expectedFieldNorm = 1.0f;
     float minTrustNorm = 0.25f;

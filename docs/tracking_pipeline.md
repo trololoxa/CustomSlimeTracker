@@ -37,10 +37,11 @@ heartbeat/output maintenance
 
 ### Current frame and output boundary
 
-The current sample path applies sensor calibration but does not yet apply the
-persisted `sensorToDevice` transform. `Ahrs6Dof` and the prepared quaternion
-therefore remain in the calibrated LSM6DSV sensor frame. This must be corrected
-before acceleration-based mounting is enabled.
+The sample path applies gyro/temperature and accel calibration in native sensor
+frame, then applies the validated `sensorToDevice` proper rotation before
+quality/AHRS processing. Magnetometer data receives the same rotation after
+`magToImu`. With the default disabled transform, behavior remains legacy
+identity-compatible.
 
 The prepared output snapshot currently carries orientation only. SlimeVR
 `RotationData` packet 17 is emitted, but acceleration packet 4 and

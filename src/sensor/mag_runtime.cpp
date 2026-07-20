@@ -1,5 +1,7 @@
 #include "sensor/mag_runtime.hpp"
 
+#include "sensor/frame_transform.hpp"
+
 namespace tracker {
 
 float MagRuntimeStats::rawNormMean() const {
@@ -75,6 +77,14 @@ bool MagRuntimeProcessor::process(const Lsm6dsvFifoReader::MagRawSample& raw,
         out.body = out.calibratedMagFrame;
         addReject(out, MAG_REJECT_AXIS_NOT_ALIGNED);
     }
+
+    // magToImu produces the native IMU sensor frame.  Keep magnetometer,
+    // gyro and accelerometer in one device frame before heading estimation.
+    const SensorToDeviceFrame frame = makeSensorToDeviceFrame(
+        cfg.sensorToDeviceValid,
+        cfg.sensorToDevice
+    );
+    out.body = frame.apply(out.body);
 
     out.calibratedNorm = out.calibratedMagFrame.norm();
     out.bodyNorm = out.body.norm();

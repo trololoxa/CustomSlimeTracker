@@ -1,5 +1,7 @@
 #include "serial/tracker_setup_commands.hpp"
 
+#include "sensor/frame_transform.hpp"
+
 #include <Arduino.h>
 #include <cstdint>
 #include <cstring>
@@ -550,7 +552,14 @@ struct SetupMagAxisDynamicCollector {
         const uint32_t imuSeq = *ctx.lastImuSampleSequence;
         if (imuSeq != 0u && imuSeq != lastImuSeq) {
             lastImuSeq = imuSeq;
-            const Vec3 gyro = ctx.lastCalibratedSample->gyro_rad_s;
+            Vec3 gyro = ctx.lastCalibratedSample->gyro_rad_s;
+            if (ctx.config) {
+                const SensorToDeviceFrame frame = makeSensorToDeviceFrame(
+                    ctx.config->data.frame.sensorToDeviceValid,
+                    ctx.config->data.frame.sensorToDevice
+                );
+                gyro = frame.inverseApply(gyro);
+            }
             const float gyroNormDps = gyro.norm() * MATH_RAD_TO_DEG;
             if (gyro.isFinite()) {
                 imuSamplesSeen++;
