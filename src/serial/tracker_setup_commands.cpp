@@ -1242,7 +1242,8 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     Stream& s = out(ctx);
     s.println();
     s.println("# SETUP CALIBRATION STEP 2/6: GYRO TEMPERATURE MODEL");
-    s.println("# Keep the tracker still. The firmware will stop when temperature reaches a relative plateau.");
+    s.println("# Keep the tracker on a normal stable surface. The firmware stops at a relative temperature plateau.");
+    s.println("# Brief touches pause collection and discard only the current short stationary window; accepted progress is kept.");
     s.println("# This uses a dedicated setup temperature capture, not the developer test static runner.");
 
     if (!ctx.gyroTempCapture || !ctx.fitGyroTempFromCaptureRam) {
@@ -1279,8 +1280,13 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
             s.print("# setup temp elapsed_s="); s.print((nowMs - startMs) / 1000UL);
             s.print(" temp_c="); s.print(t, 3);
             s.print(" range_c="); s.print(maxTemp - minTemp, 3);
+            const GyroTempCalibrationCaptureDiagnostics& d = ctx.gyroTempCapture->diagnostics();
             s.print(" usable_bins="); s.print(ctx.gyroTempCapture->usableTempBins());
-            s.print(" samples="); s.println(ctx.gyroTempCapture->capture().samples);
+            s.print(" samples="); s.print(ctx.gyroTempCapture->capture().samples);
+            s.print(" accepted="); s.print(d.acceptedSamples);
+            s.print(" rejected="); s.print(d.rejectedSamples);
+            s.print(" window="); s.print(d.currentWindowSamples);
+            s.print(" motion_resets="); s.println(d.motionWindowResets);
         }
 
         if (nowMs - windowStartMs >= kPlateauWindowMs) {
@@ -1304,6 +1310,12 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     else s.println("# setup temp: max capture duration reached; trying fit with collected data");
 
     const StaticRuntimeTest& capture = ctx.gyroTempCapture->capture();
+    const GyroTempCalibrationCaptureDiagnostics& captureDiag = ctx.gyroTempCapture->diagnostics();
+    s.print("# setup temp accepted_samples="); s.println(captureDiag.acceptedSamples);
+    s.print("# setup temp rejected_samples="); s.println(captureDiag.rejectedSamples);
+    s.print("# setup temp accepted_windows="); s.println(captureDiag.acceptedWindows);
+    s.print("# setup temp rejected_windows="); s.println(captureDiag.rejectedWindows);
+    s.print("# setup temp motion_window_resets="); s.println(captureDiag.motionWindowResets);
     if (!ctx.fitGyroTempFromCaptureRam(&capture, s, ctx.fitGyroTempFromCaptureRamUser)) {
         tracker_serial_detail::printErr(s, "setup calibration failed: gyro temperature fit did not pass quality gates");
         s.println("# TIP: repeat setup calibration after a larger cold-to-warm temperature change");

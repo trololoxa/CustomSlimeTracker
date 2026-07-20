@@ -138,11 +138,15 @@ disabled. Body mounting and recenter remain server-owned.
 
 ### Calibration lifecycle and temperature capture
 
-The static temperature fit is mathematically implemented, but its capture path
-still needs a stricter continuous stationary-window contract. Gyro static-bias replacement now invalidates the dependent temperature model,
-while temperature clear preserves the static bias and removes slope/range
-metadata. Both paths reset the volatile runtime trim. The remaining calibration
-work is the stricter continuous stationary-window capture contract.
+The dedicated setup temperature capture now commits data only after short
+contiguous stationary windows pass gyro mean/variance, accel norm/variance,
+accel-confidence, temperature-span and FIFO/timestamp quality gates. A brief
+touch or quality fault discards only the current sub-second candidate window;
+previously accepted temperature-bin progress remains available and collection
+continues automatically when the tracker is still again. Gyro static-bias
+replacement invalidates the dependent temperature model, while temperature
+clear preserves the static bias and removes slope/range metadata. Both paths
+reset the volatile runtime trim.
 
 ### Recovery
 

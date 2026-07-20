@@ -51,6 +51,20 @@ struct ScalarStats {
         const double v = (sumSq / n) - (m * m);
         return static_cast<float>(v > 0.0 ? std::sqrt(v) : 0.0);
     }
+
+    void merge(const ScalarStats& other) {
+        if (other.count == 0) return;
+        if (count == 0) {
+            minValue = other.minValue;
+            maxValue = other.maxValue;
+        } else {
+            if (other.minValue < minValue) minValue = other.minValue;
+            if (other.maxValue > maxValue) maxValue = other.maxValue;
+        }
+        count += other.count;
+        sum += other.sum;
+        sumSq += other.sumSq;
+    }
 };
 
 struct Vec3Stats {
@@ -105,6 +119,24 @@ struct Vec3Stats {
         if (v.z < 0.0f) v.z = 0.0f;
 
         return Vec3(std::sqrt(v.x), std::sqrt(v.y), std::sqrt(v.z));
+    }
+
+    void merge(const Vec3Stats& other) {
+        if (other.count == 0) return;
+        if (count == 0) {
+            minValue = other.minValue;
+            maxValue = other.maxValue;
+        } else {
+            if (other.minValue.x < minValue.x) minValue.x = other.minValue.x;
+            if (other.minValue.y < minValue.y) minValue.y = other.minValue.y;
+            if (other.minValue.z < minValue.z) minValue.z = other.minValue.z;
+            if (other.maxValue.x > maxValue.x) maxValue.x = other.maxValue.x;
+            if (other.maxValue.y > maxValue.y) maxValue.y = other.maxValue.y;
+            if (other.maxValue.z > maxValue.z) maxValue.z = other.maxValue.z;
+        }
+        count += other.count;
+        sum += other.sum;
+        sumSq += other.sumSq;
     }
 };
 
