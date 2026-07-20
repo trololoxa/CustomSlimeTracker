@@ -15,24 +15,18 @@ namespace tracker {
 // Important:
 //   - At first slope is zero, so behavior is exactly the same as normal
 //     startup gyro bias calibration.
-//   - Slope must be learned from long stationary logs or manually configured.
-//   - Online learning is gated; do not learn during motion.
+//   - Slope is produced by the validated setup/static-fit pipeline.
+//   - Runtime online slope learning is intentionally not exposed until a full
+//     producer/persistence/rollback contract exists.
 // ============================================================
 
 struct GyroTempCompConfig {
     bool enabled = true;
-    bool learningEnabled = false;
 
-    float minDeltaTempForLearningC = 2.0f;
-    float learnAlpha = 0.05f;
-
-    // Reject physically suspicious slopes during online learning.
-    // 0.10 dps/C is intentionally permissive for early experiments.
-    float maxAbsSlopeDpsPerC = 0.10f;
-
-    // Stationary rolling mean must be reasonably small after current model.
-    // Otherwise the window probably contains motion and should not train temp comp.
-    float maxResidualMeanDpsForLearning = 0.30f;
+    // Reject physically implausible slopes produced by the validated
+    // setup/static-fit pipeline. This is an offline fit acceptance limit,
+    // not a runtime online-learning parameter.
+    float maxAcceptedSlopeDpsPerC = 0.10f;
 
     // Production quality metadata. The compensator can still be valid without
     // a fitted range, but runtime/status should then treat it as startup-bias
@@ -55,7 +49,6 @@ struct GyroTempCompSnapshot {
     bool valid = false;
     bool temperatureModelValid = false;
     bool enabled = false;
-    bool learningEnabled = false;
 
     float referenceTempC = 25.0f;
     float currentTempC = 25.0f;
@@ -69,9 +62,6 @@ struct GyroTempCompSnapshot {
 
     Vec3 currentBiasRadS = Vec3::zero();
     Vec3 currentBiasDps = Vec3::zero();
-
-    uint32_t learnAccepted = 0;
-    uint32_t learnRejected = 0;
 
     float calibratedTempMinC = 0.0f;
     float calibratedTempMaxC = 0.0f;
@@ -113,7 +103,6 @@ public:
     const GyroTempCompConfig& config() const;
 
     void setEnabled(bool enabled);
-    void setLearningEnabled(bool enabled);
 
     void setSlopeDpsPerC(const Vec3& slopeDpsPerC);
     void setSlopeRadSPerC(const Vec3& slopeRadSPerC);
@@ -130,12 +119,6 @@ public:
     Vec3 biasAt(float tempC) const;
     Vec3 correctedGyro(const Vec3& rawGyroRadS, float tempC) const;
 
-    // Learn slope from a stationary rolling mean of raw gyro.
-    // rawGyroMeanRadS should be BEFORE compensation, averaged over 1-2 seconds.
-    bool learnFromStationaryMean(const Vec3& rawGyroMeanRadS,
-                                 float tempC,
-                                 bool stationaryGate);
-
     GyroTempCompSnapshot snapshot(float currentTempC) const;
 
 private:
@@ -146,9 +129,6 @@ private:
     Vec3 referenceBiasRadS_ = Vec3::zero();
     float referenceTempC_ = 25.0f;
     Vec3 slopeRadSPerC_ = Vec3::zero();
-
-    uint32_t learnAccepted_ = 0;
-    uint32_t learnRejected_ = 0;
 
     void clearQualityMetadata();
 };

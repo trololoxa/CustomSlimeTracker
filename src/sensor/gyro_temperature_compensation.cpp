@@ -26,8 +26,6 @@ void GyroTempCompensator::setStaticBias(const Vec3& referenceBiasRadS, float ref
     valid_ = referenceBiasRadS.isFinite() && std::isfinite(referenceTempC);
     temperatureModelValid_ = false;
     clearQualityMetadata();
-    learnAccepted_ = 0;
-    learnRejected_ = 0;
 }
 
 void GyroTempCompensator::clearAll() {
@@ -37,16 +35,12 @@ void GyroTempCompensator::clearAll() {
     referenceTempC_ = 25.0f;
     slopeRadSPerC_ = Vec3::zero();
     clearQualityMetadata();
-    learnAccepted_ = 0;
-    learnRejected_ = 0;
 }
 
 void GyroTempCompensator::invalidateTemperatureModel() {
     temperatureModelValid_ = false;
     slopeRadSPerC_ = Vec3::zero();
     clearQualityMetadata();
-    learnAccepted_ = 0;
-    learnRejected_ = 0;
 }
 
 void GyroTempCompensator::setModel(const Vec3& referenceBiasRadS,
@@ -91,10 +85,6 @@ const GyroTempCompConfig& GyroTempCompensator::config() const {
 
 void GyroTempCompensator::setEnabled(bool enabled) {
     cfg_.enabled = enabled;
-}
-
-void GyroTempCompensator::setLearningEnabled(bool enabled) {
-    cfg_.learningEnabled = enabled;
 }
 
 void GyroTempCompensator::setSlopeDpsPerC(const Vec3& slopeDpsPerC) {
@@ -155,48 +145,11 @@ Vec3 GyroTempCompensator::correctedGyro(const Vec3& rawGyroRadS, float tempC) co
     return rawGyroRadS - biasAt(tempC);
 }
 
-bool GyroTempCompensator::learnFromStationaryMean(const Vec3& rawGyroMeanRadS,
-                                                  float tempC,
-                                                  bool stationaryGate) {
-    if (!valid_ || !temperatureModelValid_ || !cfg_.learningEnabled || !stationaryGate || !rawGyroMeanRadS.isFinite()) {
-        learnRejected_++;
-        return false;
-    }
-
-    const float dT = tempC - referenceTempC_;
-    if (std::fabs(dT) < cfg_.minDeltaTempForLearningC) {
-        learnRejected_++;
-        return false;
-    }
-
-    const Vec3 currentResidualRadS = rawGyroMeanRadS - biasAt(tempC);
-    const float currentResidualDps = currentResidualRadS.norm() * MATH_RAD_TO_DEG;
-    if (currentResidualDps > cfg_.maxResidualMeanDpsForLearning) {
-        learnRejected_++;
-        return false;
-    }
-
-    const Vec3 candidateSlopeRadSPerC = (rawGyroMeanRadS - referenceBiasRadS_) / dT;
-    const Vec3 candidateSlopeDpsPerC = candidateSlopeRadSPerC * MATH_RAD_TO_DEG;
-
-    if (std::fabs(candidateSlopeDpsPerC.x) > cfg_.maxAbsSlopeDpsPerC ||
-        std::fabs(candidateSlopeDpsPerC.y) > cfg_.maxAbsSlopeDpsPerC ||
-        std::fabs(candidateSlopeDpsPerC.z) > cfg_.maxAbsSlopeDpsPerC) {
-        learnRejected_++;
-        return false;
-    }
-
-    slopeRadSPerC_ = lerp(slopeRadSPerC_, candidateSlopeRadSPerC, cfg_.learnAlpha);
-    learnAccepted_++;
-    return true;
-}
-
 GyroTempCompSnapshot GyroTempCompensator::snapshot(float currentTempC) const {
     GyroTempCompSnapshot s;
     s.valid = valid_;
     s.temperatureModelValid = temperatureModelValid();
     s.enabled = cfg_.enabled;
-    s.learningEnabled = cfg_.learningEnabled;
     s.referenceTempC = referenceTempC_;
     s.currentTempC = currentTempC;
     s.deltaTempC = currentTempC - referenceTempC_;
@@ -206,8 +159,6 @@ GyroTempCompSnapshot GyroTempCompensator::snapshot(float currentTempC) const {
     s.slopeDpsPerC = slopeDpsPerC();
     s.currentBiasRadS = biasAt(currentTempC);
     s.currentBiasDps = s.currentBiasRadS * MATH_RAD_TO_DEG;
-    s.learnAccepted = learnAccepted_;
-    s.learnRejected = learnRejected_;
     s.calibratedTempMinC = cfg_.calibratedTempMinC;
     s.calibratedTempMaxC = cfg_.calibratedTempMaxC;
     s.fitQuality = cfg_.fitQuality;

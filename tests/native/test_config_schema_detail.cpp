@@ -24,7 +24,7 @@ static void testDefaultSchemaHeader(TestContext& ctx) {
     CHECK(ctx, blob.schemas.magYaw == tracker_config_detail::SCHEMA_MAG_YAW_VERSION);
     CHECK(ctx, blob.hardware.spiHz == tracker_config_detail::DEFAULT_SPI_HZ);
     CHECK(ctx, blob.output.packetFormat == 0);
-    CHECK(ctx, std::strlen(blob.device.deviceName) > 0);
+    CHECK(ctx, blob.reservedDevice.reservedDeviceName[0] == '\0');
 }
 
 static void testConfigBlobLayoutGuards(TestContext& ctx) {
@@ -35,7 +35,7 @@ static void testConfigBlobLayoutGuards(TestContext& ctx) {
     CHECK(ctx, offsetof(TrackerConfigBlob, magic) == 0);
     CHECK(ctx, offsetof(TrackerConfigBlob, crc32) == 8);
     CHECK(ctx, offsetof(TrackerConfigBlob, schemas) == 12);
-    CHECK(ctx, offsetof(TrackerConfigBlob, device) == 716);
+    CHECK(ctx, offsetof(TrackerConfigBlob, reservedDevice) == 716);
     CHECK(ctx, sizeof(TrackerConfigSchemaVersions) == 24);
 }
 

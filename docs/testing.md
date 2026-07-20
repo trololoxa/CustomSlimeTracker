@@ -561,3 +561,7 @@ Interpretation: no `event=tap_src` means the LSM6DSV hardware engine did not rep
 ## Sensor-to-device alignment validation
 
 `test_sensor_to_device_alignment` is the host system test for the physical case-frame stage. It covers all 24 right-handed signed axis mappings, a non-discrete proper rotation, separation of rotation from a combined full 3x3 accel fit, contiguous stationary capture with an interrupted window, rejection of duplicate/parallel positions, runtime forward/inverse application and config validation. The normal hardware acceptance for this patch is only successful compilation; the next real `setup calibration` run will perform the two short physical observations through the same guided flow.
+
+## Production-only compile coverage
+
+The native gate also compiles production-only translation units that cannot be linked against the host NVS backend. `runtime/gyro_temp_static_fit.cpp` is covered this way so config/API drift fails before PlatformIO.

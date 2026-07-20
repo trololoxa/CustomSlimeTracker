@@ -145,6 +145,43 @@ static void testApplyCaptureDoesNotTouchUnrelatedBlocks(TestContext& ctx) {
     CHECK_NEAR(ctx, applied.accelBiasG.y, 0.02f, 1.0e-6f);
 }
 
+static void testSanitizeNeutralizesCompatibilityReservedFields(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+
+    cfg.data.ahrs.reservedAccelTrustMinNormG = -123.0f;
+    cfg.data.ahrs.reservedAccelTrustMaxNormG = 456.0f;
+    cfg.data.ahrs.reservedMountingOffsetValid = true;
+    cfg.data.ahrs.reservedMountingOffset = Quat(0.1f, 0.2f, 0.3f, 0.4f);
+    cfg.data.gyroCal.reservedTempLearningEnabled = true;
+    cfg.data.magCalQuality.reservedExpectedHorizontalNorm = 999.0f;
+    cfg.data.frame.reservedApplyMountingOffsetInFirmware = true;
+    cfg.data.frame.reservedOutputConvention = 7;
+    cfg.data.frame.reservedFlags = 0xFF;
+    cfg.data.reservedDevice.reservedDeviceId = 1234;
+    cfg.data.reservedDevice.reservedSensorId = 9;
+    std::strncpy(cfg.data.reservedDevice.reservedDeviceName, "ghost", sizeof(cfg.data.reservedDevice.reservedDeviceName) - 1);
+
+    cfg.sanitize();
+
+    CHECK(ctx, cfg.validate());
+    CHECK_NEAR(ctx, cfg.data.ahrs.reservedAccelTrustMinNormG, 0.94f, 1.0e-6f);
+    CHECK_NEAR(ctx, cfg.data.ahrs.reservedAccelTrustMaxNormG, 1.35f, 1.0e-6f);
+    CHECK(ctx, !cfg.data.ahrs.reservedMountingOffsetValid);
+    CHECK_NEAR(ctx, cfg.data.ahrs.reservedMountingOffset.w, 1.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, cfg.data.ahrs.reservedMountingOffset.x, 0.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, cfg.data.ahrs.reservedMountingOffset.y, 0.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, cfg.data.ahrs.reservedMountingOffset.z, 0.0f, 1.0e-6f);
+    CHECK(ctx, !cfg.data.gyroCal.reservedTempLearningEnabled);
+    CHECK_NEAR(ctx, cfg.data.magCalQuality.reservedExpectedHorizontalNorm, 0.0f, 1.0e-6f);
+    CHECK(ctx, !cfg.data.frame.reservedApplyMountingOffsetInFirmware);
+    CHECK(ctx, cfg.data.frame.reservedOutputConvention == 0);
+    CHECK(ctx, cfg.data.frame.reservedFlags == 0);
+    CHECK(ctx, cfg.data.reservedDevice.reservedDeviceId == 0);
+    CHECK(ctx, cfg.data.reservedDevice.reservedSensorId == 0);
+    CHECK(ctx, cfg.data.reservedDevice.reservedDeviceName[0] == '\0');
+}
+
 int main() {
     TestContext ctx;
     testDefaultRuntimeConfigValidates(ctx);
@@ -152,5 +189,6 @@ int main() {
     testSanitizeInvalidatesOnlyCorruptCalibrationBlocks(ctx);
     testCrcDeterministicAndDetectsMutation(ctx);
     testApplyCaptureDoesNotTouchUnrelatedBlocks(ctx);
+    testSanitizeNeutralizesCompatibilityReservedFields(ctx);
     return ctx.finish("test_config_hardening");
 }

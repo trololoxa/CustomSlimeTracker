@@ -88,7 +88,6 @@ bool TrackerConfig::validateContent() const {
     if (!finiteFloat(data.magCalQuality.normMax)) return false;
     if (!finiteFloat(data.magCalQuality.coverageScore)) return false;
     if (!finiteFloat(data.magCalQuality.residualRms)) return false;
-    if (!finiteFloat(data.magCalQuality.expectedHorizontalNorm)) return false;
 
     // Keep finite legacy frame values loadable so one stale frame does not
     // discard the whole NVS blob. Runtime enables only proper rotations and
@@ -110,7 +109,6 @@ bool TrackerConfig::validateContent() const {
     if (!finiteFloat(data.magYaw.maxCorrectionStepDeg)) return false;
     if (!finiteFloat(data.magYaw.fallbackDtS)) return false;
 
-    if (data.ahrs.mountingOffsetValid && !finiteQuat(data.ahrs.mountingOffset)) return false;
 
     if (!finiteFloat(data.ahrsRuntime.minDtS)) return false;
     if (!finiteFloat(data.ahrsRuntime.maxDtS)) return false;
@@ -228,18 +226,25 @@ void TrackerConfig::sanitize() {
     if (!finiteFloat(data.magCalQuality.normMax)) data.magCalQuality.normMax = 0.0f;
     if (!finiteFloat(data.magCalQuality.coverageScore)) data.magCalQuality.coverageScore = 0.0f;
     if (!finiteFloat(data.magCalQuality.residualRms)) data.magCalQuality.residualRms = 0.0f;
-    if (!finiteFloat(data.magCalQuality.expectedHorizontalNorm)) data.magCalQuality.expectedHorizontalNorm = 0.0f;
     data.magCalQuality.coverageScore = clampFloat(data.magCalQuality.coverageScore, 0.0f, 1.0f);
 
     if (!isProperRotationMatrix(data.frame.sensorToDevice)) {
         data.frame.sensorToDevice = Mat3::identity();
         data.frame.sensorToDeviceValid = false;
     }
-    data.device.deviceName[sizeof(data.device.deviceName) - 1] = '\0';
-    if (data.device.deviceName[0] == '\0') {
-        std::strncpy(data.device.deviceName, "c3_6dsv_tracker", sizeof(data.device.deviceName) - 1);
-        data.device.deviceName[sizeof(data.device.deviceName) - 1] = '\0';
-    }
+    // Compatibility bytes from abandoned firmware-side mounting/output/identity
+    // concepts are always neutral. Keeping their layout preserves existing NVS
+    // blobs without advertising a non-functional capability.
+    data.ahrs.reservedAccelTrustMinNormG = 0.94f;
+    data.ahrs.reservedAccelTrustMaxNormG = 1.35f;
+    data.ahrs.reservedMountingOffsetValid = false;
+    data.ahrs.reservedMountingOffset = Quat::identity();
+    data.gyroCal.reservedTempLearningEnabled = false;
+    data.magCalQuality.reservedExpectedHorizontalNorm = 0.0f;
+    data.frame.reservedApplyMountingOffsetInFirmware = false;
+    data.frame.reservedOutputConvention = 0;
+    data.frame.reservedFlags = 0;
+    data.reservedDevice = TrackerReservedDeviceIdentityPersisted{};
 
     // If this config was written by older firmware, magYaw fields live in
     // the previously-reserved zeroed region. Treat zero/invalid values as
@@ -297,11 +302,6 @@ void TrackerConfig::sanitize() {
     if (data.magYaw.magDisturbanceCooldownMs > 120000UL) data.magYaw.magDisturbanceCooldownMs = 3000;
     if (!finiteFloat(data.magYaw.fallbackDtS) || data.magYaw.fallbackDtS <= 0.0f) data.magYaw.fallbackDtS = 1.0f / 60.0f;
     data.magYaw.fallbackDtS = clampFloat(data.magYaw.fallbackDtS, 0.001f, 1.0f);
-
-    if (!finiteQuat(data.ahrs.mountingOffset)) {
-        data.ahrs.mountingOffset = Quat::identity();
-        data.ahrs.mountingOffsetValid = false;
-    }
 
     // Phase B: old configs have zero-filled ahrsRuntime because this region
     // used to be reserved. Repair zeros/invalid values to production-safe
@@ -517,14 +517,13 @@ void TrackerConfig::captureFromMagCalibrationResult(const MagCalibrationResult& 
     data.magCalQuality.normMax = normMax;
     data.magCalQuality.coverageScore = result.valid ? result.coverageScore : 0.0f;
     data.magCalQuality.residualRms = result.valid ? result.residualRms : 0.0f;
-    data.magCalQuality.expectedHorizontalNorm = 0.0f;
+    data.magCalQuality.reservedExpectedHorizontalNorm = 0.0f;
     updateCrc();
 }
 
 void TrackerConfig::applyToGyroTempComp(GyroTempCompensator& tempComp) const {
     GyroTempCompConfig cfg;
     cfg.enabled = data.gyroCal.tempCompEnabled;
-    cfg.learningEnabled = data.gyroCal.tempLearningEnabled;
     if (data.gyroCal.tempCompValid) {
         cfg.calibratedTempMinC = data.gyroTempQuality.tempRangeMinC;
         cfg.calibratedTempMaxC = data.gyroTempQuality.tempRangeMaxC;
@@ -568,7 +567,7 @@ void TrackerConfig::captureFromGyroTempComp(const GyroTempCompensator& tempComp)
     data.gyroCal.biasRadS = tempComp.referenceBiasRadS();
     data.gyroCal.tempCompValid = tempComp.temperatureModelValid();
     data.gyroCal.tempCompEnabled = tempComp.config().enabled;
-    data.gyroCal.tempLearningEnabled = tempComp.config().learningEnabled;
+    data.gyroCal.reservedTempLearningEnabled = false;
     data.gyroCal.referenceTempC = tempComp.referenceTempC();
     data.gyroCal.tempSlopeRadSPerC = data.gyroCal.tempCompValid
         ? tempComp.slopeRadSPerC()

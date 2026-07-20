@@ -288,7 +288,6 @@ private:
             out.print("gyro_bias_model_valid="); out.println(s.valid ? "yes" : "no");
             out.print("temp_comp_valid="); out.println(s.temperatureModelValid ? "yes" : "no");
             out.print("temp_comp_enabled="); out.println(s.enabled ? "yes" : "no");
-            out.print("temp_learning_enabled="); out.println(s.learningEnabled ? "yes" : "no");
 
             out.print("current_temp_c="); out.println(s.currentTempC, 3);
             out.print("reference_temp_c="); out.println(s.referenceTempC, 3);
@@ -305,8 +304,6 @@ private:
             out.print("fit_residual_before_dps="); out.println(s.fitResidualBeforeDps, 6);
             out.print("fit_residual_after_dps="); out.println(s.fitResidualAfterDps, 6);
 
-            out.print("learn_accepted="); out.println(s.learnAccepted);
-            out.print("learn_rejected="); out.println(s.learnRejected);
             return;
         }
 

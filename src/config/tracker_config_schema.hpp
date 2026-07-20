@@ -77,16 +77,15 @@ struct TrackerFifoConfig {
 };
 
 struct TrackerAhrsConfig {
-    // Legacy/user-facing AHRS fields kept in place to preserve the persistent
-    // config layout. Phase B effective AHRS parameters live in ahrsRuntime below.
+    // Legacy AHRS layout. accelCorrectionGain/useAccelCorrection remain active
+    // compatibility controls; the two trust floats and quaternion bytes are
+    // neutral reserved storage. Body mounting is server-side only.
     float accelCorrectionGain = 3.0f;
-    float accelTrustMinNormG = 0.94f;
-    float accelTrustMaxNormG = 1.35f;
+    float reservedAccelTrustMinNormG = 0.94f;
+    float reservedAccelTrustMaxNormG = 1.35f;
     bool useAccelCorrection = true;
-
-    // Mounting offset from sensor frame to tracker/body frame.
-    bool mountingOffsetValid = false;
-    Quat mountingOffset = Quat::identity();
+    bool reservedMountingOffsetValid = false;
+    Quat reservedMountingOffset = Quat::identity();
 };
 
 struct TrackerAhrsRuntimeConfigPersisted {
@@ -127,7 +126,7 @@ struct TrackerGyroCalibrationConfig {
 
     bool tempCompValid = false;
     bool tempCompEnabled = true;
-    bool tempLearningEnabled = false;
+    bool reservedTempLearningEnabled = false;
     float referenceTempC = 25.0f;
     Vec3 tempSlopeRadSPerC = Vec3::zero();
 };
@@ -197,29 +196,28 @@ struct TrackerMagCalibrationQualityPersisted {
     float normMax = 0.0f;
     float coverageScore = 0.0f;
     float residualRms = 0.0f;
-    float expectedHorizontalNorm = 0.0f;
+    float reservedExpectedHorizontalNorm = 0.0f;
 };
 
 struct TrackerFrameConfigPersisted {
-    // Reserved for explicit sensor/device/output frame conventions. Mounting
-    // and body offsets should normally remain server-side for SlimeVR, but the
-    // physical sensor-to-board/device transform belongs in firmware.
+    // Only sensorToDevice is active. The remaining bytes are neutral reserved
+    // compatibility storage; body mounting remains server-side and the current
+    // wire convention is fixed.
     bool sensorToDeviceValid = false;
-    bool applyMountingOffsetInFirmware = false;
-    uint8_t outputConvention = 0; // 0 = firmware-native quaternion convention.
+    bool reservedApplyMountingOffsetInFirmware = false;
+    uint8_t reservedOutputConvention = 0;
     uint8_t reservedFlags = 0;
     Mat3 sensorToDevice = Mat3::identity();
 };
 
-struct TrackerDeviceIdentityPersisted {
-    // Stable local identity defaults. SlimeVR/Wi-Fi runtime identity is stored in
-    // TrackerNetworkConfig so credentials and network naming stay isolated from
-    // IMU/calibration config resets.
-    uint32_t deviceId = 0;
-    uint8_t sensorId = 0;
+struct TrackerReservedDeviceIdentityPersisted {
+    // Abandoned duplicate identity storage retained only to preserve blob size.
+    // Runtime identity lives exclusively in TrackerNetworkConfig.
+    uint32_t reservedDeviceId = 0;
+    uint8_t reservedSensorId = 0;
     uint8_t reserved0 = 0;
     uint16_t reserved1 = 0;
-    char deviceName[32] = "c3_6dsv_tracker";
+    char reservedDeviceName[32] = {};
 };
 
 struct TrackerMagYawCorrectionConfigPersisted {
@@ -305,7 +303,7 @@ struct TrackerConfigBlob {
     TrackerAccelCalibrationQualityPersisted accelCalQuality;
     TrackerMagCalibrationQualityPersisted magCalQuality;
     TrackerFrameConfigPersisted frame;
-    TrackerDeviceIdentityPersisted device;
+    TrackerReservedDeviceIdentityPersisted reservedDevice;
 };
 
 } // namespace tracker

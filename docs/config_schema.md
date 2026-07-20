@@ -24,7 +24,7 @@ Persisted:
 - accel calibration;
 - mag axis/calibration/yaw-correction policy;
 - output policy;
-- frame-policy fields such as `sensorToDevice`, mounting-offset metadata and output convention;
+- the active `sensorToDevice` proper rotation plus neutral compatibility-reserved bytes;
 - network/SlimeVR configuration in its own NVS namespace.
 
 Runtime only:

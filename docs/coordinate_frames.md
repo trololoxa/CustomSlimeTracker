@@ -131,21 +131,18 @@ calibration and should not encode SlimeVR body offsets.
 
 ## Device/body/mounting frame
 
-Persistent config contains frame/device identity fields for:
-
-```text
-sensorToDevice
-mountingOffset
-outputConvention
-```
+Only `sensorToDevice` is an active firmware frame field. Historical bytes that
+were intended for firmware mounting offsets, output-convention selection and a
+duplicate device identity remain in the binary blob solely for NVS layout
+compatibility; sanitize always resets them to neutral values.
 
 Current firmware policy:
 
-- The firmware estimates where the sensor/device points.
+- The firmware estimates where the physical tracker device points.
 - SlimeVR/server-side logic owns body assignment, mounting calibration, recenter,
   body proportions, AutoBone and Stay Aligned.
-- Do not bake body/recenter/mounting offsets into local AHRS output unless a
-  documented firmware-side output convention explicitly requires it.
+- Firmware output uses one fixed native convention until a complete, tested
+  protocol adapter is introduced.
 
 ## Mag heading and yaw correction
 

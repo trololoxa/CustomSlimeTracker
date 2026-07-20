@@ -154,11 +154,9 @@ void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
         out.print(cfg.data.frame.sensorToDevice.m[row][1], 6); out.print(',');
         out.println(cfg.data.frame.sensorToDevice.m[row][2], 6);
     }
-    out.print("applyMountingOffsetInFirmware="); out.println(cfg.data.frame.applyMountingOffsetInFirmware ? "yes" : "no");
-    out.print("outputConvention="); out.println(cfg.data.frame.outputConvention);
-    out.print("deviceId="); out.println(cfg.data.device.deviceId);
-    out.print("sensorId="); out.println(cfg.data.device.sensorId);
-    out.print("deviceName="); out.println(cfg.data.device.deviceName);
+    out.println("firmwareBodyMounting=server_side_only");
+    out.println("wireOutputConvention=fixed_native");
+    out.println("deviceIdentitySource=network_config");
 
     out.println("-- mag yaw correction --");
     out.print("magYawControllerEnabled="); out.println(cfg.data.magYaw.controllerEnabled ? "yes" : "no");

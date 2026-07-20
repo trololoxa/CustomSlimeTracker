@@ -290,11 +290,11 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
     out.print("bad_sample_ratio="); out.println(badSampleRatio, 6);
 
     const GyroTempCompConfig& cfg = gyroTempComp.config();
-    if (std::fabs(fit.residualSlopeDpsPerC.x) > cfg.maxAbsSlopeDpsPerC ||
-        std::fabs(fit.residualSlopeDpsPerC.y) > cfg.maxAbsSlopeDpsPerC ||
-        std::fabs(fit.residualSlopeDpsPerC.z) > cfg.maxAbsSlopeDpsPerC) {
-        out.println("# ERR fitted residual slope exceeds maxAbsSlopeDpsPerC");
-        out.print("max_abs_slope_dps_per_c="); out.println(cfg.maxAbsSlopeDpsPerC, 6);
+    if (std::fabs(fit.residualSlopeDpsPerC.x) > cfg.maxAcceptedSlopeDpsPerC ||
+        std::fabs(fit.residualSlopeDpsPerC.y) > cfg.maxAcceptedSlopeDpsPerC ||
+        std::fabs(fit.residualSlopeDpsPerC.z) > cfg.maxAcceptedSlopeDpsPerC) {
+        out.println("# ERR fitted residual slope exceeds maxAcceptedSlopeDpsPerC");
+        out.print("max_accepted_slope_dps_per_c="); out.println(cfg.maxAcceptedSlopeDpsPerC, 6);
         gyro_temp_static_fit_detail::printVec3Line(out, "residual_slope_dps_per_c", fit.residualSlopeDpsPerC, 8);
         return false;
     }

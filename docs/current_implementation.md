@@ -126,23 +126,21 @@ feature is already implemented.
 
 ### Frame pipeline
 
-Persistent config contains `sensorToDevice`, `mountingOffset` and output-frame
-fields. `sensorToDevice` is runtime-gated as a proper right-handed rotation and
-is now configured by the guided setup. Device axes are defined as `+X` right,
-`+Y` forward and `+Z` top/outward. In a full calibration, the first two normal
-accel six-position captures are reserved for top/+Z and forward/+Y, so frame
-alignment adds no extra face captures. The solver separates any proper rotation
-absorbed by the full accel matrix from sensor scale/non-orthogonality before
-saving the frame, so gyro and accel do not end up in different axes. Resume mode
-asks for only those two short positions when accel calibration already exists but
-the frame is missing.
-and applied after gyro/accel calibration and after magnetic `magToImu` alignment.
-Finite legacy non-rotations remain loadable but are ignored and sanitized on save.
-The default remains disabled/identity, so existing trackers retain their previous
-orientation until a valid transform is configured.
-The current AHRS therefore operates in the device frame whenever a valid
-transform is configured, and in the legacy sensor frame when the transform is
-disabled. Body mounting and recenter remain server-owned.
+Only `sensorToDevice` is an active firmware frame setting. It is runtime-gated
+as a proper right-handed rotation and configured by the guided setup. Device axes
+are `+X` right, `+Y` forward and `+Z` top/outward. In a full calibration, the
+first two normal accel six-position captures are reserved for top/+Z and
+forward/+Y, so alignment adds no extra face captures. The solver separates any
+proper rotation absorbed by the full accel matrix from sensor scale and
+non-orthogonality before saving the frame. The transform is applied after
+gyro/accel calibration and after magnetic `magToImu` alignment.
+
+Changing calibration or frame state performs a complete deliberate orientation
+reset: the AHRS quaternion and prepared output are invalidated, magnetic dependent
+state is cleared, and the next plausible accel sample reacquires roll/pitch in
+the new frame. Body mounting and recenter remain server-owned. Compatibility
+bytes from abandoned firmware mounting/output/duplicate-identity concepts are
+forced neutral and are not exposed as capabilities.
 
 ### Calibration lifecycle and temperature capture
 

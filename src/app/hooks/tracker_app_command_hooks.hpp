@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime/orientation_runtime_reset.hpp"
+
 // Serial command and status hooks used by the app composition layer.
 // This file is included by app/tracker_app_hooks.hpp after shared app dependencies.
 
@@ -14,7 +16,16 @@ static void hookResetAhrsRuntime(void* user) {
     (void)user;
     g_lastSampleTimestampUs = 0;
     g_lastQualityFlags = 0;
-    resetOrientationDependentState("ahrs_or_config_reset", lsmFifo.stats().lastAssignedTimestampUs, false);
+
+    OrientationRuntimeResetDeps deps;
+    deps.ahrs = &g_ahrs6dof;
+    deps.preparedOutput = &g_preparedOutput;
+    deps.resetDependentState = resetOrientationDependentState;
+    (void)resetOrientationRuntime(
+        deps,
+        "ahrs_or_config_reset",
+        lsmFifo.stats().lastAssignedTimestampUs
+    );
 }
 
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP

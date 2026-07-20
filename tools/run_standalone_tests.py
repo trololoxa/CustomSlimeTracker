@@ -33,6 +33,8 @@ PROJECT_SOURCES = [
     pathlib.Path("src/sensor/mag_calibration.cpp"),
     pathlib.Path("src/sensor/sensor_to_device_alignment.cpp"),
     pathlib.Path("src/runtime/runtime_gyro_bias_controller.cpp"),
+    pathlib.Path("src/runtime/output_runtime.cpp"),
+    pathlib.Path("src/runtime/orientation_runtime_reset.cpp"),
     pathlib.Path("src/runtime/gyro_temp_calibration_capture.cpp"),
     pathlib.Path("src/runtime/tracker_console_suppress.cpp"),
     pathlib.Path("src/runtime/tracking_state_controller.cpp"),
@@ -49,6 +51,14 @@ PROJECT_SOURCES = [
     pathlib.Path("src/runtime/slimevr_output_runtime.cpp"),
 ]
 
+
+# Sources that must stay host-compilable but are intentionally not linked into
+# every native executable because they depend on hardware-backed persistence
+# implementations at link time. Compiling them here catches interface drift in
+# production-only paths before PlatformIO.
+COMPILE_ONLY_SOURCES = [
+    pathlib.Path("src/runtime/gyro_temp_static_fit.cpp"),
+]
 
 WARNING_FLAGS = [
     "-Wall",
@@ -181,6 +191,8 @@ def main() -> int:
     executables: list[pathlib.Path] = []
     try:
         project_objects = compile_project_objects(cxx, args.extra_cxxflag)
+        for source in COMPILE_ONLY_SOURCES:
+            compile_object(cxx, source, object_path_for(source), args.extra_cxxflag)
         for source in sources:
             exe = BUILD_DIR / (source.stem + executable_suffix())
             compile_one(cxx, source, exe, project_objects, args.extra_cxxflag)

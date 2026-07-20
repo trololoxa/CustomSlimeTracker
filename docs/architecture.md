@@ -460,7 +460,7 @@ Persisted in NVS:
 - mag calibration and quality metadata;
 - mag yaw correction config;
 - output policy;
-- frame/device identity fields;
+- active sensor-to-device alignment plus neutral compatibility-reserved bytes;
 - network/SlimeVR config in separate storage.
 
 Runtime only:
