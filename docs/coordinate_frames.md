@@ -73,6 +73,21 @@ gyro_rad_s in sensor/body frame
 accel_g in sensor/body frame
 ```
 
+### Current frame limitation
+
+`TrackerFrameConfigPersisted` stores a `sensorToDevice` matrix and validates it
+on load, but **sensorToDevice is not applied by the runtime** sample pipeline in
+the current baseline. The gyro and calibrated accelerometer therefore enter
+`Ahrs6Dof` in the LSM6DSV sensor frame. The prepared quaternion snapshot is the
+resulting `q_world_from_sensor`; the SlimeVR packet writer only normalizes it and
+does not perform a board/device-axis conversion.
+
+This is a known correctness gap, not an intended mounting policy. A frame
+foundation change must apply one orthonormal sensor-to-device transform
+consistently to gyro, accel and the already `magToImu`-aligned magnetometer. It
+must also transform future linear acceleration at the same boundary. SlimeVR
+body-part mounting, recenter and skeleton offsets remain server-owned.
+
 ## Magnetometer frame
 
 The QMC6309 has its own raw magnetometer frame. Runtime processing applies:

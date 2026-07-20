@@ -24,6 +24,7 @@ Persisted:
 - accel calibration;
 - mag axis/calibration/yaw-correction policy;
 - output policy;
+- frame-policy fields such as `sensorToDevice`, mounting-offset metadata and output convention;
 - network/SlimeVR configuration in its own NVS namespace.
 
 Runtime only:
@@ -49,3 +50,18 @@ When changing persisted structs:
 6. Update this document and `docs/cli_reference.md` if commands or side effects change.
 
 Current config hardening is intentionally low-cost: compile-time/native-test layout guards and host tests are preferred over runtime-heavy migration logic. Keep network credentials in the separate `TrackerNetworkConfig` namespace so IMU/calibration resets do not expose or erase Wi-Fi secrets by accident.
+
+## Current frame and gyro-temperature caveats
+
+The schema contains frame fields before the runtime frame foundation is complete.
+`frame.sensorToDevice` is sanitized and persisted, but the current sample pipeline
+does not apply it. A future schema/runtime patch may change the meaning or
+validation rules of this block; it must bump the frame schema version if persisted
+semantics change.
+
+The gyro block currently stores static bias, a reference temperature, a
+three-axis temperature slope and quality/range metadata. Runtime application and
+capture must treat these as one coherent model. Clear/replace commands must not
+leave a zeroed or stale slope marked as a valid old temperature model. This
+lifecycle correction is planned as a dedicated functional patch rather than
+being hidden in documentation maintenance.

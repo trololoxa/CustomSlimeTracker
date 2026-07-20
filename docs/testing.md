@@ -46,7 +46,7 @@ On Linux/macOS/WSL/Git Bash you can also use:
 tools/check_all.sh --clean
 ```
 
-The script always runs native tests unless `--skip-native` is passed. It also runs Python tool smoke tests unless `--skip-tool-smoke` is passed. It also runs PlatformIO builds when `pio`/`platformio` is available in `PATH`. If PlatformIO is not installed, ESP32 builds are skipped by default so host-only development machines can still run the native gate. To make missing PlatformIO a failure, use:
+The script always runs native tests unless `--skip-native` is passed. It also runs the source-filter, profile-matrix and documentation contract validators, plus Python tool smoke tests unless `--skip-tool-smoke` is passed. When `pio`/`platformio` is available, the default gate builds Debug, Production, Production Diagnostic and Slim. If PlatformIO is not installed, ESP32 builds are skipped by default so host-only development machines can still run the native gate. To make missing PlatformIO a failure, use:
 
 ```bash
 python tools/check_all.py --require-pio
@@ -72,10 +72,16 @@ set PIO=C:\Users\you\.platformio\penv\Scripts\platformio.exe
 python tools/check_all.py --require-pio
 ```
 
-Git Bash/WSL:
+Git Bash:
 
 ```bash
 PIO=/c/Users/you/.platformio/penv/Scripts/platformio.exe python tools/check_all.py --require-pio
+```
+
+WSL:
+
+```bash
+PIO=/mnt/c/Users/you/.platformio/penv/Scripts/platformio.exe python3 tools/check_all.py --require-pio
 ```
 
 On Windows, `tools/check_all.py` is the portable entrypoint for PowerShell/CMD. `tools/check_all.sh` works from Git Bash or WSL.
@@ -105,7 +111,9 @@ python tools/run_standalone_tests.py --extra-cxxflag -fsanitize=undefined
 ```
 
 The native test compiler flags intentionally mirror the diagnostic firmware
-warning profile:
+warning profile. The committed default firmware environment is
+`BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG`, but host tests stay independent from that
+selection:
 
 ```text
 -Wall
@@ -123,6 +131,41 @@ to test app, SPI, GPIO, Preferences/NVS, real Wi-Fi or Serial transport behavior
 module needs real Arduino framework semantics, it remains firmware-test only
 until the pure decision rule is isolated behind a host-safe helper.
 
+## CRLF patch and whitespace policy
+
+The firmware repository is intentionally CRLF-heavy. `.gitattributes` marks
+carriage return at end of line as valid whitespace, so `git diff --check` can
+still detect real trailing-space errors without reporting every changed CRLF
+line. Patch generation must preserve each file's existing line-ending style; do
+not run repository-wide `dos2unix` or `unix2dos`.
+
+Patches are expected to apply from the repository root with:
+
+```bash
+patch --dry-run -p1 < /mnt/c/Users/nikol/Downloads/000x_name.patch
+patch -p1 < /mnt/c/Users/nikol/Downloads/000x_name.patch
+```
+
+## Hardware/runtime test budget
+
+Do not request hardware tests for behavior that is already fully covered by host
+logic and profile builds. Use this default matrix:
+
+| Change | Native/project-contract checks | PlatformIO builds | Tracker runtime test |
+|---|---:|---:|---:|
+| Documentation, profile policy, source filters or host tools | Required | Required | None |
+| Pure math, packet encoding or host-safe state machine | Required | Required | None unless hardware integration changed |
+| FIFO/IMU driver or timestamp integration | Required where possible | Required | One focused serial/telnet smoke test |
+| Calibration capture using real sensors | Required for fit/state logic | Required | One focused capture only |
+| Wi-Fi/UDP reconnect or server protocol integration | Required with fake transports | Required | One focused server smoke test |
+| Sleep/wake or power policy | Required for controller logic | Required | One dedicated A/B test stage |
+
+Long `test static` or `test runtime` captures are release/acceptance tools, not a
+mandatory response to every patch. Prefer one short test that crosses the exact
+hardware boundary changed by the patch. Do not ask for several ideal-condition
+captures when the same regression can be proven by native tests or a fake
+transport.
+
 ## Running firmware diagnostics
 
 Firmware diagnostics still need PlatformIO and the ESP32-C3. You can run them directly or through the quality gate:
@@ -136,8 +179,9 @@ Direct commands:
 ```bash
 pio run -e BOARD_LOLIN_C3_MINI_DEBUG
 pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION
+pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG
 pio run -e BOARD_LOLIN_C3_MINI_SLIM
-pio run -e BOARD_LOLIN_C3_MINI_DEBUG -t upload
+pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG -t upload
 pio device monitor
 ```
 

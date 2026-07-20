@@ -103,7 +103,7 @@ void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("mag_enabled="); out.println(yn(s.magEnabled));
     out.print("sensor_config=0x"); out.println(s.sensorConfig, HEX);
     out.print("last_rssi_dbm="); out.println(s.lastRssiDbm);
-    out.print("last_signal_strength="); out.println(s.lastSignalStrength);
+    out.print("last_signal_strength_dbm="); out.println(static_cast<int>(s.lastSignalStrengthDbm));
     out.print("last_temperature_valid="); out.println(yn(s.lastTemperatureValid));
     out.print("last_temperature_c="); out.println(s.lastTemperatureC, 2);
     out.print("battery_telemetry_enabled="); out.println(yn(s.batteryTelemetryEnabled));
@@ -164,7 +164,7 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("signal_telemetry_interval_ms="); out.println(s.signalTelemetryIntervalMs);
     out.print("temperature_telemetry_interval_ms="); out.println(s.temperatureTelemetryIntervalMs);
     out.print("battery_telemetry_interval_ms="); out.println(s.batteryTelemetryIntervalMs);
-    out.print("last_signal_strength="); out.println(s.lastSignalStrength);
+    out.print("last_signal_strength_dbm="); out.println(static_cast<int>(s.lastSignalStrengthDbm));
     out.print("last_rssi_dbm="); out.println(s.lastRssiDbm);
     out.print("last_temperature_valid="); out.println(yn(s.lastTemperatureValid));
     out.print("last_temperature_c="); out.println(s.lastTemperatureC, 2);

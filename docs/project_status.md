@@ -2,6 +2,22 @@
 
 This document replaces the completed code-quality roadmap notes. It records the current structural state of the firmware after the architecture cleanup patches.
 
+
+## Source of truth
+
+Use Git for the exact firmware identity:
+
+```bash
+git branch --show-current
+git rev-parse --short HEAD
+git status --short
+```
+
+`docs/current_implementation.md` is the canonical short runtime summary.
+`docs/production_firmware_roadmap.md` is retained as a historical planning
+record and must not be used to infer that an item is still missing or already
+implemented.
+
 ## Current structural baseline
 
 - `main.cpp` is an Arduino entrypoint only.
@@ -18,7 +34,7 @@ This document replaces the completed code-quality roadmap notes. It records the 
 
 - The boot serial settle delay is Debug-profile only (`TRACKER_ENABLE_BOOT_DELAY`). Production and Slim do not keep the old unconditional `sleep(2)`.
 - `defines.h` is now a compatibility umbrella over `src/build_config/*`; new profile/config defaults should go into the focused build-config headers.
-- `BOARD_LOLIN_C3_MINI_DEBUG` is the normal local build/upload environment while warnings are being kept clean. The old DIAG alias was removed; use the explicit Debug/Production/Slim environments.
+- `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` is the committed default build/upload environment on the `Upgrades` branch. It is a service environment built from `TRACKER_PROFILE_PRODUCTION` plus the live runtime profiler; Debug, Production and Slim remain separate committed environments.
 
 ## Current quality gate
 
@@ -61,6 +77,30 @@ The tracker now has a working SlimeVR UDP MVP:
 - `test runtime <seconds>` for full Wi-Fi/server/FIFO loop-load measurement.
 
 Optimization work should keep using a `test runtime 600` baseline rather than `test static` alone, and firmware-size deltas should be checked with `python tools/report_firmware_size.py`.
+
+
+## Known baseline gaps before the upgrade series
+
+The following limitations are confirmed in the current code and are deliberately
+recorded before behavior-changing patches begin:
+
+- persisted `sensorToDevice`/mounting fields are validated and printed but the
+  sensor-to-device transform is not applied in the runtime sample path;
+- gyro/temperature calibration clear/replace operations need explicit model
+  invalidation semantics, and temperature capture needs a stricter continuous
+  stationary-window gate;
+- FIFO recovery rebases timestamps but has no dedicated large-error tilt
+  reacquisition mode after missed motion;
+- prepared output contains quaternion only: no timestamp-coherent linear
+  acceleration is sent, so SlimeVR acceleration packet 4 and step mounting are
+  not available;
+- SensorInfo ACK state, firmware FeatureFlags/bundle negotiation, protocol
+  switching and control-endpoint validation remain incomplete;
+- SignalStrength packet 19 now preserves signed RSSI dBm instead of the previous
+  incorrect 0-100 normalization.
+
+These gaps define the next implementation patches. They are not reasons to
+weaken the existing FIFO timestamp, calibration, AHRS or mag-yaw quality path.
 
 ## Current setup baseline
 

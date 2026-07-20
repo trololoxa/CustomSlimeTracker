@@ -5,7 +5,8 @@ This inventory is the current ownership map. It is intentionally compact; update
 | Path | Owner layer | Purpose | Notes |
 |---|---|---|---|
 | `src/main.cpp` | entrypoint | Arduino `setup()`/`loop()` forwarding only | Must stay tiny. |
-| `src/defines.h` | global defaults | Compile-time board/default constants | Canonical defaults header. |
+| `src/defines.h` | compatibility umbrella | Includes the focused build-configuration headers | Do not add new monolithic defaults here. |
+| `src/build_config/` | compile-time policy | Profiles, feature flags, board pins and runtime/network/tracking tuning | Canonical location for profile/default changes. |
 | `src/app/` | composition | Firmware setup/loop orchestration and app-level singleton wiring | No domain algorithms here. |
 | `src/app/hooks/` | composition glue | Connect app singletons to runtime/serial callbacks | Include-only by design; wiring only. |
 | `src/config/` | persisted config | Schema, runtime apply/capture/sanitize, NVS store, print helpers | Config changes need docs/tests. |
@@ -18,8 +19,12 @@ This inventory is the current ownership map. It is intentionally compact; update
 | `src/output/` | protocol output | Host-safe SlimeVR packet writer/protocol helpers | No Wi-Fi state or sensor fusion ownership. |
 | `tools/logs/` | host tools | Existing E0 log summarizer | Human/debug summaries. |
 | `tools/replay/` | host tools | Replay/metrics tooling for machine logs | Added before major tracking changes. |
+| `tools/validate_source_filters.py` | project contract | Checks that concrete PlatformIO exclusions still exist | Runs from `check_all.py`. |
+| `tools/validate_profile_matrix.py` | project contract | Checks all committed environments, default env and product filter semantics | Runs from `check_all.py`. |
+| `tools/validate_documentation.py` | project contract | Checks required docs, local links and stable baseline statements | Runs from `check_all.py`. |
 | `tests/native/` | host tests | Host-safe C++ regression tests | No real Arduino/SPI/NVS/Wi-Fi hardware behavior. |
 | `docs/` | docs | Architecture, testing, CLI, config, replay, tracking pipeline | Docs should describe current code, not stale roadmaps. |
+| `docs/current_implementation.md` | canonical baseline | Short statement of what the `Upgrades` branch actually implements and its known gaps | Takes precedence over historical roadmaps. |
 
 ## Experimental/future code policy
 

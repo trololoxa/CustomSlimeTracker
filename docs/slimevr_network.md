@@ -99,6 +99,9 @@ RotationData
 HeartBeat
 PingPong response
 AcknowledgeConfigChange
+BatteryLevel when enabled
+Tap when enabled
+Error when tracker health reports one
 SignalStrength
 Temperature
 ```
@@ -109,7 +112,7 @@ Incoming packets currently handled:
 Discovery response: raw 0x03 + "Hey OVR =D 5"
 Heartbeat packet 0/1
 PingPong packet 10
-FeatureFlags packet 22, counted but not acted on
+FeatureFlags packet 22, stored for diagnostics but not acted on
 SetConfigFlag packet 25, used for runtime magnetometer/yaw toggle
 ProtocolChange packet 200, counted but not acted on
 ```
@@ -124,6 +127,30 @@ Magnetometer capability is advertised via `SensorInfo.sensor_config`:
 
 The firmware intentionally does not send periodic dummy `MagnetometerAccuracy` packets. Packet 18 should only be emitted if a real mag-calibration/accuracy workflow starts using it.
 
+`SignalStrength` packet 19 carries one signed RSSI value in dBm. For example,
+`-68 dBm` is encoded as the two's-complement byte `0xBC`; it is not normalized
+to a user-facing 0..100 percentage. `slime status` exposes the value as
+`last_signal_strength_dbm`.
+
+## Known protocol gaps in the current baseline
+
+The existing UDP runtime is sufficient for orientation tracking, but it does
+not yet implement the complete modern tracker/server contract:
+
+- acceleration packet 4 is not emitted, so step mounting does not receive
+  tracker acceleration;
+- the short SensorInfo acknowledgement packet 15 is not tracked as a confirmed
+  state, and SensorInfo is refreshed periodically or on local changes;
+- firmware FeatureFlags packet 22 is not sent, so optional packet bundling is
+  not negotiated;
+- received server FeatureFlags are stored only for diagnostics;
+- ProtocolChange is counted but does not switch protocol;
+- normal control packets are not yet hardened to the established server
+  endpoint before they refresh session activity or change runtime flags.
+
+These are planned protocol upgrades. Documentation must not describe them as
+already active.
+
 ## CLI diagnostics
 
 Compact status:
@@ -132,7 +159,7 @@ Compact status:
 slime status
 ```
 
-Use it for normal checks. It shows server state, rotation counter, send failures, ping/pong, unknown packet count, mag flags, RSSI and latest IMU temperature.
+Use it for normal checks. It shows server state, rotation counter, send failures, ping/pong, unknown packet count, mag flags, signed RSSI dBm and latest IMU temperature.
 
 Full developer dump:
 

@@ -440,7 +440,7 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.signalTelemetryIntervalMs = signalTelemetryIntervalMs_;
     s.temperatureTelemetryIntervalMs = temperatureTelemetryIntervalMs_;
     s.batteryTelemetryIntervalMs = batteryTelemetryIntervalMs_;
-    s.lastSignalStrength = lastSignalStrength_;
+    s.lastSignalStrengthDbm = lastSignalStrengthDbm_;
     s.lastRssiDbm = lastRssiDbm_;
     s.lastTemperatureC = latestTemperatureC_;
     s.lastTemperatureValid = latestTemperatureValid_;
@@ -497,7 +497,7 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastTemperatureTelemetryMs_ = 0;
     lastBatteryTelemetryMs_ = 0;
     lastTrackerErrorMs_ = 0;
-    lastSignalStrength_ = 0;
+    lastSignalStrengthDbm_ = 0;
     lastRssiDbm_ = 0;
     lastRotationSnapshotSequence_ = 0;
     lastRotationRuntimeSample_ = 0;
@@ -828,16 +828,16 @@ void SlimeVROutputRuntime::sendSignalStrength(uint32_t nowMs) {
     (void)nowMs;
     if (!serverEndpoint_.valid() || !wifi_) return;
     const TrackerWifiManagerStatus ws = wifi_->status();
-    const uint8_t signal = signalStrengthFromRssi(ws.rssiDbm);
+    const int8_t signalDbm = signalStrengthFromRssi(ws.rssiDbm);
     const SlimeVRPacketWriteResult packet = writer_.writeSignalStrength(
         packetBuffer_,
         sizeof(packetBuffer_),
         sensorId_,
-        signal
+        signalDbm
     );
     if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
         ++signalStrengthSent_;
-        lastSignalStrength_ = signal;
+        lastSignalStrengthDbm_ = signalDbm;
         lastRssiDbm_ = ws.rssiDbm;
     }
 }
@@ -943,10 +943,10 @@ uint8_t SlimeVROutputRuntime::accuracyFromConfidence(float confidence) {
     return 0;
 }
 
-uint8_t SlimeVROutputRuntime::signalStrengthFromRssi(int32_t rssiDbm) {
-    if (rssiDbm <= -100) return 0;
-    if (rssiDbm >= -50) return 100;
-    return static_cast<uint8_t>((rssiDbm + 100) * 2);
+int8_t SlimeVROutputRuntime::signalStrengthFromRssi(int32_t rssiDbm) {
+    if (rssiDbm < -128) rssiDbm = -128;
+    if (rssiDbm > 127) rssiDbm = 127;
+    return static_cast<int8_t>(rssiDbm);
 }
 
 void SlimeVROutputRuntime::maybeSendRotation(uint32_t nowMs) {

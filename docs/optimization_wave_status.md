@@ -4,6 +4,10 @@ This document records the current accepted state of the optimization roadmap.
 Temporary A/B environments and rejected candidates should not be kept in the
 committed PlatformIO matrix.
 
+For the complete current tracking/protocol baseline and known correctness gaps,
+use `docs/current_implementation.md`. This document is limited to accepted
+optimization experiments and does not assert feature completeness.
+
 ## Wave 1 — build profiles and guardrails
 
 Status: **closed**.

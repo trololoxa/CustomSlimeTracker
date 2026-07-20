@@ -1,6 +1,12 @@
 # Production firmware roadmap
 
-This roadmap replaces the old development roadmaps with a compact release plan for the
+> **Historical planning document.** This file records the plan that guided earlier
+> production work. It is not the source of truth for current behavior. Use
+> `docs/current_implementation.md`, `docs/project_status.md`, the `Upgrades` branch
+> source, and the build/test contract for the present baseline. Items below may
+> already be complete, superseded, partially implemented or deliberately deferred.
+
+This roadmap replaced older development roadmaps with a compact release plan for the
 ESP32-C3 + LSM6DSV + QMC6309 SlimeVR tracker firmware.
 
 The goal is not to add every possible experiment. The goal is a reliable, convenient,

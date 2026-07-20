@@ -172,7 +172,7 @@ public:
                                                        float accuracyInfo);
     SlimeVRPacketWriteResult writeSignalStrength(uint8_t* out, size_t capacity,
                                                  uint8_t sensorId,
-                                                 uint8_t signalStrength);
+                                                 int8_t signalStrengthDbm);
     SlimeVRPacketWriteResult writeTemperature(uint8_t* out, size_t capacity,
                                               uint8_t sensorId,
                                               float temperatureC);

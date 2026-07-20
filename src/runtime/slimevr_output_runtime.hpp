@@ -140,7 +140,7 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t signalTelemetryIntervalMs = 0;
     uint32_t temperatureTelemetryIntervalMs = 0;
     uint32_t batteryTelemetryIntervalMs = 0;
-    uint8_t lastSignalStrength = 0;
+    int8_t lastSignalStrengthDbm = 0;
     int32_t lastRssiDbm = 0;
     float lastTemperatureC = 0.0f;
     bool lastTemperatureValid = false;
@@ -244,7 +244,7 @@ private:
     uint32_t rotationPeriodMs() const;
     uint16_t sensorConfigFlags() const;
     static uint8_t accuracyFromConfidence(float confidence);
-    static uint8_t signalStrengthFromRssi(int32_t rssiDbm);
+    static int8_t signalStrengthFromRssi(int32_t rssiDbm);
 
     IUdpTransport* udp_ = nullptr;
     const TrackerWifiManager* wifi_ = nullptr;
@@ -359,7 +359,7 @@ private:
     uint32_t lastSignalTelemetryMs_ = 0;
     uint32_t lastTemperatureTelemetryMs_ = 0;
     uint32_t lastBatteryTelemetryMs_ = 0;
-    uint8_t lastSignalStrength_ = 0;
+    int8_t lastSignalStrengthDbm_ = 0;
     int32_t lastRssiDbm_ = 0;
     uint32_t lastRotationSnapshotSequence_ = 0;
     uint32_t lastRotationRuntimeSample_ = 0;

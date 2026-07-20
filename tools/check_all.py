@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PIO_ENVS = (
     "BOARD_LOLIN_C3_MINI_DEBUG",
     "BOARD_LOLIN_C3_MINI_PRODUCTION",
+    "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG",
     "BOARD_LOLIN_C3_MINI_SLIM",
 )
 
@@ -65,9 +66,10 @@ def run_replay_gate(
     run(cmd)
 
 
-def run_profile_contract_checks() -> None:
+def run_project_contract_checks() -> None:
     run([sys.executable, "tools/validate_source_filters.py"])
     run([sys.executable, "tools/validate_profile_matrix.py"])
+    run([sys.executable, "tools/validate_documentation.py"])
 
 
 def run_tool_smokes() -> None:
@@ -155,7 +157,7 @@ def main() -> int:
     if not args.skip_native:
         run_native_tests(args.clean)
 
-    run_profile_contract_checks()
+    run_project_contract_checks()
 
     if not args.skip_tool_smoke:
         run_tool_smokes()

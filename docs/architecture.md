@@ -4,6 +4,10 @@ This document describes the current project layout, ownership rules, and extensi
 
 It is written for future maintainers and agents. Before adding code, read this file and keep the layer boundaries intact.
 
+For the exact current runtime baseline and explicitly known gaps, also read
+`docs/current_implementation.md`. Historical roadmaps are planning records and
+do not override current source.
+
 ## Current high-level goal
 
 The firmware is responsible for the physical sensor side of tracking:
@@ -22,7 +26,8 @@ The firmware should **not** own body model logic, SlimeVR mounting/body calibrat
 ```text
 src/
   main.cpp                         Arduino entrypoint only
-  defines.h                        compile-time board/default constants
+  defines.h                        compatibility umbrella
+  build_config/                    canonical profiles, feature flags and tuning
 
   app/                             top-level composition/wiring layer
   config/                          persisted config schema, store, print, runtime apply
@@ -37,6 +42,7 @@ src/
 
 docs/
   architecture.md                  this document
+  current_implementation.md        canonical current runtime baseline
   project_status.md                current structural baseline
   module_inventory.md              ownership map
   testing.md                       host/firmware test strategy
@@ -48,6 +54,7 @@ docs/
 tools/
   logs/                            host-side log parsing/debug helpers
   replay/                          replay/metrics helpers for machine logs
+  validate_*.py                    profile/source/documentation contracts
 ```
 
 ## Layer responsibilities

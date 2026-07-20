@@ -134,6 +134,13 @@ int main() {
     CHECK(ctx, packet[12] == 9);
     CHECK_NEAR(ctx, readF32Be(packet + 13), 0.5f, 1.0e-6f);
 
+    const SlimeVRPacketWriteResult signal = writer.writeSignalStrength(packet, sizeof(packet), 255, -68);
+    CHECK(ctx, signal.ok);
+    CHECK(ctx, signal.size == SLIMEVR_PACKET_HEADER_SIZE + 2u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::SignalStrength));
+    CHECK(ctx, packet[12] == 255);
+    CHECK(ctx, packet[13] == static_cast<uint8_t>(static_cast<int8_t>(-68)));
+
     const SlimeVRPacketWriteResult pong = writer.writePingPong(packet, sizeof(packet), 0xAABBCCDDu);
     CHECK(ctx, pong.ok);
     CHECK(ctx, pong.size == SLIMEVR_PACKET_HEADER_SIZE + 4u);

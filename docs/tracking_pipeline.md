@@ -35,6 +35,17 @@ CLI poll
 heartbeat/output maintenance
 ```
 
+### Current frame and output boundary
+
+The current sample path applies sensor calibration but does not yet apply the
+persisted `sensorToDevice` transform. `Ahrs6Dof` and the prepared quaternion
+therefore remain in the calibrated LSM6DSV sensor frame. This must be corrected
+before acceleration-based mounting is enabled.
+
+The prepared output snapshot currently carries orientation only. SlimeVR
+`RotationData` packet 17 is emitted, but acceleration packet 4 and
+timestamp-coherent linear acceleration are not implemented in this baseline.
+
 ## Trust boundaries
 
 - Gyro is the dynamic source.

@@ -167,7 +167,7 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 | `net reconnect` | Restart Wi-Fi connection attempt | No | Non-blocking reconnect. |
 | `net scan [visible|hidden] [limit N]` | Blocking Wi-Fi environment scan | No | Developer diagnostic; pauses sensor processing while scan runs. |
 | `net save|load|defaults|erase` | Manage network NVS config | Yes/Runtime | Network config is stored separately from main tracker config. |
-| `slime status` | Print compact SlimeVR UDP runtime status | No | Shows server state, rotation, tap/battery packet counters, failures, ping, mag flags, RSSI, latest temperature and latest battery telemetry. |
+| `slime status` | Print compact SlimeVR UDP runtime status | No | Shows server state, rotation, tap/battery packet counters, failures, ping, mag flags, signed `last_signal_strength_dbm`, latest temperature and latest battery telemetry. |
 | `slime debug` | Print full SlimeVR counters/timestamps | No | Developer view with packet counters, last packet values, battery telemetry state and reconnect-hardening counters. |
 | `slime start` | Start SlimeVR UDP runtime | Runtime | Uses prepared quaternion snapshots directly and leaves local serial output off. |
 | `slime stop` | Stop SlimeVR output runtime | Runtime | Does not erase saved Wi-Fi/config. |
@@ -278,6 +278,7 @@ SlimeVR `SensorInfo.hasCompletedRestCalibration` is driven by the local rest/gyr
 
 ### SlimeVR telemetry notes
 
+- Signal-strength telemetry is packet type 19 and uses one signed dBm byte. `-68 dBm` is sent as two's-complement `0xBC`, not as a normalized 0..100 quality percentage. `slime status` prints `last_signal_strength_dbm`.
 - Temperature telemetry is sent with SlimeVR UDP packet type 20 (`sensorId + f32 temperatureC`). The server parser accepts it, but not every GUI view exposes it. Use `slime status` fields `temperature_sent`, `last_temperature_valid`, and `last_temperature_c` to verify firmware-side emission.
 - Battery telemetry is sent with SlimeVR UDP packet type 12 (`f32 voltage + f32 percentage`). The RC1 ADC backend expects `BAT+ -> R_TOP -> GPIO -> R_BOTTOM -> GND`, defaults to GPIO4 and 180 kΩ / 180 kΩ, and maps 3.30 V to 0% and 4.20 V to 100%. GPIO4 is ESP32-C3 ADC1_CH4, so no ADC2 force-use path is needed. The firmware reads it sparsely (`TRACKER_BATTERY_ADC_SAMPLE_INTERVAL_MS`, default 10000 ms), uses a small median-filtered burst (`TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT`, default 3), rejects implausible ADC millivolts, applies EMA filtering, and rejects impossible voltage steps. If the divider reads below `TRACKER_BATTERY_PRESENT_MIN_VOLTAGE`, the runtime treats the battery as absent and still reports safe 0.000 V / 0.0% telemetry.
 - Magnetometer support is advertised through `SensorInfo.sensorConfig`: bit 1 = supported, bit 0 = enabled. When mag support is enabled from firmware config, `sensor_config` should be `0x3`; `0x1` is interpreted by the current server as `Mag not supported`.
@@ -295,6 +296,8 @@ The firmware currently handles the server-to-tracker packets needed for a normal
 - packet `200` ProtocolChange: stored for diagnostics only. The firmware stays on UDP protocol v19.
 
 Use `slime status` to inspect `ping_received`, `pong_sent`, `feature_flags_received`, `set_config_flag_*`, `ack_config_sent`, `protocol_change_received`, and `unknown_packets_received`.
+
+Current protocol limitations: the firmware does not emit acceleration packet 4, does not send its own FeatureFlags, does not negotiate bundles, does not maintain a short SensorInfo-ACK confirmation state, and does not apply ProtocolChange. These are tracked as future protocol work rather than implied by the existing command counters.
 
 ## SlimeVR Server serial compatibility
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Validate the firmware build-profile/source-filter contract.
 
-This check is deliberately project-specific.  `validate_source_filters.py`
-checks whether filter paths exist; this script checks whether the important
-Debug/Production/Slim contract is still represented in `platformio.ini`.
+`validate_source_filters.py` checks whether concrete filter paths exist. This
+script checks the semantic contract represented by `platformio.ini`: all
+committed environments must exist, the committed default must remain the
+wearable Production Diagnostic environment, profile flags must match, and
+product source filters must keep quality-critical tracking/network modules.
 """
 
 from __future__ import annotations
@@ -20,17 +22,30 @@ EXCLUDE_RE = re.compile(r"^\s*-<([^>]+)>\s*(?:[;#].*)?$")
 PROFILE_RE = re.compile(r"TRACKER_BUILD_PROFILE=(TRACKER_PROFILE_[A-Z_]+)")
 DEFAULT_ENVS_RE = re.compile(r"^\s*default_envs\s*=\s*(.+?)\s*(?:[;#].*)?$")
 
+BASE_ENV = "BOARD_LOLIN_C3_MINI"
 DEBUG_ENV = "BOARD_LOLIN_C3_MINI_DEBUG"
 PRODUCTION_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION"
+PRODUCTION_DIAG_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG"
 SLIM_ENV = "BOARD_LOLIN_C3_MINI_SLIM"
 
+EXPECTED_DEFAULT_ENVS = (PRODUCTION_DIAG_ENV,)
+EXPECTED_ENVIRONMENTS = {
+    BASE_ENV,
+    DEBUG_ENV,
+    PRODUCTION_ENV,
+    PRODUCTION_DIAG_ENV,
+    SLIM_ENV,
+}
 EXPECTED_PROFILE_FLAGS = {
     DEBUG_ENV: "TRACKER_PROFILE_DEBUG",
     PRODUCTION_ENV: "TRACKER_PROFILE_PRODUCTION",
+    PRODUCTION_DIAG_ENV: "TRACKER_PROFILE_PRODUCTION",
     SLIM_ENV: "TRACKER_PROFILE_SLIM",
 }
 
-PRODUCTION_REQUIRED_EXCLUDES = {
+# Exclusions shared by normal Production and Production Diagnostic. The
+# diagnostic environment intentionally keeps the live profiler/motion modules.
+PRODUCT_COMMON_REQUIRED_EXCLUDES = {
     "config/tracker_config_print.cpp",
     "runtime/machine_log_runtime.cpp",
     "runtime/mag_status_reporter.cpp",
@@ -44,15 +59,25 @@ PRODUCTION_REQUIRED_EXCLUDES = {
     "serial/tracker_test_commands.cpp",
 }
 
+LIVE_DIAGNOSTIC_SOURCES = {
+    "runtime/runtime_profiler.cpp",
+    "runtime/runtime_motion_diagnostics.cpp",
+    "serial/tracker_perf_commands.cpp",
+    "serial/tracker_motion_commands.cpp",
+}
+
+PRODUCTION_REQUIRED_EXCLUDES = PRODUCT_COMMON_REQUIRED_EXCLUDES | LIVE_DIAGNOSTIC_SOURCES
+PRODUCTION_DIAG_REQUIRED_EXCLUDES = PRODUCT_COMMON_REQUIRED_EXCLUDES
+
 SLIM_REQUIRED_EXCLUDES = PRODUCTION_REQUIRED_EXCLUDES | {
     "app/tracker_command_wiring.cpp",
-    "runtime/gyro_temp_static_fit.cpp",
     "network/wifi_remote_console.cpp",
     "runtime/status_led_runtime.cpp",
     "runtime/tap_accumulator.cpp",
     "runtime/tap_runtime_controller.cpp",
     "runtime/tracker_console_suppress.cpp",
     "runtime/gyro_temp_calibration_capture.cpp",
+    "runtime/gyro_temp_static_fit.cpp",
     "sensor/accel_6pos_calibration.cpp",
     "sensor/fifo_calibrations.cpp",
     "serial/tracker_battery_commands.cpp",
@@ -70,7 +95,7 @@ SLIM_REQUIRED_EXCLUDES = PRODUCTION_REQUIRED_EXCLUDES | {
 }
 
 # Core tracking/network translation units that must not be excluded by product
-# profiles.  If one of these appears in a filter, the profile is no longer a
+# profiles. If one of these appears in a filter, the profile is no longer a
 # quality-preserving optimization profile.
 MUST_KEEP_IN_PRODUCT_PROFILES = {
     "connection/lsm6dsv_driver.cpp",
@@ -90,23 +115,31 @@ MUST_KEEP_IN_PRODUCT_PROFILES = {
 }
 
 
-def parse_platformio() -> tuple[dict[str, set[str]], dict[str, str], str | None]:
+def parse_default_envs(raw: str | None) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    return tuple(part for part in re.split(r"[\s,]+", raw.strip()) if part)
+
+
+def parse_platformio() -> tuple[set[str], dict[str, set[str]], dict[str, str], tuple[str, ...]]:
     current_env = "<global>"
+    environments: set[str] = set()
     excludes: dict[str, set[str]] = {}
     profiles: dict[str, str] = {}
-    default_envs: str | None = None
+    default_envs_raw: str | None = None
 
     for line in PLATFORMIO_INI.read_text(encoding="utf-8").splitlines():
         env_match = ENV_RE.match(line)
         if env_match:
             current_env = env_match.group(1)
+            environments.add(current_env)
             excludes.setdefault(current_env, set())
             continue
 
         if current_env == "<global>":
             default_match = DEFAULT_ENVS_RE.match(line)
             if default_match:
-                default_envs = default_match.group(1).strip()
+                default_envs_raw = default_match.group(1).strip()
 
         exclude_match = EXCLUDE_RE.match(line)
         if exclude_match:
@@ -116,53 +149,73 @@ def parse_platformio() -> tuple[dict[str, set[str]], dict[str, str], str | None]
         if profile_match:
             profiles[current_env] = profile_match.group(1)
 
-
-    return excludes, profiles, default_envs
+    return environments, excludes, profiles, parse_default_envs(default_envs_raw)
 
 
 def check_required_subset(errors: list[str], env: str, actual: set[str], required: set[str]) -> None:
     missing = sorted(required - actual)
     if missing:
+        errors.append(f"{env}: missing required source-filter excludes:\n  " + "\n  ".join(missing))
+
+
+def check_forbidden_core(errors: list[str], env: str, actual: set[str]) -> None:
+    forbidden = sorted(actual & MUST_KEEP_IN_PRODUCT_PROFILES)
+    if forbidden:
         errors.append(
-            f"{env}: missing required source-filter excludes:\n  " + "\n  ".join(missing)
+            f"{env}: must not exclude tracking/network core files:\n  " + "\n  ".join(forbidden)
         )
 
 
 def main() -> int:
-    excludes, profiles, default_envs = parse_platformio()
+    environments, excludes, profiles, default_envs = parse_platformio()
     errors: list[str] = []
 
-    if default_envs != DEBUG_ENV:
-        errors.append(f"[platformio] default_envs should be {DEBUG_ENV}, got {default_envs!r}")
+    missing_envs = sorted(EXPECTED_ENVIRONMENTS - environments)
+    if missing_envs:
+        errors.append("[platformio] missing committed environments:\n  " + "\n  ".join(missing_envs))
+
+    if default_envs != EXPECTED_DEFAULT_ENVS:
+        errors.append(
+            "[platformio] default_envs should be "
+            f"{','.join(EXPECTED_DEFAULT_ENVS)}, got {default_envs!r}"
+        )
+    for env in default_envs:
+        if env not in environments:
+            errors.append(f"[platformio] default environment does not exist: {env}")
 
     for env, expected in EXPECTED_PROFILE_FLAGS.items():
         actual = profiles.get(env)
         if actual != expected:
             errors.append(f"{env}: expected -DTRACKER_BUILD_PROFILE={expected}, got {actual!r}")
 
-
-    production_excludes = excludes.get(PRODUCTION_ENV, set())
-    slim_excludes = excludes.get(SLIM_ENV, set())
-    check_required_subset(errors, PRODUCTION_ENV, production_excludes, PRODUCTION_REQUIRED_EXCLUDES)
-    check_required_subset(errors, SLIM_ENV, slim_excludes, SLIM_REQUIRED_EXCLUDES)
-
-    forbidden_production = sorted(production_excludes & MUST_KEEP_IN_PRODUCT_PROFILES)
-    if forbidden_production:
-        errors.append(
-            f"{PRODUCTION_ENV}: must not exclude tracking/network core files:\n  " + "\n  ".join(forbidden_production)
-        )
-
-    forbidden_slim = sorted(slim_excludes & MUST_KEEP_IN_PRODUCT_PROFILES)
-    if forbidden_slim:
-        errors.append(
-            f"{SLIM_ENV}: must not exclude tracking/network core files:\n  " + "\n  ".join(forbidden_slim)
-        )
-
-    # Debug should be the full diagnostic build.  It should not have a source
-    # filter that excludes project modules.
     debug_excludes = excludes.get(DEBUG_ENV, set())
+    production_excludes = excludes.get(PRODUCTION_ENV, set())
+    production_diag_excludes = excludes.get(PRODUCTION_DIAG_ENV, set())
+    slim_excludes = excludes.get(SLIM_ENV, set())
+
+    # Debug is the full diagnostic build and must not exclude project modules.
     if debug_excludes:
         errors.append(f"{DEBUG_ENV}: Debug profile should not exclude source files: {sorted(debug_excludes)}")
+
+    check_required_subset(errors, PRODUCTION_ENV, production_excludes, PRODUCTION_REQUIRED_EXCLUDES)
+    check_required_subset(
+        errors,
+        PRODUCTION_DIAG_ENV,
+        production_diag_excludes,
+        PRODUCTION_DIAG_REQUIRED_EXCLUDES,
+    )
+    check_required_subset(errors, SLIM_ENV, slim_excludes, SLIM_REQUIRED_EXCLUDES)
+
+    accidentally_removed_diag = sorted(production_diag_excludes & LIVE_DIAGNOSTIC_SOURCES)
+    if accidentally_removed_diag:
+        errors.append(
+            f"{PRODUCTION_DIAG_ENV}: live diagnostic sources must remain linked:\n  "
+            + "\n  ".join(accidentally_removed_diag)
+        )
+
+    check_forbidden_core(errors, PRODUCTION_ENV, production_excludes)
+    check_forbidden_core(errors, PRODUCTION_DIAG_ENV, production_diag_excludes)
+    check_forbidden_core(errors, SLIM_ENV, slim_excludes)
 
     if errors:
         for error in errors:
@@ -171,7 +224,9 @@ def main() -> int:
 
     print(
         "# validate_profile_matrix: OK "
-        f"(Production required={len(PRODUCTION_REQUIRED_EXCLUDES)}, Slim required={len(SLIM_REQUIRED_EXCLUDES)})"
+        f"(default={default_envs[0]}, Production required={len(PRODUCTION_REQUIRED_EXCLUDES)}, "
+        f"ProductionDiag required={len(PRODUCTION_DIAG_REQUIRED_EXCLUDES)}, "
+        f"Slim required={len(SLIM_REQUIRED_EXCLUDES)})"
     )
     return 0
 

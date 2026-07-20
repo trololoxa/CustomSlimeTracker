@@ -279,8 +279,18 @@ int main() {
     CHECK(ctx, rt.status().temperatureSent >= 1);
     CHECK(ctx, rt.status().batterySent >= 1);
     CHECK(ctx, rt.status().batterySendFailures == 0);
-    CHECK(ctx, rt.status().lastSignalStrength == 64);
+    CHECK(ctx, rt.status().lastSignalStrengthDbm == -68);
     CHECK(ctx, rt.status().lastRssiDbm == -68);
+    bool sawSignalStrength = false;
+    for (const auto& sent : udp.sent) {
+        if (sent.data.size() >= 14u &&
+            sent.data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SignalStrength)) {
+            sawSignalStrength = true;
+            CHECK(ctx, sent.data[12] == cfg.sensorId);
+            CHECK(ctx, sent.data[13] == static_cast<uint8_t>(static_cast<int8_t>(-68)));
+        }
+    }
+    CHECK(ctx, sawSignalStrength);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::BatteryLevel));
     CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 12), 3.80f, 1.0e-6f);
     CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 16), 0.55f, 1.0e-6f);

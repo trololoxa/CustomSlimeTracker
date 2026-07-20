@@ -243,11 +243,11 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writeMagnetometerAccuracy(uint8_t*
 
 SlimeVRPacketWriteResult SlimeVRPacketWriter::writeSignalStrength(uint8_t* out, size_t capacity,
                                                                   uint8_t sensorId,
-                                                                  uint8_t signalStrength) {
+                                                                  int8_t signalStrengthDbm) {
     BufferCursor cursor{out, out, capacity};
     if (writePacketHeader(cursor, SlimeVRSendPacketType::SignalStrength)) {
         cursor.writeU8(sensorId);
-        cursor.writeU8(signalStrength);
+        cursor.writeU8(static_cast<uint8_t>(signalStrengthDbm));
     }
     return finish(cursor);
 }

@@ -1,5 +1,7 @@
 # Build profiles
 
+The committed default environment is `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG`.
+
 The firmware has three committed compile-time profiles. Select a profile with
 `TRACKER_BUILD_PROFILE` in `platformio.ini`; this must stay a build-time choice
 because the goal is to remove unused code from the final binary.
@@ -17,8 +19,16 @@ The committed matrix also contains one service environment,
 `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG`. It is not a fourth product profile: it
 uses `TRACKER_PROFILE_PRODUCTION` plus `TRACKER_ENABLE_RUNTIME_PROFILER=1` so a
 wearable tracker can expose `perf`/`motion` over serial/telnet without linking
-the full Debug profile. For other local A/B experiments, pass `-D...` overrides
-from a private PlatformIO config or a one-off build command.
+the full Debug profile. It is also the committed default environment in
+`platformio.ini`, because it is the normal on-device diagnostic baseline for the
+`Upgrades` branch. For other local A/B experiments, pass `-D...` overrides from
+a private PlatformIO config or a one-off build command.
+
+The profile validator treats this as an explicit contract: all four build
+environments must exist, Production Diagnostic must map to
+`TRACKER_PROFILE_PRODUCTION`, and `default_envs` must remain the committed
+wearable diagnostic environment unless the policy and documentation are changed
+together.
 
 ## Debug
 
@@ -127,11 +137,12 @@ New app/runtime code should prefer `TRACKER_HAS_*` aliases. See
 `docs/profile_contract.md` and `docs/source_filter_matrix.md` before adding new
 profile-specific code.
 
-The profile infrastructure is healthy when both validators pass:
+The profile infrastructure is healthy when the project-contract validators pass:
 
 ```bash
 python tools/validate_source_filters.py
 python tools/validate_profile_matrix.py
+python tools/validate_documentation.py
 ```
 
 ## Size report
@@ -142,8 +153,8 @@ Use the helper below after profile changes:
 python tools/report_firmware_size.py
 ```
 
-It runs PlatformIO's `-t size` target for Debug, Production and Slim and stores
-raw reports under `build/firmware_size/`.
+It runs PlatformIO's `-t size` target for Debug, Production, Production
+Diagnostic and Slim and stores raw reports under `build/firmware_size/`.
 
 ## Why `build_src_filter` is still used
 
