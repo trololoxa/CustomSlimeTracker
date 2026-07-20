@@ -148,6 +148,12 @@ void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.println("-- frame/device --");
     out.print("sensorToDeviceValid="); out.println(cfg.data.frame.sensorToDeviceValid ? "yes" : "no");
     out.print("sensorToDeviceDet="); out.println(cfg.data.frame.sensorToDevice.determinant(), 6);
+    for (uint8_t row = 0; row < 3; ++row) {
+        out.print("sensorToDeviceRow"); out.print(row); out.print('=');
+        out.print(cfg.data.frame.sensorToDevice.m[row][0], 6); out.print(',');
+        out.print(cfg.data.frame.sensorToDevice.m[row][1], 6); out.print(',');
+        out.println(cfg.data.frame.sensorToDevice.m[row][2], 6);
+    }
     out.print("applyMountingOffsetInFirmware="); out.println(cfg.data.frame.applyMountingOffsetInFirmware ? "yes" : "no");
     out.print("outputConvention="); out.println(cfg.data.frame.outputConvention);
     out.print("deviceId="); out.println(cfg.data.device.deviceId);

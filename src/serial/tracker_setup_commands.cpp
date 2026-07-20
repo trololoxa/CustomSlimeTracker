@@ -21,6 +21,7 @@
 #include "sensor/fifo_calibrations.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/mag_runtime.hpp"
+#include "sensor/sensor_to_device_alignment.hpp"
 #include "serial/tracker_calibration_commands.hpp"
 #include "serial/tracker_config_commands.hpp"
 #include "serial/tracker_mag_commands.hpp"
@@ -101,6 +102,7 @@ struct SetupReadiness {
     bool configLoaded = false;
     bool gyroReady = false;
     bool accelReady = false;
+    bool frameReady = false;
     bool tempReady = false;
     bool tempEnabled = false;
     bool tempRangeValid = false;
@@ -125,7 +127,7 @@ struct SetupReadiness {
     bool localOutputReady = false;
     bool runtimeWired = false;
 
-    bool tracking6dof() const { return configValid && gyroReady && accelReady; }
+    bool tracking6dof() const { return configValid && gyroReady && accelReady && frameReady; }
     bool tempQuality() const { return gyroReady && tempReady && !tempHardExtrapolated; }
     bool runtimeBias() const { return runtimeBiasReady && runtimeBiasEnabled; }
     bool magYaw() const { return tracking6dof() && magDriver && magCal && magAxis; }
@@ -164,6 +166,10 @@ SetupReadiness readSetupReadiness(TrackerSerialCommandContext& ctx) {
     }
 
     if (ctx.config) {
+        r.frameReady = makeSensorToDeviceFrame(
+            ctx.config->data.frame.sensorToDeviceValid,
+            ctx.config->data.frame.sensorToDevice
+        ).enabled;
         r.magDriver = ctx.config->data.magCal.driverEnabled;
         r.magCal = ctx.config->data.magCal.calibrationValid;
         r.magAxis = ctx.config->data.magCal.axisAlignmentValid;
@@ -248,11 +254,17 @@ void printSetupGuide(Stream& s) {
     s.println("  full mode intentionally recalibrates every stage transactionally.");
     s.println("  Blocking guided production calibration. It services FIFO, magnetometer,");
     s.println("  Wi-Fi and SlimeVR while it performs rest gyro, gyro temperature model,");
-    s.println("  auto-detected accel 6-position, optional mag hard/soft collection, mag axis");
-    s.println("  alignment and production tracking enable/save. Use nomag/6dof for a dead or absent magnetometer.");
+    s.println("  auto-detected accel 6-position, a two-orientation sensor-to-device frame stage,");
+    s.println("  optional mag hard/soft collection, mag axis alignment and production tracking enable/save.");
+    s.println("  The frame stage reuses the first two accel captures in full calibration; resume mode");
+    s.println("  asks for only two short positions when accel calibration already exists.");
+    s.println("  Use nomag/6dof for a dead or absent magnetometer.");
     s.println();
     s.println("setup status");
-    s.println("  Readiness checklist for tracking, mag-yaw, temperature model and SlimeVR.");
+    s.println("  Readiness checklist for tracking, frame alignment, mag-yaw, temperature model and SlimeVR.");
+    s.println();
+    s.println("setup frame status|calibrate");
+    s.println("  Inspect or repeat only the two-position sensor-to-device frame stage.");
     s.println();
     s.println("# Low-level net/cal/mag commands remain available for service diagnostics,");
     s.println("# but normal first-run setup should use the two commands above.");
@@ -275,6 +287,7 @@ void printSetupStatus(TrackerSerialCommandContext& ctx) {
     s.print("wifi_connected="); s.println(yesNo(r.wifiConnected));
     printStep(s, "rest_gyro", r.gyroReady, "setup calibration");
     printStep(s, "accel_6pos", r.accelReady, "setup calibration");
+    printStep(s, "sensor_to_device", r.frameReady, "setup calibration");
     if (r.magDriver) {
         printStep(s, "mag_driver", r.magDriver, "setup calibration nomag");
         printStep(s, "mag_hard_soft", r.magCal, "setup calibration");
@@ -444,6 +457,23 @@ struct SetupCalibrationTransaction {
 // small on ESP32-C3.  Keep the heavy transaction snapshot and mag-axis sample
 // buffers in static storage instead of the command stack frame.
 static SetupCalibrationTransaction g_setupCalibrationTx;
+
+struct SetupFrameObservations {
+    bool topValid = false;
+    bool forwardValid = false;
+    Vec3 topScaledMeanG = Vec3::zero();
+    Vec3 forwardScaledMeanG = Vec3::zero();
+
+    void reset() {
+        *this = SetupFrameObservations{};
+    }
+
+    bool complete() const {
+        return topValid && forwardValid;
+    }
+};
+
+static SetupFrameObservations g_setupFrameObservations;
 
 struct SetupMagAxisFaceSample {
     bool valid = false;
@@ -1221,7 +1251,7 @@ bool setupMaybeStartWifiHeating(TrackerSerialCommandContext& ctx) {
 bool setupRunRestGyro(TrackerSerialCommandContext& ctx) {
     Stream& s = out(ctx);
     s.println();
-    s.println("# SETUP CALIBRATION STEP 1/6: REST/GYRO");
+    s.println("# SETUP CALIBRATION STEP 1/7: REST/GYRO");
     s.println("# Put the tracker on a stable surface and do not touch it.");
     if (!waitSetupEnter(ctx, "# Press Enter when the tracker is completely still.", 120000UL)) {
         tracker_serial_detail::printErr(s, "setup calibration aborted: rest confirmation timeout");
@@ -1241,7 +1271,7 @@ bool setupRunRestGyro(TrackerSerialCommandContext& ctx) {
 bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     Stream& s = out(ctx);
     s.println();
-    s.println("# SETUP CALIBRATION STEP 2/6: GYRO TEMPERATURE MODEL");
+    s.println("# SETUP CALIBRATION STEP 2/7: GYRO TEMPERATURE MODEL");
     s.println("# Keep the tracker on a normal stable surface. The firmware stops at a relative temperature plateau.");
     s.println("# Brief touches pause collection and discard only the current short stationary window; accepted progress is kept.");
     s.println("# This uses a dedicated setup temperature capture, not the developer test static runner.");
@@ -1326,14 +1356,18 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
 
 bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
                                          SetupMagAxisAutoCollector& axisAuto,
+                                         SetupFrameObservations& frameObservations,
                                          bool collectMagDuringAccel) {
     Stream& s = out(ctx);
     s.println();
     s.println(collectMagDuringAccel
-        ? "# SETUP CALIBRATION STEP 3/6: ACCEL 6-POS + MAG COLLECTION"
-        : "# SETUP CALIBRATION STEP 3/6: ACCEL 6-POS");
+        ? "# SETUP CALIBRATION STEP 3/7: ACCEL 6-POS + FRAME + MAG COLLECTION"
+        : "# SETUP CALIBRATION STEP 3/7: ACCEL 6-POS + FRAME");
+    s.println("# Device axes used by firmware: +X right, +Y forward, +Z top/outward.");
+    s.println("# Use the same physical +Y edge on every tracker; the USB-connector edge is the recommended default.");
+    s.println("# The first two captures identify the case frame and also count toward the normal six accel sides.");
     s.println("# You do NOT need to know the IMU axis labels.");
-    s.println("# For each capture, place the tracker on any uncaptured physical side, let it fully settle, then press Enter.");
+    s.println("# After the first two captures, place the tracker on any uncaptured physical side, let it fully settle, then press Enter.");
     s.println("# The firmware waits for a contiguous still window, detects which accel side is up, and rejects duplicates/diagonal positions.");
     s.println("# Slight IMU solder/board misalignment is handled later by the full 3x3 accel correction matrix.");
 
@@ -1356,6 +1390,7 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
 
     char* clearAccel[] = { const_cast<char*>("cal"), const_cast<char*>("accel"), const_cast<char*>("clear") };
     dispatchCal(ctx, 3, clearAccel);
+    frameObservations.reset();
 
     uint8_t captured = 0;
     uint8_t attempts = 0;
@@ -1380,7 +1415,15 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
         if (!any) s.print(" none");
         s.println();
 
-        if (!waitSetupEnter(ctx, "# Move to a NEW side, wait until it stops wobbling, then press Enter.", 300000UL)) {
+        const char* capturePrompt = "# Move to a NEW side, wait until it stops wobbling, then press Enter.";
+        if (captured == 0) {
+            s.println("# FRAME TOP: place the tracker flat with its top/outward face pointing upward (+Z up).");
+            capturePrompt = "# Wait until the tracker stops wobbling, then press Enter for frame top/+Z.";
+        } else if (captured == 1) {
+            s.println("# FRAME FORWARD: stand the tracker so its chosen +Y/forward edge points straight upward.");
+            capturePrompt = "# Wait until the tracker stops wobbling, then press Enter for frame forward/+Y.";
+        }
+        if (!waitSetupEnter(ctx, capturePrompt, 300000UL)) {
             if (magCollectionActive && ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
             tracker_serial_detail::printErr(s, "setup calibration aborted while waiting for accel face");
             return false;
@@ -1409,6 +1452,13 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
             return false;
         }
 
+        if (captured == 0) {
+            frameObservations.topScaledMeanG = faceResult.meanG;
+            frameObservations.topValid = true;
+        } else if (captured == 1) {
+            frameObservations.forwardScaledMeanG = faceResult.meanG;
+            frameObservations.forwardValid = true;
+        }
         captured++;
         s.print("# setup accel auto_face=");
         s.print(Accel6PosCalibration::faceName(faceResult.detectedFace));
@@ -1438,12 +1488,175 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
     return true;
 }
 
+bool setupApplySensorToDeviceAlignment(TrackerSerialCommandContext& ctx,
+                                       const Vec3& topScaledSensorG,
+                                       const Vec3& forwardScaledSensorG,
+                                       bool separateAccelRotation) {
+    Stream& s = out(ctx);
+    if (!ctx.config || !ctx.imuCal || !ctx.imuCal->accelCalValid) {
+        tracker_serial_detail::printErr(s, "setup frame failed: config or accel calibration is not available");
+        return false;
+    }
+
+    SensorToDeviceAlignmentResult alignment;
+    if (separateAccelRotation) {
+        const SensorToDeviceCalibrationSeparationResult separated =
+            separateSensorToDeviceFromAccelCalibration(
+                topScaledSensorG,
+                forwardScaledSensorG,
+                ctx.imuCal->accelBiasG,
+                ctx.imuCal->accelScale
+            );
+        s.print("# frame accel_rotation_det="); s.println(separated.extractedAccelRotation.determinant(), 6);
+        s.print("# frame accel_reconstruction_error="); s.println(separated.reconstructionError, 8);
+        if (!separated.valid) {
+            tracker_serial_detail::printErr(s, "setup frame failed: accel calibration could not be separated from board rotation");
+            return false;
+        }
+        ctx.imuCal->accelScale = separated.accelScaleSensorFrame;
+        alignment = separated.alignment;
+    } else {
+        alignment = solveSensorToDeviceAlignment(
+            ctx.imuCal->applyAccel(topScaledSensorG),
+            ctx.imuCal->applyAccel(forwardScaledSensorG)
+        );
+    }
+
+    s.print("# frame top_norm_g="); s.println(alignment.topNormG, 6);
+    s.print("# frame forward_norm_g="); s.println(alignment.forwardNormG, 6);
+    s.print("# frame observation_separation_deg="); s.println(alignment.observationSeparationDeg, 3);
+    s.print("# frame mapped_top_error_deg="); s.println(alignment.mappedTopErrorDeg, 3);
+    s.print("# frame mapped_forward_error_deg="); s.println(alignment.mappedForwardErrorDeg, 3);
+    s.print("# frame determinant="); s.println(alignment.determinant, 6);
+    if (!alignment.valid) {
+        tracker_serial_detail::printErr(s, "setup frame failed: top and forward observations were not stable and perpendicular enough");
+        s.println("# TIP: keep top/+Z and forward/+Y positions distinct; do not hold the tracker diagonally.");
+        return false;
+    }
+
+    ctx.config->data.frame.sensorToDevice = alignment.sensorToDevice;
+    ctx.config->data.frame.sensorToDeviceValid = true;
+    ctx.config->updateCrc();
+    if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+    tracker_serial_detail::printOk(s, "sensor-to-device frame aligned in RAM");
+    return true;
+}
+
+bool setupRunSensorToDeviceAlignmentFromAccel(TrackerSerialCommandContext& ctx,
+                                               const SetupFrameObservations& observations) {
+    Stream& s = out(ctx);
+    s.println();
+    s.println("# SETUP CALIBRATION STEP 4/7: SENSOR-TO-DEVICE FRAME");
+    s.println("# Reusing the top/+Z and forward/+Y observations already captured during accel 6-position calibration.");
+    if (!ctx.imuCal || !ctx.imuCal->accelCalValid || !observations.complete()) {
+        tracker_serial_detail::printErr(s, "setup frame failed: accel calibration or frame observations are missing");
+        return false;
+    }
+    return setupApplySensorToDeviceAlignment(
+        ctx,
+        observations.topScaledMeanG,
+        observations.forwardScaledMeanG,
+        true
+    );
+}
+
+bool setupCaptureSensorFrameObservation(TrackerSerialCommandContext& ctx,
+                                        const char* instruction,
+                                        const char* prompt,
+                                        Vec3& meanAccelG) {
+    Stream& s = out(ctx);
+    if (!ctx.lastScaledSample || !ctx.lastImuSampleSequence || !ctx.imuCal || !ctx.imuCal->accelCalValid) {
+        tracker_serial_detail::printErr(s, "setup frame failed: latest sensor sample or accel calibration is unavailable");
+        return false;
+    }
+
+    s.println(instruction);
+    if (!waitSetupEnter(ctx, prompt, 300000UL)) {
+        tracker_serial_detail::printErr(s, "setup frame aborted while waiting for position confirmation");
+        return false;
+    }
+
+    SensorToDeviceObservationCapture capture;
+    uint32_t lastSeq = *ctx.lastImuSampleSequence;
+    const uint32_t startMs = millis();
+    uint32_t lastPrintMs = 0;
+    while (!capture.complete() && millis() - startMs < 60000UL) {
+        serviceSetupRuntime(ctx);
+        const uint32_t seq = *ctx.lastImuSampleSequence;
+        if (seq != 0u && seq != lastSeq) {
+            lastSeq = seq;
+            Lsm6dsv::Sample sensorSample = *ctx.lastScaledSample;
+            if (ctx.imuCal->gyroBiasValid) sensorSample.gyro_rad_s = ctx.imuCal->applyGyro(sensorSample.gyro_rad_s);
+            const Vec3 sourceAccelG = sensorSample.accel_g;
+            sensorSample.accel_g = ctx.imuCal->applyAccel(sourceAccelG);
+            (void)capture.push(sensorSample, sourceAccelG);
+        }
+        const uint32_t nowMs = millis();
+        if (nowMs - lastPrintMs >= 2000UL) {
+            lastPrintMs = nowMs;
+            const SensorToDeviceObservationCaptureStatus st = capture.status();
+            s.print("# setup frame accepted="); s.print(st.acceptedSamples);
+            s.print('/'); s.print(capture.params().requiredSamples);
+            s.print(" rejected="); s.print(st.rejectedSamples);
+            s.print(" resets="); s.println(st.resetCount);
+        }
+        delay(5);
+    }
+
+    const SensorToDeviceObservationCaptureStatus st = capture.status();
+    if (!st.complete) {
+        tracker_serial_detail::printErr(s, "setup frame failed: no contiguous stable observation was captured");
+        return false;
+    }
+    meanAccelG = st.meanSourceAccelG;
+    s.print("# setup frame mean_g=");
+    s.print(meanAccelG.x, 6); s.print(',');
+    s.print(meanAccelG.y, 6); s.print(',');
+    s.println(meanAccelG.z, 6);
+    return true;
+}
+
+bool setupRunSensorToDeviceAlignmentStandalone(TrackerSerialCommandContext& ctx) {
+    Stream& s = out(ctx);
+    s.println();
+    s.println("# SETUP CALIBRATION STEP 4/7: SENSOR-TO-DEVICE FRAME");
+    s.println("# Device axes: +X right, +Y forward, +Z top/outward.");
+    s.println("# Use the same +Y physical edge on every tracker; USB-connector edge is the recommended default.");
+
+    Vec3 topSensorG = Vec3::zero();
+    Vec3 forwardSensorG = Vec3::zero();
+    if (!setupCaptureSensorFrameObservation(
+            ctx,
+            "# FRAME TOP: place the tracker flat with its top/outward face pointing upward (+Z up).",
+            "# Wait until it stops wobbling, then press Enter.",
+            topSensorG)) {
+        return false;
+    }
+    if (!setupCaptureSensorFrameObservation(
+            ctx,
+            "# FRAME FORWARD: stand the tracker so its chosen +Y/forward edge points straight upward.",
+            "# Wait until it stops wobbling, then press Enter.",
+            forwardSensorG)) {
+        return false;
+    }
+    const bool frameAlreadyValid = ctx.config && makeSensorToDeviceFrame(
+        ctx.config->data.frame.sensorToDeviceValid,
+        ctx.config->data.frame.sensorToDevice
+    ).enabled;
+    return setupApplySensorToDeviceAlignment(
+        ctx,
+        topSensorG,
+        forwardSensorG,
+        !frameAlreadyValid
+    );
+}
+
 bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
                                 SetupMagAxisDynamicCollector& axisDynamic,
                                 bool startFreshMagCalibration) {
     Stream& s = out(ctx);
     s.println();
-    s.println("# SETUP CALIBRATION STEP 4/6: MAG HARD/SOFT MOTION + GYRO AXIS DATA");
+    s.println("# SETUP CALIBRATION STEP 5/7: MAG HARD/SOFT MOTION + GYRO AXIS DATA");
     s.println("# Move slowly through as many orientations as possible. Avoid steel tables, speakers, chargers and magnets.");
     s.println("# Include several smooth rotations around different tracker axes; gyro+mag motion will be used to validate mag axis mapping.");
 
@@ -1570,7 +1783,7 @@ bool setupRunMagAxisMotionOnly(TrackerSerialCommandContext& ctx,
                                SetupMagAxisDynamicCollector& axisDynamic) {
     Stream& s = out(ctx);
     s.println();
-    s.println("# SETUP CALIBRATION STEP 4b/6: MAG AXIS MOTION ONLY");
+    s.println("# SETUP CALIBRATION STEP 5b/7: MAG AXIS MOTION ONLY");
     s.println("# Existing hard/soft mag calibration is valid; rotate in full 3D so gyro+mag can infer axis mapping.");
     s.println("# Press Enter after several smooth rotations around different tracker axes, or let this finish.");
 
@@ -1652,7 +1865,7 @@ bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
                            const char* axisZ) {
     Stream& s = out(ctx);
     s.println();
-    s.println("# SETUP CALIBRATION STEP 5/6: MAG AXIS ALIGNMENT");
+    s.println("# SETUP CALIBRATION STEP 6/7: MAG AXIS ALIGNMENT");
 
     if (axisX && axisY && axisZ) {
         s.println("# Manual axis mapping was provided; applying it instead of auto-detection.");
@@ -1772,8 +1985,8 @@ bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx, bool noMag)
     Stream& s = out(ctx);
     s.println();
     s.println(noMag
-        ? "# SETUP CALIBRATION STEP 6/6: ENABLE 6DOF TRACKING FEATURES"
-        : "# SETUP CALIBRATION STEP 6/6: ENABLE PRODUCTION TRACKING FEATURES");
+        ? "# SETUP CALIBRATION STEP 7/7: ENABLE 6DOF TRACKING FEATURES"
+        : "# SETUP CALIBRATION STEP 7/7: ENABLE PRODUCTION TRACKING FEATURES");
 
     if (!ctx.config) {
         tracker_serial_detail::printErr(s, "setup calibration failed: config is not available");
@@ -1903,7 +2116,10 @@ void cmdSetupCalibrationFull(TrackerSerialCommandContext& ctx,
     axisAuto.reset();
     SetupMagAxisDynamicCollector& axisDynamic = g_setupMagAxisDynamicCollector;
     axisDynamic.reset();
-    if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto, !noMag)) { fail(noMag ? "accel_6pos" : "accel_mag_faces"); return; }
+    SetupFrameObservations& frameObservations = g_setupFrameObservations;
+    frameObservations.reset();
+    if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto, frameObservations, !noMag)) { fail(noMag ? "accel_6pos" : "accel_mag_faces"); return; }
+    if (!setupRunSensorToDeviceAlignmentFromAccel(ctx, frameObservations)) { fail("sensor_to_device"); return; }
     if (!noMag) {
         if (!setupRunMagMotionAndApply(ctx, axisDynamic, false)) { fail("mag_hard_soft"); return; }
         if (!setupRunAxisAlignment(ctx, axisAuto, axisDynamic, axisX, axisY, axisZ)) { fail("mag_axis"); return; }
@@ -1937,8 +2153,10 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
 
     SetupMagAxisAutoCollector& axisAuto = g_setupMagAxisAutoCollector;
     SetupMagAxisDynamicCollector& axisDynamic = g_setupMagAxisDynamicCollector;
+    SetupFrameObservations& frameObservations = g_setupFrameObservations;
     axisAuto.reset();
     axisDynamic.reset();
+    frameObservations.reset();
 
     SetupReadiness r = readSetupReadiness(ctx);
     const bool restReadyAtStart = r.gyroReady;
@@ -1971,16 +2189,28 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
 
     if (r.accelReady) {
         s.println("# skip accel_6pos: already valid in RAM/NVS");
+        if (r.frameReady) {
+            s.println("# skip sensor_to_device: already valid in RAM/NVS");
+        } else {
+            SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+            tx.begin(ctx);
+            if (!setupRunSensorToDeviceAlignmentStandalone(ctx)) { tx.rollback(ctx, "sensor_to_device"); return; }
+            if (!setupCheckpointCommit(ctx, "sensor_to_device")) { tx.rollback(ctx, "sensor_to_device_commit"); return; }
+        }
     } else {
         SetupCalibrationTransaction& tx = g_setupCalibrationTx;
         tx.begin(ctx);
         const bool collectMagDuringAccel = needMagCollection || needAxisAssist;
         magCollectionStartedDuringAccel = collectMagDuringAccel;
-        if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto, collectMagDuringAccel)) {
+        if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto, frameObservations, collectMagDuringAccel)) {
             tx.rollback(ctx, "accel_6pos");
             return;
         }
-        if (!setupCheckpointCommit(ctx, "accel_6pos")) { tx.rollback(ctx, "accel_6pos_commit"); return; }
+        if (!setupRunSensorToDeviceAlignmentFromAccel(ctx, frameObservations)) {
+            tx.rollback(ctx, "sensor_to_device");
+            return;
+        }
+        if (!setupCheckpointCommit(ctx, "accel_6pos_and_frame")) { tx.rollback(ctx, "accel_frame_commit"); return; }
     }
 
     if (noMag) {
@@ -2026,6 +2256,57 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
     printSetupStatus(ctx);
 }
 
+void printSetupFrameStatus(TrackerSerialCommandContext& ctx) {
+    Stream& s = out(ctx);
+    s.println("# SENSOR-TO-DEVICE FRAME STATUS");
+    s.println("# convention: +X right, +Y forward, +Z top/outward");
+    if (!ctx.config) {
+        s.println("valid=no");
+        return;
+    }
+    const SensorToDeviceFrame frame = makeSensorToDeviceFrame(
+        ctx.config->data.frame.sensorToDeviceValid,
+        ctx.config->data.frame.sensorToDevice
+    );
+    s.print("valid="); s.println(yesNo(frame.enabled));
+    s.print("determinant="); s.println(ctx.config->data.frame.sensorToDevice.determinant(), 6);
+    for (uint8_t row = 0; row < 3; ++row) {
+        s.print("row"); s.print(row); s.print('=');
+        s.print(ctx.config->data.frame.sensorToDevice.m[row][0], 6); s.print(',');
+        s.print(ctx.config->data.frame.sensorToDevice.m[row][1], 6); s.print(',');
+        s.println(ctx.config->data.frame.sensorToDevice.m[row][2], 6);
+    }
+}
+
+void cmdSetupFrame(TrackerSerialCommandContext& ctx, int argc, char** argv) {
+    Stream& s = out(ctx);
+    if (argc < 3 || is(argv[2], "status")) {
+        printSetupFrameStatus(ctx);
+        return;
+    }
+    if (!is(argv[2], "calibrate") && !is(argv[2], "align")) {
+        tracker_serial_detail::printErr(s, "usage: setup frame status|calibrate");
+        return;
+    }
+    if (!ctx.config || !ctx.configStore || !ctx.imuCal || !ctx.imuCal->accelCalValid) {
+        tracker_serial_detail::printErr(s, "setup frame calibrate requires saved accel calibration and config store");
+        return;
+    }
+
+    SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+    tx.begin(ctx);
+    if (!setupRunSensorToDeviceAlignmentStandalone(ctx)) {
+        tx.rollback(ctx, "sensor_to_device");
+        return;
+    }
+    if (!tx.commit(ctx)) {
+        tx.rollback(ctx, "sensor_to_device_commit");
+        return;
+    }
+    tracker_serial_detail::printOk(s, "sensor-to-device frame calibration saved to NVS");
+    printSetupFrameStatus(ctx);
+}
+
 void cmdSetupCalibration(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     SetupCalibrationOptions opt;
     if (!parseSetupCalibrationOptions(ctx, argc, argv, opt)) return;
@@ -2057,12 +2338,17 @@ void trackerSerialDispatchSetupCommand(TrackerSerialCommandContext& ctx, int arg
         return;
     }
 
+    if (is(argv[1], "frame")) {
+        cmdSetupFrame(ctx, argc, argv);
+        return;
+    }
+
     if (is(argv[1], "wifi")) {
         cmdSetupWifi(ctx, argc, argv);
         return;
     }
 
-    tracker_serial_detail::printErr(s, "usage: setup guide|status|wifi|calibration [resume|full] [axis <bodyX> <bodyY> <bodyZ>]");
+    tracker_serial_detail::printErr(s, "usage: setup guide|status|wifi|frame status|frame calibrate|calibration [resume|full] [axis <bodyX> <bodyY> <bodyZ>]");
 }
 
 } // namespace tracker

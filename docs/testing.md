@@ -557,3 +557,7 @@ tap status
 Tap the enclosure several times, then run `tap status` and `slime status`. `tap log` emits only nonzero `TAP_SRC`, decoded single/double/axis bits, accumulator queue or suppression decisions, and the final SlimeVR send result; it deliberately does not print the idle 5 ms polls. The same `# TAP_LOG ...` lines are mirrored to Serial and the active remote-console/telnet client. Use `tap log off` after the capture.
 
 Interpretation: no `event=tap_src` means the LSM6DSV hardware engine did not report an event; `tap_src` without `physical_tap` indicates an unexpected source-bit pattern; `suppressed_below_min`, `suppressed_duplicate`, or `suppressed_lockout` identifies firmware gesture filtering; `slimevr_no_server` / `slimevr_send_failed` identifies the output path.
+
+## Sensor-to-device alignment validation
+
+`test_sensor_to_device_alignment` is the host system test for the physical case-frame stage. It covers all 24 right-handed signed axis mappings, a non-discrete proper rotation, separation of rotation from a combined full 3x3 accel fit, contiguous stationary capture with an interrupted window, rejection of duplicate/parallel positions, runtime forward/inverse application and config validation. The normal hardware acceptance for this patch is only successful compilation; the next real `setup calibration` run will perform the two short physical observations through the same guided flow.

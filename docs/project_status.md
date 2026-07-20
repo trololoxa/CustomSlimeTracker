@@ -84,7 +84,7 @@ Optimization work should keep using a `test runtime 600` baseline rather than `t
 The following limitations are confirmed in the current code and are deliberately
 recorded before behavior-changing patches begin:
 
-- persisted `sensorToDevice` is validated as a proper rotation and applied to
+- persisted `sensorToDevice` is validated as a proper rotation, applied to
   calibrated gyro, accel and IMU-aligned magnetometer data; mounting/body offsets
   remain server-side;
 - gyro/temperature clear and replacement have explicit model invalidation
@@ -113,7 +113,7 @@ Current setup coverage:
 - `setup guide` prints the recommended first-run sequence.
 - `setup status` reports production, 6DoF, mag-yaw, temperature-model, Wi-Fi, and SlimeVR readiness plus next commands.
 - `setup wifi` is an interactive serial Wi-Fi provisioner: scan visible networks, choose one by number, enter password, connect, save successful credentials to NVS, start SlimeVR discovery, and leave Wi-Fi/SlimeVR autostart enabled. If Wi-Fi succeeds but the server is not found in the setup timeout, Wi-Fi remains saved and discovery continues in normal runtime.
-- `setup calibration [axis <bodyX> <bodyY> <bodyZ>]` runs a blocking guided production calibration flow: rest/gyro, Wi-Fi heat warm-up, dedicated gyro temperature capture until relative plateau using validated sub-second stationary windows, auto-detected accel 6-position full 3x3 affine calibration, magnetometer hard/soft collection, gyro-assisted automatic mag axis inference with static accel-face cross-check, production tracking feature enable and one final transactional save. Brief touches during the temperature stage pause only the current window and do not restart the full warm-up. Failed/aborted setup calibration restores the previous RAM calibration/config and leaves the previous NVS calibration untouched.
+- `setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]` runs the guided production flow: rest/gyro, Wi-Fi heat warm-up, validated stationary-window temperature capture, accel 6-position calibration, sensor-to-device case-frame alignment, optional magnetometer hard/soft and mag-axis stages, and production feature enable/save. Full mode reuses the first two accel captures as top/+Z and forward/+Y frame observations, so it still requires only six accel positions. Resume mode captures only those two positions when frame data alone is missing. Failed/aborted stages restore the previous RAM calibration/config and do not overwrite the last saved NVS state.
 - SlimeVR `SensorInfo.hasCompletedRestCalibration` follows local gyro/rest validity instead of being hardcoded true.
 
 The guided calibration command services FIFO, magnetometer runtime, Wi-Fi and SlimeVR internally while blocking the CLI. Temperature fitting now uses a dedicated setup temperature capture instead of the developer `test static` runner, while reusing the same fit quality gates. Mag hard/soft apply now uses robust full-ellipsoid quality gates: bounded sample reservoir, raw-norm prefilter, geometric outlier rejection, inlier ratio, box coverage, directional coverage, algebraic residual and corrected-norm residual checks. The final setup save captures runtime calibration/config to NVS after production features are enabled. Magnetic axis inference now prefers gyro-assisted motion scoring from the mag motion stage, cross-checks against static accel-face/mag inclination samples when available, and keeps explicit `axis ...` tokens as an override/fallback.

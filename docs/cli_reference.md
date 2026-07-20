@@ -256,7 +256,9 @@ slime debug
 | `setup guide` | Print the first-run sequence | Does not modify state. |
 | `setup status` | Print readiness checklist and next step | Includes 6DoF, mag-yaw, temp model, Wi-Fi and SlimeVR readiness. |
 | `setup wifi` | Interactive Wi-Fi provisioning | Scans visible networks, asks for a network number and password, tries to connect, saves successful credentials to NVS, starts SlimeVR discovery and enables Wi-Fi/SlimeVR autostart. If Wi-Fi connects but the server is not found within the setup timeout, Wi-Fi remains saved and discovery continues in normal runtime. |
-| `setup calibration [axis <bodyX> <bodyY> <bodyZ>]` | Run the full guided production calibration | Performs rest/gyro, Wi-Fi heat warm-up, dedicated gyro temperature capture/fit, auto-detected accel 6-position full 3x3 affine calibration, mag hard/soft collection, automatic mag axis inference using gyro-assisted mag motion plus static accel-face/mag inclination checks, enables accel/adaptive accel, runtime gyro bias and mag-yaw apply, then saves. Axis tokens are now an override/fallback path. |
+| `setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]` | Run the guided production calibration | Performs rest/gyro, Wi-Fi heat warm-up, dedicated gyro temperature capture/fit, auto-detected accel 6-position calibration, sensor-to-device frame alignment, optional mag hard/soft collection and automatic mag axis inference, then enables production tracking and saves. In full mode the top/+Z and forward/+Y frame observations are the first two of the same six accel captures, so no extra face positions are added. Resume mode skips valid stages. Mag axis tokens remain an override/fallback path. |
+| `setup frame status` | Print the physical sensor-to-device frame | Shows validity, determinant and all three rotation rows. |
+| `setup frame calibrate` | Repeat only physical case-frame alignment | Requires an existing accel calibration, asks for top/+Z and forward/+Y up, validates the proper rotation and saves transactionally. |
 
 `setup calibration` is transactional. It snapshots the current RAM calibration/config at start, performs every stage in RAM, and writes to NVS only once after all quality gates pass. If any stage fails or is aborted, the command stops mag/temp captures, restores the previous RAM calibration/config, resets AHRS/mag/runtime-bias transient state, and leaves the previous NVS calibration untouched. The temperature stage no longer depends on `test static`; it uses a dedicated setup capture that commits only short contiguous stationary windows from the normal FIFO pipeline. Brief touches, slow rotation, vibration, timestamp/FIFO faults or accel instability reject only the current candidate window; accepted temperature-bin progress is retained and capture resumes automatically. During the magnetometer motion stage, setup also records gyro/mag motion intervals and uses them to validate the signed axis permutation before enabling mag yaw.
 
@@ -272,7 +274,7 @@ slime debug
 - `slimevr_server_found`
 - `mag_yaw_apply_enabled`
 
-When a block is missing, `setup status` points back to the simple production path (`setup wifi` or `setup calibration`). The readiness report does not modify config, NVS, AHRS, FIFO, or calibration state.
+When a block is missing, `setup status` points back to the simple production path (`setup wifi` or `setup calibration`). `tracking_6dof_ready` now requires a valid sensor-to-device frame in addition to gyro and accel calibration. The readiness report does not modify config, NVS, AHRS, FIFO, or calibration state.
 
 SlimeVR `SensorInfo.hasCompletedRestCalibration` is driven by the local rest/gyro calibration state. Before a valid gyro bias exists, the firmware reports `false`; after `setup calibration` or another valid gyro calibration save, it reports `true` and requests a SensorInfo refresh.
 

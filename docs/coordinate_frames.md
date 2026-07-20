@@ -84,10 +84,30 @@ validated rotation is applied afterwards. QMC6309 data receives the same
 rotation after `magToImu`, so gyro, accel and magnetometer agree in device frame
 before AHRS/heading processing.
 
+The firmware device convention is:
+
+```text
++X = right
++Y = forward
++Z = top/outward
+```
+
+`setup calibration` determines this physical case frame from two stationary
+gravity observations. During a full accel six-position calibration, the first
+capture is top/+Z up and the second is the chosen forward/+Y edge up; both still
+count toward the same six accel faces, so no extra positions are added. Use the
+same physical +Y edge on every tracker; the USB-connector edge is the recommended
+default when the case has no printed arrow. The full 3x3 accel fit can absorb a
+small board rotation, so setup performs a polar separation: the proper rotation
+is moved into `sensorToDevice`, while scale/non-orthogonality stays in the native
+sensor-frame accel matrix. This keeps gyro, accel and mag in one device frame.
+If accel calibration already exists, resume mode captures only those two short
+observations. `setup frame calibrate` repeats just this stage.
+
 When `sensorToDeviceValid=false`, the transform is identity and behavior remains
-compatible with the previous baseline. Future linear acceleration must be
-created after this same boundary. SlimeVR body-part mounting, recenter and
-skeleton offsets remain server-owned.
+compatible with the previous baseline, but setup readiness reports the frame as
+missing. Future linear acceleration must be created after this same boundary.
+SlimeVR body-part mounting, recenter and skeleton offsets remain server-owned.
 
 ## Magnetometer frame
 

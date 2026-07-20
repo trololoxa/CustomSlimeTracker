@@ -65,3 +65,5 @@ temperature slope and quality/range metadata. Static-bias replacement explicitly
 invalidates the old temperature model. Temperature clear preserves the static
 bias while clearing slope/range metadata. Runtime capture persists
 `tempCompValid` only when the in-memory model is explicitly valid.
+
+The guided setup defines device axes as `+X` right, `+Y` forward and `+Z` top/outward. `sensorToDeviceValid` becomes true only after the two-position frame solver produces a finite right-handed proper rotation. No schema bump is required because the frame fields already existed; older configs remain loadable and simply report the frame stage as missing until setup is resumed.

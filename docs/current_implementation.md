@@ -127,7 +127,15 @@ feature is already implemented.
 ### Frame pipeline
 
 Persistent config contains `sensorToDevice`, `mountingOffset` and output-frame
-fields. `sensorToDevice` is now runtime-gated as a proper right-handed rotation
+fields. `sensorToDevice` is runtime-gated as a proper right-handed rotation and
+is now configured by the guided setup. Device axes are defined as `+X` right,
+`+Y` forward and `+Z` top/outward. In a full calibration, the first two normal
+accel six-position captures are reserved for top/+Z and forward/+Y, so frame
+alignment adds no extra face captures. The solver separates any proper rotation
+absorbed by the full accel matrix from sensor scale/non-orthogonality before
+saving the frame, so gyro and accel do not end up in different axes. Resume mode
+asks for only those two short positions when accel calibration already exists but
+the frame is missing.
 and applied after gyro/accel calibration and after magnetic `magToImu` alignment.
 Finite legacy non-rotations remain loadable but are ignored and sanitized on save.
 The default remains disabled/identity, so existing trackers retain their previous
