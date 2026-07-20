@@ -123,9 +123,13 @@ static void pipelineEnterTrackingRecoveryCallback(uint32_t reasonFlags,
     enterTrackingRecovery(reasonFlags, reason, timestampUs);
 }
 
-static void pipelineUpdateTrackingRecoveryCallback(const ImuQualityResult& quality, void* user) {
+static void pipelineUpdateTrackingRecoveryCallback(const ImuQualityResult& quality,
+                                                   const Vec3& gyroRadS,
+                                                   const Vec3& accelG,
+                                                   uint64_t timestampUs,
+                                                   void* user) {
     (void)user;
-    updateTrackingRecoveryState(quality);
+    updateTrackingRecoveryState(quality, gyroRadS, accelG, timestampUs);
 }
 
 #if TRACKER_HAS_MACHINE_LOG

@@ -156,9 +156,13 @@ reset the volatile runtime trim.
 
 ### Recovery
 
-FIFO/timestamp recovery restores normal sample processing and rebases AHRS
-timestamps. It does not yet provide a dedicated large-error roll/pitch
-reacquisition mode after motion was missed during an unreconstructable gap.
+An unreconstructable FIFO/timestamp gap enters a closed recovery state. Network
+orientation output remains invalid while post-gap gyro prediction continues with
+accel correction disabled. After 256 contiguous samples with usable timestamps,
+near-1 g accel and gyro below 3 dps, the mean gravity vector rebuilds roll/pitch
+while preserving the current horizontal heading. Any motion or quality fault
+restarts only this sub-second stationary window; no calibration is required.
+Magnetic heading/reference state is reacquired after the tilt reset.
 
 ### Motion output and new server features
 

@@ -1,5 +1,7 @@
 #include "runtime/tracking_state_controller.hpp"
 
+#include <cmath>
+
 #include "sensor/mag_runtime.hpp"
 #include "sensor/mag_yaw_correction.hpp"
 #include "runtime/tracker_console_suppress.hpp"
@@ -30,6 +32,7 @@ uint32_t TrackingStateController::stableSamplesRequired() const { return stableS
 bool TrackingStateController::recoveryActive() const { return recoveryActive_; }
 uint32_t TrackingStateController::recoveryStableSamples() const { return recoveryStableSamples_; }
 uint32_t TrackingStateController::recoveryEnterCount() const { return recoveryEnterCount_; }
+uint32_t TrackingStateController::recoveryTiltReacquireCount() const { return recoveryTiltReacquireCount_; }
 uint32_t TrackingStateController::recoveryLastFlags() const { return recoveryLastFlags_; }
 uint64_t TrackingStateController::recoveryLastTimestampUs() const { return recoveryLastTimestampUs_; }
 
@@ -38,6 +41,7 @@ TrackingStateController::Snapshot TrackingStateController::snapshot() const {
     s.recoveryActive = recoveryActive_;
     s.recoveryStableSamples = recoveryStableSamples_;
     s.recoveryEnterCount = recoveryEnterCount_;
+    s.recoveryTiltReacquireCount = recoveryTiltReacquireCount_;
     s.recoveryLastFlags = recoveryLastFlags_;
     s.recoveryLastTimestampUs = recoveryLastTimestampUs_;
     return s;
@@ -46,7 +50,9 @@ TrackingStateController::Snapshot TrackingStateController::snapshot() const {
 void TrackingStateController::reset() {
     recoveryActive_ = false;
     recoveryStableSamples_ = 0;
+    recoveryAccelSum_ = Vec3::zero();
     recoveryEnterCount_ = 0;
+    recoveryTiltReacquireCount_ = 0;
     recoveryLastFlags_ = 0;
     recoveryLastTimestampUs_ = 0;
 }
@@ -59,6 +65,7 @@ void TrackingStateController::enterRecovery(uint32_t reasonFlags,
 
     recoveryActive_ = true;
     recoveryStableSamples_ = 0;
+    recoveryAccelSum_ = Vec3::zero();
     recoveryLastFlags_ = reasonFlags;
     recoveryLastTimestampUs_ = timestampUs;
 
@@ -68,8 +75,8 @@ void TrackingStateController::enterRecovery(uint32_t reasonFlags,
     if (!wasRecovering) {
         recoveryEnterCount_++;
 
-        if (sink.resetOrientation) {
-            sink.resetOrientation(reason, timestampUs, true, sink.resetOrientationUser);
+        if (sink.prepareRecovery) {
+            sink.prepareRecovery(reason, timestampUs, true, sink.prepareRecoveryUser);
         }
 
         if (sink.out && !trackerConsoleTrackingMessagesSuppressed(millis())) {
@@ -89,11 +96,26 @@ void TrackingStateController::enterRecovery(uint32_t reasonFlags,
 }
 
 void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
+                                             const Vec3& gyroRadS,
+                                             const Vec3& accelG,
                                              uint64_t lastSampleTimestampUs,
                                              const TrackingStateEventSink& sink) {
     if (!recoveryActive_) return;
 
-    const bool stable = quality.shouldUpdateAhrs &&
+    constexpr float kMaxRecoveryGyroRadS = 3.0f * MATH_DEG_TO_RAD;
+    constexpr float kMaxRecoveryAccelErrorG = 0.08f;
+
+    const bool vectorsValid = gyroRadS.isFinite() && accelG.isFinite();
+    const float gyroNorm = vectorsValid ? gyroRadS.norm() : 0.0f;
+    const float accelNorm = quality.accelNormValid ? quality.accelNormG : accelG.norm();
+    const bool stable = vectorsValid &&
+                        quality.shouldUpdateAhrs &&
+                        quality.shouldUseAccelCorrection &&
+                        quality.accelConfidence >= 0.75f &&
+                        std::isfinite(gyroNorm) &&
+                        gyroNorm <= kMaxRecoveryGyroRadS &&
+                        std::isfinite(accelNorm) &&
+                        std::fabs(accelNorm - 1.0f) <= kMaxRecoveryAccelErrorG &&
                         !quality.shouldRequestFifoRecovery &&
                         !quality.has(imu_quality_flags::TIMESTAMP_ZERO) &&
                         !quality.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC) &&
@@ -106,22 +128,37 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
 
     if (!stable) {
         recoveryStableSamples_ = 0;
+        recoveryAccelSum_ = Vec3::zero();
         return;
     }
 
+    recoveryAccelSum_ += accelG;
     recoveryStableSamples_++;
-    if (recoveryStableSamples_ >= stableSamplesRequired_) {
-        recoveryActive_ = false;
+    if (recoveryStableSamples_ < stableSamplesRequired_) return;
+
+    const Vec3 meanAccel = recoveryAccelSum_ / static_cast<float>(recoveryStableSamples_);
+    const float meanAccelNorm = meanAccel.norm();
+    if (!std::isfinite(meanAccelNorm) ||
+        std::fabs(meanAccelNorm - 1.0f) > kMaxRecoveryAccelErrorG ||
+        !sink.reacquireTilt ||
+        !sink.reacquireTilt(meanAccel, lastSampleTimestampUs, sink.reacquireTiltUser)) {
         recoveryStableSamples_ = 0;
-        const uint64_t eventTs = quality.dtUs != 0 ? lastSampleTimestampUs : recoveryLastTimestampUs_;
+        recoveryAccelSum_ = Vec3::zero();
+        return;
+    }
 
-        if (sink.out && !trackerConsoleTrackingMessagesSuppressed(millis())) {
-            sink.out->println("# TRACKING state=TRACKING_6DOF reason=recovery_stable");
-        }
+    recoveryActive_ = false;
+    recoveryStableSamples_ = 0;
+    recoveryAccelSum_ = Vec3::zero();
+    recoveryTiltReacquireCount_++;
+    const uint64_t eventTs = quality.dtUs != 0 ? lastSampleTimestampUs : recoveryLastTimestampUs_;
 
-        if (sink.emitStateEvent) {
-            sink.emitStateEvent("TRACKING_6DOF", "recovery_stable", eventTs, quality.flags, quality.overallConfidence, sink.emitStateEventUser);
-        }
+    if (sink.out && !trackerConsoleTrackingMessagesSuppressed(millis())) {
+        sink.out->println("# TRACKING state=TRACKING_6DOF reason=recovery_stable");
+    }
+
+    if (sink.emitStateEvent) {
+        sink.emitStateEvent("TRACKING_6DOF", "recovery_stable", eventTs, quality.flags, quality.overallConfidence, sink.emitStateEventUser);
     }
 }
 
@@ -219,6 +256,7 @@ const char* TrackingStateController::stateName(bool accelCalValid,
 void TrackingStateController::printRecoveryStatus(Stream& out) const {
     out.print("tracking_recovery_active="); out.println(recoveryActive_ ? "yes" : "no");
     out.print("tracking_recovery_enter_count="); out.println(recoveryEnterCount_);
+    out.print("tracking_recovery_tilt_reacquire_count="); out.println(recoveryTiltReacquireCount_);
     out.print("tracking_recovery_last_flags=0x"); out.println(recoveryLastFlags_, HEX);
 }
 

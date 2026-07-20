@@ -369,7 +369,8 @@ mag yaw gate/reject/cooldown behavior
 config detail CRC/schema defaults
 config hardening/sanitize behavior
 serial parse helper behavior
-tracking-state controller transitions
+tracking-state controller transitions and stationary recovery completion
+AHRS heading-preserving tilt reacquisition after unreconstructable gaps
 Wi-Fi manager state-machine behavior through fake adapters
 UDP endpoint helpers
 SlimeVR packet writer and output-runtime behavior

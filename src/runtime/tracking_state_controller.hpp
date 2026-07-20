@@ -46,11 +46,16 @@ struct TrackingStateEventSink {
     Stream* out = nullptr;
     float confidence = 0.0f;
 
-    void (*resetOrientation)(const char* reason,
+    void (*prepareRecovery)(const char* reason,
                              uint64_t timestampUs,
                              bool rebaseAhrsTimebase,
                              void* user) = nullptr;
-    void* resetOrientationUser = nullptr;
+    void* prepareRecoveryUser = nullptr;
+
+    bool (*reacquireTilt)(const Vec3& accelG,
+                          uint64_t timestampUs,
+                          void* user) = nullptr;
+    void* reacquireTiltUser = nullptr;
 
     void (*emitStateEvent)(const char* state,
                            const char* reason,
@@ -67,6 +72,7 @@ public:
         bool recoveryActive = false;
         uint32_t recoveryStableSamples = 0;
         uint32_t recoveryEnterCount = 0;
+        uint32_t recoveryTiltReacquireCount = 0;
         uint32_t recoveryLastFlags = 0;
         uint64_t recoveryLastTimestampUs = 0;
     };
@@ -77,6 +83,7 @@ public:
     bool recoveryActive() const;
     uint32_t recoveryStableSamples() const;
     uint32_t recoveryEnterCount() const;
+    uint32_t recoveryTiltReacquireCount() const;
     uint32_t recoveryLastFlags() const;
     uint64_t recoveryLastTimestampUs() const;
 
@@ -89,6 +96,8 @@ public:
                        const TrackingStateEventSink& sink);
 
     void updateRecovery(const ImuQualityResult& quality,
+                        const Vec3& gyroRadS,
+                        const Vec3& accelG,
                         uint64_t lastSampleTimestampUs,
                         const TrackingStateEventSink& sink);
 
@@ -112,10 +121,12 @@ private:
     static bool hasSensorFault(uint32_t flags);
     static bool hasMagDegradation(const TrackingStateInputs& in);
 
-    uint32_t stableSamplesRequired_ = 128;
+    uint32_t stableSamplesRequired_ = 256;
     bool recoveryActive_ = false;
     uint32_t recoveryStableSamples_ = 0;
+    Vec3 recoveryAccelSum_ = Vec3::zero();
     uint32_t recoveryEnterCount_ = 0;
+    uint32_t recoveryTiltReacquireCount_ = 0;
     uint32_t recoveryLastFlags_ = 0;
     uint64_t recoveryLastTimestampUs_ = 0;
 };

@@ -116,12 +116,19 @@ static void resetOrientationDependentState(const char* reason, uint64_t timestam
     g_magRuntime.resetOrientationState(reason, timestampUs, rebaseAhrsTimebase);
 }
 
-static void trackingResetOrientationCallback(const char* reason,
+static void trackingPrepareRecoveryCallback(const char* reason,
                                              uint64_t timestampUs,
                                              bool rebaseAhrsTimebase,
                                              void* user) {
     (void)user;
     resetOrientationDependentState(reason, timestampUs, rebaseAhrsTimebase);
+}
+
+static bool trackingReacquireTiltCallback(const Vec3& accelG,
+                                          uint64_t timestampUs,
+                                          void* user) {
+    (void)user;
+    return g_ahrs6dof.reacquireTiltFromAccelPreserveHeading(accelG, timestampUs);
 }
 
 static void trackingEmitStateEventCallback(const char* state,
@@ -138,8 +145,10 @@ static TrackingStateEventSink makeTrackingEventSink() {
     TrackingStateEventSink sink;
     sink.out = trackerConsoleTrackingMessagesSuppressed(millis()) ? nullptr : &Serial;
     sink.confidence = g_lastOutputConfidence;
-    sink.resetOrientation = trackingResetOrientationCallback;
-    sink.resetOrientationUser = nullptr;
+    sink.prepareRecovery = trackingPrepareRecoveryCallback;
+    sink.prepareRecoveryUser = nullptr;
+    sink.reacquireTilt = trackingReacquireTiltCallback;
+    sink.reacquireTiltUser = nullptr;
     sink.emitStateEvent = trackingEmitStateEventCallback;
     sink.emitStateEventUser = nullptr;
     return sink;
@@ -149,8 +158,11 @@ static void enterTrackingRecovery(uint32_t reasonFlags, const char* reason, uint
     g_trackingState.enterRecovery(reasonFlags, reason, timestampUs, makeTrackingEventSink());
 }
 
-static void updateTrackingRecoveryState(const ImuQualityResult& quality) {
-    g_trackingState.updateRecovery(quality, g_lastSampleTimestampUs, makeTrackingEventSink());
+static void updateTrackingRecoveryState(const ImuQualityResult& quality,
+                                        const Vec3& gyroRadS,
+                                        const Vec3& accelG,
+                                        uint64_t timestampUs) {
+    g_trackingState.updateRecovery(quality, gyroRadS, accelG, timestampUs, makeTrackingEventSink());
 }
 
 static TrackingStateInputs makeTrackingStateInputs() {

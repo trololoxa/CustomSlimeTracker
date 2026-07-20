@@ -67,17 +67,20 @@ Blocking diagnostics such as Wi-Fi scans can pause sensor processing long enough
 for FIFO timestamps to jump by multiple seconds. With the production runtime
 configuration, AHRS rejects that gap instead of integrating it as real rotation.
 After the rejection it rebases `lastIntegratedTimestampUs` to the current sample
-so the next normal FIFO sample resumes gyro prediction. This prevents a stale
-pre-recovery timestamp baseline from freezing quaternion updates while FIFO and
-SlimeVR packet counters continue to advance. `ahrs status` exposes this through
-`large_dt_rebase_count`, `last_rebase_t_us`, and `post_fifo_recovery_samples` so
-post-scan recovery can be verified without enabling high-rate logs.
+so the next normal FIFO sample resumes gyro prediction. While recovery is active,
+prepared network orientation is invalidated and accel correction is disabled.
+Post-gap gyro is still integrated, so heading changes made after the stream
+returns are retained. Recovery exits only after 256 contiguous samples pass
+timestamp/FIFO checks, gyro remains below 3 dps and accel remains near 1 g. The
+mean accel vector then rebuilds roll/pitch while preserving horizontal heading.
+Movement restarts only this short window. `runtime status` exposes recovery entry
+and successful tilt-reacquisition counters.
 
 `net scan`, `GET WIFISCAN`, and other blocking diagnostics are tracking
 interruptions: motion made while the CPU is inside the blocking operation is not
-recoverable because the gyro history was not processed in real time. Recovery is
-expected to restore clean FIFO/AHRS operation for motion that happens after the
-command returns; it is not expected to reconstruct motion that happened during
-the scan. FIFO timestamp reconstruction also resets the sensor-hub/magnetometer
+reconstructable because the missing gyro history does not exist. The recovery
+step does not invent that motion; it restores gravity-consistent tilt after the
+tracker is briefly still and preserves the heading available before and after
+the gap. FIFO timestamp reconstruction also resets the sensor-hub/magnetometer
 timestamp baseline so the first post-recovery mag sample is anchored to the new
 IMU stream instead of inheriting a stale pre-recovery 60 Hz mag cadence.

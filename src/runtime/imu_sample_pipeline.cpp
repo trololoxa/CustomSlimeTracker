@@ -167,7 +167,7 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
         if (deps.lastQualityFlags != nullptr) {
             *deps.lastQualityFlags = quality.flags;
         }
-        deps.preparedOutput.update(deps.config, deps.runtimeSamples, raw.t_us, deps.ahrs, quality);
+        deps.preparedOutput.reset();
 
         imuPipelineEmitPerSampleOutputs(deps, raw, scaled, calibrated, quality);
 
@@ -187,9 +187,16 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
             deps.callbacks.enterTrackingRecovery(quality.flags, "large_dt_gap", raw.t_us, deps.callbacks.user);
         }
     } else if (quality.shouldUpdateAhrs) {
-        const Vec3 accelForAhrs = quality.accelForAhrs(calibrated.accel_g);
-        const float accelNormForAhrs = quality.shouldUseAccelCorrection ? quality.accelNormG : 0.0f;
-        deps.ahrs.update(calibrated.gyro_rad_s, accelForAhrs, accelNormForAhrs, raw.t_us);
+        if (deps.trackingState.recoveryActive()) {
+            // Keep integrating post-gap gyro so heading changes made while
+            // waiting for a short rest are retained. Accel correction remains
+            // disabled until tilt is reacquired from a stable mean vector.
+            deps.ahrs.update(calibrated.gyro_rad_s, Vec3::zero(), 0.0f, raw.t_us);
+        } else {
+            const Vec3 accelForAhrs = quality.accelForAhrs(calibrated.accel_g);
+            const float accelNormForAhrs = quality.shouldUseAccelCorrection ? quality.accelNormG : 0.0f;
+            deps.ahrs.update(calibrated.gyro_rad_s, accelForAhrs, accelNormForAhrs, raw.t_us);
+        }
     }
 
     deps.runtimeSamples++;
@@ -198,13 +205,22 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
     if (deps.lastQualityFlags != nullptr) {
         *deps.lastQualityFlags = quality.flags;
     }
-    deps.preparedOutput.update(deps.config, deps.runtimeSamples, raw.t_us, deps.ahrs, quality);
-
-    imuPipelineEmitPerSampleOutputs(deps, raw, scaled, calibrated, quality);
 
     if (deps.callbacks.updateTrackingRecoveryState != nullptr) {
-        deps.callbacks.updateTrackingRecoveryState(quality, deps.callbacks.user);
+        deps.callbacks.updateTrackingRecoveryState(quality,
+                                                   calibrated.gyro_rad_s,
+                                                   calibrated.accel_g,
+                                                   raw.t_us,
+                                                   deps.callbacks.user);
     }
+
+    if (deps.trackingState.recoveryActive()) {
+        deps.preparedOutput.reset();
+    } else {
+        deps.preparedOutput.update(deps.config, deps.runtimeSamples, raw.t_us, deps.ahrs, quality);
+    }
+
+    imuPipelineEmitPerSampleOutputs(deps, raw, scaled, calibrated, quality);
 
 #if TRACKER_HAS_HOTPATH_PERF
     const uint32_t processUs = micros() - sampleProcessStartUs;

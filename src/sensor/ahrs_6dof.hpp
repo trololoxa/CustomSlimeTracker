@@ -155,6 +155,12 @@ public:
     void reset(const Quat& initialQ = Quat::identity(), uint64_t timestampUs = 0);
     bool resetFromAccel(const Vec3& accelG, uint64_t timestampUs = 0);
 
+    // Rebuild roll/pitch from gravity after an unreconstructable sample gap
+    // while preserving the pre-gap horizontal heading. This is intentionally
+    // separate from resetFromAccel(), whose startup solution has no yaw
+    // reference. Returns false until accel is a plausible gravity vector.
+    bool reacquireTiltFromAccelPreserveHeading(const Vec3& accelG, uint64_t timestampUs);
+
     bool initialized() const;
     const Quat& quaternion() const;
     Quat quaternionPositiveW() const;

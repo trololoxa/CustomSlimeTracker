@@ -30,7 +30,11 @@ using ImuPipelineRecoveryCallback = void (*)(uint32_t reasonFlags,
                                              const char* reason,
                                              uint64_t timestampUs,
                                              void* user);
-using ImuPipelineQualityCallback = void (*)(const ImuQualityResult& quality, void* user);
+using ImuPipelineQualityCallback = void (*)(const ImuQualityResult& quality,
+                                               const Vec3& gyroRadS,
+                                               const Vec3& accelG,
+                                               uint64_t timestampUs,
+                                               void* user);
 using ImuPipelineMachineLogCallback = void (*)(const Lsm6dsv::RawSample& raw,
                                                const Lsm6dsv::Sample& calibrated,
                                                const ImuQualityResult& quality,

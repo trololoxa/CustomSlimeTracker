@@ -91,8 +91,9 @@ recorded before behavior-changing patches begin:
   semantics, and the guided temperature capture now accepts only validated
   contiguous stationary windows while preserving earlier progress across brief
   touches or quality faults;
-- FIFO recovery rebases timestamps but has no dedicated large-error tilt
-  reacquisition mode after missed motion;
+- FIFO/timestamp recovery blocks stale orientation output, keeps post-gap gyro
+  prediction active and performs heading-preserving tilt reacquisition after a
+  short ordinary stationary window;
 - prepared output contains quaternion only: no timestamp-coherent linear
   acceleration is sent, so SlimeVR acceleration packet 4 and step mounting are
   not available;

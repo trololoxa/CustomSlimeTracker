@@ -50,6 +50,71 @@ bool Ahrs6Dof::resetFromAccel(const Vec3& accelG, uint64_t timestampUs) {
     return true;
 }
 
+bool Ahrs6Dof::reacquireTiltFromAccelPreserveHeading(const Vec3& accelG, uint64_t timestampUs) {
+    if (timestampUs == 0) return false;
+
+    const float n = accelG.norm();
+    if (!accelG.isFinite() || !std::isfinite(n) || n < MATH_EPSILON ||
+        std::fabs(n - 1.0f) > cfg_.accelNormGoodErrorG) {
+        return false;
+    }
+    if (!initialized_) return resetFromAccel(accelG, timestampUs);
+
+    const Vec3 measuredUp = accelG / n;
+    const Vec3 predictedUp = q_.rotate(measuredUp).normalized();
+    if (!predictedUp.isFinite()) return false;
+
+    // Left-multiply the smallest world-frame rotation that restores gravity.
+    // Its axis is horizontal, so the correction contains no rotation around
+    // world-up and therefore does not invent a yaw observation. The antipodal
+    // case is ambiguous; rotate around the best observable device horizontal
+    // axis to keep that axis' heading continuous.
+    Quat correction;
+    if (dot(predictedUp, cfg_.worldUp) < -0.9999f) {
+        Vec3 axis = q_.rotate(Vec3::unitY());
+        axis -= cfg_.worldUp * dot(axis, cfg_.worldUp);
+        if (!axis.normalizeInPlace()) {
+            axis = q_.rotate(Vec3::unitX());
+            axis -= cfg_.worldUp * dot(axis, cfg_.worldUp);
+            if (!axis.normalizeInPlace()) return false;
+        }
+        correction = Quat::fromAxisAngle(axis, MATH_PI);
+    } else {
+        correction = Quat::fromTwoUnitVectors(predictedUp, cfg_.worldUp);
+    }
+
+    const Quat candidate = (correction * q_).normalized().withPositiveW();
+    const Vec3 mappedUp = candidate.rotate(measuredUp).normalized();
+    if (!candidate.isFinite() || !mappedUp.isFinite() ||
+        dot(mappedUp, cfg_.worldUp) < 0.999f) {
+        return false;
+    }
+
+    q_ = candidate;
+    initialized_ = true;
+    stats_.lastSeenTimestampUs = timestampUs;
+    stats_.lastIntegratedTimestampUs = timestampUs;
+    stats_.lastTimestampUs = timestampUs;
+    stats_.lastDtS = 0.0f;
+    stats_.lastUsedDtS = 0.0f;
+    stats_.lastGyroRadS = Vec3::zero();
+    stats_.lastGyroAngleRad = 0.0f;
+    stats_.lastAccelG = accelG;
+    stats_.lastAccelUnitSensor = measuredUp;
+    stats_.lastAccelUnitWorld = cfg_.worldUp;
+    stats_.lastAccelErrorWorld = Vec3::zero();
+    stats_.accelNormStatsInitialized = false;
+    stats_.accelNormMeanG = 0.0f;
+    stats_.accelNormVarianceG2 = 0.0f;
+    stats_.lastAccelNormVarianceTrust = 1.0f;
+    stats_.lastGyroMotionTrust = 1.0f;
+    stats_.lastAdaptiveAccelTrust = 1.0f;
+    stats_.lastAccelGate = Ahrs6DofAccelGate{};
+    stats_.lastAccelCorrectionWorldRad = Vec3::zero();
+    stats_.lastAccelCorrectionAngleRad = 0.0f;
+    return true;
+}
+
 bool Ahrs6Dof::initialized() const {
     return initialized_;
 }

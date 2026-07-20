@@ -12,6 +12,10 @@ inline uint32_t millis() {
     return 0u;
 }
 
+inline uint32_t micros() {
+    return 0u;
+}
+
 class Stream {
 public:
     virtual ~Stream() = default;

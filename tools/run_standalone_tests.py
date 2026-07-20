@@ -58,6 +58,7 @@ PROJECT_SOURCES = [
 # production-only paths before PlatformIO.
 COMPILE_ONLY_SOURCES = [
     pathlib.Path("src/runtime/gyro_temp_static_fit.cpp"),
+    pathlib.Path("src/runtime/imu_sample_pipeline.cpp"),
 ]
 
 WARNING_FLAGS = [

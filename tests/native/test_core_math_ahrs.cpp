@@ -120,6 +120,50 @@ static void testAhrsStartupAndDtPolicy(TestContext& ctx) {
     CHECK(ctx, rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 102000));
 }
 
+
+static float horizontalHeading(const Vec3& v) {
+    return std::atan2(v.y, v.x);
+}
+
+static void testAhrsTiltReacquisitionPreservesHeading(TestContext& ctx) {
+    Ahrs6Dof ahrs;
+    const Quat yaw = Quat::fromAxisAngle(Vec3::unitZ(), 60.0f * MATH_DEG_TO_RAD);
+    ahrs.reset(yaw, 1000);
+
+    const Quat trueQ = (yaw * Quat::fromAxisAngle(Vec3::unitX(), 28.0f * MATH_DEG_TO_RAD)).normalized();
+    const Vec3 measuredAccel = trueQ.conjugated().rotate(Vec3::unitZ());
+    const float headingBefore = horizontalHeading(ahrs.quaternion().rotate(Vec3::unitY()));
+
+    CHECK(ctx, ahrs.reacquireTiltFromAccelPreserveHeading(measuredAccel, 5000));
+    const Quat recovered = ahrs.quaternion();
+    const Vec3 mappedUp = recovered.rotate(measuredAccel).normalized();
+    CHECK_NEAR(ctx, mappedUp.x, 0.0f, 2.0e-4f);
+    CHECK_NEAR(ctx, mappedUp.y, 0.0f, 2.0e-4f);
+    CHECK_NEAR(ctx, mappedUp.z, 1.0f, 2.0e-4f);
+
+    const float headingAfter = horizontalHeading(recovered.rotate(Vec3::unitY()));
+    CHECK_NEAR(ctx, wrapPi(headingAfter - headingBefore), 0.0f, 2.0e-4f);
+    CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 5000);
+    CHECK(ctx, !ahrs.reacquireTiltFromAccelPreserveHeading(Vec3(0.0f, 0.0f, 1.2f), 6000));
+
+    // A 180-degree missed flip is gravity-observable but its horizontal axis
+    // is ambiguous. The fallback keeps the current forward heading instead
+    // of accepting the arbitrary axis chosen by a generic vector-to-vector
+    // quaternion.
+    Ahrs6Dof upsideDown;
+    const Quat yaw35 = Quat::fromAxisAngle(Vec3::unitZ(), 35.0f * MATH_DEG_TO_RAD);
+    upsideDown.reset(yaw35, 1000);
+    const Vec3 flippedAccel = yaw35.conjugated().rotate(-Vec3::unitZ());
+    const float flippedHeadingBefore = horizontalHeading(yaw35.rotate(Vec3::unitY()));
+    CHECK(ctx, upsideDown.reacquireTiltFromAccelPreserveHeading(flippedAccel, 2000));
+    const Quat flippedRecovered = upsideDown.quaternion();
+    CHECK_NEAR(ctx, dot(flippedRecovered.rotate(flippedAccel), Vec3::unitZ()), 1.0f, 2.0e-4f);
+    CHECK_NEAR(ctx,
+               wrapPi(horizontalHeading(flippedRecovered.rotate(Vec3::unitY())) - flippedHeadingBefore),
+               0.0f,
+               2.0e-4f);
+}
+
 static void testAhrsRecoveryRebaseDiagnostics(TestContext& ctx) {
     Ahrs6DofConfig cfg;
     cfg.clampLargeDt = false;
@@ -149,5 +193,6 @@ int main() {
     testAhrsStaticInvariants(ctx);
     testAhrsStartupAndDtPolicy(ctx);
     testAhrsRecoveryRebaseDiagnostics(ctx);
+    testAhrsTiltReacquisitionPreservesHeading(ctx);
     return ctx.finish("test_core_math_ahrs");
 }
