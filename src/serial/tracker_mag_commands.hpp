@@ -4,7 +4,7 @@
 
 namespace tracker {
 
-void rearmMagIfNeeded(TrackerSerialCommandContext& ctx);
+bool rearmMagIfNeeded(TrackerSerialCommandContext& ctx);
 void trackerSerialDispatchMagCommand(TrackerSerialCommandContext& ctx, int argc, char** argv);
 
 } // namespace tracker

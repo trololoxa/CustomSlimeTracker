@@ -190,6 +190,11 @@ static void testFifoStatsDeltaRequestsRecovery(TestContext& ctx) {
     CHECK(ctx, c.fifoUnknownTagEvents == 2);
     CHECK(ctx, c.timestampBackwards == 1);
     CHECK(ctx, c.fifoRecoveryRequests == 1);
+    CHECK(ctx, c.fifoRecoveryOverrunRequests == 1);
+    CHECK(ctx, c.fifoRecoveryFullRequests == 1);
+    CHECK(ctx, c.fifoRecoveryUnknownTagRequests == 0);
+    CHECK(ctx, c.fifoRecoveryTimestampBackwardsRequests == 1);
+    CHECK(ctx, c.fifoRecoveryTimestampQueueOverflowRequests == 0);
 }
 
 int main() {

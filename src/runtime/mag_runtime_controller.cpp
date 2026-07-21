@@ -1,5 +1,7 @@
 #include "runtime/mag_runtime_controller.hpp"
 
+#include "sensor/imu_quality.hpp"
+
 #include <cmath>
 
 #include "config/tracker_config_runtime.hpp"
@@ -576,6 +578,14 @@ bool MagRuntimeController::reconfigureFifoForCurrentMagConfig(uint64_t keepTimes
     }
     if (deps_.callbacks.resetFifoRuntime) {
         deps_.callbacks.resetFifoRuntime(deps_.callbacks.resetFifoRuntimeUser);
+    }
+    if (deps_.callbacks.requestTrackingRecovery) {
+        deps_.callbacks.requestTrackingRecovery(
+            imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+            "mag_fifo_reconfigure",
+            keepTimestampUs,
+            deps_.callbacks.requestTrackingRecoveryUser
+        );
     }
     return true;
 }

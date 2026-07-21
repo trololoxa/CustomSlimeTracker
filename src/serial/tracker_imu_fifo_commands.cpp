@@ -7,9 +7,8 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/imu_quality.hpp"
 #include "config/tracker_config_runtime.hpp"
-#include "config/tracker_config_store.hpp"
+#include "serial/tracker_fifo_config_control.hpp"
 #include "serial/tracker_serial_context.hpp"
-#include "serial/tracker_mag_commands.hpp"
 
 namespace tracker {
 
@@ -110,6 +109,11 @@ void trackerSerialPrintQualityStats(Stream& out, const ImuQualityCounters& qc) {
     out.print("ahrs_skipped_samples="); out.println(qc.ahrsSkippedSamples);
     out.print("accel_correction_disabled_samples="); out.println(qc.accelCorrectionDisabledSamples);
     out.print("fifo_recovery_requests="); out.println(qc.fifoRecoveryRequests);
+    out.print("fifo_recovery_overrun_requests="); out.println(qc.fifoRecoveryOverrunRequests);
+    out.print("fifo_recovery_full_requests="); out.println(qc.fifoRecoveryFullRequests);
+    out.print("fifo_recovery_unknown_tag_requests="); out.println(qc.fifoRecoveryUnknownTagRequests);
+    out.print("fifo_recovery_timestamp_backwards_requests="); out.println(qc.fifoRecoveryTimestampBackwardsRequests);
+    out.print("fifo_recovery_timestamp_queue_overflow_requests="); out.println(qc.fifoRecoveryTimestampQueueOverflowRequests);
     out.print("mean_dt_us="); out.println(qc.meanDtUs(), 6);
     out.print("min_dt_us="); out.println(qc.minDtUs, 6);
     out.print("max_dt_us="); out.println(qc.maxDtUs, 6);
@@ -141,52 +145,6 @@ void trackerSerialPrintImuRuntimeStatus(TrackerSerialCommandContext& ctx, Stream
     }
 }
 
-bool trackerSerialLiveReconfigureImuFifo(TrackerSerialCommandContext& ctx, Stream& out) {
-    if (!ctx.config || !ctx.lsm || !ctx.fifo) {
-        tracker_serial_detail::printErr(out, "imu/fifo/config not available");
-        return false;
-    }
-
-    if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
-    if (ctx.logState) ctx.logState->mode = TrackerLogMode::Off;
-
-    if (!ctx.lsm->begin(ctx.config->makeLsmConfig())) {
-        out.print("# ERR imu reconfigure failed last_error=");
-        out.println(static_cast<int>(ctx.lsm->lastError()));
-        return false;
-    }
-
-    if (!ctx.fifo->configure(ctx.config->makeFifoConfig())) {
-        tracker_serial_detail::printErr(out, "fifo reconfigure failed");
-        return false;
-    }
-
-    ctx.fifo->resetTimestampReconstruction(0);
-    if (ctx.quality) {
-        ctx.quality->reset();
-        ctx.quality->syncFifoStats(ctx.fifo->stats());
-    }
-    if (ctx.resetFifoRuntime) ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
-    if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
-    rearmMagIfNeeded(ctx);
-    return true;
-}
-
-bool trackerSerialSaveConfigIfRequested(TrackerSerialCommandContext& ctx, Stream& out, bool save) {
-    if (!save) return true;
-    if (!ctx.config || !ctx.configStore) {
-        tracker_serial_detail::printErr(out, "config store not available; changed in RAM only");
-        return false;
-    }
-    ctx.config->updateCrc();
-    if (!ctx.configStore->save(*ctx.config)) {
-        out.print("# ERR save failed: ");
-        out.println(ctx.configStore->lastErrorName());
-        return false;
-    }
-    return true;
-}
-
 void trackerSerialDispatchImuCommand(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     Stream& out = ctx.io ? *ctx.io : Serial;
     if (!ctx.lsm) {
@@ -214,15 +172,7 @@ void trackerSerialDispatchImuCommand(TrackerSerialCommandContext& ctx, int argc,
             return;
         }
         const bool save = (argc >= 4 && tracker_serial_detail::eqIgnoreCase(argv[3], "save"));
-        ctx.config->data.imu.imuOdr = odr;
-        ctx.config->data.fifo.accelBdr = odr;
-        ctx.config->data.fifo.gyroBdr = odr;
-        ctx.config->data.fifo.samplePeriodUsOverride = 0.0f;
-        ctx.config->sanitize();
-        ctx.config->updateCrc();
-
-        if (!trackerSerialLiveReconfigureImuFifo(ctx, out)) return;
-        if (!trackerSerialSaveConfigIfRequested(ctx, out, save)) return;
+        if (!trackerSerialCommitImuRate(ctx, out, odr, save)) return;
 
         out.print("# OK imu/fifo rate set hz="); out.print(trackerSerialOdrName(odr));
         out.println(save ? " saved=yes" : " saved=no");
@@ -302,11 +252,7 @@ void trackerSerialDispatchFifoCommand(TrackerSerialCommandContext& ctx, int argc
             return;
         }
         const bool save = (argc >= 4 && tracker_serial_detail::eqIgnoreCase(argv[3], "save"));
-        ctx.config->data.fifo.watermarkWords = static_cast<uint8_t>(words);
-        ctx.config->sanitize();
-        ctx.config->updateCrc();
-        if (!trackerSerialLiveReconfigureImuFifo(ctx, out)) return;
-        if (!trackerSerialSaveConfigIfRequested(ctx, out, save)) return;
+        if (!trackerSerialCommitFifoWatermark(ctx, out, static_cast<uint8_t>(words), save)) return;
         out.print("# OK fifo watermark set words="); out.print(words);
         out.println(save ? " saved=yes" : " saved=no");
         return;
@@ -332,12 +278,8 @@ void trackerSerialDispatchFifoCommand(TrackerSerialCommandContext& ctx, int argc
             return;
         }
         const bool save = (argc >= 5 && tracker_serial_detail::eqIgnoreCase(argv[4], "save"));
-        ctx.config->data.fifo.maxWordsPerDrain = static_cast<uint16_t>(maxWords);
-        ctx.config->data.fifo.maxDrainRoundsPerEvent = static_cast<uint8_t>(rounds);
-        ctx.config->sanitize();
-        ctx.config->updateCrc();
-        if (!trackerSerialLiveReconfigureImuFifo(ctx, out)) return;
-        if (!trackerSerialSaveConfigIfRequested(ctx, out, save)) return;
+        if (!trackerSerialCommitFifoDrain(
+                ctx, out, static_cast<uint16_t>(maxWords), static_cast<uint8_t>(rounds), save)) return;
         out.print("# OK fifo drain set max_words="); out.print(maxWords);
         out.print(" rounds="); out.print(rounds);
         out.println(save ? " saved=yes" : " saved=no");
@@ -353,6 +295,14 @@ void trackerSerialDispatchFifoCommand(TrackerSerialCommandContext& ctx, int argc
             ctx.quality->syncFifoStats(ctx.fifo->stats());
         }
         if (ctx.resetFifoRuntime) ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
+        if (ctx.requestTrackingRecovery) {
+            ctx.requestTrackingRecovery(
+                imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+                "manual_fifo_reset",
+                lastTs,
+                ctx.requestTrackingRecoveryUser
+            );
+        }
         if (ok) tracker_serial_detail::printOk(out, "fifo reset");
         else tracker_serial_detail::printErr(out, "fifo reset failed");
         return;

@@ -63,7 +63,18 @@ COMPILE_ONLY_SOURCES = [
     pathlib.Path("src/runtime/gyro_temp_static_fit.cpp"),
     pathlib.Path("src/runtime/imu_sample_pipeline.cpp"),
     pathlib.Path("src/runtime/runtime_status_reporter.cpp"),
+    pathlib.Path("src/runtime/mag_runtime_controller.cpp"),
     pathlib.Path("src/serial/tracker_slimevr_commands.cpp"),
+    pathlib.Path("src/serial/tracker_fifo_config_control.cpp"),
+    pathlib.Path("src/serial/tracker_config_commands.cpp"),
+    pathlib.Path("src/serial/tracker_perf_commands.cpp"),
+    pathlib.Path("src/serial/tracker_imu_fifo_commands.cpp"),
+    pathlib.Path("src/serial/tracker_network_commands.cpp"),
+    pathlib.Path("src/serial/tracker_mag_commands.cpp"),
+    pathlib.Path("src/serial/tracker_slimevr_serial_compat_commands.cpp"),
+    pathlib.Path("src/serial/tracker_serial_commands.cpp"),
+    pathlib.Path("src/serial/tracker_system_commands.cpp"),
+    pathlib.Path("src/app/tracker_command_wiring.cpp"),
 ]
 
 ARDUINO_COMPILE_ONLY_SOURCES = [

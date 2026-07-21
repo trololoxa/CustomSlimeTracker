@@ -150,6 +150,11 @@ struct ImuQualityCounters {
     uint32_t ahrsSkippedSamples = 0;
     uint32_t accelCorrectionDisabledSamples = 0;
     uint32_t fifoRecoveryRequests = 0;
+    uint32_t fifoRecoveryOverrunRequests = 0;
+    uint32_t fifoRecoveryFullRequests = 0;
+    uint32_t fifoRecoveryUnknownTagRequests = 0;
+    uint32_t fifoRecoveryTimestampBackwardsRequests = 0;
+    uint32_t fifoRecoveryTimestampQueueOverflowRequests = 0;
 
     float minDtUs = 0.0f;
     float maxDtUs = 0.0f;

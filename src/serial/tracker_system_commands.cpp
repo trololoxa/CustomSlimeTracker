@@ -52,7 +52,7 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  sleep                              (enter motion light sleep; move tracker to wake)");
 #endif
 #if TRACKER_ENABLE_RUNTIME_PROFILER
-    out.println("  perf status | top | on | off | reset");
+    out.println("  perf status | top | tracking [reset] | on | off | reset");
     out.println("  motion status | on | off | reset");
 #endif
 #if TRACKER_ENABLE_SETUP_COMMANDS
@@ -63,7 +63,11 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println();
     out.println("[config]");
     out.println("  config print | load | save | defaults | erase | crc | nvs");
-    out.println("  config spi <hz> [save]          (live SPI clock, e.g. 1000000/4000000/8000000)");
+    out.println("  config spi <hz> [save]          (transactional live SPI clock)");
+    out.println("  config fifo [status] | watermark <words> [save] | drain <words> <rounds> [save]");
+#if !TRACKER_ENABLE_FULL_CLI
+    out.println("  fifo status | watermark <words> [save] | drain <words> <rounds> [save]");
+#endif
 #endif
 
 #if TRACKER_ENABLE_FULL_CLI
@@ -222,6 +226,11 @@ static void trackerSerialPrintCompactQualityHealth(Stream& out, const ImuQuality
     out.print("ahrs_skipped_samples="); out.println(qc.ahrsSkippedSamples);
     out.print("accel_correction_disabled_samples="); out.println(qc.accelCorrectionDisabledSamples);
     out.print("fifo_recovery_requests="); out.println(qc.fifoRecoveryRequests);
+    out.print("fifo_recovery_overrun_requests="); out.println(qc.fifoRecoveryOverrunRequests);
+    out.print("fifo_recovery_full_requests="); out.println(qc.fifoRecoveryFullRequests);
+    out.print("fifo_recovery_unknown_tag_requests="); out.println(qc.fifoRecoveryUnknownTagRequests);
+    out.print("fifo_recovery_timestamp_backwards_requests="); out.println(qc.fifoRecoveryTimestampBackwardsRequests);
+    out.print("fifo_recovery_timestamp_queue_overflow_requests="); out.println(qc.fifoRecoveryTimestampQueueOverflowRequests);
     out.print("mean_dt_us="); out.println(qc.meanDtUs(), 6);
     out.print("min_dt_us="); out.println(qc.minDtUs, 6);
     out.print("max_dt_us="); out.println(qc.maxDtUs, 6);

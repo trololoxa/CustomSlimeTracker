@@ -25,14 +25,25 @@ static constexpr uint8_t FIFO_MAX_DRAIN_ROUNDS_PER_EVENT = 6;
 // of this budget: once a batch has been copied out of the sensor, processing
 // must make guaranteed forward progress or the hardware FIFO can overflow.
 static constexpr uint8_t FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE = 12;
-static constexpr uint8_t FIFO_RUNTIME_MAX_RAW_CALLBACKS_PER_SLICE = 48;
+static constexpr uint8_t FIFO_RUNTIME_MAX_RAW_CALLBACKS_PER_SLICE = 64;
 static constexpr uint8_t FIFO_RUNTIME_MAX_MAG_CALLBACKS_PER_SLICE = 2;
 static constexpr uint32_t FIFO_RUNTIME_SLICE_BUDGET_US = 3500;
 static constexpr uint32_t FIFO_RUNTIME_APP_BUDGET_US = 9000;
+#if TRACKER_BUILD_IS_SLIM
 static constexpr uint32_t FIFO_RUNTIME_URGENT_BUDGET_US = 18000;
 static constexpr size_t FIFO_RUNTIME_RAW_QUEUE_CAPACITY = 256;
+#else
+// Production keeps extra RAM headroom for rare Wi-Fi/console stalls. A full
+// 512-sample queue is roughly half a second at the configured IMU ODR and is
+// preferable to losing orientation continuity after a single scheduling spike.
+static constexpr uint32_t FIFO_RUNTIME_URGENT_BUDGET_US = 24000;
+static constexpr size_t FIFO_RUNTIME_RAW_QUEUE_CAPACITY = 512;
+#endif
 static constexpr size_t FIFO_RUNTIME_MAG_QUEUE_CAPACITY = 64;
-static constexpr size_t FIFO_RUNTIME_RAW_QUEUE_HIGH_WATER = 96;
+static constexpr size_t FIFO_RUNTIME_RAW_QUEUE_HIGH_WATER =
+    (FIFO_RUNTIME_RAW_QUEUE_CAPACITY * 3u) / 8u;
+static_assert(FIFO_RUNTIME_RAW_QUEUE_HIGH_WATER < FIFO_RUNTIME_RAW_QUEUE_CAPACITY,
+              "FIFO urgent threshold must leave queue headroom");
 
 // Gyro prediction remains at the full IMU ODR. Gravity correction and prepared
 // motion snapshots run at a still-high sub-rate to remove redundant trigonometry

@@ -33,7 +33,7 @@ Legend:
 | `config load` | Load config from NVS | Runtime | Applies loaded values to runtime where supported. |
 | `config save` | Capture supported runtime values and save | Yes | Saves calibration/output/runtime settings captured by config layer. |
 | `config erase` | Erase config store | Yes | Reboot recommended. |
-| `config spi <hz> [save]` | Live SPI clock reconfigure | Optional | Uses app hook; `save` persists configured frequency. |
+| `config spi [<hz> [save]]` | Inspect or live-reconfigure SPI clock | Optional | Transactional: runtime apply and NVS save roll back to the previous clock on failure. |
 
 ## IMU/FIFO/quality
 
@@ -43,13 +43,12 @@ Legend:
 | `imu whoami` | Print last WHOAMI | No | Hardware sanity check. |
 | `imu read` | Read one direct sample | No | Debug path, not FIFO runtime. |
 | `imu rate <120|240|480|960> [save]` | Live IMU+FIFO ODR reconfigure | Optional | Stops stream/log during reconfigure and re-arms mag if needed. |
-| `fifo status` | Print FIFO status | No | Inspection only. |
-| `fifo stats` | Print FIFO counters | No | Inspection only. |
-| `fifo watermark <words> [save]` | Live FIFO watermark reconfigure | Optional | Re-arms runtime/FIFO path. |
-| `fifo drain <max_words> <rounds> [save]` | Live drain limits reconfigure | Optional | Affects bounded drain behavior. |
-| `fifo reset` | Reset FIFO/runtime counters/path | No | Uses app reset hook when available. |
-| `quality stats` | Print quality counters | No | Inspection only. |
-| `quality reset` | Reset quality counters | No | Runtime only. |
+| `config fifo [status]` / `fifo status` | Print persisted FIFO tuning and live counters | No | The short `fifo` alias is available in Production/ProductionDiag without enabling the full developer FIFO CLI. |
+| `config fifo watermark <1..255> [save]` / `fifo watermark ...` | Live FIFO watermark reconfigure | Optional | Transactional hardware apply; clears pre-reconfigure software queues, requests controlled orientation recovery, and rolls back on apply/save failure. |
+| `config fifo drain <16..4096> <1..32> [save]` / `fifo drain ...` | Change bounded drain limits | Optional | Takes effect on the next app-loop drain; `save` persists before the in-RAM config is committed. |
+| `fifo stats` | Print detailed FIFO counters | No | Full developer CLI only. Production/ProductionDiag use `health` or `perf tracking`. |
+| `fifo reset` | Reset hardware FIFO/runtime path | No | Full developer CLI only; intentionally requests orientation recovery. |
+| `quality stats` / `quality reset` | Inspect/reset detailed quality counters | No | Full developer CLI only. ProductionDiag uses non-destructive `perf tracking reset` baselines. |
 
 ## Calibration
 
@@ -209,6 +208,8 @@ That command scans visible networks, asks for a numbered selection and password,
 
 These commands are compiled only when `TRACKER_ENABLE_RUNTIME_PROFILER=1` (Debug by default, plus the service `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` environment). Production and Slim exclude the profiler/motion source files in `platformio.ini`, so a clean product/control build does not carry these commands. Use them from USB serial or the Wi-Fi remote console when a tracker drops SlimeVR TPS.
 
+FIFO tuning behavior: apply `fifo watermark` while the tracker is stationary. A successful live hardware reconfigure intentionally enters controlled recovery, so output resumes after the short stationary tilt capture. A failed apply or NVS save restores the previous config and hardware settings.
+
 Safety behavior: `perf` and `motion` are runtime-only diagnostics. `motion` does not touch the per-sample hot path until `motion on` is issued, and missing diagnostic pointers are treated as unavailable commands/status rather than as a boot failure.
 
 | Command | Effect | Persisted | Notes |
@@ -216,7 +217,9 @@ Safety behavior: `perf` and `motion` are runtime-only diagnostics. `motion` does
 | `perf on` / `perf off` | Enable/disable rolling loop-section profiler | Runtime | Off by default; enabling resets the timing window. |
 | `perf status` | Print loop-section timing plus temperature/system, Wi-Fi, quality and SlimeVR counters | No | Shows all measured sections (`loop`, `cli`, `remote`, `fifo`, `battery`, `network`, `tap`, `led`, `heartbeat`, `idle_yield`), not only the top offender. |
 | `perf top` | Print highest average/max section summary plus correlation blocks | No | Shortcut for TPS-drop triage. |
-| `perf reset` | Reset profiler window | Runtime | Does not reset firmware counters outside the profiler. |
+| `perf tracking reset` | Capture a compact, non-destructive FIFO/tracking baseline | Runtime | Does not reset timestamp reconstruction, quality state, recovery state or transport counters. |
+| `perf tracking` / `perf brief` | Print compact deltas and effective rotation rate | No | Before the first reset it reports counters since boot; after reset it reports only the selected test window. Intended for low-intrusion hardware validation. |
+| `perf reset` | Reset profiler window and tracking baseline | Runtime | Does not reset firmware quality/timestamp state. |
 | `motion on` / `motion off` | Enable/disable per-sample motion diagnostics | Runtime | Intended for ankle/fast-motion tests. |
 | `motion status` | Print motion window plus FIFO/quality/bias/SlimeVR correlation | No | Reports dt, sample rate, gyro/accel norms, saturation, accel outliers, AHRS skips and runtime-bias rejects. SlimeVR packet counters are printed both as absolute totals and as deltas/rates since `motion on`/`motion reset`, so `slime_rotation_sent_rate_hz` is a window rate rather than a boot-total rate. |
 | `motion reset` | Reset motion diagnostic window | Runtime | Keeps current enabled/disabled state. |

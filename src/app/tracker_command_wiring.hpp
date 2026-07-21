@@ -34,6 +34,8 @@ struct TrackerCommandRuntimeObjects {
     RuntimeGyroBiasEstimator* runtimeBias = nullptr;
     RuntimeProfiler* runtimeProfiler = nullptr;
     RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
+    FifoRuntimeProcessor* fifoRuntime = nullptr;
+    TrackingStateController* trackingState = nullptr;
 
     FifoCalibrationIo* calibrationIo = nullptr;
     FifoAccel6PosCalibrationRunner* accelCalRunner = nullptr;
@@ -50,6 +52,9 @@ struct TrackerCommandRuntimeObjects {
 struct TrackerCommandRuntimeHooks {
     decltype(TrackerSerialCommandContext::resetFifoRuntime) resetFifoRuntime = nullptr;
     void* resetFifoRuntimeUser = nullptr;
+
+    decltype(TrackerSerialCommandContext::requestTrackingRecovery) requestTrackingRecovery = nullptr;
+    void* requestTrackingRecoveryUser = nullptr;
 
     decltype(TrackerSerialCommandContext::resetAhrsRuntime) resetAhrsRuntime = nullptr;
     void* resetAhrsRuntimeUser = nullptr;

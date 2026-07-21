@@ -91,10 +91,10 @@ recorded before behavior-changing patches begin:
   semantics, and the guided temperature capture now accepts only validated
   contiguous stationary windows while preserving earlier progress across brief
   touches or quality faults;
-- FIFO/timestamp recovery blocks stale orientation output, keeps post-gap gyro
-  prediction active and performs heading-preserving tilt reacquisition after a
-  short stationary window; real motion resets the window immediately while a
-  bounded number of isolated quality rejects no longer traps recovery forever;
+- recovery is reason-aware: bounded FIFO full/overrun uses non-blocking soft
+  recovery and resumes output on the next integrated sample, while corrupted
+  timestamps, explicit resets and blocking operations still block stale output,
+  keep post-gap gyro active and perform heading-preserving tilt reacquisition;
 - runtime FIFO processing is cooperative across app-loop passes, preserving all
   samples while bounding one pass so the 100 Hz SlimeVR scheduler can run;
 - prepared output contains one timestamp-coherent quaternion and device-frame

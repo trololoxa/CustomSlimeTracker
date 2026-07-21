@@ -117,6 +117,14 @@ void recoverSensorStreamAfterBlockingWifiScan(TrackerSerialCommandContext& ctx, 
     if (ctx.resetFifoRuntime) {
         ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
     }
+    if (ctx.requestTrackingRecovery) {
+        ctx.requestTrackingRecovery(
+            imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+            "blocking_wifi_scan",
+            keepTs,
+            ctx.requestTrackingRecoveryUser
+        );
+    }
 
     if (!ok) {
         Stream& out = outFor(ctx);

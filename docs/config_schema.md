@@ -56,7 +56,10 @@ watermark default is 18 words. Existing valid NVS values are deliberately
 preserved so performance updates cannot erase or silently reinterpret calibrated
 trackers. Users may opt in with `config spi 8000000 save` and
 `fifo watermark 18 save`; LSM startup retries at 4 MHz if the higher clock fails.
-No schema, persisted layout or total blob-size change is required.
+These live changes are transactional: failed runtime apply or NVS save restores the
+previous config. Watermark reconfiguration clears pre-change software queues and
+requests controlled orientation recovery. No schema, persisted layout or total
+blob-size change is required.
 
 ## Current frame and gyro-temperature semantics
 

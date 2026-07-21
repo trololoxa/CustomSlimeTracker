@@ -25,6 +25,8 @@ class BatteryRuntime;
 class TrackerHealthState;
 class RuntimeProfiler;
 class RuntimeMotionDiagnostics;
+class FifoRuntimeProcessor;
+class TrackingStateController;
 class Lsm6dsv;
 class Lsm6dsvFifoReader;
 class Lsm6dsvSensorHub;
@@ -145,10 +147,21 @@ struct TrackerSerialCommandContext {
     TrackerSerialLogState* logState = nullptr;
     RuntimeProfiler* runtimeProfiler = nullptr;
     RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
+    FifoRuntimeProcessor* fifoRuntime = nullptr;
+    TrackingStateController* trackingState = nullptr;
 
     // Optional hooks supplied by main.cpp.
+    // Clears software FIFO queues/counters only. Recovery is requested
+    // explicitly through requestTrackingRecovery so diagnostics can identify
+    // manual, blocking-operation and reconfiguration causes correctly.
     void (*resetFifoRuntime)(void* user) = nullptr;
     void* resetFifoRuntimeUser = nullptr;
+
+    void (*requestTrackingRecovery)(uint32_t reasonFlags,
+                                    const char* reason,
+                                    uint64_t timestampUs,
+                                    void* user) = nullptr;
+    void* requestTrackingRecoveryUser = nullptr;
 
     void (*resetAhrsRuntime)(void* user) = nullptr;
     void* resetAhrsRuntimeUser = nullptr;

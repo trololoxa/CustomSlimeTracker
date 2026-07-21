@@ -85,6 +85,7 @@ SLIM_REQUIRED_EXCLUDES = PRODUCTION_REQUIRED_EXCLUDES | {
     "serial/tracker_battery_commands.cpp",
     "serial/tracker_calibration_commands.cpp",
     "serial/tracker_config_commands.cpp",
+    "serial/tracker_fifo_config_control.cpp",
     "serial/tracker_led_commands.cpp",
     "serial/tracker_mag_commands.cpp",
     "serial/tracker_network_commands.cpp",
@@ -227,6 +228,15 @@ def main() -> int:
             "tracker_config_runtime.cpp must not reference Accel6PosCalibration methods; "
             "keep calibration-only capture code in tracker_config_calibration_capture.cpp"
         )
+
+    fifo_basic_control = "serial/tracker_fifo_config_control.cpp"
+    for env, actual in ((PRODUCTION_ENV, production_excludes),
+                        (PRODUCTION_DIAG_ENV, production_diag_excludes)):
+        if fifo_basic_control in actual:
+            errors.append(
+                f"{env}: Production-safe FIFO control must remain linked: "
+                f"{fifo_basic_control}"
+            )
 
     accidentally_removed_diag = sorted(production_diag_excludes & LIVE_DIAGNOSTIC_SOURCES)
     if accidentally_removed_diag:

@@ -5,6 +5,11 @@
 // Magnetometer and tracking-state hooks used by the app composition layer.
 // This file is included by app/tracker_app_hooks.hpp after shared app dependencies.
 
+static void hookRequestTrackingRecovery(uint32_t reasonFlags,
+                                        const char* reason,
+                                        uint64_t timestampUs,
+                                        void* user);
+
 #if TRACKER_HAS_MACHINE_LOG
 static void emitMachineLogMagFrame(const MagProcessedSample& mag,
                                    const MagHeadingSample& heading,
@@ -63,6 +68,7 @@ static void magControllerRecordStaticMagYawSampleCallback(float magHeadingErrorD
 static MagRuntimeControllerDeps makeMagRuntimeControllerDeps() {
     MagRuntimeControllerCallbacks callbacks;
     callbacks.resetFifoRuntime = magControllerResetFifoRuntimeCallback;
+    callbacks.requestTrackingRecovery = hookRequestTrackingRecovery;
     callbacks.emitStateEvent = magControllerEmitStateEventCallback;
 #if TRACKER_HAS_MACHINE_LOG
     callbacks.emitMagFrame = magControllerEmitMachineLogMagFrameCallback;
@@ -146,6 +152,7 @@ static TrackingStateEventSink makeTrackingEventSink() {
     TrackingStateEventSink sink;
     sink.out = trackerConsoleTrackingMessagesSuppressed(millis()) ? nullptr : &Serial;
     sink.confidence = g_lastOutputConfidence;
+    sink.hasRecoverableOrientation = g_ahrs6dof.initialized();
     sink.prepareRecovery = trackingPrepareRecoveryCallback;
     sink.prepareRecoveryUser = nullptr;
     sink.reacquireTilt = trackingReacquireTiltCallback;
@@ -162,8 +169,10 @@ static void enterTrackingRecovery(uint32_t reasonFlags, const char* reason, uint
 static void updateTrackingRecoveryState(const ImuQualityResult& quality,
                                         const Vec3& gyroRadS,
                                         const Vec3& accelG,
-                                        uint64_t timestampUs) {
-    g_trackingState.updateRecovery(quality, gyroRadS, accelG, timestampUs, makeTrackingEventSink());
+                                        uint64_t timestampUs,
+                                        bool ahrsIntegrated) {
+    g_trackingState.updateRecovery(
+        quality, gyroRadS, accelG, timestampUs, ahrsIntegrated, makeTrackingEventSink());
 }
 
 static TrackingStateInputs makeTrackingStateInputs() {

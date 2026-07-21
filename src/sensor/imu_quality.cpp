@@ -334,6 +334,12 @@ void ImuQualityMonitor::updateCounters(const ImuQualityResult& q) {
 }
 
 void ImuQualityMonitor::requestRecovery(ImuQualityResult& q, uint32_t reasonFlag) {
+    if (reasonFlag == imu_quality_flags::FIFO_OVERRUN) counters_.fifoRecoveryOverrunRequests++;
+    else if (reasonFlag == imu_quality_flags::FIFO_FULL) counters_.fifoRecoveryFullRequests++;
+    else if (reasonFlag == imu_quality_flags::FIFO_UNKNOWN_TAG) counters_.fifoRecoveryUnknownTagRequests++;
+    else if (reasonFlag == imu_quality_flags::TIMESTAMP_BACKWARDS) counters_.fifoRecoveryTimestampBackwardsRequests++;
+    else if (reasonFlag == imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) counters_.fifoRecoveryTimestampQueueOverflowRequests++;
+
     q.flags |= imu_quality_flags::FIFO_RECOVERY_REQUESTED;
     q.shouldRequestFifoRecovery = true;
     recoveryRequested_ = true;

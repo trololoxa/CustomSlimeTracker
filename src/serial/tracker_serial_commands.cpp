@@ -46,6 +46,11 @@ void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int ar
         trackerSerialDispatchConfigCommand(ctx, argc, argv);
         return;
     }
+#if !TRACKER_ENABLE_FULL_CLI
+    if (trackerSerialDispatchBasicFifoCommand(ctx, argc, argv)) {
+        return;
+    }
+#endif
 #endif
 
 #if TRACKER_ENABLE_MAG_COMMANDS

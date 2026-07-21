@@ -17,6 +17,7 @@
 #endif
 #if TRACKER_ENABLE_CONFIG_COMMANDS
 #include "serial/tracker_config_commands.hpp"
+#include "serial/tracker_fifo_config_control.hpp"
 #endif
 #if TRACKER_ENABLE_FULL_CLI
 #include "serial/tracker_imu_fifo_commands.hpp"

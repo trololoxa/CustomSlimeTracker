@@ -21,7 +21,10 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     }
 
     const uint64_t ts = raw.t_us != 0 ? raw.t_us : lsmFifo.stats().lastAssignedTimestampUs;
-    enterTrackingRecovery(quality.flags, "fifo_recovery", ts);
+    const bool useSoftRecovery = trackingFifoLossCanUseSoftRecovery(quality);
+    enterTrackingRecovery(quality.flags,
+                          useSoftRecovery ? "fifo_recovery_soft" : "fifo_recovery",
+                          ts);
     const bool resetOk = lsmFifo.resetFifo();
     lsmFifo.resetTimestampReconstruction(ts);
     // The sample that requested recovery already came from a broken pre-reset
@@ -127,9 +130,10 @@ static void pipelineUpdateTrackingRecoveryCallback(const ImuQualityResult& quali
                                                    const Vec3& gyroRadS,
                                                    const Vec3& accelG,
                                                    uint64_t timestampUs,
+                                                   bool ahrsIntegrated,
                                                    void* user) {
     (void)user;
-    updateTrackingRecoveryState(quality, gyroRadS, accelG, timestampUs);
+    updateTrackingRecoveryState(quality, gyroRadS, accelG, timestampUs, ahrsIntegrated);
 }
 
 #if TRACKER_HAS_MACHINE_LOG

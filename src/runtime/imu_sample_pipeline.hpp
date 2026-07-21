@@ -34,6 +34,7 @@ using ImuPipelineQualityCallback = void (*)(const ImuQualityResult& quality,
                                                const Vec3& gyroRadS,
                                                const Vec3& accelG,
                                                uint64_t timestampUs,
+                                               bool ahrsIntegrated,
                                                void* user);
 using ImuPipelineMachineLogCallback = void (*)(const Lsm6dsv::RawSample& raw,
                                                const Lsm6dsv::Sample& calibrated,

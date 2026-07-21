@@ -10,7 +10,14 @@ static void hookResetFifoRuntime(void* user) {
     g_fifoRuntime.resetWork();
     resetFifoRuntimeCounters();
     g_lastSampleTimestampUs = 0;
-    enterTrackingRecovery(imu_quality_flags::FIFO_RECOVERY_REQUESTED, "manual_fifo_reset", lsmFifo.stats().lastAssignedTimestampUs);
+}
+
+static void hookRequestTrackingRecovery(uint32_t reasonFlags,
+                                        const char* reason,
+                                        uint64_t timestampUs,
+                                        void* user) {
+    (void)user;
+    enterTrackingRecovery(reasonFlags, reason, timestampUs);
 }
 
 static void hookResetAhrsRuntime(void* user) {
@@ -313,6 +320,8 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.runtimeProfiler = &g_runtimeProfiler;
     objects.motionDiagnostics = &g_motionDiagnostics;
 #endif
+    objects.fifoRuntime = &g_fifoRuntime;
+    objects.trackingState = &g_trackingState;
 #if TRACKER_ENABLE_CALIBRATION_COMMANDS
     objects.calibrationIo = &g_calIo;
     objects.accelCalRunner = &g_accelCalRunner;
@@ -332,6 +341,7 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
 static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     TrackerCommandRuntimeHooks hooks;
     hooks.resetFifoRuntime = hookResetFifoRuntime;
+    hooks.requestTrackingRecovery = hookRequestTrackingRecovery;
     hooks.resetAhrsRuntime = hookResetAhrsRuntime;
 #if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
     hooks.printRuntimeStatus = printRuntimeStatus;

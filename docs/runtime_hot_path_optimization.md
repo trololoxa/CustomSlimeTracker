@@ -195,19 +195,25 @@ default because a product thermal/current benefit is not proven.
 
 ## Cooperative FIFO scheduling
 
-Hardware FIFO drains now enqueue decoded data into fixed RAM rings (256 raw IMU
-samples and 64 magnetometer samples). The consumer is work-conserving: raw IMU
-callbacks have priority, mag work has its own small slice limit, and network is
-serviced between slices. Ordinary catch-up receives a 9 ms app budget; a raw queue
-at or above the urgent high-water threshold receives up to 18 ms while still
-checkpointing network. Each slice guarantees at least 12 raw callbacks and may
-process up to 48 inside a 3.5 ms callback budget. Manual, network-scan and
-magnetometer-triggered FIFO resets clear all queued pre-reset data.
+Hardware FIFO drains now enqueue decoded data into fixed RAM rings (512 raw IMU
+samples in Production/ProductionDiag, 256 in Slim, plus 64 magnetometer samples).
+The consumer is work-conserving: raw IMU callbacks have priority, mag work has its
+own small slice limit, and network is serviced between slices. Ordinary catch-up
+receives a 9 ms app budget; Production raw backlog at the urgent threshold receives
+up to 24 ms while still checkpointing network. Each slice guarantees at least 12
+raw callbacks and may process up to 64 inside a 3.5 ms callback budget. Manual,
+network-scan and magnetometer-triggered FIFO resets clear all queued pre-reset data.
 
 The default SPI clock for new/default configs is 8 MHz with an automatic 4 MHz
 startup fallback, and the Production/Debug FIFO watermark default is 18 words.
 Existing NVS values are preserved; an already-calibrated tracker opts in explicitly
-with `config spi 8000000 save` and `fifo watermark 18 save`.
+with `config spi 8000000 save` and `fifo watermark 18 save`. Both commands are
+available in Production/ProductionDiag. SPI and live FIFO hardware changes are
+transactional: failed apply/save attempts restore the previous runtime config.
+Changing the watermark intentionally clears pre-reconfigure queues and requests a
+short strict stationary orientation recovery. Plain runtime FIFO full/overrun events
+use soft recovery instead, so a rare scheduling spike cannot mute tracking until the
+user stops moving.
 
 Runtime tests report:
 
@@ -233,6 +239,24 @@ slime_unknown_packets_delta: 0
 slime_rotation_sample_lag_end: 0
 sample_rate_hz remains near baseline
 ```
+
+### Low-intrusion hardware acceptance
+
+Use the compact ProductionDiag window instead of repeatedly printing full `health`
+or `slime debug` reports:
+
+```text
+perf tracking reset
+# move the tracker continuously for 5-10 minutes
+perf tracking
+```
+
+Healthy acceptance requires zero FIFO overrun/full, dropped-sample, recovery and
+RAM-ring overflow deltas. `rotation_delivery_pct` should remain near 100%,
+`rotation_sent_rate_hz` should stay near the configured rate during movement, and
+`acceleration_sent_delta` should track `rotation_sent_delta`. Recovery reason
+counters distinguish FIFO quality, unreconstructable timestamp gaps, manual reset,
+blocking operations and runtime reconfiguration.
 
 ## Acceptance checklist
 

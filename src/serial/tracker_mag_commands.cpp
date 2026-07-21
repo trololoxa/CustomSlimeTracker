@@ -33,10 +33,10 @@ bool magSaveConfigIfRequested(TrackerSerialCommandContext& ctx, bool saveRequest
         return ctx.configStore->save(*ctx.config);
     }
 
-void rearmMagIfNeeded(TrackerSerialCommandContext& ctx) {
-        if (!ctx.config || !ctx.config->data.magCal.driverEnabled) return;
-        if (!ctx.setMagRuntimeEnabled) return;
-        ctx.setMagRuntimeEnabled(true, false, ctx.setMagRuntimeEnabledUser);
+bool rearmMagIfNeeded(TrackerSerialCommandContext& ctx) {
+        if (!ctx.config || !ctx.config->data.magCal.driverEnabled) return true;
+        if (!ctx.setMagRuntimeEnabled) return false;
+        return ctx.setMagRuntimeEnabled(true, false, ctx.setMagRuntimeEnabledUser);
     }
 
 char magAxisLower(char c) {
@@ -798,7 +798,7 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             out.print(" qmcErr="); out.print(ctx.mag->lastErrorName());
             if (ctx.sensorHub) { out.print(" hubErr="); out.print(ctx.sensorHub->lastErrorName()); }
             out.println();
-            rearmMagIfNeeded(ctx);
+            (void)rearmMagIfNeeded(ctx);
             return;
         }
 
@@ -814,7 +814,7 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             out.print(" qmcErr="); out.print(ctx.mag->lastErrorName());
             if (ctx.sensorHub) { out.print(" hubErr="); out.print(ctx.sensorHub->lastErrorName()); }
             out.println();
-            rearmMagIfNeeded(ctx);
+            (void)rearmMagIfNeeded(ctx);
             return;
         }
 
@@ -829,7 +829,7 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 else out.print("ERR");
                 out.println();
             }
-            rearmMagIfNeeded(ctx);
+            (void)rearmMagIfNeeded(ctx);
             return;
         }
 

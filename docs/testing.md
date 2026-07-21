@@ -516,26 +516,56 @@ For SlimeVR output, also check the effective rotation rate:
 slime_rotation_rate_hz_observed ~= slime rate
 ```
 
-Production/Debug default to an 18-word FIFO watermark and 8 MHz SPI, with a
-4 MHz startup fallback. Hardware drains feed a 256-sample raw RAM ring and a
-64-sample mag ring. The consumer is work-conserving: each slice guarantees raw
-progress, favors raw IMU samples over mag callbacks, services network between
-slices, and receives a larger app budget when the raw queue reaches its urgent
-high-water threshold. Hardware SPI time is excluded from the callback budget.
+New/default Production/Debug configs use an 18-word FIFO watermark and 8 MHz SPI, with a
+4 MHz startup fallback. Hardware drains feed a 512-sample raw RAM ring in
+Production/ProductionDiag (256 in Slim) and a 64-sample mag ring. The consumer
+is work-conserving: each slice guarantees raw progress, favors raw IMU samples
+over mag callbacks, services network between slices, and receives a larger app
+budget when the raw queue reaches its urgent high-water threshold. Hardware SPI
+time is excluded from the callback budget.
 Long runtime/SlimeVR diagnostic reports cooperatively service FIFO and network
 between output sections. Healthy hardware tests must keep both hardware FIFO and
 RAM-ring overflow counters at zero.
 
-For a 100 Hz hardware cadence check, reset counters, move the tracker continuously
-for 20 seconds, then inspect `slime debug`, `status`, `quality stats`, and
-`fifo stats`. `slime debug` includes `rotation_send_due`,
-`rotation_rate_limited`, `service_updates`, `service_skips`, and
-`last_rotation_snapshot_age_us`. Healthy results should show rotation and
-acceleration counts close to each other, no send failures, negligible
-`rotation_no_snapshot`, no FIFO overrun/full/recovery, and an observed moving
-rotation rate near the configured value. A server GUI may visually report a low
-idle TPS for nearly identical quaternions; firmware counter deltas are the source
-of truth for packet cadence.
+For a 100 Hz hardware cadence check on ProductionDiag, prefer the compact,
+non-destructive window:
+
+```text
+perf tracking reset
+# move the tracker continuously for 5-10 minutes
+perf tracking
+```
+
+Healthy results normally have zero `fifo_overrun_delta`, `fifo_full_delta`,
+`quality_dropped_delta`, `quality_recovery_delta`, and RAM-ring overflow deltas.
+If a rare bounded FIFO full/overrun does occur, `tracking_soft_recovery_enter_delta`
+should increase together with `tracking_soft_recovery_complete_delta`, while
+`tracking_recovery_enter_delta` and a long `rotation_no_snapshot_delta` remain
+zero. Timestamp-corruption and explicit-reset cases must still use strict recovery.
+`rotation_delivery_pct` should be near 100%, `rotation_sent_rate_hz` should be near
+the configured rate during movement, and `acceleration_sent_delta` should remain
+close to `rotation_sent_delta`. The baseline command does not reset quality,
+timestamp reconstruction or recovery state, so the measurement cannot hide an
+existing fault. Use full `health`/`slime debug` only after the window when deeper
+context is needed. A server GUI may visually report a low idle TPS for nearly
+identical quaternions; firmware counter deltas are the source of truth for packet
+cadence.
+
+For an existing calibrated tracker, test 8 MHz and an 18-word watermark with:
+
+```text
+config spi 8000000 save
+fifo watermark 18 save
+```
+
+Apply the watermark while stationary. Live hardware reconfiguration clears old
+software-queued samples and intentionally requests controlled recovery when a valid
+orientation already exists; wait for that short recovery before starting the timed
+window. During boot, reconfiguration before the first quaternion must instead report
+a startup-bootstrap bypass and allow normal AHRS gravity initialization. Failed
+hardware apply or NVS save must restore the previous config. `perf tracking` reports
+classified recovery causes so reconfiguration can be distinguished from
+FIFO/timestamp faults.
 
 Use `test stop` to finish early. `test status` prints both static and runtime test status.
 

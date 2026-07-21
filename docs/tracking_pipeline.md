@@ -95,14 +95,14 @@ Blocking diagnostics such as Wi-Fi scans can pause sensor processing long enough
 for FIFO timestamps to jump by multiple seconds. With the production runtime
 configuration, AHRS rejects that gap instead of integrating it as real rotation.
 After the rejection it rebases `lastIntegratedTimestampUs` to the current sample
-so the next normal FIFO sample resumes gyro prediction. While recovery is active,
-prepared network orientation is invalidated and accel correction is disabled.
-Post-gap gyro is still integrated, so heading changes made after the stream
-returns are retained. Recovery exits only after 256 contiguous samples pass
-timestamp/FIFO checks, gyro remains below 3 dps and accel remains near 1 g. The
-mean accel vector then rebuilds roll/pitch while preserving horizontal heading.
-Movement restarts only this short window. `status` exposes recovery entry and
-successful tilt-reacquisition counters; `quality stats` keeps routine gap counts.
+so the next normal FIFO sample resumes gyro prediction. A bounded FIFO full/overrun uses non-blocking soft recovery: the FIFO and AHRS
+timebase are reset, one faulted snapshot is discarded, then gyro+adaptive accel
+updates and network output resume on the next integrated sample. The controller
+stays `DEGRADED_TIMING` for 32 clean samples for diagnostics, but movement does
+not prolong it. Timestamp corruption, explicit resets and blocking operations use
+strict recovery: prepared orientation is invalidated, accel correction is disabled
+and post-gap gyro is retained until 256 stationary samples rebuild roll/pitch.
+`status` exposes strict and soft entry/completion counters separately.
 
 `net scan`, `GET WIFISCAN`, and other blocking diagnostics are tracking
 interruptions: motion made while the CPU is inside the blocking operation is not

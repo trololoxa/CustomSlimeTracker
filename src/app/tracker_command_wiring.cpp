@@ -30,6 +30,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.runtimeBias = objects.runtimeBias;
     ctx.runtimeProfiler = objects.runtimeProfiler;
     ctx.motionDiagnostics = objects.motionDiagnostics;
+    ctx.fifoRuntime = objects.fifoRuntime;
+    ctx.trackingState = objects.trackingState;
     ctx.calibrationIo = objects.calibrationIo;
     ctx.accelCalRunner = objects.accelCalRunner;
     ctx.gyroTempCapture = objects.gyroTempCapture;
@@ -42,6 +44,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
 
     ctx.resetFifoRuntime = hooks.resetFifoRuntime;
     ctx.resetFifoRuntimeUser = hooks.resetFifoRuntimeUser;
+    ctx.requestTrackingRecovery = hooks.requestTrackingRecovery;
+    ctx.requestTrackingRecoveryUser = hooks.requestTrackingRecoveryUser;
     ctx.resetAhrsRuntime = hooks.resetAhrsRuntime;
     ctx.resetAhrsRuntimeUser = hooks.resetAhrsRuntimeUser;
     ctx.printRuntimeStatus = hooks.printRuntimeStatus;

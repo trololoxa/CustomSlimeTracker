@@ -183,20 +183,28 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
         return FifoRuntimeSampleResult::FifoRecovered;
     }
 
+    bool ahrsIntegrated = false;
     if (unreconstructableGap) {
         if (deps.callbacks.enterTrackingRecovery != nullptr) {
             deps.callbacks.enterTrackingRecovery(quality.flags, "unreconstructable_dt_gap", raw.t_us, deps.callbacks.user);
         }
     } else if (quality.shouldUpdateAhrs) {
-        if (deps.trackingState.recoveryActive()) {
+        const bool recoveryNeedsBootstrap = trackingRecoveryNeedsAhrsBootstrap(
+            deps.trackingState.recoveryActive(), deps.ahrs.initialized());
+        if (deps.trackingState.recoveryActive() && !recoveryNeedsBootstrap) {
             // Keep integrating post-gap gyro so heading changes made while
             // waiting for a short rest are retained. Accel correction remains
             // disabled until tilt is reacquired from a stable mean vector.
-            deps.ahrs.update(calibrated.gyro_rad_s, Vec3::zero(), 0.0f, raw.t_us);
+            ahrsIntegrated = deps.ahrs.update(
+                calibrated.gyro_rad_s, Vec3::zero(), 0.0f, raw.t_us);
         } else {
+            // Normal startup, including the defensive case where strict
+            // recovery was requested before AHRS had any quaternion, must be
+            // allowed to initialize from gravity.
             const Vec3 accelForAhrs = quality.accelForAhrs(calibrated.accel_g);
             const float accelNormForAhrs = quality.shouldUseAccelCorrection ? quality.accelNormG : 0.0f;
-            deps.ahrs.update(calibrated.gyro_rad_s, accelForAhrs, accelNormForAhrs, raw.t_us);
+            ahrsIntegrated = deps.ahrs.update(
+                calibrated.gyro_rad_s, accelForAhrs, accelNormForAhrs, raw.t_us);
         }
     }
 
@@ -212,6 +220,7 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
                                                    calibrated.gyro_rad_s,
                                                    calibrated.accel_g,
                                                    raw.t_us,
+                                                   ahrsIntegrated,
                                                    deps.callbacks.user);
     }
 

@@ -4,6 +4,7 @@
 
 #include "config/tracker_config.hpp"
 #include "sensor/fifo_calibrations.hpp"
+#include "serial/tracker_fifo_config_control.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
@@ -86,7 +87,7 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
         return;
     }
     if (argc < 2) {
-        tracker_serial_detail::printErr(out, "usage: config print|load|save|defaults|erase|crc|nvs|spi");
+        tracker_serial_detail::printErr(out, "usage: config print|load|save|defaults|erase|crc|nvs|spi|fifo");
         return;
     }
 
@@ -115,7 +116,8 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
 
     if (trackerSerialConfigIs(argv[1], "spi")) {
         if (argc < 3) {
-            tracker_serial_detail::printErr(out, "usage: config spi <hz> [save]");
+            out.print("# spi_hz="); out.println(ctx.config->data.hardware.spiHz);
+            out.println("# usage: config spi <hz> [save]");
             return;
         }
 
@@ -132,30 +134,26 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
             tracker_serial_detail::printErr(out, "usage: config spi <hz> [save]");
             return;
         }
-
-        ctx.config->data.hardware.spiHz = hz;
-        ctx.config->sanitize();
-        ctx.config->updateCrc();
-
-        if (ctx.setSpiFrequency && !ctx.setSpiFrequency(ctx.config->data.hardware.spiHz, ctx.setSpiFrequencyUser)) {
-            tracker_serial_detail::printErr(out, "failed to apply SPI clock");
-            return;
-        }
-
-        if (save) {
-            if (!ctx.configStore) {
-                tracker_serial_detail::printErr(out, "config store not available; changed in RAM only");
-                return;
-            }
-            if (!ctx.configStore->save(*ctx.config)) {
-                out.print("# ERR config save failed: ");
-                out.println(ctx.configStore->lastErrorName());
-                return;
-            }
-        }
+        if (!trackerSerialCommitSpiFrequency(ctx, out, hz, save)) return;
 
         tracker_serial_detail::printOk(out, save ? "SPI clock set and saved" : "SPI clock set");
         out.print("# spi_hz="); out.println(ctx.config->data.hardware.spiHz);
+        return;
+    }
+
+    if (trackerSerialConfigIs(argv[1], "fifo")) {
+        if (argc < 3 || trackerSerialConfigIs(argv[2], "status")) {
+            trackerSerialPrintFifoTuning(out, ctx);
+            return;
+        }
+
+        char* fifoArgv[8] = {};
+        fifoArgv[0] = const_cast<char*>("fifo");
+        int fifoArgc = 1;
+        for (int k = 2; k < argc && fifoArgc < 8; ++k) {
+            fifoArgv[fifoArgc++] = argv[k];
+        }
+        (void)trackerSerialDispatchBasicFifoCommand(ctx, fifoArgc, fifoArgv);
         return;
     }
 

@@ -23,6 +23,11 @@ class MagCalibrationCollector;
 struct MagRuntimeControllerCallbacks {
     void (*resetFifoRuntime)(void* user) = nullptr;
     void* resetFifoRuntimeUser = nullptr;
+    void (*requestTrackingRecovery)(uint32_t reasonFlags,
+                                    const char* reason,
+                                    uint64_t timestampUs,
+                                    void* user) = nullptr;
+    void* requestTrackingRecoveryUser = nullptr;
 
     void (*emitStateEvent)(const char* state,
                            const char* reason,

@@ -157,7 +157,6 @@ build_src_filter =
   -<serial/tracker_bias_commands.cpp>
   -<serial/tracker_calibration_commands.cpp>
   -<serial/tracker_config_commands.cpp>
-  -<serial/tracker_fifo_config_control.cpp>
   -<serial/tracker_imu_fifo_commands.cpp>
   -<serial/tracker_led_commands.cpp>
   -<serial/tracker_mag_commands.cpp>

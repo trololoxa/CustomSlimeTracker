@@ -55,6 +55,7 @@ public:
     void begin(uint32_t) {}
     virtual int available() { return 0; }
     virtual int read() { return -1; }
+    virtual void flush() {}
 
     std::size_t print(const char* s) { return s ? std::printf("%s", s) : 0u; }
     std::size_t print(char c) { return std::printf("%c", c); }
@@ -148,4 +149,10 @@ private:
     }
 };
 
+class ESPClass {
+public:
+    void restart() {}
+};
+
 extern Stream Serial;
+extern ESPClass ESP;

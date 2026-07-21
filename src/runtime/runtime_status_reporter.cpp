@@ -222,6 +222,11 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
     out.print("gyro_saturated_samples="); out.println(qc.gyroSaturatedSamples);
     out.print("accel_saturated_samples="); out.println(qc.accelSaturatedSamples);
     out.print("fifo_recovery_requests="); out.println(qc.fifoRecoveryRequests);
+    out.print("fifo_recovery_overrun_requests="); out.println(qc.fifoRecoveryOverrunRequests);
+    out.print("fifo_recovery_full_requests="); out.println(qc.fifoRecoveryFullRequests);
+    out.print("fifo_recovery_unknown_tag_requests="); out.println(qc.fifoRecoveryUnknownTagRequests);
+    out.print("fifo_recovery_timestamp_backwards_requests="); out.println(qc.fifoRecoveryTimestampBackwardsRequests);
+    out.print("fifo_recovery_timestamp_queue_overflow_requests="); out.println(qc.fifoRecoveryTimestampQueueOverflowRequests);
     out.print("mean_dt_us="); out.println(qc.meanDtUs(), 6);
 }
 
