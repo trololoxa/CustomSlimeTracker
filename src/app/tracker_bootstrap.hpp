@@ -67,7 +67,6 @@ struct TrackerBootstrapDeps {
 const char* trackerBootstrapLsmErrorName(Lsm6dsv::Error e);
 
 void trackerBootstrapEnforceProductCalibrationValidity(TrackerConfig& config);
-void trackerBootstrapMigrateRuntimeConfigForPerformance(TrackerConfig& config);
 void trackerBootstrapApplySpiConfigToTransport(TrackerConfig& config,
                                                ArduinoLsm6dsvSpiTransport& lsmBus);
 bool trackerBootstrapSetRuntimeSpiFrequency(TrackerConfig& config,

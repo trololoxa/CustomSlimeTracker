@@ -368,6 +368,11 @@ bool TrackerApp::ready() const {
            deps_.buffers.fifoRawCapacity > 0u &&
            deps_.buffers.magRaw != nullptr &&
            deps_.buffers.magRawCapacity > 0u &&
+           deps_.buffers.fifoRuntimeRawQueue != nullptr &&
+           deps_.buffers.fifoRuntimeRawQueueFlags != nullptr &&
+           deps_.buffers.fifoRuntimeRawQueueCapacity > 0u &&
+           deps_.buffers.fifoRuntimeMagQueue != nullptr &&
+           deps_.buffers.fifoRuntimeMagQueueCapacity > 0u &&
            deps_.callbacks.processRawSample != nullptr &&
            deps_.callbacks.processMagSample != nullptr &&
            deps_.callbacks.recordFifoProcessTime != nullptr;
@@ -502,6 +507,11 @@ void TrackerApp::setupSensorRuntime() {
         deps_.buffers.fifoRawCapacity,
         deps_.buffers.magRaw,
         deps_.buffers.magRawCapacity,
+        deps_.buffers.fifoRuntimeRawQueue,
+        deps_.buffers.fifoRuntimeRawQueueFlags,
+        deps_.buffers.fifoRuntimeRawQueueCapacity,
+        deps_.buffers.fifoRuntimeMagQueue,
+        deps_.buffers.fifoRuntimeMagQueueCapacity,
         deps_.callbacks.processRawSample,
         deps_.callbacks.processMagSample,
         deps_.callbacks.recordFifoProcessTime,
@@ -796,7 +806,28 @@ bool TrackerApp::processFifoRuntime() {
         ? config.data.fifo.maxDrainRoundsPerEvent
         : deps_.timing.fifoMaxDrainRoundsPerEventDefault;
 
-    return deps_.runtime.fifoRuntime->process(watermarkWords, maxWords, maxRounds, *deps_.runtime.out);
+    const uint32_t startUs = micros();
+    bool worked = false;
+    do {
+        const bool sliceWorked = deps_.runtime.fifoRuntime->process(
+            watermarkWords, maxWords, maxRounds, *deps_.runtime.out);
+        if (!sliceWorked) break;
+        worked = true;
+
+        if (!deps_.runtime.fifoRuntime->hasPendingWork()) break;
+
+        // Keep UDP/ping-pong cadence alive while catching up, but do not run
+        // CLI, battery, LED or tap work inside the FIFO loop.
+        (void)callBool(deps_.callbacks.updateNetworkRuntime);
+
+        const uint32_t elapsedUs = micros() - startUs;
+        const uint32_t budgetUs = deps_.runtime.fifoRuntime->urgent()
+            ? cfg::FIFO_RUNTIME_URGENT_BUDGET_US
+            : cfg::FIFO_RUNTIME_APP_BUDGET_US;
+        if (elapsedUs >= budgetUs) break;
+    } while (deps_.runtime.fifoRuntime->hasPendingWork());
+
+    return worked;
 }
 
 void TrackerApp::startMagFromConfig(Stream& out) {

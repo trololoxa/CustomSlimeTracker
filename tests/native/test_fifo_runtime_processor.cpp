@@ -121,6 +121,9 @@ struct Fixture {
     FifoInterruptEventSource events;
     Lsm6dsv::RawSample raw[160]{};
     Lsm6dsvFifoReader::MagRawSample mag[48]{};
+    Lsm6dsv::RawSample rawQueue[256]{};
+    uint8_t rawQueueFlags[256]{};
+    Lsm6dsvFifoReader::MagRawSample magQueue[64]{};
     CallbackProbe probe;
     FifoRuntimeProcessor processor;
     Stream out;
@@ -139,6 +142,11 @@ struct Fixture {
                         sizeof(raw) / sizeof(raw[0]),
                         mag,
                         sizeof(mag) / sizeof(mag[0]),
+                        rawQueue,
+                        rawQueueFlags,
+                        sizeof(rawQueue) / sizeof(rawQueue[0]),
+                        magQueue,
+                        sizeof(magQueue) / sizeof(magQueue[0]),
                         onRaw,
                         onMag,
                         onTime,
@@ -225,6 +233,26 @@ void testExternalResetDropsPendingBatch(TestContext& ctx) {
     CHECK(ctx, f.probe.rawCalls == 12);
 }
 
+void testRamQueueAbsorbsSecondHardwareBurst(TestContext& ctx) {
+    trackerTestSetMicros(0);
+    Fixture f;
+    for (int16_t i = 0; i < 80; ++i) f.bus.addSample(i);
+    CHECK(ctx, f.begin());
+    f.probe.rawCallbackCostUs = 500;
+    f.irqCount = 1;
+
+    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
+    CHECK(ctx, f.probe.rawCalls == 12);
+    CHECK(ctx, f.processor.rawQueueDepth() == 68);
+
+    for (int16_t i = 80; i < 120; ++i) f.bus.addSample(i);
+    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
+    CHECK(ctx, f.probe.rawCalls == 24);
+    CHECK(ctx, f.processor.rawQueueDepth() == 96);
+    CHECK(ctx, f.processor.queueStats().rawQueueHighWater >= 108);
+    CHECK(ctx, f.processor.queueStats().rawQueueOverflow == 0);
+}
+
 } // namespace
 
 int main() {
@@ -233,5 +261,6 @@ int main() {
     testHardwareDrainTimeDoesNotConsumeCallbackBudget(ctx);
     testRecoveryDropsRemainderOfPredateBatch(ctx);
     testExternalResetDropsPendingBatch(ctx);
+    testRamQueueAbsorbsSecondHardwareBurst(ctx);
     return ctx.finish("test_fifo_runtime_processor");
 }

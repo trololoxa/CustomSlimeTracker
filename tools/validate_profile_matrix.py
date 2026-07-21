@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORMIO_INI = ROOT / "platformio.ini"
+CONFIG_RUNTIME_CPP = ROOT / "src" / "config" / "tracker_config_runtime.cpp"
 
 ENV_RE = re.compile(r"^\s*\[env:([^\]]+)\]\s*$")
 EXCLUDE_RE = re.compile(r"^\s*-<([^>]+)>\s*(?:[;#].*)?$")
@@ -70,6 +71,7 @@ PRODUCTION_REQUIRED_EXCLUDES = PRODUCT_COMMON_REQUIRED_EXCLUDES | LIVE_DIAGNOSTI
 PRODUCTION_DIAG_REQUIRED_EXCLUDES = PRODUCT_COMMON_REQUIRED_EXCLUDES
 
 SLIM_REQUIRED_EXCLUDES = PRODUCTION_REQUIRED_EXCLUDES | {
+    "config/tracker_config_calibration_capture.cpp",
     "app/tracker_command_wiring.cpp",
     "network/wifi_remote_console.cpp",
     "runtime/status_led_runtime.cpp",
@@ -205,6 +207,26 @@ def main() -> int:
         PRODUCTION_DIAG_REQUIRED_EXCLUDES,
     )
     check_required_subset(errors, SLIM_ENV, slim_excludes, SLIM_REQUIRED_EXCLUDES)
+
+    # The config runtime is linked in every profile, while the six-position
+    # calibration implementation is intentionally removed from Slim. Keep the
+    # capture adapter in the same profile boundary so tracker_config_runtime.cpp
+    # never carries unresolved calibration-only references into the Slim link.
+    accel_impl = "sensor/accel_6pos_calibration.cpp"
+    accel_capture_adapter = "config/tracker_config_calibration_capture.cpp"
+    for env, actual in excludes.items():
+        if accel_impl in actual and accel_capture_adapter not in actual:
+            errors.append(
+                f"{env}: excluding {accel_impl} also requires excluding "
+                f"{accel_capture_adapter}"
+            )
+
+    config_runtime_text = CONFIG_RUNTIME_CPP.read_text(encoding="utf-8")
+    if "Accel6PosCalibration::" in config_runtime_text:
+        errors.append(
+            "tracker_config_runtime.cpp must not reference Accel6PosCalibration methods; "
+            "keep calibration-only capture code in tracker_config_calibration_capture.cpp"
+        )
 
     accidentally_removed_diag = sorted(production_diag_excludes & LIVE_DIAGNOSTIC_SOURCES)
     if accidentally_removed_diag:

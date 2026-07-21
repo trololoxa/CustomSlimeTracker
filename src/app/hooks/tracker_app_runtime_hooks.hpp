@@ -216,12 +216,18 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
     return deps;
 }
 
+static ImuSamplePipelineDeps& runtimeImuSamplePipelineDeps() {
+    // All referenced runtime objects have static lifetime. Reusing this wiring
+    // avoids rebuilding a large aggregate of references/pointers at 960 Hz.
+    static ImuSamplePipelineDeps deps = makeImuSamplePipelineDeps();
+    return deps;
+}
+
 static FifoRuntimeSampleResult processRuntimeRawSampleCallback(const Lsm6dsv::RawSample& raw,
                                                                bool checkFifoStatsDelta,
                                                                void* user) {
     (void)user;
-    ImuSamplePipelineDeps deps = makeImuSamplePipelineDeps();
-    return imuSamplePipelineProcessRaw(deps, raw, checkFifoStatsDelta);
+    return imuSamplePipelineProcessRaw(runtimeImuSamplePipelineDeps(), raw, checkFifoStatsDelta);
 }
 
 static void processRuntimeMagSampleCallback(const Lsm6dsvFifoReader::MagRawSample& mag, void* user) {
@@ -1019,6 +1025,11 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.buffers.fifoRawCapacity = FIFO_RAW_BUFFER_CAPACITY;
     deps.buffers.magRaw = g_magRaw;
     deps.buffers.magRawCapacity = MAG_RAW_BUFFER_CAPACITY;
+    deps.buffers.fifoRuntimeRawQueue = g_fifoRuntimeRawQueue;
+    deps.buffers.fifoRuntimeRawQueueFlags = g_fifoRuntimeRawQueueFlags;
+    deps.buffers.fifoRuntimeRawQueueCapacity = FIFO_RUNTIME_RAW_QUEUE_CAPACITY;
+    deps.buffers.fifoRuntimeMagQueue = g_fifoRuntimeMagQueue;
+    deps.buffers.fifoRuntimeMagQueueCapacity = FIFO_RUNTIME_MAG_QUEUE_CAPACITY;
 
     deps.pins.int1 = PIN_LSM_INT1;
 

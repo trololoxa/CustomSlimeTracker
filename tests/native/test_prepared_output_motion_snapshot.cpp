@@ -150,6 +150,40 @@ static void testMotionRequiresAccelAndFrameCalibration(TestContext& ctx) {
     CHECK(ctx, snapshot.linearAccelerationValid);
 }
 
+static void testPreparedSnapshotRateLimitAndFailClosed(TestContext& ctx) {
+    TrackerConfig config;
+    config.resetDefaults();
+    config.data.accelCal.valid = true;
+    config.data.frame.sensorToDeviceValid = true;
+
+    Ahrs6Dof ahrs(config.makeAhrsConfig());
+    ahrs.reset(Quat::identity(), 10000);
+    ImuQualityResult quality;
+    PreparedOutputRuntime prepared;
+    TrackerPreparedOutputSnapshot snapshot;
+
+    prepared.update(config, 1, 10000, ahrs, quality, Vec3::unitZ());
+    CHECK(ctx, prepared.copy(snapshot));
+    const uint32_t firstSequence = snapshot.sequence;
+
+    CHECK(ctx, ahrs.update(Vec3(0.0f, 0.0f, 0.2f), Vec3::unitZ(), 11000));
+    prepared.update(config, 2, 11000, ahrs, quality, Vec3::unitZ());
+    CHECK(ctx, prepared.copy(snapshot));
+    CHECK(ctx, snapshot.sequence == firstSequence);
+    CHECK(ctx, snapshot.timestampUs == 10000);
+
+    CHECK(ctx, ahrs.update(Vec3(0.0f, 0.0f, 0.2f), Vec3::unitZ(), 15000));
+    prepared.update(config, 3, 15000, ahrs, quality, Vec3::unitZ());
+    CHECK(ctx, prepared.copy(snapshot));
+    CHECK(ctx, snapshot.sequence == firstSequence + 1u);
+    CHECK(ctx, snapshot.timestampUs == 15000);
+
+    // A mismatched/rejected sample invalidates immediately; rate limiting may
+    // never keep the previous quaternion marked fresh.
+    prepared.update(config, 4, 16000, ahrs, quality, Vec3::unitZ());
+    CHECK(ctx, !prepared.copy(snapshot));
+}
+
 int main() {
     TestContext ctx;
     testCoherentLinearAccelerationAndDerivedWorldFrame(ctx);
@@ -157,5 +191,6 @@ int main() {
     testRejectedLargeDtCannotMasqueradeAsFreshOrientation(ctx);
     testHardAccelFailureKeepsOrientationButInvalidatesMotion(ctx);
     testMotionRequiresAccelAndFrameCalibration(ctx);
+    testPreparedSnapshotRateLimitAndFailClosed(ctx);
     return ctx.finish("test_prepared_output_motion_snapshot");
 }

@@ -47,6 +47,7 @@ static RuntimeStatusReporterDeps makeRuntimeStatusReporterDeps() {
     deps.runtimeSamples = g_runtimeSamples;
     deps.fifoIntCount = g_fifoIntCount;
     deps.fifoEvents = &g_fifoEvents;
+    deps.fifoRuntime = &g_fifoRuntime;
     deps.fifo = &lsmFifo;
     deps.latestTempC = g_latestTempC;
     deps.imuCal = &g_imuCal;

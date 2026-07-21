@@ -30,6 +30,7 @@ public:
 private:
     TrackerPreparedOutputSnapshot snapshot_;
     volatile uint32_t seqLock_ = 0;
+    uint64_t lastPublishedTimestampUs_ = 0;
 };
 
 void emitSerialStreamIfNeeded(TrackerSerialStreamState& streamState,

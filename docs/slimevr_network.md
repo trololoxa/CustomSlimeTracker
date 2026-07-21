@@ -189,15 +189,16 @@ slime rate 100
 ```
 
 `100 Hz` is the default target because it gives smooth SlimeVR preview/tracking
-and the current ESP32-C3 runtime can sustain it with the 12-word FIFO watermark.
-It is not a protocol requirement. For thermal experiments or battery-focused
+and the optimized ESP32-C3 runtime targets it with an 18-word FIFO watermark,
+an 8 MHz SPI default and a RAM-backed work queue. It is not a protocol requirement. For thermal experiments or battery-focused
 builds, `slime rate 50` is a valid lower-load setting, but verify the result
 with `test runtime <seconds>` and the SlimeVR preview before changing defaults.
 
-The FIFO watermark affects the effective rotation rate. The default is 12 words.
-The older 48-word default was stable but refreshed prepared snapshots at only
-about one rate per FIFO drain, which caused about 23 Hz effective RotationData
-when `slime rate` was set to 100.
+The FIFO watermark affects transaction overhead and latency. Production/Debug
+default to 18 words; Slim remains at 9. Existing NVS values are preserved, so an
+already-calibrated tracker using the previous 4 MHz / 12-word settings must opt in
+with `config spi 8000000 save` and `fifo watermark 18 save`. If 8 MHz fails during
+LSM initialization, startup retries at 4 MHz.
 
 ## Reconnect behavior
 

@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "build_config/tracking_tuning.hpp"
+
 namespace tracker {
 
 Ahrs6Dof::Ahrs6Dof(const Ahrs6DofConfig& config)
@@ -13,6 +15,7 @@ void Ahrs6Dof::reset(const Quat& initialQ, uint64_t timestampUs) {
     stats_.lastSeenTimestampUs = timestampUs;
     stats_.lastIntegratedTimestampUs = timestampUs;
     stats_.lastTimestampUs = timestampUs;
+    resetAccelCorrectionAccumulator();
     initialized_ = timestampUs != 0;
 }
 
@@ -46,6 +49,7 @@ bool Ahrs6Dof::resetFromAccel(const Vec3& accelG, uint64_t timestampUs) {
     stats_.lastSeenTimestampUs = timestampUs;
     stats_.lastIntegratedTimestampUs = timestampUs;
     stats_.lastTimestampUs = timestampUs;
+    resetAccelCorrectionAccumulator();
     initialized_ = timestampUs != 0;
     return true;
 }
@@ -112,6 +116,7 @@ bool Ahrs6Dof::reacquireTiltFromAccelPreserveHeading(const Vec3& accelG, uint64_
     stats_.lastAccelGate = Ahrs6DofAccelGate{};
     stats_.lastAccelCorrectionWorldRad = Vec3::zero();
     stats_.lastAccelCorrectionAngleRad = 0.0f;
+    resetAccelCorrectionAccumulator();
     return true;
 }
 
@@ -145,10 +150,12 @@ const Ahrs6DofConfig& Ahrs6Dof::config() const {
 
 void Ahrs6Dof::setConfig(const Ahrs6DofConfig& config) {
     cfg_ = sanitizeConfig(config);
+    resetAccelCorrectionAccumulator();
 }
 
 void Ahrs6Dof::setQuaternion(const Quat& q) {
     q_ = q.normalized().withPositiveW();
+    resetAccelCorrectionAccumulator();
 }
 
 void Ahrs6Dof::rebaseTimestamp(uint64_t timestampUs) {
@@ -163,6 +170,7 @@ void Ahrs6Dof::rebaseTimestamp(uint64_t timestampUs) {
     stats_.fifoRecoveryRebaseCount++;
     stats_.lastRebaseTimestampUs = timestampUs;
     stats_.postFifoRecoverySamples = 0;
+    resetAccelCorrectionAccumulator();
 }
 
 Ahrs6DofAccelGate Ahrs6Dof::evaluateAccelGate(const Vec3& accelG) const {
@@ -233,11 +241,11 @@ bool Ahrs6Dof::update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG
         if (std::fabs(gyroUsed.z) < cfg_.gyroDeadbandRadS) gyroUsed.z = 0.0f;
     }
 
-    const float gyroNormRadS = gyroUsed.norm();
-    updateAdaptiveAccelTrust(accelNormG, gyroNormRadS);
+    const float gyroNormSq = gyroUsed.normSq();
 
-    // 1. High-rate gyro prediction.
-    q_ = integrateBodyRate(q_, gyroUsed, dtS);
+    // 1. Full-rate gyro prediction. The incremental exponential map uses a
+    // sixth-order small-angle path and leaves normalization to normalizeEvery.
+    q_ = integrateBodyRateFast(q_, gyroUsed, dtS);
 
     stats_.updateCount++;
     stats_.gyroPredictCount++;
@@ -246,13 +254,14 @@ bool Ahrs6Dof::update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG
     stats_.lastUsedDtS = dtS;
     stats_.lastGyroRadS = gyroUsed;
     stats_.lastAccelG = accelG;
-    stats_.lastGyroAngleRad = gyroNormRadS * dtS;
     if (stats_.fifoRecoveryRebaseCount > 0) {
         stats_.postFifoRecoverySamples++;
     }
 
-    // 2. Accel gravity correction.
-    applyAccelCorrection(accelG, accelNormG, dtS);
+    // 2. Gravity correction is accumulated over a four-sample window. Gyro
+    // prediction remains full-rate; only the low-bandwidth absolute tilt
+    // correction is decimated, with the full represented dt applied at once.
+    accumulateAccelCorrection(accelG, accelNormG, gyroNormSq, dtS);
 
     if (cfg_.normalizeEvery > 0 && (stats_.updateCount % cfg_.normalizeEvery) == 0) {
         q_.normalizeInPlace();
@@ -320,14 +329,14 @@ Ahrs6Dof::AccelEvaluation Ahrs6Dof::evaluateAccel(const Vec3& accelG, float acce
                               cfg_.accelNormBadErrorG);
 
     eval.accelUnitSensor = accelG / gate.normG;
-    eval.accelUnitWorld = q_.rotate(eval.accelUnitSensor).normalized();
+    eval.accelUnitWorld = q_.rotate(eval.accelUnitSensor);
 
     if (!eval.accelUnitWorld.isFinite() || eval.accelUnitWorld.normSq() < MATH_EPSILON) {
         return eval;
     }
 
     eval.vectorsValid = true;
-    gate.innovationRad = angleBetweenUnitVectors(eval.accelUnitWorld, cfg_.worldUp);
+    gate.innovationRad = acosFastUnitDot(dot(eval.accelUnitWorld, cfg_.worldUp));
     gate.innovationTrust = rampDown(gate.innovationRad,
                                     cfg_.accelInnovationGoodRad,
                                     cfg_.accelInnovationBadRad);
@@ -339,7 +348,7 @@ Ahrs6Dof::AccelEvaluation Ahrs6Dof::evaluateAccel(const Vec3& accelG, float acce
     return eval;
 }
 
-void Ahrs6Dof::updateAdaptiveAccelTrust(float accelNormG, float gyroNorm) {
+void Ahrs6Dof::updateAdaptiveAccelTrust(float accelNormG, float gyroNorm, uint8_t representedSamples) {
     stats_.lastAccelNormVarianceTrust = 1.0f;
     stats_.lastGyroMotionTrust = 1.0f;
     stats_.lastAdaptiveAccelTrust = 1.0f;
@@ -353,7 +362,11 @@ void Ahrs6Dof::updateAdaptiveAccelTrust(float accelNormG, float gyroNorm) {
         stats_.accelNormMeanG = accelNormG;
         stats_.accelNormVarianceG2 = 0.0f;
     } else {
-        const float alpha = cfg_.accelNormVarianceAlpha;
+        float retention = 1.0f;
+        const float perSampleRetention = 1.0f - cfg_.accelNormVarianceAlpha;
+        const uint8_t count = representedSamples > 0u ? representedSamples : 1u;
+        for (uint8_t i = 0; i < count; ++i) retention *= perSampleRetention;
+        const float alpha = 1.0f - retention;
         const float delta = accelNormG - stats_.accelNormMeanG;
         stats_.accelNormMeanG += alpha * delta;
         const float delta2 = accelNormG - stats_.accelNormMeanG;
@@ -389,13 +402,14 @@ void Ahrs6Dof::applyAccelCorrection(const Vec3& accelG, float accelNormG, float 
 
     Vec3 correctionWorldRad = errorWorld * (cfg_.accelKp * gate.trust * dtS);
 
-    float corrNorm = correctionWorldRad.norm();
+    const float corrNormSq = correctionWorldRad.normSq();
+    float corrNorm = std::sqrt(corrNormSq);
     if (corrNorm > cfg_.maxAccelCorrectionRadPerUpdate && corrNorm > MATH_EPSILON) {
         correctionWorldRad *= cfg_.maxAccelCorrectionRadPerUpdate / corrNorm;
         corrNorm = cfg_.maxAccelCorrectionRadPerUpdate;
     }
 
-    q_ = applyWorldCorrection(q_, correctionWorldRad).withPositiveW();
+    q_ = applyWorldCorrectionFast(q_, correctionWorldRad);
 
     stats_.accelUpdateCount++;
     stats_.lastAccelUnitSensor = eval.accelUnitSensor;
@@ -403,6 +417,49 @@ void Ahrs6Dof::applyAccelCorrection(const Vec3& accelG, float accelNormG, float 
     stats_.lastAccelErrorWorld = errorWorld;
     stats_.lastAccelCorrectionWorldRad = correctionWorldRad;
     stats_.lastAccelCorrectionAngleRad = corrNorm;
+}
+
+void Ahrs6Dof::resetAccelCorrectionAccumulator() {
+    accelCorrectionWeightedSum_ = Vec3::zero();
+    accelCorrectionValidDtS_ = 0.0f;
+    accelCorrectionElapsedDtS_ = 0.0f;
+    accelCorrectionMaxGyroNormSq_ = 0.0f;
+    accelCorrectionSamples_ = 0;
+    accelCorrectionValidSamples_ = 0;
+}
+
+void Ahrs6Dof::accumulateAccelCorrection(const Vec3& accelG,
+                                         float accelNormG,
+                                         float gyroNormSq,
+                                         float dtS) {
+    accelCorrectionElapsedDtS_ += dtS;
+    if (std::isfinite(gyroNormSq) && gyroNormSq > accelCorrectionMaxGyroNormSq_) {
+        accelCorrectionMaxGyroNormSq_ = gyroNormSq;
+    }
+    if (accelG.isFinite() && std::isfinite(accelNormG) && accelNormG > MATH_EPSILON) {
+        accelCorrectionWeightedSum_ += accelG * dtS;
+        accelCorrectionValidDtS_ += dtS;
+        ++accelCorrectionValidSamples_;
+    }
+
+    ++accelCorrectionSamples_;
+    if (accelCorrectionSamples_ < cfg::AHRS_ACCEL_CORRECTION_DIVISOR) return;
+
+    const uint8_t representedSamples = accelCorrectionSamples_;
+    const float gyroNorm = std::sqrt(accelCorrectionMaxGyroNormSq_);
+    stats_.lastGyroAngleRad = gyroNorm * accelCorrectionElapsedDtS_;
+
+    if (accelCorrectionValidDtS_ > MATH_EPSILON) {
+        const Vec3 averagedAccel = accelCorrectionWeightedSum_ / accelCorrectionValidDtS_;
+        const float averagedNorm = averagedAccel.norm();
+        updateAdaptiveAccelTrust(averagedNorm, gyroNorm, accelCorrectionValidSamples_);
+        applyAccelCorrection(averagedAccel, averagedNorm, accelCorrectionValidDtS_);
+    } else {
+        updateAdaptiveAccelTrust(0.0f, gyroNorm, representedSamples);
+        applyAccelCorrection(Vec3::zero(), 0.0f, accelCorrectionElapsedDtS_);
+    }
+
+    resetAccelCorrectionAccumulator();
 }
 
 Ahrs6DofDebugSnapshot makeAhrs6DofDebugSnapshot(const Ahrs6Dof& ahrs) {

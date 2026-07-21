@@ -43,6 +43,22 @@ quality/AHRS processing. Magnetometer data receives the same rotation after
 `magToImu`. With the default disabled transform, behavior remains legacy
 identity-compatible.
 
+### Optimized fusion cadence
+
+Gyro prediction remains at the full accepted IMU sample rate. The small-angle
+quaternion exponential uses a bounded polynomial for ordinary ~1 ms samples and
+falls back to the exact trigonometric path for larger rotation vectors. Quaternion
+normalization remains periodic. Gravity correction aggregates four accepted
+samples and applies the same represented valid time at roughly 230-240 Hz; it does
+not decimate gyro integration. Prepared motion snapshots are capped at 250 Hz,
+well above the 100 Hz network output, and invalid samples still fail closed
+immediately.
+
+The host regression suite compares the fast and previous exact gyro paths over an
+extreme two-hour 1000 dps trajectory, bounds single-step and acos approximation
+error, and verifies static tilt convergence. These tests protect long-duration
+orientation quality while removing redundant per-sample trigonometry.
+
 The prepared output snapshot is produced from one accepted IMU sample and carries
 the quaternion plus gravity-removed device-frame acceleration under the same
 timestamp. A snapshot is invalid unless the AHRS integrated or initialized at that

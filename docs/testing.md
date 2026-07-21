@@ -516,14 +516,15 @@ For SlimeVR output, also check the effective rotation rate:
 slime_rotation_rate_hz_observed ~= slime rate
 ```
 
-The default FIFO watermark is 12 words. Runtime draining is cooperative: each
-hardware read keeps the configured drain ceiling, and SPI read time is excluded
-from the callback budget. One app pass guarantees at least 12 callbacks, may
-process up to 24 while still inside the roughly 4.5 ms callback budget, then
-returns to network service. Remaining decoded samples continue on later passes.
+Production/Debug default to an 18-word FIFO watermark and 8 MHz SPI, with a
+4 MHz startup fallback. Hardware drains feed a 256-sample raw RAM ring and a
+64-sample mag ring. The consumer is work-conserving: each slice guarantees raw
+progress, favors raw IMU samples over mag callbacks, services network between
+slices, and receives a larger app budget when the raw queue reaches its urgent
+high-water threshold. Hardware SPI time is excluded from the callback budget.
 Long runtime/SlimeVR diagnostic reports cooperatively service FIFO and network
-between output sections; they may be invoked during motion without intentionally
-creating FIFO full/overrun events.
+between output sections. Healthy hardware tests must keep both hardware FIFO and
+RAM-ring overflow counters at zero.
 
 For a 100 Hz hardware cadence check, reset counters, move the tracker continuously
 for 20 seconds, then inspect `slime debug`, `status`, `quality stats`, and

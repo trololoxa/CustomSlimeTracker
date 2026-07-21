@@ -31,43 +31,6 @@ void trackerBootstrapEnforceProductCalibrationValidity(TrackerConfig& config) {
     config.updateCrc();
 }
 
-void trackerBootstrapMigrateRuntimeConfigForPerformance(TrackerConfig& config) {
-    // Old NVS configs used the original conservative 1 MHz SPI default.
-    // Upgrade that legacy value in RAM so the optimized build benefits
-    // immediately, while still allowing explicit config save/revert commands.
-    if (config.data.hardware.spiHz == tracker_config_detail::LEGACY_SPI_HZ) {
-        config.data.hardware.spiHz = tracker_config_detail::DEFAULT_SPI_HZ;
-    }
-
-    // Early SlimeVR UDP builds used a 48-word FIFO watermark. It was stable,
-    // but with the network loop outside FIFO batch processing it produced only
-    // ~23 Hz effective RotationData because the prepared quaternion snapshot
-    // changed once per FIFO drain. Runtime testing showed that 12 words keeps
-    // the full firmware stable while producing ~98 Hz RotationData. Migrate
-    // only the known legacy default; explicit user-tuned values are preserved.
-    if (config.data.fifo.watermarkWords == cfg::LEGACY_FIFO_WATERMARK_WORDS) {
-        config.data.fifo.watermarkWords = cfg::FIFO_WATERMARK_WORDS;
-    }
-
-#if TRACKER_BUILD_IS_SLIM
-    // Slim has no CLI, so do not preserve a high-latency FIFO watermark from a
-    // previous Debug/Production NVS profile. Keep the hardware FIFO watermark
-    // at or below the Slim default so prepared quaternion snapshots refresh
-    // with enough margin for the build-forced 125 TPS SlimeVR target.
-    if (config.data.fifo.watermarkWords == 0u ||
-        config.data.fifo.watermarkWords > cfg::FIFO_WATERMARK_WORDS) {
-        config.data.fifo.watermarkWords = cfg::FIFO_WATERMARK_WORDS;
-    }
-    if (config.data.output.outputRateHz == 0u ||
-        config.data.output.outputRateHz > cfg::OUTPUT_RATE_HZ_MAX) {
-        config.data.output.outputRateHz = cfg::OUTPUT_RATE_HZ;
-    }
-#endif
-
-    config.sanitize();
-    config.updateCrc();
-}
-
 void trackerBootstrapApplySpiConfigToTransport(TrackerConfig& config,
                                                       ArduinoLsm6dsvSpiTransport& lsmBus) {
     config.sanitize();
@@ -87,7 +50,7 @@ bool trackerBootstrapSetRuntimeSpiFrequency(TrackerConfig& config,
 bool trackerBootstrapLoadConfigAndApplyRuntime(const TrackerBootstrapDeps& deps) {
     deps.configStore->loadOrDefaults(*deps.config, deps.configLoadedFromNvs);
     deps.config->sanitize();
-    trackerBootstrapMigrateRuntimeConfigForPerformance(*deps.config);
+    trackerMigratePerformanceDefaults(*deps.config);
     trackerBootstrapEnforceProductCalibrationValidity(*deps.config);
 
     deps.config->applyToImuCalibration(*deps.imuCal);
@@ -130,13 +93,39 @@ bool trackerBootstrapInitLsm(const TrackerBootstrapDeps& deps) {
     Lsm6dsv::Config cfg = deps.config->makeLsmConfig();
 
     if (!deps.lsm->begin(cfg)) {
+        // 8 MHz is inside the LSM6DSV SPI limit and cuts FIFO transfer time in
+        // half, but long/noisy DIY wiring may not tolerate it. Fall back to the
+        // previous 4 MHz clock only after a real init/readback failure.
+        if (deps.config->data.hardware.spiHz > tracker_config_detail::SPI_FALLBACK_HZ) {
 #if TRACKER_HAS_SERIAL_CONSOLE
-        deps.out->print("# ERR LSM6DSV init failed error=");
-        deps.out->print(trackerBootstrapLsmErrorName(deps.lsm->lastError()));
-        deps.out->print(" who=0x");
-        deps.out->println(deps.lsm->lastWhoAmI(), HEX);
+            deps.out->println("# WARN LSM6DSV fast SPI init failed; retrying at 4 MHz");
 #endif
-        return false;
+            deps.config->data.hardware.spiHz = tracker_config_detail::SPI_FALLBACK_HZ;
+            deps.config->updateCrc();
+            deps.lsmBus->setSettings(deps.config->data.hardware.spiHz,
+                                     deps.config->data.hardware.spiMode);
+            if (deps.lsm->begin(cfg)) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+                deps.out->println("# WARN spi_fallback_active=yes");
+#endif
+            } else {
+#if TRACKER_HAS_SERIAL_CONSOLE
+                deps.out->print("# ERR LSM6DSV init failed error=");
+                deps.out->print(trackerBootstrapLsmErrorName(deps.lsm->lastError()));
+                deps.out->print(" who=0x");
+                deps.out->println(deps.lsm->lastWhoAmI(), HEX);
+#endif
+                return false;
+            }
+        } else {
+#if TRACKER_HAS_SERIAL_CONSOLE
+            deps.out->print("# ERR LSM6DSV init failed error=");
+            deps.out->print(trackerBootstrapLsmErrorName(deps.lsm->lastError()));
+            deps.out->print(" who=0x");
+            deps.out->println(deps.lsm->lastWhoAmI(), HEX);
+#endif
+            return false;
+        }
     }
 
 #if TRACKER_HAS_SERIAL_CONSOLE

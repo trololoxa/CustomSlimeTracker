@@ -592,11 +592,66 @@ inline Quat operator*(float s, const Quat& q) {
 // Gyro integration helpers
 // ============================================================
 
+inline Quat quaternionFromRotationVectorFast(const Vec3& rotVecRad) {
+    // High-rate exponential-map approximation. For the normal 960 Hz path,
+    // even 2000 dps is only about 0.036 rad/sample. Sixth-order terms keep
+    // the incremental quaternion effectively identical to sin/cos while
+    // avoiding sqrt/trigonometry. Large recovery/clamped steps use the exact
+    // implementation. The caller owns periodic quaternion normalization.
+    const float angleSq = rotVecRad.normSq();
+    if (!std::isfinite(angleSq)) return Quat::identity();
+    if (angleSq > 0.0400f) { // > 0.2 rad: retain exact large-step behavior.
+        return Quat::fromRotationVector(rotVecRad);
+    }
+
+    const float angle4 = angleSq * angleSq;
+    const float angle6 = angle4 * angleSq;
+    const float w = 1.0f - angleSq * (1.0f / 8.0f)
+                          + angle4 * (1.0f / 384.0f)
+                          - angle6 * (1.0f / 46080.0f);
+    const float vectorScale = 0.5f - angleSq * (1.0f / 48.0f)
+                                    + angle4 * (1.0f / 3840.0f)
+                                    - angle6 * (1.0f / 645120.0f);
+    return Quat(w,
+                rotVecRad.x * vectorScale,
+                rotVecRad.y * vectorScale,
+                rotVecRad.z * vectorScale);
+}
+
+inline Quat integrateBodyRateFast(const Quat& q_world_from_body,
+                                  const Vec3& gyro_body_rad_s,
+                                  float dt_s) {
+    const Quat dq = quaternionFromRotationVectorFast(gyro_body_rad_s * dt_s);
+    return q_world_from_body * dq;
+}
+
+inline Quat applyWorldCorrectionFast(const Quat& q_world_from_body,
+                                     const Vec3& correction_world_rad) {
+    const Quat dq = quaternionFromRotationVectorFast(correction_world_rad);
+    return dq * q_world_from_body;
+}
+
+inline float acosFastUnitDot(float x) {
+    // Minimax-style approximation with worst-case error below 7e-5 rad on
+    // [-1, 1]. This is used only for adaptive accel trust; the correction
+    // vector itself still comes from the exact cross-product geometry.
+    x = clampf(x, -1.0f, 1.0f);
+    const bool negative = x < 0.0f;
+    const float ax = negative ? -x : x;
+    float p = -0.0187293f;
+    p = p * ax + 0.0742610f;
+    p = p * ax - 0.2121144f;
+    p = p * ax + 1.5707288f;
+    const float angle = p * std::sqrt(1.0f - ax);
+    return negative ? MATH_PI - angle : angle;
+}
+
 inline Quat integrateBodyRate(const Quat& q_world_from_body,
                               const Vec3& gyro_body_rad_s,
                               float dt_s) {
-    // For q_world_from_body and body-frame gyro:
-    //   q_next = q * dq_body
+    // Exact/reference helper retained for calibration/tests and large one-off
+    // operations. The AHRS hot path uses integrateBodyRateFast() plus its
+    // configured periodic normalization.
     const Vec3 delta = gyro_body_rad_s * dt_s;
     const Quat dq = Quat::fromRotationVector(delta);
     return (q_world_from_body * dq).normalized();

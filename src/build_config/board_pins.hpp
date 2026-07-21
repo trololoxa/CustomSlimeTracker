@@ -13,8 +13,10 @@ static constexpr int PIN_LSM_CS   = 1;
 static constexpr int PIN_LSM_INT1 = 10;
 
 static constexpr uint32_t SERIAL_BAUD = 921600UL;
-static constexpr uint32_t SPI_HZ = 4000000UL;
+static constexpr uint32_t SPI_HZ = 8000000UL;
 static constexpr uint32_t LEGACY_SPI_HZ = 1000000UL;
+static constexpr uint32_t PREVIOUS_SPI_HZ = 4000000UL;
+static constexpr uint32_t SPI_FALLBACK_HZ = 4000000UL;
 static constexpr uint32_t MIN_SPI_HZ = 100000UL;
 static constexpr uint32_t MAX_SPI_HZ = 10000000UL;
 

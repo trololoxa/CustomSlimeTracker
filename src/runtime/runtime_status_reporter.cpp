@@ -41,6 +41,15 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
     out.print("fifo_int_missed="); out.println(deps.fifoEvents ? deps.fifoEvents->missedIrqCount() : 0UL);
     out.print("fifo_status_fallback_events="); out.println(deps.fifoEvents ? deps.fifoEvents->fallbackEvents() : 0UL);
     out.print("fifo_wait_timeouts="); out.println(deps.fifoEvents ? deps.fifoEvents->waitTimeouts() : 0UL);
+    out.print("fifo_runtime_raw_queue_depth="); out.println(deps.fifoRuntime ? deps.fifoRuntime->rawQueueDepth() : 0u);
+    out.print("fifo_runtime_mag_queue_depth="); out.println(deps.fifoRuntime ? deps.fifoRuntime->magQueueDepth() : 0u);
+    if (deps.fifoRuntime) {
+        const FifoRuntimeQueueStats& qs = deps.fifoRuntime->queueStats();
+        out.print("fifo_runtime_raw_queue_high_water="); out.println(qs.rawQueueHighWater);
+        out.print("fifo_runtime_mag_queue_high_water="); out.println(qs.magQueueHighWater);
+        out.print("fifo_runtime_raw_queue_overflow="); out.println(qs.rawQueueOverflow);
+        out.print("fifo_runtime_mag_queue_overflow="); out.println(qs.magQueueOverflow);
+    }
     out.print("latest_temp_c="); out.println(deps.latestTempC, 3);
 
     out.print("mag_enabled="); out.println(deps.config && deps.config->data.magCal.driverEnabled ? "yes" : "no");
@@ -192,6 +201,15 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
     out.print("overrun_events="); out.println(fs.overrunEvents);
     out.print("full_events="); out.println(fs.fullEvents);
     out.print("tag_counter_jumps="); out.println(fs.tagCounterJumps);
+    if (deps.fifoRuntime) {
+        const FifoRuntimeQueueStats& qs = deps.fifoRuntime->queueStats();
+        out.print("runtime_raw_queue_depth="); out.println(deps.fifoRuntime->rawQueueDepth());
+        out.print("runtime_raw_queue_high_water="); out.println(qs.rawQueueHighWater);
+        out.print("runtime_raw_queue_overflow="); out.println(qs.rawQueueOverflow);
+        out.print("runtime_mag_queue_depth="); out.println(deps.fifoRuntime->magQueueDepth());
+        out.print("runtime_mag_queue_high_water="); out.println(qs.magQueueHighWater);
+        out.print("runtime_mag_queue_overflow="); out.println(qs.magQueueOverflow);
+    }
     out.print("hw_ts_assigned="); out.println(fs.hwTimestampAssigned);
     out.print("fb_ts_assigned="); out.println(fs.fallbackTimestampAssigned);
     serviceNonCliRuntime(deps);

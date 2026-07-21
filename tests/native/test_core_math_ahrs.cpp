@@ -192,6 +192,111 @@ static void testAhrsRecoveryRebaseDiagnostics(TestContext& ctx) {
     CHECK(ctx, ahrs.stats().postFifoRecoverySamples == 2);
 }
 
+static float quatAngularErrorRad(const Quat& aIn, const Quat& bIn) {
+    const Quat a = aIn.normalized();
+    const Quat b = bIn.normalized();
+    const float d = std::fabs(a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z);
+    return 2.0f * std::acos(clampf(d, 0.0f, 1.0f));
+}
+
+static void testFastQuaternionMathAccuracy(TestContext& ctx) {
+    float maxStepError = 0.0f;
+    for (int i = 0; i <= 400; ++i) {
+        const float angle = -0.2f + 0.001f * static_cast<float>(i);
+        const Vec3 rv = Vec3(0.31f, -0.72f, 0.62f).normalized() * angle;
+        const Quat exact = Quat::fromRotationVector(rv);
+        const Quat fast = quaternionFromRotationVectorFast(rv);
+        const float err = quatAngularErrorRad(exact, fast);
+        if (err > maxStepError) maxStepError = err;
+        CHECK_NEAR(ctx, fast.norm(), 1.0f, 2.0e-6f);
+    }
+    CHECK(ctx, maxStepError < 1.0e-5f);
+
+    float maxAcosError = 0.0f;
+    for (int i = 0; i <= 2000; ++i) {
+        const float x = -1.0f + 0.001f * static_cast<float>(i);
+        const float err = std::fabs(std::acos(x) - acosFastUnitDot(x));
+        if (err > maxAcosError) maxAcosError = err;
+    }
+    CHECK(ctx, maxAcosError < 8.0e-5f);
+}
+
+static void testFastGyroIntegrationTwoHours(TestContext& ctx) {
+    constexpr uint32_t rateHz = 960;
+    constexpr uint32_t seconds = 2u * 60u * 60u;
+    const uint64_t samples = static_cast<uint64_t>(rateHz) * seconds;
+    const float dt = 1.0f / static_cast<float>(rateHz);
+    const Vec3 axis = Vec3(0.37f, -0.51f, 0.776f).normalized();
+    const Vec3 gyro = axis * (1000.0f * MATH_DEG_TO_RAD);
+
+    Quat fast = Quat::identity();
+    Quat previousExact = Quat::identity();
+    for (uint64_t i = 0; i < samples; ++i) {
+        fast = integrateBodyRateFast(fast, gyro, dt);
+        previousExact = integrateBodyRate(previousExact, gyro, dt);
+        if ((i & 15u) == 15u) fast.normalizeInPlace();
+    }
+    fast.normalizeInPlace();
+
+    // This is an intentionally extreme trajectory: two hours of continuous
+    // 1000 dps rotation (20,000 full turns). The optimized path must remain
+    // visually indistinguishable from the previous exact-per-sample path.
+    const float differenceDeg = quatAngularErrorRad(previousExact, fast) * MATH_RAD_TO_DEG;
+    CHECK_NEAR(ctx, fast.norm(), 1.0f, 2.0e-6f);
+    CHECK(ctx, differenceDeg < 0.15f);
+}
+
+static void testDecimatedAccelCorrectionConverges(TestContext& ctx) {
+    Ahrs6DofConfig cfg;
+    cfg.normalizeEvery = 16;
+    cfg.accelKp = 3.0f;
+    Ahrs6Dof ahrs(cfg);
+    ahrs.reset(Quat::fromAxisAngle(Vec3::unitX(), 25.0f * MATH_DEG_TO_RAD), 1000);
+
+    uint64_t timestamp = 1000;
+    for (uint32_t i = 0; i < 9600; ++i) {
+        timestamp += 1042;
+        CHECK(ctx, ahrs.update(Vec3::zero(), Vec3::unitZ(), 1.0f, timestamp));
+    }
+
+    const Vec3 mappedUp = ahrs.quaternion().rotate(Vec3::unitZ()).normalized();
+    const float tiltErrorDeg = std::acos(clampf(dot(mappedUp, Vec3::unitZ()), -1.0f, 1.0f)) * MATH_RAD_TO_DEG;
+    CHECK(ctx, tiltErrorDeg < 0.05f);
+    CHECK_NEAR(ctx, ahrs.quaternion().norm(), 1.0f, 2.0e-5f);
+    CHECK(ctx, ahrs.stats().accelUpdateCount > 2000u);
+    CHECK(ctx, ahrs.stats().accelUpdateCount < 2500u);
+}
+
+static void testTwoHourStaticTiltRemainsBounded(TestContext& ctx) {
+    Ahrs6DofConfig cfg;
+    cfg.normalizeEvery = 16;
+    cfg.accelKp = 3.0f;
+    Ahrs6Dof ahrs(cfg);
+    ahrs.reset(Quat::identity(), 1000);
+
+    constexpr uint64_t samples = 960ULL * 2ULL * 60ULL * 60ULL;
+    const Vec3 gyroBias(0.03f * MATH_DEG_TO_RAD,
+                       -0.02f * MATH_DEG_TO_RAD,
+                       0.01f * MATH_DEG_TO_RAD);
+    uint64_t timestamp = 1000;
+    uint32_t rng = 0x13579BDFu;
+    for (uint64_t i = 0; i < samples; ++i) {
+        timestamp += 1042;
+        rng = rng * 1664525u + 1013904223u;
+        const float nx = (static_cast<float>(rng >> 8) * (1.0f / 16777215.0f) - 0.5f) * 0.004f;
+        rng = rng * 1664525u + 1013904223u;
+        const float ny = (static_cast<float>(rng >> 8) * (1.0f / 16777215.0f) - 0.5f) * 0.004f;
+        const Vec3 accel(nx, ny, 1.0f);
+        CHECK(ctx, ahrs.update(gyroBias, accel, accel.norm(), timestamp));
+    }
+
+    const Vec3 mappedUp = ahrs.quaternion().rotate(Vec3::unitZ()).normalized();
+    const float tiltErrorDeg =
+        std::acos(clampf(dot(mappedUp, Vec3::unitZ()), -1.0f, 1.0f)) * MATH_RAD_TO_DEG;
+    CHECK(ctx, tiltErrorDeg < 0.10f);
+    CHECK_NEAR(ctx, ahrs.quaternion().norm(), 1.0f, 2.0e-5f);
+}
+
 int main() {
     TestContext ctx;
     testVecMatQuat(ctx);
@@ -199,5 +304,9 @@ int main() {
     testAhrsStartupAndDtPolicy(ctx);
     testAhrsRecoveryRebaseDiagnostics(ctx);
     testAhrsTiltReacquisitionPreservesHeading(ctx);
+    testFastQuaternionMathAccuracy(ctx);
+    testFastGyroIntegrationTwoHours(ctx);
+    testTwoHourStaticTiltRemainsBounded(ctx);
+    testDecimatedAccelCorrectionConverges(ctx);
     return ctx.finish("test_core_math_ahrs");
 }

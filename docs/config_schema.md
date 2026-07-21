@@ -51,6 +51,13 @@ When changing persisted structs:
 
 Current config hardening is intentionally low-cost: compile-time/native-test layout guards and host tests are preferred over runtime-heavy migration logic. Keep network credentials in the separate `TrackerNetworkConfig` namespace so IMU/calibration resets do not expose or erase Wi-Fi secrets by accident.
 
+The default LSM SPI clock for new/default configs is 8 MHz and the non-Slim
+watermark default is 18 words. Existing valid NVS values are deliberately
+preserved so performance updates cannot erase or silently reinterpret calibrated
+trackers. Users may opt in with `config spi 8000000 save` and
+`fifo watermark 18 save`; LSM startup retries at 4 MHz if the higher clock fails.
+No schema, persisted layout or total blob-size change is required.
+
 ## Current frame and gyro-temperature semantics
 
 `frame.sensorToDevice` is persisted and applied only as a physical

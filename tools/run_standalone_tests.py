@@ -47,6 +47,7 @@ PROJECT_SOURCES = [
     pathlib.Path("src/connection/lsm6dsv_fifo.cpp"),
     pathlib.Path("src/runtime/fifo_runtime_processor.cpp"),
     pathlib.Path("src/config/tracker_config_runtime.cpp"),
+    pathlib.Path("src/config/tracker_config_calibration_capture.cpp"),
     pathlib.Path("src/output/slimevr_packet_writer.cpp"),
     pathlib.Path("src/network/wifi_manager.cpp"),
     pathlib.Path("src/network/udp_transport.cpp"),
@@ -63,6 +64,11 @@ COMPILE_ONLY_SOURCES = [
     pathlib.Path("src/runtime/imu_sample_pipeline.cpp"),
     pathlib.Path("src/runtime/runtime_status_reporter.cpp"),
     pathlib.Path("src/serial/tracker_slimevr_commands.cpp"),
+]
+
+ARDUINO_COMPILE_ONLY_SOURCES = [
+    pathlib.Path("src/app/tracker_app.cpp"),
+    pathlib.Path("src/app/tracker_bootstrap.cpp"),
 ]
 
 WARNING_FLAGS = [
@@ -198,6 +204,8 @@ def main() -> int:
         project_objects = compile_project_objects(cxx, args.extra_cxxflag)
         for source in COMPILE_ONLY_SOURCES:
             compile_object(cxx, source, object_path_for(source), args.extra_cxxflag)
+        for source in ARDUINO_COMPILE_ONLY_SOURCES:
+            compile_object(cxx, source, object_path_for(source), [*args.extra_cxxflag, "-DARDUINO"])
         for source in sources:
             exe = BUILD_DIR / (source.stem + executable_suffix())
             compile_one(cxx, source, exe, project_objects, args.extra_cxxflag)

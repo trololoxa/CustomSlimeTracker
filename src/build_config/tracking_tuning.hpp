@@ -9,15 +9,14 @@ namespace tracker::cfg {
 
 // FIFO / runtime loop defaults.
 static constexpr uint8_t LEGACY_FIFO_WATERMARK_WORDS = 48;
-// SlimeVR UDP output is paced from prepared quaternion snapshots. With the
-// original 48-word FIFO watermark, snapshots were only refreshed at about
-// 23 Hz because samples arrived in large FIFO batches. A 12-word watermark
-// keeps FIFO/AHRS latency low enough for a real ~100 Hz RotationData stream
-// while the runtime test still shows no drops/recovery on the target board.
+static constexpr uint8_t PREVIOUS_FIFO_WATERMARK_WORDS = 12;
+// A modestly larger watermark amortizes status/SPI transaction overhead while
+// keeping a full batch below one 100 Hz output interval at the 960 Hz IMU ODR.
+// The RAM queue and work-conserving consumer absorb larger transient bursts.
 #if TRACKER_BUILD_IS_SLIM
 static constexpr uint8_t FIFO_WATERMARK_WORDS = 9;
 #else
-static constexpr uint8_t FIFO_WATERMARK_WORDS = 12;
+static constexpr uint8_t FIFO_WATERMARK_WORDS = 18;
 #endif
 static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN = 384;
 static constexpr uint8_t FIFO_MAX_DRAIN_ROUNDS_PER_EVENT = 6;
@@ -25,9 +24,21 @@ static constexpr uint8_t FIFO_MAX_DRAIN_ROUNDS_PER_EVENT = 6;
 // 100 Hz UDP scheduler between IMU batches. Hardware SPI drain time is not part
 // of this budget: once a batch has been copied out of the sensor, processing
 // must make guaranteed forward progress or the hardware FIFO can overflow.
-static constexpr uint8_t FIFO_RUNTIME_MIN_CALLBACKS_PER_SLICE = 12;
-static constexpr uint8_t FIFO_RUNTIME_MAX_CALLBACKS_PER_SLICE = 24;
-static constexpr uint32_t FIFO_RUNTIME_SLICE_BUDGET_US = 4500;
+static constexpr uint8_t FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE = 12;
+static constexpr uint8_t FIFO_RUNTIME_MAX_RAW_CALLBACKS_PER_SLICE = 48;
+static constexpr uint8_t FIFO_RUNTIME_MAX_MAG_CALLBACKS_PER_SLICE = 2;
+static constexpr uint32_t FIFO_RUNTIME_SLICE_BUDGET_US = 3500;
+static constexpr uint32_t FIFO_RUNTIME_APP_BUDGET_US = 9000;
+static constexpr uint32_t FIFO_RUNTIME_URGENT_BUDGET_US = 18000;
+static constexpr size_t FIFO_RUNTIME_RAW_QUEUE_CAPACITY = 256;
+static constexpr size_t FIFO_RUNTIME_MAG_QUEUE_CAPACITY = 64;
+static constexpr size_t FIFO_RUNTIME_RAW_QUEUE_HIGH_WATER = 96;
+
+// Gyro prediction remains at the full IMU ODR. Gravity correction and prepared
+// motion snapshots run at a still-high sub-rate to remove redundant trigonometry
+// and quaternion/world-vector work without reducing observable tracking bandwidth.
+static constexpr uint8_t AHRS_ACCEL_CORRECTION_DIVISOR = 4;
+static constexpr uint32_t PREPARED_OUTPUT_MIN_INTERVAL_US = 4000;
 static constexpr uint8_t FIFO_MAX_WAITING_SAMPLES_BEFORE_FALLBACK = 32;
 
 static constexpr size_t FIFO_RAW_BUFFER_CAPACITY = 160;

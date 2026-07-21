@@ -1,6 +1,7 @@
 #include "runtime/fifo_runtime_processor.hpp"
 
 #include "build_config/profile_contract.hpp"
+#include "build_config/tracking_tuning.hpp"
 
 namespace tracker {
 
@@ -92,29 +93,40 @@ uint32_t FifoInterruptEventSource::lastHandledIrqCount() const { return lastHand
 
 void FifoRuntimeProcessor::begin(FifoInterruptEventSource* eventSource,
                                  Lsm6dsvFifoReader* fifo,
-                                 Lsm6dsv::RawSample* rawBuffer,
-                                 size_t rawBufferCapacity,
-                                 Lsm6dsvFifoReader::MagRawSample* magBuffer,
-                                 size_t magBufferCapacity,
+                                 Lsm6dsv::RawSample* rawDrainBuffer,
+                                 size_t rawDrainBufferCapacity,
+                                 Lsm6dsvFifoReader::MagRawSample* magDrainBuffer,
+                                 size_t magDrainBufferCapacity,
+                                 Lsm6dsv::RawSample* rawQueueBuffer,
+                                 uint8_t* rawQueueFlags,
+                                 size_t rawQueueCapacity,
+                                 Lsm6dsvFifoReader::MagRawSample* magQueueBuffer,
+                                 size_t magQueueCapacity,
                                  FifoRuntimeSampleCallback sampleCallback,
                                  FifoRuntimeMagCallback magCallback,
                                  FifoRuntimeRecordTimeCallback recordTimeCallback,
                                  void* callbackUser) {
     eventSource_ = eventSource;
     fifo_ = fifo;
-    rawBuffer_ = rawBuffer;
-    rawBufferCapacity_ = rawBufferCapacity;
-    magBuffer_ = magBuffer;
-    magBufferCapacity_ = magBufferCapacity;
+    rawDrainBuffer_ = rawDrainBuffer;
+    rawDrainBufferCapacity_ = rawDrainBufferCapacity;
+    magDrainBuffer_ = magDrainBuffer;
+    magDrainBufferCapacity_ = magDrainBufferCapacity;
+    rawQueueBuffer_ = rawQueueBuffer;
+    rawQueueFlags_ = rawQueueFlags;
+    rawQueueCapacity_ = rawQueueCapacity;
+    magQueueBuffer_ = magQueueBuffer;
+    magQueueCapacity_ = magQueueCapacity;
     sampleCallback_ = sampleCallback;
     magCallback_ = magCallback;
     recordTimeCallback_ = recordTimeCallback;
     callbackUser_ = callbackUser;
+    queueStats_ = FifoRuntimeQueueStats{};
     resetWork();
 }
 
 void FifoRuntimeProcessor::resetWork() {
-    clearPendingBatch();
+    clearQueues();
     drainActive_ = false;
     drainRoundsRemaining_ = 0;
 }
@@ -131,84 +143,35 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
     const uint32_t fifoProcessStartUs = 0;
 #endif
 
-    if (!hasPendingCallbacks() && !drainActive_) {
-        if (!eventSource_->consume(0, watermarkWords)) return false;
-        drainActive_ = true;
-        drainRoundsRemaining_ = maxDrainRoundsPerEvent > 0u ? maxDrainRoundsPerEvent : 1u;
+    bool worked = false;
+    if (!drainActive_) {
+        worked = beginDrainEvent(watermarkWords, maxDrainRoundsPerEvent);
     }
 
-    if (!hasPendingCallbacks()) {
-        if (!drainActive_ || drainRoundsRemaining_ == 0u) {
-            drainActive_ = false;
-            recordElapsed(fifoProcessStartUs);
-            return true;
-        }
-
-        --drainRoundsRemaining_;
-        const uint16_t configuredMaxWords = maxWordsPerDrain > 0u ? maxWordsPerDrain : 1u;
-        const uint64_t drainTimestampUs = micros();
-
-        size_t rawCount = 0;
-        const bool ok = fifo_->drainRawSamples(
-            rawBuffer_,
-            rawBufferCapacity_,
-            rawCount,
-            drainTimestampUs,
-            configuredMaxWords
-        );
-        pendingRawCount_ = rawCount;
-        pendingRawIndex_ = 0;
-        pendingMagCount_ = fifo_->popMagSamples(magBuffer_, magBufferCapacity_);
-        pendingMagIndex_ = 0;
-        pendingCheckFifoStatsDelta_ = pendingRawCount_ != 0u;
-
-        if (!ok) {
-            out.println("# ERR FIFO drain failed");
-            clearPendingBatch();
-            drainActive_ = false;
-            drainRoundsRemaining_ = 0;
-            recordElapsed(fifoProcessStartUs);
-            return true;
-        }
-
-        if (!hasPendingCallbacks()) {
-            // A status read with no produced samples means this event is fully
-            // drained.  Do not burn the remaining configured rounds in the
-            // same app pass; a new IRQ/fallback poll will restart work.
-            drainActive_ = false;
-            drainRoundsRemaining_ = 0;
-            recordElapsed(fifoProcessStartUs);
-            return true;
-        }
+    // Copy hardware FIFO data into the RAM queue before spending time on AHRS.
+    // This gives short Wi-Fi/CLI stalls hundreds of milliseconds of headroom.
+    if (drainActive_ && drainRoundsRemaining_ > 0u &&
+        rawQueueCount_ < rawQueueCapacity_) {
+        worked = drainOneRound(maxWordsPerDrain, out) || worked;
     }
 
-    // The SPI drain above can legitimately take several milliseconds for a
-    // large batch. Do not charge that time to the callback/AHRS slice: doing so
-    // can reduce progress to one sample per app pass and let the hardware FIFO
-    // overflow while already-drained samples wait in RAM.
     const uint32_t callbackSliceStartUs = micros();
-    uint8_t callbacks = 0;
-    while (hasPendingCallbacks()) {
-        if (pendingMagIndex_ < pendingMagCount_) {
-            magCallback_(magBuffer_[pendingMagIndex_++], callbackUser_);
-        } else {
-            const bool checkStats = pendingCheckFifoStatsDelta_;
-            pendingCheckFifoStatsDelta_ = false;
-            if (sampleCallback_(rawBuffer_[pendingRawIndex_++], checkStats, callbackUser_) ==
-                FifoRuntimeSampleResult::FifoRecovered) {
-                // The local batch predates the reset.  Discard every remaining
-                // callback and require a fresh interrupt/status observation.
-                clearPendingBatch();
-                drainActive_ = false;
-                drainRoundsRemaining_ = 0;
-                recordElapsed(fifoProcessStartUs);
-                return true;
-            }
+    uint8_t rawCallbacks = 0;
+    Lsm6dsv::RawSample raw;
+    bool checkStats = false;
+    while (dequeueRaw(raw, checkStats)) {
+        worked = true;
+        if (sampleCallback_(raw, checkStats, callbackUser_) ==
+            FifoRuntimeSampleResult::FifoRecovered) {
+            // Every queued sample predates the hardware reset.
+            resetWork();
+            recordElapsed(fifoProcessStartUs);
+            return true;
         }
-
-        ++callbacks;
-        if (callbacks >= cfg::FIFO_RUNTIME_MAX_CALLBACKS_PER_SLICE) break;
-        if (callbacks >= cfg::FIFO_RUNTIME_MIN_CALLBACKS_PER_SLICE &&
+        queueStats_.rawProcessed++;
+        ++rawCallbacks;
+        if (rawCallbacks >= cfg::FIFO_RUNTIME_MAX_RAW_CALLBACKS_PER_SLICE) break;
+        if (rawCallbacks >= cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE &&
             cfg::FIFO_RUNTIME_SLICE_BUDGET_US != 0u &&
             static_cast<uint32_t>(micros() - callbackSliceStartUs) >=
                 cfg::FIFO_RUNTIME_SLICE_BUDGET_US) {
@@ -216,38 +179,148 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
         }
     }
 
-    if (!hasPendingCallbacks()) {
-        clearPendingBatch();
-        if (drainRoundsRemaining_ == 0u) {
-            drainActive_ = false;
-        }
+    // Magnetometer callbacks use a separate small budget so a 60 Hz sensor-hub
+    // burst can never consume the raw-IMU forward-progress allowance.
+    uint8_t magCallbacks = 0;
+    Lsm6dsvFifoReader::MagRawSample mag;
+    while (magCallbacks < cfg::FIFO_RUNTIME_MAX_MAG_CALLBACKS_PER_SLICE && dequeueMag(mag)) {
+        magCallback_(mag, callbackUser_);
+        queueStats_.magProcessed++;
+        ++magCallbacks;
+        worked = true;
+    }
+
+    if (drainActive_ && drainRoundsRemaining_ == 0u) {
+        drainActive_ = false;
     }
 
     recordElapsed(fifoProcessStartUs);
+    return worked;
+}
+
+bool FifoRuntimeProcessor::beginDrainEvent(uint16_t watermarkWords,
+                                           uint8_t maxDrainRoundsPerEvent) {
+    if (!eventSource_->consume(0, watermarkWords)) return false;
+    drainActive_ = true;
+    drainRoundsRemaining_ = maxDrainRoundsPerEvent > 0u ? maxDrainRoundsPerEvent : 1u;
     return true;
 }
 
-bool FifoRuntimeProcessor::hasPendingCallbacks() const {
-    return pendingMagIndex_ < pendingMagCount_ || pendingRawIndex_ < pendingRawCount_;
+bool FifoRuntimeProcessor::drainOneRound(uint16_t maxWordsPerDrain, Stream& out) {
+    const size_t rawFree = rawQueueCapacity_ - rawQueueCount_;
+    const size_t magFree = magQueueCapacity_ - magQueueCount_;
+    if (rawFree == 0u || drainRoundsRemaining_ == 0u) return false;
+
+    --drainRoundsRemaining_;
+    const size_t rawCapacity = rawFree < rawDrainBufferCapacity_ ? rawFree : rawDrainBufferCapacity_;
+    const size_t magCapacity = magFree < magDrainBufferCapacity_ ? magFree : magDrainBufferCapacity_;
+    const uint16_t configuredMaxWords = maxWordsPerDrain > 0u ? maxWordsPerDrain : 1u;
+
+    size_t rawCount = 0;
+    const bool ok = fifo_->drainRawSamples(rawDrainBuffer_,
+                                           rawCapacity,
+                                           rawCount,
+                                           micros(),
+                                           configuredMaxWords);
+    if (!ok) {
+        out.println("# ERR FIFO drain failed");
+        resetWork();
+        return true;
+    }
+
+    const size_t magCount = fifo_->popMagSamples(magDrainBuffer_, magCapacity);
+    queueStats_.hardwareDrains++;
+
+    for (size_t i = 0; i < rawCount; ++i) {
+        if (!enqueueRaw(rawDrainBuffer_[i], i == 0u)) {
+            queueStats_.rawQueueOverflow++;
+            break;
+        }
+    }
+    for (size_t i = 0; i < magCount; ++i) {
+        if (!enqueueMag(magDrainBuffer_[i])) {
+            queueStats_.magQueueOverflow++;
+            break;
+        }
+    }
+
+    if (rawCount == 0u && magCount == 0u) {
+        drainActive_ = false;
+        drainRoundsRemaining_ = 0;
+    }
+    return true;
 }
 
-void FifoRuntimeProcessor::clearPendingBatch() {
-    pendingRawCount_ = 0;
-    pendingRawIndex_ = 0;
-    pendingMagCount_ = 0;
-    pendingMagIndex_ = 0;
-    pendingCheckFifoStatsDelta_ = false;
+bool FifoRuntimeProcessor::enqueueRaw(const Lsm6dsv::RawSample& raw, bool checkStats) {
+    if (rawQueueCount_ >= rawQueueCapacity_) return false;
+    rawQueueBuffer_[rawQueueTail_] = raw;
+    rawQueueFlags_[rawQueueTail_] = checkStats ? 1u : 0u;
+    rawQueueTail_ = (rawQueueTail_ + 1u) % rawQueueCapacity_;
+    ++rawQueueCount_;
+    ++queueStats_.rawQueued;
+    if (rawQueueCount_ > queueStats_.rawQueueHighWater) {
+        queueStats_.rawQueueHighWater = rawQueueCount_;
+    }
+    return true;
 }
+
+bool FifoRuntimeProcessor::enqueueMag(const Lsm6dsvFifoReader::MagRawSample& mag) {
+    if (magQueueCount_ >= magQueueCapacity_) return false;
+    magQueueBuffer_[magQueueTail_] = mag;
+    magQueueTail_ = (magQueueTail_ + 1u) % magQueueCapacity_;
+    ++magQueueCount_;
+    ++queueStats_.magQueued;
+    if (magQueueCount_ > queueStats_.magQueueHighWater) {
+        queueStats_.magQueueHighWater = magQueueCount_;
+    }
+    return true;
+}
+
+bool FifoRuntimeProcessor::dequeueRaw(Lsm6dsv::RawSample& raw, bool& checkStats) {
+    if (rawQueueCount_ == 0u) return false;
+    raw = rawQueueBuffer_[rawQueueHead_];
+    checkStats = rawQueueFlags_[rawQueueHead_] != 0u;
+    rawQueueHead_ = (rawQueueHead_ + 1u) % rawQueueCapacity_;
+    --rawQueueCount_;
+    return true;
+}
+
+bool FifoRuntimeProcessor::dequeueMag(Lsm6dsvFifoReader::MagRawSample& mag) {
+    if (magQueueCount_ == 0u) return false;
+    mag = magQueueBuffer_[magQueueHead_];
+    magQueueHead_ = (magQueueHead_ + 1u) % magQueueCapacity_;
+    --magQueueCount_;
+    return true;
+}
+
+void FifoRuntimeProcessor::clearQueues() {
+    rawQueueHead_ = 0;
+    rawQueueTail_ = 0;
+    rawQueueCount_ = 0;
+    magQueueHead_ = 0;
+    magQueueTail_ = 0;
+    magQueueCount_ = 0;
+}
+
+bool FifoRuntimeProcessor::hasPendingWork() const {
+    return drainActive_ || rawQueueCount_ != 0u || magQueueCount_ != 0u;
+}
+
+bool FifoRuntimeProcessor::urgent() const {
+    return rawQueueCount_ >= cfg::FIFO_RUNTIME_RAW_QUEUE_HIGH_WATER;
+}
+
+size_t FifoRuntimeProcessor::rawQueueDepth() const { return rawQueueCount_; }
+size_t FifoRuntimeProcessor::magQueueDepth() const { return magQueueCount_; }
+const FifoRuntimeQueueStats& FifoRuntimeProcessor::queueStats() const { return queueStats_; }
 
 bool FifoRuntimeProcessor::ready() const {
-    return eventSource_ != nullptr &&
-           fifo_ != nullptr &&
-           rawBuffer_ != nullptr &&
-           rawBufferCapacity_ > 0u &&
-           magBuffer_ != nullptr &&
-           magBufferCapacity_ > 0u &&
-           sampleCallback_ != nullptr &&
-           magCallback_ != nullptr &&
+    return eventSource_ != nullptr && fifo_ != nullptr &&
+           rawDrainBuffer_ != nullptr && rawDrainBufferCapacity_ > 0u &&
+           magDrainBuffer_ != nullptr && magDrainBufferCapacity_ > 0u &&
+           rawQueueBuffer_ != nullptr && rawQueueFlags_ != nullptr && rawQueueCapacity_ > 0u &&
+           magQueueBuffer_ != nullptr && magQueueCapacity_ > 0u &&
+           sampleCallback_ != nullptr && magCallback_ != nullptr &&
            recordTimeCallback_ != nullptr;
 }
 

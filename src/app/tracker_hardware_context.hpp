@@ -28,6 +28,8 @@ static constexpr uint8_t SPI_MODE_DEFAULT = cfg::SPI_MODE;
 
 static constexpr size_t FIFO_RAW_BUFFER_CAPACITY = cfg::FIFO_RAW_BUFFER_CAPACITY;
 static constexpr size_t MAG_RAW_BUFFER_CAPACITY = cfg::MAG_RAW_BUFFER_CAPACITY;
+static constexpr size_t FIFO_RUNTIME_RAW_QUEUE_CAPACITY = cfg::FIFO_RUNTIME_RAW_QUEUE_CAPACITY;
+static constexpr size_t FIFO_RUNTIME_MAG_QUEUE_CAPACITY = cfg::FIFO_RUNTIME_MAG_QUEUE_CAPACITY;
 static constexpr float MAG_HUB_PERIOD_US = cfg::MAG_HUB_PERIOD_US;
 static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN_DEFAULT = cfg::FIFO_MAX_WORDS_PER_DRAIN;
 static constexpr uint8_t MAX_DRAIN_ROUNDS_PER_EVENT_DEFAULT = cfg::FIFO_MAX_DRAIN_ROUNDS_PER_EVENT;
@@ -46,6 +48,9 @@ static Qmc6309 qmc(lsmHub);
 
 static Lsm6dsv::RawSample g_fifoRaw[FIFO_RAW_BUFFER_CAPACITY];
 static Lsm6dsvFifoReader::MagRawSample g_magRaw[MAG_RAW_BUFFER_CAPACITY];
+static Lsm6dsv::RawSample g_fifoRuntimeRawQueue[FIFO_RUNTIME_RAW_QUEUE_CAPACITY];
+static uint8_t g_fifoRuntimeRawQueueFlags[FIFO_RUNTIME_RAW_QUEUE_CAPACITY];
+static Lsm6dsvFifoReader::MagRawSample g_fifoRuntimeMagQueue[FIFO_RUNTIME_MAG_QUEUE_CAPACITY];
 
 static volatile uint32_t g_fifoIntCount = 0;
 static volatile uint32_t g_fifoLastIrqUs = 0;

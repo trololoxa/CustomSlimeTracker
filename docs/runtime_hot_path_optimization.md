@@ -1,8 +1,9 @@
 # Runtime hot-path optimization notes
 
-This document tracks the safe runtime optimizations that do not change IMU ODR,
-LSM6DSV performance mode, AHRS math, calibration application or SlimeVR
-RotationData quaternion quality.
+This document tracks runtime optimizations that preserve IMU ODR, LSM6DSV
+performance mode, calibration semantics and observable SlimeVR quaternion quality.
+AHRS implementation details may change only behind explicit numerical and
+long-duration regression gates.
 
 ## SlimeVR runtime configuration policy
 
@@ -194,14 +195,19 @@ default because a product thermal/current benefit is not proven.
 
 ## Cooperative FIFO scheduling
 
-Production runtime no longer processes every decoded sample from a large FIFO
-event in one app-loop pass. Hardware reads keep the existing configured drain
-ceiling, while pending callbacks resume in slices of at most 12 callbacks or
-about 4.5 ms. This keeps the single-owner network scheduler responsive without
-creating another FreeRTOS task, dropping IMU samples, or invoking UDP from inside
-the AHRS sample callback. Manual, network-scan and magnetometer-triggered FIFO
-resets clear the local pending batch so pre-reset samples cannot leak into the
-new stream.
+Hardware FIFO drains now enqueue decoded data into fixed RAM rings (256 raw IMU
+samples and 64 magnetometer samples). The consumer is work-conserving: raw IMU
+callbacks have priority, mag work has its own small slice limit, and network is
+serviced between slices. Ordinary catch-up receives a 9 ms app budget; a raw queue
+at or above the urgent high-water threshold receives up to 18 ms while still
+checkpointing network. Each slice guarantees at least 12 raw callbacks and may
+process up to 48 inside a 3.5 ms callback budget. Manual, network-scan and
+magnetometer-triggered FIFO resets clear all queued pre-reset data.
+
+The default SPI clock for new/default configs is 8 MHz with an automatic 4 MHz
+startup fallback, and the Production/Debug FIFO watermark default is 18 words.
+Existing NVS values are preserved; an already-calibrated tracker opts in explicitly
+with `config spi 8000000 save` and `fifo watermark 18 save`.
 
 Runtime tests report:
 

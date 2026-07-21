@@ -36,6 +36,8 @@ static constexpr uint8_t AHRS_RUNTIME_FLAG_RUNTIME_BIAS_ENABLED = 0x01;
 
 static constexpr uint32_t DEFAULT_SPI_HZ = cfg::SPI_HZ;
 static constexpr uint32_t LEGACY_SPI_HZ = cfg::LEGACY_SPI_HZ;
+static constexpr uint32_t PREVIOUS_SPI_HZ = cfg::PREVIOUS_SPI_HZ;
+static constexpr uint32_t SPI_FALLBACK_HZ = cfg::SPI_FALLBACK_HZ;
 static constexpr uint32_t MIN_SPI_HZ = cfg::MIN_SPI_HZ;
 static constexpr uint32_t MAX_SPI_HZ = cfg::MAX_SPI_HZ;
 

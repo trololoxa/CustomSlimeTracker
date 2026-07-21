@@ -1,5 +1,7 @@
 #include "runtime/output_runtime.hpp"
 
+#include "build_config/tracking_tuning.hpp"
+
 namespace tracker {
 
 void outputPrintU64Dec(Stream& out, uint64_t v) {
@@ -35,6 +37,7 @@ bool PreparedOutputRuntime::enabled(const TrackerConfig& config) const {
 void PreparedOutputRuntime::reset() {
     snapshot_ = TrackerPreparedOutputSnapshot{};
     seqLock_ = 0;
+    lastPublishedTimestampUs_ = 0;
 }
 
 void PreparedOutputRuntime::update(const TrackerConfig& config,
@@ -46,13 +49,23 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
 #if TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
     if (!enabled(config)) return;
 
-    uint32_t startSeq = seqLock_ + 1u;
-    if ((startSeq & 1u) == 0u) startSeq++;
-    seqLock_ = startSeq;
-
     const Ahrs6DofStats& ast = ahrs.stats();
     const bool orientationCoherent =
         ahrs.initialized() && timestampUs != 0 && ast.lastIntegratedTimestampUs == timestampUs;
+
+    // Never retain a stale valid snapshot across an AHRS-rejected sample. Valid
+    // snapshots may otherwise be rate-limited because SlimeVR consumes at 100
+    // Hz and does not benefit from rebuilding gravity/linear acceleration at
+    // the full 960 Hz IMU ODR.
+    if (orientationCoherent && lastPublishedTimestampUs_ != 0u &&
+        timestampUs > lastPublishedTimestampUs_ &&
+        timestampUs - lastPublishedTimestampUs_ < cfg::PREPARED_OUTPUT_MIN_INTERVAL_US) {
+        return;
+    }
+
+    uint32_t startSeq = seqLock_ + 1u;
+    if ((startSeq & 1u) == 0u) startSeq++;
+    seqLock_ = startSeq;
 
     snapshot_.valid = orientationCoherent;
     snapshot_.linearAccelerationValid = false;
@@ -78,6 +91,7 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
         }
     }
 
+    lastPublishedTimestampUs_ = orientationCoherent ? timestampUs : 0u;
     seqLock_ = startSeq + 1u;
 #else
     (void)config;

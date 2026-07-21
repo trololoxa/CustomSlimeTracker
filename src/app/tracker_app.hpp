@@ -44,6 +44,11 @@ struct TrackerAppBuffers {
     size_t fifoRawCapacity = 0;
     Lsm6dsvFifoReader::MagRawSample* magRaw = nullptr;
     size_t magRawCapacity = 0;
+    Lsm6dsv::RawSample* fifoRuntimeRawQueue = nullptr;
+    uint8_t* fifoRuntimeRawQueueFlags = nullptr;
+    size_t fifoRuntimeRawQueueCapacity = 0;
+    Lsm6dsvFifoReader::MagRawSample* fifoRuntimeMagQueue = nullptr;
+    size_t fifoRuntimeMagQueueCapacity = 0;
 };
 
 struct TrackerAppTimingConfig {

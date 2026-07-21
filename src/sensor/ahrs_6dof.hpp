@@ -202,12 +202,23 @@ private:
     static float rampDown(float x, float good, float bad);
 
     AccelEvaluation evaluateAccel(const Vec3& accelG, float accelNormG) const;
-    void updateAdaptiveAccelTrust(float accelNormG, float gyroNorm);
+    void updateAdaptiveAccelTrust(float accelNormG, float gyroNorm, uint8_t representedSamples);
     void applyAccelCorrection(const Vec3& accelG, float accelNormG, float dtS);
+    void resetAccelCorrectionAccumulator();
+    void accumulateAccelCorrection(const Vec3& accelG,
+                                   float accelNormG,
+                                   float gyroNormSq,
+                                   float dtS);
 
     Ahrs6DofConfig cfg_;
     Ahrs6DofStats stats_;
     Quat q_ = Quat::identity();
+    Vec3 accelCorrectionWeightedSum_ = Vec3::zero();
+    float accelCorrectionValidDtS_ = 0.0f;
+    float accelCorrectionElapsedDtS_ = 0.0f;
+    float accelCorrectionMaxGyroNormSq_ = 0.0f;
+    uint8_t accelCorrectionSamples_ = 0;
+    uint8_t accelCorrectionValidSamples_ = 0;
     bool initialized_ = false;
 };
 

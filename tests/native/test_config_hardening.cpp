@@ -182,6 +182,28 @@ static void testSanitizeNeutralizesCompatibilityReservedFields(TestContext& ctx)
     CHECK(ctx, cfg.data.reservedDevice.reservedDeviceName[0] == '\0');
 }
 
+static void testPerformanceDefaultMigrationPreservesCurrentSettings(TestContext& ctx) {
+    TrackerConfig legacy;
+    legacy.resetDefaults();
+    legacy.data.hardware.spiHz = tracker_config_detail::LEGACY_SPI_HZ;
+    legacy.data.fifo.watermarkWords = cfg::LEGACY_FIFO_WATERMARK_WORDS;
+    legacy.updateCrc();
+    trackerMigratePerformanceDefaults(legacy);
+    CHECK(ctx, legacy.data.hardware.spiHz == tracker_config_detail::DEFAULT_SPI_HZ);
+    CHECK(ctx, legacy.data.fifo.watermarkWords == cfg::FIFO_WATERMARK_WORDS);
+    CHECK(ctx, legacy.validate());
+
+    TrackerConfig current;
+    current.resetDefaults();
+    current.data.hardware.spiHz = tracker_config_detail::PREVIOUS_SPI_HZ;
+    current.data.fifo.watermarkWords = cfg::PREVIOUS_FIFO_WATERMARK_WORDS;
+    current.updateCrc();
+    trackerMigratePerformanceDefaults(current);
+    CHECK(ctx, current.data.hardware.spiHz == tracker_config_detail::PREVIOUS_SPI_HZ);
+    CHECK(ctx, current.data.fifo.watermarkWords == cfg::PREVIOUS_FIFO_WATERMARK_WORDS);
+    CHECK(ctx, current.validate());
+}
+
 int main() {
     TestContext ctx;
     testDefaultRuntimeConfigValidates(ctx);
@@ -190,5 +212,6 @@ int main() {
     testCrcDeterministicAndDetectsMutation(ctx);
     testApplyCaptureDoesNotTouchUnrelatedBlocks(ctx);
     testSanitizeNeutralizesCompatibilityReservedFields(ctx);
+    testPerformanceDefaultMigrationPreservesCurrentSettings(ctx);
     return ctx.finish("test_config_hardening");
 }

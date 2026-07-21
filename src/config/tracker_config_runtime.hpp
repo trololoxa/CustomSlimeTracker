@@ -48,4 +48,8 @@ public:
     void captureFromGyroTempComp(const GyroTempCompensator& tempComp);
 };
 
+// One-time schema-gated migration of historical performance defaults.
+// sanitize() is called before return and updates schema versions/CRC.
+void trackerMigratePerformanceDefaults(TrackerConfig& config);
+
 } // namespace tracker

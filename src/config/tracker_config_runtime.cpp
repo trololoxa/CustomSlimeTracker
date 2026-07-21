@@ -3,7 +3,6 @@
 #include <cstring>
 #include <cmath>
 
-#include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/frame_transform.hpp"
@@ -470,23 +469,6 @@ void TrackerConfig::noteGyroBiasCalibrationCaptured(uint32_t uptimeMs) {
     updateCrc();
 }
 
-void TrackerConfig::captureFromAccelCalibrationQuality(const Accel6PosCalibration& cal, uint32_t uptimeMs) {
-    const Accel6PosCalibration::Result& r = cal.result();
-    data.accelCalQuality.calibrationUptimeMs = uptimeMs;
-    data.accelCalQuality.qualityFlags = r.qualityFlags;
-    data.accelCalQuality.qualityScore = r.qualityScore;
-    data.accelCalQuality.maxFaceNormErrorG = r.maxFaceNormErrorG;
-    data.accelCalQuality.maxAxisResidualG = r.maxAxisResidualG;
-
-    for (uint8_t i = 0; i < 6; ++i) {
-        const auto face = static_cast<Accel6PosCalibration::Face>(i);
-        data.accelCalQuality.faceSamples[i] = cal.faceData(face).samples;
-        data.accelCalQuality.faceNormErrorG[i] = r.faceNormErrorG[i];
-        data.accelCalQuality.faceAxisResidualG[i] = r.faceAxisResidualG[i];
-    }
-    updateCrc();
-}
-
 void TrackerConfig::captureFromMagCalibrationResult(const MagCalibrationResult& result,
                                      uint32_t sampleCount,
                                      uint32_t rejectedSamples,
@@ -588,6 +570,32 @@ void TrackerConfig::captureFromGyroTempComp(const GyroTempCompensator& tempComp)
     }
     data.gyroCalMeta.tempModelVersion = tracker_config_detail::SCHEMA_GYRO_CAL_VERSION;
     updateCrc();
+}
+
+void trackerMigratePerformanceDefaults(TrackerConfig& config) {
+    // Preserve all current user/NVS settings. Only unmistakable historical
+    // defaults are upgraded; the previous 4 MHz / 12-word production settings
+    // stay intact until the user explicitly A/B tests and saves new values.
+    if (config.data.hardware.spiHz == tracker_config_detail::LEGACY_SPI_HZ) {
+        config.data.hardware.spiHz = tracker_config_detail::DEFAULT_SPI_HZ;
+    }
+    if (config.data.fifo.watermarkWords == cfg::LEGACY_FIFO_WATERMARK_WORDS) {
+        config.data.fifo.watermarkWords = cfg::FIFO_WATERMARK_WORDS;
+    }
+
+#if TRACKER_BUILD_IS_SLIM
+    if (config.data.fifo.watermarkWords == 0u ||
+        config.data.fifo.watermarkWords > cfg::FIFO_WATERMARK_WORDS) {
+        config.data.fifo.watermarkWords = cfg::FIFO_WATERMARK_WORDS;
+    }
+    if (config.data.output.outputRateHz == 0u ||
+        config.data.output.outputRateHz > cfg::OUTPUT_RATE_HZ_MAX) {
+        config.data.output.outputRateHz = cfg::OUTPUT_RATE_HZ;
+    }
+#endif
+
+    config.sanitize();
+    config.updateCrc();
 }
 
 } // namespace tracker

@@ -30,6 +30,7 @@ struct RuntimeStatusReporterDeps {
     uint32_t runtimeSamples = 0;
     uint32_t fifoIntCount = 0;
     const FifoInterruptEventSource* fifoEvents = nullptr;
+    const FifoRuntimeProcessor* fifoRuntime = nullptr;
     const Lsm6dsvFifoReader* fifo = nullptr;
 
     float latestTempC = 0.0f;

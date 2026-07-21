@@ -32,10 +32,29 @@ inline uint32_t micros() {
 inline void noInterrupts() {}
 inline void interrupts() {}
 inline void yield() {}
+inline void delay(uint32_t) {}
+inline void pinMode(int, int) {}
+inline void digitalWrite(int, int) {}
+
+#ifndef INPUT
+#define INPUT 0
+#endif
+#ifndef OUTPUT
+#define OUTPUT 1
+#endif
+#ifndef LOW
+#define LOW 0
+#endif
+#ifndef HIGH
+#define HIGH 1
+#endif
 
 class Stream {
 public:
     virtual ~Stream() = default;
+    void begin(uint32_t) {}
+    virtual int available() { return 0; }
+    virtual int read() { return -1; }
 
     std::size_t print(const char* s) { return s ? std::printf("%s", s) : 0u; }
     std::size_t print(char c) { return std::printf("%c", c); }
@@ -52,6 +71,7 @@ public:
     std::size_t print(float v, int decimals) { return printFixed(static_cast<double>(v), decimals); }
     std::size_t print(double v, int decimals) { return printFixed(v, decimals); }
 
+    std::size_t print(uint8_t v, int base) { return printUnsignedBase(v, base); }
     std::size_t print(unsigned short v, int base) { return printUnsignedBase(v, base); }
     std::size_t print(unsigned int v, int base) { return printUnsignedBase(v, base); }
     std::size_t print(unsigned long v, int base) { return printUnsignedBase(v, base); }
@@ -72,6 +92,11 @@ public:
 
     std::size_t println(double v, int decimals) {
         const std::size_t n = print(v, decimals);
+        return n + println();
+    }
+
+    std::size_t println(uint8_t v, int base) {
+        const std::size_t n = print(v, base);
         return n + println();
     }
 
