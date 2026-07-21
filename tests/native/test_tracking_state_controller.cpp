@@ -47,6 +47,31 @@ static void testPriorityOrder(TestContext& ctx) {
     CHECK(ctx, c.evaluateState(in) == TrackingStateId::DegradedAccel);
 }
 
+static void testTimestampGapRecoveryPolicy(TestContext& ctx) {
+    ImuQualityResult q;
+    q.flags = imu_quality_flags::TIMESTAMP_HARDWARE;
+    q.dtUs = 1042;
+    CHECK(ctx, !trackingTimestampGapRequiresRecovery(q, 0.020f));
+
+    q.flags |= imu_quality_flags::TIMESTAMP_LARGE_GAP |
+               imu_quality_flags::SAMPLE_DROPPED_BEFORE;
+    q.estimatedDroppedBefore = 1;
+    q.dtUs = 2084;
+    CHECK(ctx, !trackingTimestampGapRequiresRecovery(q, 0.020f));
+
+    q.estimatedDroppedBefore = 7;
+    q.dtUs = 8336;
+    CHECK(ctx, !trackingTimestampGapRequiresRecovery(q, 0.020f));
+
+    q.estimatedDroppedBefore = 19;
+    q.dtUs = 20000;
+    CHECK(ctx, !trackingTimestampGapRequiresRecovery(q, 0.020f));
+
+    q.dtUs = 20001;
+    CHECK(ctx, trackingTimestampGapRequiresRecovery(q, 0.020f));
+    CHECK(ctx, trackingTimestampGapRequiresRecovery(q, 0.0f));
+}
+
 static void testRecoveryOverridesDegradation(TestContext& ctx) {
     TrackingStateController c;
     TrackingStateEventSink sink;
@@ -219,6 +244,7 @@ int main() {
     TestContext ctx;
     testNominalStates(ctx);
     testPriorityOrder(ctx);
+    testTimestampGapRecoveryPolicy(ctx);
     testRecoveryOverridesDegradation(ctx);
     testMagDegradedState(ctx);
     testCompatibilityWrapper(ctx);

@@ -64,6 +64,38 @@ static void testOrientationTimestampMustMatchSample(TestContext& ctx) {
     CHECK(ctx, !snapshot.linearAccelerationValid);
 }
 
+static void testRejectedLargeDtCannotMasqueradeAsFreshOrientation(TestContext& ctx) {
+    TrackerConfig config;
+    config.resetDefaults();
+
+    Ahrs6DofConfig ahrsConfig = config.makeAhrsConfig();
+    ahrsConfig.maxDtS = 0.020f;
+    ahrsConfig.clampLargeDt = false;
+    Ahrs6Dof ahrs(ahrsConfig);
+    ahrs.reset(Quat::identity(), 1000);
+
+    const Vec3 gyro(0.0f, 0.0f, 1.0f);
+    CHECK(ctx, !ahrs.update(gyro, Vec3::unitZ(), 25000));
+    CHECK(ctx, ahrs.stats().lastTimestampUs == 25000);
+    CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 1000);
+
+    ImuQualityResult quality;
+    quality.flags = imu_quality_flags::TIMESTAMP_HARDWARE |
+                    imu_quality_flags::TIMESTAMP_LARGE_GAP |
+                    imu_quality_flags::SAMPLE_DROPPED_BEFORE;
+    quality.dtUs = 24000;
+
+    PreparedOutputRuntime prepared;
+    prepared.update(config, 1, 25000, ahrs, quality, Vec3::unitZ());
+    TrackerPreparedOutputSnapshot snapshot;
+    CHECK(ctx, !prepared.copy(snapshot));
+
+    CHECK(ctx, ahrs.update(gyro, Vec3::unitZ(), 26000));
+    prepared.update(config, 2, 26000, ahrs, quality, Vec3::unitZ());
+    CHECK(ctx, prepared.copy(snapshot));
+    CHECK(ctx, snapshot.timestampUs == 26000);
+}
+
 static void testHardAccelFailureKeepsOrientationButInvalidatesMotion(TestContext& ctx) {
     TrackerConfig config;
     config.resetDefaults();
@@ -122,6 +154,7 @@ int main() {
     TestContext ctx;
     testCoherentLinearAccelerationAndDerivedWorldFrame(ctx);
     testOrientationTimestampMustMatchSample(ctx);
+    testRejectedLargeDtCannotMasqueradeAsFreshOrientation(ctx);
     testHardAccelFailureKeepsOrientationButInvalidatesMotion(ctx);
     testMotionRequiresAccelAndFrameCalibration(ctx);
     return ctx.finish("test_prepared_output_motion_snapshot");

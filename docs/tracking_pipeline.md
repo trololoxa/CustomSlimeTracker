@@ -66,7 +66,14 @@ when rotation transport succeeded. Packet 4 is never emitted alone or recomputed
 
 Machine-readable logs are the source for replay/metrics. Human CLI output is for inspection and should not become a replay input format. `MAG`/`YAW` frames describe magnetometer trust and yaw correction behavior; full-mode `MAGR` frames carry raw/calibrated/body magnetometer vectors for host-side magnetometer fitting and axis-mapping regression.
 
-### AHRS recovery after multi-second timestamp gaps
+### AHRS recovery after unreconstructable timestamp gaps
+
+The quality monitor labels a gap once it exceeds the normal sample cadence. That
+label is diagnostic: losing one or several samples does not by itself invalidate
+orientation. When the measured `dt` is still within the AHRS `maxDtS`, gyro is
+integrated across the real interval and prepared output remains live. Recovery is
+reserved for a gap larger than AHRS can safely integrate, an explicit blocking
+operation, or a real FIFO reset/fault.
 
 Blocking diagnostics such as Wi-Fi scans can pause sensor processing long enough
 for FIFO timestamps to jump by multiple seconds. With the production runtime
@@ -78,8 +85,8 @@ Post-gap gyro is still integrated, so heading changes made after the stream
 returns are retained. Recovery exits only after 256 contiguous samples pass
 timestamp/FIFO checks, gyro remains below 3 dps and accel remains near 1 g. The
 mean accel vector then rebuilds roll/pitch while preserving horizontal heading.
-Movement restarts only this short window. `runtime status` exposes recovery entry
-and successful tilt-reacquisition counters.
+Movement restarts only this short window. `status` exposes recovery entry and
+successful tilt-reacquisition counters; `quality stats` keeps routine gap counts.
 
 `net scan`, `GET WIFISCAN`, and other blocking diagnostics are tracking
 interruptions: motion made while the CPU is inside the blocking operation is not

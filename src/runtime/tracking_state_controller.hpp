@@ -21,6 +21,13 @@ enum class TrackingStateId : uint8_t {
 
 const char* trackingStateIdName(TrackingStateId state);
 
+// A quality "large gap" starts above the dropped-sample diagnostic threshold,
+// but orientation recovery is only required when the actual dt is too large
+// for AHRS gyro integration. Routine one/few-sample gaps stay observable in
+// quality counters without suppressing tracking until the device is still.
+bool trackingTimestampGapRequiresRecovery(const ImuQualityResult& quality,
+                                          float maxAhrsDtS);
+
 struct TrackingStateInputs {
     bool accelCalValid = false;
     bool gyroBiasValid = false;

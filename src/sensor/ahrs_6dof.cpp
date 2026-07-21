@@ -157,7 +157,6 @@ void Ahrs6Dof::rebaseTimestamp(uint64_t timestampUs) {
         return;
     }
 
-    stats_.lastIntegratedTimestampUs = timestampUs;
     stats_.lastTimestampUs = timestampUs;
     stats_.lastDtS = 0.0f;
     stats_.lastUsedDtS = 0.0f;
@@ -191,7 +190,7 @@ bool Ahrs6Dof::update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG
     }
 
     stats_.lastSeenTimestampUs = timestampUs;
-    const uint64_t lastUs = stats_.lastIntegratedTimestampUs;
+    const uint64_t lastUs = stats_.lastTimestampUs;
 
     if (timestampUs <= lastUs) {
         stats_.skippedBadDt++;
@@ -217,7 +216,6 @@ bool Ahrs6Dof::update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG
             stats_.skippedBadDt++;
             stats_.largeDtRebaseCount++;
             stats_.lastRebaseTimestampUs = timestampUs;
-            stats_.lastIntegratedTimestampUs = timestampUs;
             stats_.lastTimestampUs = timestampUs;
             stats_.lastUsedDtS = 0.0f;
             stats_.lastGyroRadS = gyroRadS;

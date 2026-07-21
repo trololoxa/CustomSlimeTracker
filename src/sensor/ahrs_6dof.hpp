@@ -117,10 +117,12 @@ struct Ahrs6DofStats {
 
     // Timestamp semantics:
     //   lastSeenTimestampUs       = latest timestamp observed by update(), even if rejected.
-    //   lastIntegratedTimestampUs = latest timestamp that actually affected gyro integration.
+    //   lastIntegratedTimestampUs = latest timestamp represented by the current quaternion.
+    //   lastTimestampUs           = timebase baseline used for the next dt calculation.
     //
-    // Keep lastTimestampUs as a backwards-compatible mirror of
-    // lastIntegratedTimestampUs for existing diagnostics/users of stats().
+    // A rejected oversized gap advances lastTimestampUs so normal prediction can
+    // resume, but it must not advance lastIntegratedTimestampUs or make stale
+    // orientation look coherent with the rejected sample.
     uint64_t lastSeenTimestampUs = 0;
     uint64_t lastIntegratedTimestampUs = 0;
     uint64_t lastTimestampUs = 0;

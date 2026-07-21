@@ -71,7 +71,8 @@ static void testAhrsStaticInvariants(TestContext& ctx) {
     CHECK(ctx, ahrs.stats().skippedBadDt == skippedBefore + 1);
     CHECK(ctx, ahrs.stats().largeDtRebaseCount == largeDtRebaseBefore + 1);
     CHECK(ctx, ahrs.stats().lastRebaseTimestampUs == 2000ULL * 1000ULL);
-    CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 2000ULL * 1000ULL);
+    CHECK(ctx, ahrs.stats().lastTimestampUs == 2000ULL * 1000ULL);
+    CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 1000ULL * 1000ULL);
     CHECK(ctx, ahrs.stats().lastUsedDtS == 0.0f);
 
     // After a rejected multi-second gap, the next normal sample must integrate
@@ -115,9 +116,11 @@ static void testAhrsStartupAndDtPolicy(TestContext& ctx) {
     CHECK(ctx, rejectLargeDt.stats().skippedBadDt == 1);
     CHECK(ctx, rejectLargeDt.stats().largeDtRebaseCount == 1);
     CHECK(ctx, rejectLargeDt.stats().lastRebaseTimestampUs == 101000);
-    CHECK(ctx, rejectLargeDt.stats().lastIntegratedTimestampUs == 101000);
+    CHECK(ctx, rejectLargeDt.stats().lastTimestampUs == 101000);
+    CHECK(ctx, rejectLargeDt.stats().lastIntegratedTimestampUs == 1000);
     CHECK(ctx, rejectLargeDt.stats().lastUsedDtS == 0.0f);
     CHECK(ctx, rejectLargeDt.update(Vec3::zero(), Vec3::unitZ(), 102000));
+    CHECK(ctx, rejectLargeDt.stats().lastIntegratedTimestampUs == 102000);
 }
 
 
@@ -177,9 +180,11 @@ static void testAhrsRecoveryRebaseDiagnostics(TestContext& ctx) {
     CHECK(ctx, ahrs.stats().fifoRecoveryRebaseCount == 1);
     CHECK(ctx, ahrs.stats().lastRebaseTimestampUs == 5000);
     CHECK(ctx, ahrs.stats().postFifoRecoverySamples == 0);
-    CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 5000);
+    CHECK(ctx, ahrs.stats().lastTimestampUs == 5000);
+    CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 2000);
 
     CHECK(ctx, ahrs.update(Vec3::zero(), Vec3::unitZ(), 6000));
+    CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 6000);
     CHECK(ctx, ahrs.stats().postFifoRecoverySamples == 1);
     CHECK(ctx, ahrs.stats().updateCount == updatesBefore + 1);
 

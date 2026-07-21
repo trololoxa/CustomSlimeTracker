@@ -158,7 +158,8 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
     ImuQualityResult quality = deps.qualityMonitor.evaluate(raw, calibrated, fifoStats, checkFifoStatsDelta);
     runtimeBiasApplyGyroTempQualityFlags(deps.gyroTempComp, quality, calibrated.temp_c);
 
-    const bool largeGap = quality.has(imu_quality_flags::TIMESTAMP_LARGE_GAP);
+    const bool unreconstructableGap =
+        trackingTimestampGapRequiresRecovery(quality, deps.ahrs.config().maxDtS);
 
     if (quality.shouldRequestFifoRecovery) {
         deps.runtimeSamples++;
@@ -182,9 +183,9 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
         return FifoRuntimeSampleResult::FifoRecovered;
     }
 
-    if (largeGap) {
+    if (unreconstructableGap) {
         if (deps.callbacks.enterTrackingRecovery != nullptr) {
-            deps.callbacks.enterTrackingRecovery(quality.flags, "large_dt_gap", raw.t_us, deps.callbacks.user);
+            deps.callbacks.enterTrackingRecovery(quality.flags, "unreconstructable_dt_gap", raw.t_us, deps.callbacks.user);
         }
     } else if (quality.shouldUpdateAhrs) {
         if (deps.trackingState.recoveryActive()) {

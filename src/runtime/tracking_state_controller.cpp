@@ -23,6 +23,13 @@ const char* trackingStateIdName(TrackingStateId state) {
     return "UNKNOWN";
 }
 
+bool trackingTimestampGapRequiresRecovery(const ImuQualityResult& quality,
+                                          float maxAhrsDtS) {
+    if (!quality.has(imu_quality_flags::TIMESTAMP_LARGE_GAP)) return false;
+    if (!std::isfinite(maxAhrsDtS) || maxAhrsDtS <= 0.0f) return true;
+    return static_cast<float>(quality.dtUs) * 1.0e-6f > maxAhrsDtS;
+}
+
 void TrackingStateController::setStableSamplesRequired(uint32_t samples) {
     stableSamplesRequired_ = samples == 0 ? 1 : samples;
 }
