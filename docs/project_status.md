@@ -93,7 +93,10 @@ recorded before behavior-changing patches begin:
   touches or quality faults;
 - FIFO/timestamp recovery blocks stale orientation output, keeps post-gap gyro
   prediction active and performs heading-preserving tilt reacquisition after a
-  short ordinary stationary window;
+  short stationary window; real motion resets the window immediately while a
+  bounded number of isolated quality rejects no longer traps recovery forever;
+- runtime FIFO processing is cooperative across app-loop passes, preserving all
+  samples while bounding one pass so the 100 Hz SlimeVR scheduler can run;
 - prepared output contains one timestamp-coherent quaternion and device-frame
   linear-acceleration snapshot; packet 4 is paired with successful packet 17 output;
 - SensorInfo ACK state, firmware FeatureFlags/bundle negotiation, protocol

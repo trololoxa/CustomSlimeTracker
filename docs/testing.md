@@ -516,12 +516,25 @@ For SlimeVR output, also check the effective rotation rate:
 slime_rotation_rate_hz_observed ~= slime rate
 ```
 
-The default FIFO watermark is 12 words. A larger watermark may still be
-stable, but it batches samples and can reduce effective `RotationData` output
-rate because the network loop sees only the latest prepared snapshot after each
-FIFO drain. If `slime rate 100` observes much less than 80 Hz, inspect
-`perf_fifo_process_calls`, `fifo_loop_section_avg_us`, and the configured
-`fifo watermark`.
+The default FIFO watermark is 12 words. Runtime draining is cooperative: each
+hardware read keeps the configured drain ceiling, and SPI read time is excluded
+from the callback budget. One app pass guarantees at least 12 callbacks, may
+process up to 24 while still inside the roughly 4.5 ms callback budget, then
+returns to network service. Remaining decoded samples continue on later passes.
+Long runtime/SlimeVR diagnostic reports cooperatively service FIFO and network
+between output sections; they may be invoked during motion without intentionally
+creating FIFO full/overrun events.
+
+For a 100 Hz hardware cadence check, reset counters, move the tracker continuously
+for 20 seconds, then inspect `slime debug`, `status`, `quality stats`, and
+`fifo stats`. `slime debug` includes `rotation_send_due`,
+`rotation_rate_limited`, `service_updates`, `service_skips`, and
+`last_rotation_snapshot_age_us`. Healthy results should show rotation and
+acceleration counts close to each other, no send failures, negligible
+`rotation_no_snapshot`, no FIFO overrun/full/recovery, and an observed moving
+rotation rate near the configured value. A server GUI may visually report a low
+idle TPS for nearly identical quaternions; firmware counter deltas are the source
+of truth for packet cadence.
 
 Use `test stop` to finish early. `test status` prints both static and runtime test status.
 

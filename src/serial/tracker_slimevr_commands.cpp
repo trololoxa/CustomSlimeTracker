@@ -19,6 +19,12 @@ Stream& outFor(TrackerSerialCommandContext& ctx) {
 
 const char* yn(bool v) { return v ? "yes" : "no"; }
 
+void serviceNonCliRuntime(TrackerSerialCommandContext& ctx) {
+    if (ctx.serviceNonCliRuntime) {
+        (void)ctx.serviceNonCliRuntime(ctx.serviceNonCliRuntimeUser);
+    }
+}
+
 SlimeVROutputRuntimeConfig makeConfigFromNetwork(TrackerSerialCommandContext& ctx, const TrackerNetworkConfig& net, uint16_t rotationRateHz) {
     SlimeVROutputRuntimeConfig cfg;
     cfg.enabled = true;
@@ -69,7 +75,9 @@ void stopLocalSerialStreamForSlime(TrackerSerialCommandContext& ctx) {
 }
 
 
-void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
+void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
+                           Stream& out,
+                           const SlimeVROutputRuntimeStatus& s) {
     char ipBuf[24];
     out.println("# SLIMEVR STATUS");
     out.print("enabled="); out.println(yn(s.enabled));
@@ -84,7 +92,12 @@ void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("acceleration_skipped_invalid="); out.println(s.accelerationSkippedInvalid);
     out.print("acceleration_send_failures="); out.println(s.accelerationSendFailures);
     out.print("rotation_suppressed_by_error="); out.println(s.rotationSuppressedByError);
+    out.print("rotation_send_due="); out.println(s.rotationSendDue);
+    out.print("rotation_rate_limited="); out.println(s.rotationRateLimited);
+    out.print("service_updates="); out.println(s.serviceUpdates);
+    out.print("service_skips="); out.println(s.serviceSkips);
     out.print("rotation_rate_hz="); out.println(s.rotationRateHz);
+    serviceNonCliRuntime(ctx);
     out.print("tap_sent="); out.println(s.tapSent);
     out.print("tap_send_failures="); out.println(s.tapSendFailures);
     out.print("last_tap_value="); out.println(s.lastTapValue);
@@ -99,6 +112,7 @@ void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("server_silence_resets="); out.println(s.serverSilenceResets);
     out.print("wifi_lost_resets="); out.println(s.wifiLostResets);
     out.print("udp_reopen_requests="); out.println(s.udpReopenRequests);
+    serviceNonCliRuntime(ctx);
     out.print("ping_received="); out.println(s.pingReceived);
     out.print("pong_sent="); out.println(s.pongSent);
     out.print("unknown_packets_received="); out.println(s.unknownPacketsReceived);
@@ -115,11 +129,14 @@ void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("last_battery_valid="); out.println(yn(s.lastBatteryValid));
     out.print("last_battery_voltage_v="); out.println(s.lastBatteryVoltage, 3);
     out.print("last_battery_percentage="); out.println(s.lastBatteryPercentage, 1);
+    serviceNonCliRuntime(ctx);
     out.print("last_rotation_confidence="); out.println(s.lastRotationConfidence, 4);
     out.println("# use 'slime debug' for full counters/timestamps");
 }
 
-void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
+void printSlimeDebug(TrackerSerialCommandContext& ctx,
+                     Stream& out,
+                     const SlimeVROutputRuntimeStatus& s) {
     char ipBuf[24];
     out.println("# SLIMEVR DEBUG");
     out.print("enabled="); out.println(yn(s.enabled));
@@ -133,6 +150,7 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("server_ip="); out.println(s.serverIpv4 ? udpIpv4ToCString(s.serverIpv4, ipBuf, sizeof(ipBuf)) : "0.0.0.0");
     out.print("server_port="); out.println(s.serverPort);
     out.print("sensor_id="); out.println(s.sensorId);
+    serviceNonCliRuntime(ctx);
     out.print("tracker_error_active="); out.println(yn(s.trackerErrorActive));
     out.print("tracker_degraded_no_imu="); out.println(yn(s.trackerDegradedNoImu));
     out.print("tracker_error_code="); out.println(s.trackerErrorCode);
@@ -142,6 +160,7 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("board_type="); out.println(s.boardType);
     out.print("imu_type="); out.println(s.imuType);
     out.print("mcu_type="); out.println(s.mcuType);
+    serviceNonCliRuntime(ctx);
     out.print("handshakes_sent="); out.println(s.handshakesSent);
     out.print("sensor_info_sent="); out.println(s.sensorInfoSent);
     out.print("heartbeat_sent="); out.println(s.heartbeatSent);
@@ -153,6 +172,7 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("temperature_sent="); out.println(s.temperatureSent);
     out.print("battery_sent="); out.println(s.batterySent);
     out.print("battery_send_failures="); out.println(s.batterySendFailures);
+    serviceNonCliRuntime(ctx);
     out.print("magnetometer_accuracy_sent="); out.println(s.magnetometerAccuracySent);
     out.print("tap_sent="); out.println(s.tapSent);
     out.print("tap_send_failures="); out.println(s.tapSendFailures);
@@ -163,6 +183,7 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("mag_support_enabled="); out.println(yn(s.magSupportEnabled));
     out.print("mag_enabled="); out.println(yn(s.magEnabled));
     out.print("sensor_config=0x"); out.println(s.sensorConfig, HEX);
+    serviceNonCliRuntime(ctx);
     out.print("signal_telemetry_enabled="); out.println(yn(s.signalTelemetryEnabled));
     out.print("temperature_telemetry_enabled="); out.println(yn(s.temperatureTelemetryEnabled));
     out.print("battery_telemetry_enabled="); out.println(yn(s.batteryTelemetryEnabled));
@@ -170,6 +191,7 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("signal_telemetry_interval_ms="); out.println(s.signalTelemetryIntervalMs);
     out.print("temperature_telemetry_interval_ms="); out.println(s.temperatureTelemetryIntervalMs);
     out.print("battery_telemetry_interval_ms="); out.println(s.batteryTelemetryIntervalMs);
+    serviceNonCliRuntime(ctx);
     out.print("last_signal_strength_dbm="); out.println(static_cast<int>(s.lastSignalStrengthDbm));
     out.print("last_rssi_dbm="); out.println(s.lastRssiDbm);
     out.print("last_temperature_valid="); out.println(yn(s.lastTemperatureValid));
@@ -177,11 +199,17 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("last_battery_valid="); out.println(yn(s.lastBatteryValid));
     out.print("last_battery_voltage_v="); out.println(s.lastBatteryVoltage, 3);
     out.print("last_battery_percentage="); out.println(s.lastBatteryPercentage, 1);
+    serviceNonCliRuntime(ctx);
     out.print("rotation_no_snapshot="); out.println(s.rotationNoSnapshot);
     out.print("rotation_duplicate_snapshot="); out.println(s.rotationDuplicateSnapshot);
     out.print("rotation_suppressed_by_error="); out.println(s.rotationSuppressedByError);
+    out.print("rotation_send_due="); out.println(s.rotationSendDue);
+    out.print("rotation_rate_limited="); out.println(s.rotationRateLimited);
+    out.print("service_updates="); out.println(s.serviceUpdates);
+    out.print("service_skips="); out.println(s.serviceSkips);
     out.print("rotation_rate_hz="); out.println(s.rotationRateHz);
     out.print("prepared_output_available="); out.println(yn(s.preparedOutputAvailable));
+    serviceNonCliRuntime(ctx);
     out.print("next_packet_number="); out.println(s.nextPacketNumber);
     out.print("packets_received="); out.println(s.packetsReceived);
     out.print("discovery_responses="); out.println(s.discoveryResponses);
@@ -195,6 +223,7 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("ack_config_sent="); out.println(s.ackConfigSent);
     out.print("protocol_change_received="); out.println(s.protocolChangeReceived);
     out.print("unknown_packets_received="); out.println(s.unknownPacketsReceived);
+    serviceNonCliRuntime(ctx);
     out.print("last_ping_id="); out.println(s.lastPingId);
     out.print("last_server_feature_flags=0x"); out.println(s.lastServerFeatureFlags, HEX);
     out.print("last_set_config_sensor_id="); out.println(s.lastSetConfigSensorId);
@@ -204,12 +233,14 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("last_protocol_target="); out.println(s.lastProtocolTarget);
     out.print("last_protocol_version="); out.println(s.lastProtocolVersion);
     out.print("last_unknown_packet_type="); out.println(s.lastUnknownPacketType);
+    serviceNonCliRuntime(ctx);
     out.print("send_failures="); out.println(s.sendFailures);
     out.print("udp_begin_failures="); out.println(s.udpBeginFailures);
     out.print("server_silence_resets="); out.println(s.serverSilenceResets);
     out.print("wifi_lost_resets="); out.println(s.wifiLostResets);
     out.print("udp_reopen_requests="); out.println(s.udpReopenRequests);
     out.print("consecutive_send_failures="); out.println(s.consecutiveSendFailures);
+    serviceNonCliRuntime(ctx);
     out.print("last_handshake_ms="); out.println(s.lastHandshakeMs);
     out.print("last_incoming_packet_ms="); out.println(s.lastIncomingPacketMs);
     out.print("last_state_change_ms="); out.println(s.lastStateChangeMs);
@@ -219,6 +250,7 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("last_rotation_timestamp_us="); tracker_serial_detail::printU64Dec(out, s.lastRotationTimestampUs); out.println();
     out.print("last_rotation_quality_flags=0x"); out.println(s.lastRotationQualityFlags, HEX);
     out.print("last_rotation_confidence="); out.println(s.lastRotationConfidence, 4);
+    out.print("last_rotation_snapshot_age_us="); out.println(s.lastRotationSnapshotAgeUs);
 }
 
 void printHelp(Stream& out) {
@@ -247,12 +279,12 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
     }
 
     if (argc < 2 || tracker_serial_detail::eqIgnoreCase(argv[1], "status")) {
-        printSlimeStatusBrief(out, ctx.slimevrRuntime->status());
+        printSlimeStatusBrief(ctx, out, ctx.slimevrRuntime->status());
         return true;
     }
 
     if (tracker_serial_detail::eqIgnoreCase(argv[1], "debug")) {
-        printSlimeDebug(out, ctx.slimevrRuntime->status());
+        printSlimeDebug(ctx, out, ctx.slimevrRuntime->status());
         return true;
     }
 

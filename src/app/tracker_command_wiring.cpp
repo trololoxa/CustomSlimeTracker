@@ -115,8 +115,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.fitGyroTempFromCaptureUser = hooks.fitGyroTempFromCaptureUser;
     ctx.fitGyroTempFromCaptureRam = hooks.fitGyroTempFromCaptureRam;
     ctx.fitGyroTempFromCaptureRamUser = hooks.fitGyroTempFromCaptureRamUser;
-    ctx.serviceCalibrationRuntime = hooks.serviceCalibrationRuntime;
-    ctx.serviceCalibrationRuntimeUser = hooks.serviceCalibrationRuntimeUser;
+    ctx.serviceNonCliRuntime = hooks.serviceNonCliRuntime;
+    ctx.serviceNonCliRuntimeUser = hooks.serviceNonCliRuntimeUser;
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     ctx.requestMotionLightSleep = hooks.requestMotionLightSleep;
     ctx.requestMotionLightSleepUser = hooks.requestMotionLightSleepUser;

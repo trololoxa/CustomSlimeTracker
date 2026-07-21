@@ -68,8 +68,15 @@ public:
                  uint8_t maxDrainRoundsPerEvent,
                  Stream& out);
 
+    // Discard local pre-reset batches after an external/manual FIFO reset.
+    // Hardware recovery initiated by a sample callback is handled directly
+    // by process(), but command paths reset the hardware outside that call.
+    void resetWork();
+
 private:
     bool ready() const;
+    bool hasPendingCallbacks() const;
+    void clearPendingBatch();
     void recordElapsed(uint32_t startUs);
 
     FifoInterruptEventSource* eventSource_ = nullptr;
@@ -82,6 +89,14 @@ private:
     FifoRuntimeMagCallback magCallback_ = nullptr;
     FifoRuntimeRecordTimeCallback recordTimeCallback_ = nullptr;
     void* callbackUser_ = nullptr;
+
+    size_t pendingRawCount_ = 0;
+    size_t pendingRawIndex_ = 0;
+    size_t pendingMagCount_ = 0;
+    size_t pendingMagIndex_ = 0;
+    bool pendingCheckFifoStatsDelta_ = false;
+    bool drainActive_ = false;
+    uint8_t drainRoundsRemaining_ = 0;
 };
 
 } // namespace tracker

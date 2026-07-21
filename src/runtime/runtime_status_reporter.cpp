@@ -2,6 +2,15 @@
 
 namespace tracker {
 
+namespace {
+
+void serviceNonCliRuntime(const RuntimeStatusReporterDeps& deps) {
+    if (deps.serviceNonCliRuntime) {
+        (void)deps.serviceNonCliRuntime(deps.serviceNonCliRuntimeUser);
+    }
+}
+
+} // namespace
 
 const char* runtimeStatusStreamModeName(TrackerStreamMode mode) {
     switch (mode) {
@@ -37,6 +46,7 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
     out.print("mag_enabled="); out.println(deps.config && deps.config->data.magCal.driverEnabled ? "yes" : "no");
     out.print("mag_runtime_samples="); out.println(deps.magState ? deps.magState->samples : 0UL);
     out.print("mag_fifo_armed="); out.println(deps.magState && deps.magState->fifoArmed ? "yes" : "no");
+    serviceNonCliRuntime(deps);
 
     out.print("gyro_bias_valid="); out.println(deps.imuCal && deps.imuCal->gyroBiasValid ? "yes" : "no");
     const GyroTempCompSnapshot tempSnap = deps.gyroTempComp
@@ -56,6 +66,7 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
         ? imu_quality_flags::TEMP_COMP_OUT_OF_RANGE
         : 0u, HEX);
     out.print("gyro_temp_fit_quality="); out.println(tempSnap.fitQuality, 6);
+    serviceNonCliRuntime(deps);
 
     out.print("runtime_bias_enabled="); out.println(deps.runtimeBias && deps.runtimeBias->enabled ? "yes" : "no");
     out.print("runtime_bias_updates="); out.println(deps.runtimeBias ? deps.runtimeBias->updates : 0UL);
@@ -71,6 +82,7 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
     }
     out.print("last_output_confidence="); out.println(deps.lastOutputConfidence, 6);
     out.print("quality_recovery_requested="); out.println(deps.quality && deps.quality->recoveryRequested() ? "yes" : "no");
+    serviceNonCliRuntime(deps);
 
     const Ahrs6DofConfig& acfg = deps.ahrs->config();
     const Ahrs6DofStats& ast = deps.ahrs->stats();
@@ -82,6 +94,7 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
     out.print("ahrs_gyro_motion_trust="); out.println(ast.lastGyroMotionTrust, 6);
     out.print("ahrs_accel_norm_variance_g2="); out.println(ast.accelNormVarianceG2, 9);
     out.print("ahrs_startup_accel_rejects="); out.println(ast.startupAccelRejectedCount);
+    serviceNonCliRuntime(deps);
 
     out.print("stream_mode="); out.println(deps.streamState ? runtimeStatusStreamModeName(deps.streamState->mode) : "off");
     out.print("stream_rate_hz="); out.println(deps.streamState ? deps.streamState->rateHz : 0UL);
@@ -103,6 +116,7 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
         const uint64_t ageUs = nowUs >= ps.timestampUs ? (nowUs - ps.timestampUs) : 0;
         out.print("prepared_output_age_ms="); out.println(static_cast<uint32_t>(ageUs / 1000ULL));
     }
+    serviceNonCliRuntime(deps);
 
     const Vec3 e = deps.ahrs->eulerDeg();
     const Quat q = deps.ahrs->quaternionPositiveW();
@@ -131,6 +145,7 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
     out.print("sensorhub_nack_words="); out.println(fs.sensorHubNackWords);
     out.print("mag_samples_produced="); out.println(fs.magSamplesProduced);
     out.print("mag_queue_overflow="); out.println(fs.magQueueOverflow);
+    serviceNonCliRuntime(deps);
 
     const auto& ms = deps.magProcessor->stats();
     out.print("mag_processed_samples="); out.println(ms.processedSamples);
@@ -139,6 +154,7 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
     out.print("mag_last_reject_flags=0x"); out.println(deps.lastMagProcessed->rejectFlags, HEX);
     out.print("mag_last_body_norm="); out.println(deps.lastMagProcessed->bodyNorm, 6);
     out.print("mag_last_trusted="); out.println(deps.lastMagProcessed->trusted ? "yes" : "no");
+    serviceNonCliRuntime(deps);
 
     const auto& hs = deps.magHeading->stats();
     out.print("mag_heading_valid="); out.println(deps.lastMagHeading->valid ? "yes" : "no");
@@ -156,6 +172,7 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
     out.println(deps.lastMagYawCorrection->rejectFlags, HEX);
     out.print("mag_yaw_cooldown_active=");
     out.println(deps.lastMagYawCorrection->cooldownActive ? "yes" : "no");
+    serviceNonCliRuntime(deps);
 
     out.print("mag_yaw_cooldown_remaining_ms=");
     out.println(deps.lastMagYawCorrection->cooldownRemainingMs);
@@ -177,6 +194,7 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
     out.print("tag_counter_jumps="); out.println(fs.tagCounterJumps);
     out.print("hw_ts_assigned="); out.println(fs.hwTimestampAssigned);
     out.print("fb_ts_assigned="); out.println(fs.fallbackTimestampAssigned);
+    serviceNonCliRuntime(deps);
 
     out.println("# QUALITY SUMMARY");
     const auto& qc = deps.quality->counters();

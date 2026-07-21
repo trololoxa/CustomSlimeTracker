@@ -192,6 +192,17 @@ kept FIFO/AHRS stable but reduced observed SlimeVR RotationData rate. The curren
 manual candidate is throttled `delay(0)` with `N=16`; it remains disabled by
 default because a product thermal/current benefit is not proven.
 
+## Cooperative FIFO scheduling
+
+Production runtime no longer processes every decoded sample from a large FIFO
+event in one app-loop pass. Hardware reads keep the existing configured drain
+ceiling, while pending callbacks resume in slices of at most 12 callbacks or
+about 4.5 ms. This keeps the single-owner network scheduler responsive without
+creating another FreeRTOS task, dropping IMU samples, or invoking UDP from inside
+the AHRS sample callback. Manual, network-scan and magnetometer-triggered FIFO
+resets clear the local pending batch so pre-reset samples cannot leak into the
+new stream.
+
 Runtime tests report:
 
 ```text

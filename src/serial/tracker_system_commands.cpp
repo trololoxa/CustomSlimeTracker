@@ -313,11 +313,20 @@ void trackerSerialPrintHealth(TrackerSerialCommandContext& ctx) {
     }
 
     trackerSerialPrintStatus(ctx);
+    if (ctx.serviceNonCliRuntime) {
+        (void)ctx.serviceNonCliRuntime(ctx.serviceNonCliRuntimeUser);
+    }
 #if TRACKER_ENABLE_FULL_CLI
     if (ctx.fifo) trackerSerialPrintFifoStats(out, ctx.fifo->stats());
+    if (ctx.serviceNonCliRuntime) {
+        (void)ctx.serviceNonCliRuntime(ctx.serviceNonCliRuntimeUser);
+    }
     if (ctx.quality) trackerSerialPrintQualityStats(out, ctx.quality->counters());
 #else
     if (ctx.fifo) trackerSerialPrintCompactFifoHealth(out, ctx.fifo->stats());
+    if (ctx.serviceNonCliRuntime) {
+        (void)ctx.serviceNonCliRuntime(ctx.serviceNonCliRuntimeUser);
+    }
     if (ctx.quality) trackerSerialPrintCompactQualityHealth(out, ctx.quality->counters());
 #endif
 }

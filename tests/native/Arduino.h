@@ -12,9 +12,26 @@ inline uint32_t millis() {
     return 0u;
 }
 
-inline uint32_t micros() {
-    return 0u;
+inline uint32_t& trackerTestMicrosStorage() {
+    static uint32_t value = 0u;
+    return value;
 }
+
+inline void trackerTestSetMicros(uint32_t value) {
+    trackerTestMicrosStorage() = value;
+}
+
+inline void trackerTestAdvanceMicros(uint32_t delta) {
+    trackerTestMicrosStorage() += delta;
+}
+
+inline uint32_t micros() {
+    return trackerTestMicrosStorage();
+}
+
+inline void noInterrupts() {}
+inline void interrupts() {}
+inline void yield() {}
 
 class Stream {
 public:
@@ -35,6 +52,7 @@ public:
     std::size_t print(float v, int decimals) { return printFixed(static_cast<double>(v), decimals); }
     std::size_t print(double v, int decimals) { return printFixed(v, decimals); }
 
+    std::size_t print(unsigned short v, int base) { return printUnsignedBase(v, base); }
     std::size_t print(unsigned int v, int base) { return printUnsignedBase(v, base); }
     std::size_t print(unsigned long v, int base) { return printUnsignedBase(v, base); }
     std::size_t print(unsigned long long v, int base) { return printUnsignedBase(v, base); }
@@ -54,6 +72,11 @@ public:
 
     std::size_t println(double v, int decimals) {
         const std::size_t n = print(v, decimals);
+        return n + println();
+    }
+
+    std::size_t println(unsigned short v, int base) {
+        const std::size_t n = print(v, base);
         return n + println();
     }
 
@@ -99,3 +122,5 @@ private:
         return std::printf("%llu", v);
     }
 };
+
+extern Stream Serial;

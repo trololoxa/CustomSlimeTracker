@@ -192,6 +192,60 @@ static void testRecoveryRejectsIncoherentGravityWindow(TestContext& ctx) {
     CHECK(ctx, probe.calls == 1);
 }
 
+
+static void testRecoveryToleratesIsolatedQualityRejects(TestContext& ctx) {
+    TrackingStateController c;
+    c.setStableSamplesRequired(3);
+
+    ReacquireProbe probe;
+    TrackingStateEventSink sink;
+    sink.reacquireTilt = reacquireProbeCallback;
+    sink.reacquireTiltUser = &probe;
+    c.enterRecovery(imu_quality_flags::FIFO_RECOVERY_REQUESTED, "gap", 1000, sink);
+
+    ImuQualityResult q = stableRecoveryQuality();
+    c.updateRecovery(q, Vec3::zero(), Vec3::unitZ(), 2000, sink);
+    CHECK(ctx, c.recoveryStableSamples() == 1);
+
+    ImuQualityResult transient = q;
+    transient.shouldUpdateAhrs = false;
+    transient.flags = imu_quality_flags::TIMESTAMP_NON_MONOTONIC;
+    c.updateRecovery(transient, Vec3::zero(), Vec3::unitZ(), 3000, sink);
+    CHECK(ctx, c.recoveryStableSamples() == 1);
+    CHECK(ctx, c.recoveryRejectStreak() == 1);
+
+    ImuQualityResult shortGap = q;
+    shortGap.flags = imu_quality_flags::TIMESTAMP_LARGE_GAP |
+                     imu_quality_flags::SAMPLE_DROPPED_BEFORE;
+    shortGap.dtUs = 2084;
+    c.updateRecovery(shortGap, Vec3::zero(), Vec3::unitZ(), 4000, sink);
+    CHECK(ctx, c.recoveryStableSamples() == 2);
+    CHECK(ctx, c.recoveryRejectStreak() == 0);
+
+    c.updateRecovery(q, Vec3::zero(), Vec3::unitZ(), 5000, sink);
+    CHECK(ctx, !c.recoveryActive());
+    CHECK(ctx, probe.calls == 1);
+}
+
+static void testRecoveryRejectStreakEventuallyRestartsWindow(TestContext& ctx) {
+    TrackingStateController c;
+    c.setStableSamplesRequired(3);
+    TrackingStateEventSink sink;
+    c.enterRecovery(imu_quality_flags::FIFO_RECOVERY_REQUESTED, "gap", 1000, sink);
+
+    ImuQualityResult q = stableRecoveryQuality();
+    c.updateRecovery(q, Vec3::zero(), Vec3::unitZ(), 2000, sink);
+    CHECK(ctx, c.recoveryStableSamples() == 1);
+
+    q.shouldUpdateAhrs = false;
+    q.flags = imu_quality_flags::TIMESTAMP_NON_MONOTONIC;
+    for (uint32_t i = 0; i < 9; ++i) {
+        c.updateRecovery(q, Vec3::zero(), Vec3::unitZ(), 3000 + i * 1000, sink);
+    }
+    CHECK(ctx, c.recoveryStableSamples() == 0);
+    CHECK(ctx, c.recoveryRejectStreak() == 9);
+}
+
 static bool reacquireAhrsCallback(const Vec3& accelG, uint64_t timestampUs, void* user) {
     return static_cast<Ahrs6Dof*>(user)->reacquireTiltFromAccelPreserveHeading(accelG, timestampUs);
 }
@@ -251,6 +305,8 @@ int main() {
     testRecoveryRequiresStableTiltReacquisition(ctx);
     testRecoveryDoesNotExitWithoutReacquireConsumer(ctx);
     testRecoveryRejectsIncoherentGravityWindow(ctx);
+    testRecoveryToleratesIsolatedQualityRejects(ctx);
+    testRecoveryRejectStreakEventuallyRestartsWindow(ctx);
     testRecoveryKeepsPostGapGyroAndRestoresTilt(ctx);
     return ctx.finish("test_tracking_state_controller");
 }

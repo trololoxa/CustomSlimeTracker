@@ -265,12 +265,12 @@ struct TrackerSerialCommandContext {
     const Lsm6dsv::Sample* lastCalibratedSample = nullptr;
     const uint32_t* lastImuSampleSequence = nullptr;
 
-    // Used by blocking guided setup/calibration flows. The hook must service
-    // FIFO, magnetometer runtime and network/slime runtime without polling the
-    // serial command parser recursively. It is intentionally optional so unit
-    // tests and host-only command dispatch can still build.
-    bool (*serviceCalibrationRuntime)(void* user) = nullptr;
-    void* serviceCalibrationRuntimeUser = nullptr;
+    // Services FIFO, magnetometer and network/slime runtime without polling
+    // the serial parser recursively. Blocking setup flows and long diagnostic
+    // reports use it to avoid starving the IMU while command output is written.
+    // It remains optional for host-only command dispatch and unit tests.
+    bool (*serviceNonCliRuntime)(void* user) = nullptr;
+    void* serviceNonCliRuntimeUser = nullptr;
 
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     // Queues a deferred platform sleep transition. It must not enter sleep

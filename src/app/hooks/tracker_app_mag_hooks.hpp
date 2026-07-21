@@ -15,6 +15,7 @@ static void emitMachineLogMagFrame(const MagProcessedSample& mag,
 
 static void magControllerResetFifoRuntimeCallback(void* user) {
     (void)user;
+    g_fifoRuntime.resetWork();
     resetFifoRuntimeCounters();
 }
 

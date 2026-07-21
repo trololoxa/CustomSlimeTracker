@@ -159,8 +159,8 @@ struct TrackerCommandRuntimeHooks {
     decltype(TrackerSerialCommandContext::fitGyroTempFromCaptureRam) fitGyroTempFromCaptureRam = nullptr;
     void* fitGyroTempFromCaptureRamUser = nullptr;
 
-    decltype(TrackerSerialCommandContext::serviceCalibrationRuntime) serviceCalibrationRuntime = nullptr;
-    void* serviceCalibrationRuntimeUser = nullptr;
+    decltype(TrackerSerialCommandContext::serviceNonCliRuntime) serviceNonCliRuntime = nullptr;
+    void* serviceNonCliRuntimeUser = nullptr;
 
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     decltype(TrackerSerialCommandContext::requestMotionLightSleep) requestMotionLightSleep = nullptr;

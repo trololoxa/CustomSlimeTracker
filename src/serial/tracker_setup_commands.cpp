@@ -1137,8 +1137,8 @@ void cmdSetupWifi(TrackerSerialCommandContext& ctx, int argc, char** argv) {
 
 
 bool serviceSetupRuntime(TrackerSerialCommandContext& ctx) {
-    if (ctx.serviceCalibrationRuntime) {
-        return ctx.serviceCalibrationRuntime(ctx.serviceCalibrationRuntimeUser);
+    if (ctx.serviceNonCliRuntime) {
+        return ctx.serviceNonCliRuntime(ctx.serviceNonCliRuntimeUser);
     }
     delay(5);
     return true;

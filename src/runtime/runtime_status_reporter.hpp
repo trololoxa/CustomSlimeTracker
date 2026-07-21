@@ -53,6 +53,9 @@ struct RuntimeStatusReporterDeps {
     const MagHeadingReferenceState* magHeadingRef = nullptr;
     const MagHeadingAutoReferenceState* magHeadingAutoRef = nullptr;
     const MagYawCorrectionOutput* lastMagYawCorrection = nullptr;
+
+    bool (*serviceNonCliRuntime)(void* user) = nullptr;
+    void* serviceNonCliRuntimeUser = nullptr;
 };
 
 const char* runtimeStatusStreamModeName(TrackerStreamMode mode);

@@ -78,6 +78,7 @@ public:
     struct Snapshot {
         bool recoveryActive = false;
         uint32_t recoveryStableSamples = 0;
+        uint8_t recoveryRejectStreak = 0;
         uint32_t recoveryEnterCount = 0;
         uint32_t recoveryTiltReacquireCount = 0;
         uint32_t recoveryLastFlags = 0;
@@ -89,6 +90,7 @@ public:
 
     bool recoveryActive() const;
     uint32_t recoveryStableSamples() const;
+    uint8_t recoveryRejectStreak() const;
     uint32_t recoveryEnterCount() const;
     uint32_t recoveryTiltReacquireCount() const;
     uint32_t recoveryLastFlags() const;
@@ -128,9 +130,12 @@ private:
     static bool hasSensorFault(uint32_t flags);
     static bool hasMagDegradation(const TrackingStateInputs& in);
 
+    static constexpr uint8_t MAX_RECOVERY_REJECT_STREAK = 8;
+
     uint32_t stableSamplesRequired_ = 256;
     bool recoveryActive_ = false;
     uint32_t recoveryStableSamples_ = 0;
+    uint8_t recoveryRejectStreak_ = 0;
     Vec3 recoveryAccelSum_ = Vec3::zero();
     uint32_t recoveryEnterCount_ = 0;
     uint32_t recoveryTiltReacquireCount_ = 0;

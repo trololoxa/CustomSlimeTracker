@@ -7,6 +7,7 @@
 
 static void hookResetFifoRuntime(void* user) {
     (void)user;
+    g_fifoRuntime.resetWork();
     resetFifoRuntimeCounters();
     g_lastSampleTimestampUs = 0;
     enterTrackingRecovery(imu_quality_flags::FIFO_RECOVERY_REQUESTED, "manual_fifo_reset", lsmFifo.stats().lastAssignedTimestampUs);
@@ -34,6 +35,8 @@ static bool requestMotionLightSleepHook(void* user) {
     return g_app.requestMotionLightSleep();
 }
 #endif
+
+static bool serviceNonCliRuntimeHook(void* user);
 
 #if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
 static RuntimeStatusReporterDeps makeRuntimeStatusReporterDeps() {
@@ -64,6 +67,7 @@ static RuntimeStatusReporterDeps makeRuntimeStatusReporterDeps() {
     deps.magHeadingRef = &g_magHeadingRef;
     deps.magHeadingAutoRef = &g_magHeadingAutoRef;
     deps.lastMagYawCorrection = &g_lastMagYawCorrection;
+    deps.serviceNonCliRuntime = serviceNonCliRuntimeHook;
     return deps;
 }
 
@@ -269,7 +273,7 @@ static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user)
 static bool fitGyroTempFromCaptureHook(const StaticRuntimeTest* capture, bool persist, Stream& out, void* user);
 static bool fitGyroTempFromCaptureRamHook(const StaticRuntimeTest* capture, Stream& out, void* user);
 
-static bool serviceCalibrationRuntimeHook(void* user) {
+static bool serviceNonCliRuntimeHook(void* user) {
     (void)user;
     g_app.serviceRuntimeForBlockingCommand();
     return true;
@@ -377,9 +381,7 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
 #if TRACKER_HAS_GYRO_TEMP_FIT
     hooks.fitGyroTempFromCaptureRam = fitGyroTempFromCaptureRamHook;
 #endif
-#if TRACKER_ENABLE_CALIBRATION_COMMANDS
-    hooks.serviceCalibrationRuntime = serviceCalibrationRuntimeHook;
-#endif
+    hooks.serviceNonCliRuntime = serviceNonCliRuntimeHook;
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     hooks.requestMotionLightSleep = requestMotionLightSleepHook;
 #endif

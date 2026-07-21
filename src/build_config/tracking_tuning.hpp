@@ -21,6 +21,13 @@ static constexpr uint8_t FIFO_WATERMARK_WORDS = 12;
 #endif
 static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN = 384;
 static constexpr uint8_t FIFO_MAX_DRAIN_ROUNDS_PER_EVENT = 6;
+// Runtime FIFO work is deliberately sliced so the app loop can service the
+// 100 Hz UDP scheduler between IMU batches. Hardware SPI drain time is not part
+// of this budget: once a batch has been copied out of the sensor, processing
+// must make guaranteed forward progress or the hardware FIFO can overflow.
+static constexpr uint8_t FIFO_RUNTIME_MIN_CALLBACKS_PER_SLICE = 12;
+static constexpr uint8_t FIFO_RUNTIME_MAX_CALLBACKS_PER_SLICE = 24;
+static constexpr uint32_t FIFO_RUNTIME_SLICE_BUDGET_US = 4500;
 static constexpr uint8_t FIFO_MAX_WAITING_SAMPLES_BEFORE_FALLBACK = 32;
 
 static constexpr size_t FIFO_RAW_BUFFER_CAPACITY = 160;

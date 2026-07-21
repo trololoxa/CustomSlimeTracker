@@ -158,11 +158,28 @@ reset the volatile runtime trim.
 
 An unreconstructable FIFO/timestamp gap enters a closed recovery state. Network
 orientation output remains invalid while post-gap gyro prediction continues with
-accel correction disabled. After 256 contiguous samples with usable timestamps,
-near-1 g accel and gyro below 3 dps, the mean gravity vector rebuilds roll/pitch
-while preserving the current horizontal heading. Any motion or quality fault
-restarts only this sub-second stationary window; no calibration is required.
-Magnetic heading/reference state is reacquired after the tilt reset.
+accel correction disabled. After 256 accepted stationary samples with near-1 g
+accel and gyro below 3 dps, the mean gravity vector rebuilds roll/pitch while
+preserving the current horizontal heading. Real motion or a hard FIFO fault
+restarts the window immediately; up to eight isolated unusable quality/timestamp
+samples are tolerated, and reconstructable short timestamp gaps remain eligible.
+This avoids recovery lock-in on a busy Wi-Fi tracker without averaging gravity
+across two physical orientations. Magnetic heading/reference state is reacquired
+after the tilt reset.
+
+### Cooperative FIFO/runtime cadence
+
+Runtime FIFO work is split across app-loop passes. A hardware drain keeps the
+configured `maxWordsPerDrain` safety ceiling, while decoded IMU/magnetometer
+callbacks are executed in bounded slices. Hardware SPI read time is excluded
+from the callback budget: each pass processes at least 12 and at most 24
+callbacks, yielding after about 4.5 ms once minimum forward progress is met.
+The remaining local batch is retained for the next pass, allowing Wi-Fi/UDP,
+battery, tap and LED services to run between slices without starving FIFO
+processing. Long `status`, `health`, `slime status` and `slime debug` reports
+also service the non-CLI runtime between output sections, so diagnostics cannot
+fill the hardware FIFO merely by printing. Configured drain round limits remain
+intact. External/manual FIFO resets explicitly discard any local pre-reset batch.
 
 ### Motion output and new server features
 

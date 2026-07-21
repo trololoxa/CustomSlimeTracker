@@ -38,6 +38,7 @@ uint32_t TrackingStateController::stableSamplesRequired() const { return stableS
 
 bool TrackingStateController::recoveryActive() const { return recoveryActive_; }
 uint32_t TrackingStateController::recoveryStableSamples() const { return recoveryStableSamples_; }
+uint8_t TrackingStateController::recoveryRejectStreak() const { return recoveryRejectStreak_; }
 uint32_t TrackingStateController::recoveryEnterCount() const { return recoveryEnterCount_; }
 uint32_t TrackingStateController::recoveryTiltReacquireCount() const { return recoveryTiltReacquireCount_; }
 uint32_t TrackingStateController::recoveryLastFlags() const { return recoveryLastFlags_; }
@@ -47,6 +48,7 @@ TrackingStateController::Snapshot TrackingStateController::snapshot() const {
     Snapshot s;
     s.recoveryActive = recoveryActive_;
     s.recoveryStableSamples = recoveryStableSamples_;
+    s.recoveryRejectStreak = recoveryRejectStreak_;
     s.recoveryEnterCount = recoveryEnterCount_;
     s.recoveryTiltReacquireCount = recoveryTiltReacquireCount_;
     s.recoveryLastFlags = recoveryLastFlags_;
@@ -57,6 +59,7 @@ TrackingStateController::Snapshot TrackingStateController::snapshot() const {
 void TrackingStateController::reset() {
     recoveryActive_ = false;
     recoveryStableSamples_ = 0;
+    recoveryRejectStreak_ = 0;
     recoveryAccelSum_ = Vec3::zero();
     recoveryEnterCount_ = 0;
     recoveryTiltReacquireCount_ = 0;
@@ -72,6 +75,7 @@ void TrackingStateController::enterRecovery(uint32_t reasonFlags,
 
     recoveryActive_ = true;
     recoveryStableSamples_ = 0;
+    recoveryRejectStreak_ = 0;
     recoveryAccelSum_ = Vec3::zero();
     recoveryLastFlags_ = reasonFlags;
     recoveryLastTimestampUs_ = timestampUs;
@@ -115,30 +119,43 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
     const bool vectorsValid = gyroRadS.isFinite() && accelG.isFinite();
     const float gyroNorm = vectorsValid ? gyroRadS.norm() : 0.0f;
     const float accelNorm = quality.accelNormValid ? quality.accelNormG : accelG.norm();
-    const bool stable = vectorsValid &&
+    const bool motionStable = vectorsValid &&
+                              std::isfinite(gyroNorm) &&
+                              gyroNorm <= kMaxRecoveryGyroRadS &&
+                              std::isfinite(accelNorm) &&
+                              std::fabs(accelNorm - 1.0f) <= kMaxRecoveryAccelErrorG;
+    const bool hardStreamFault = quality.shouldRequestFifoRecovery ||
+                                 quality.has(imu_quality_flags::TIMESTAMP_BACKWARDS) ||
+                                 quality.has(imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) ||
+                                 quality.has(imu_quality_flags::FIFO_OVERRUN) ||
+                                 quality.has(imu_quality_flags::FIFO_FULL) ||
+                                 quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG);
+    const bool stable = motionStable &&
+                        !hardStreamFault &&
                         quality.shouldUpdateAhrs &&
                         quality.shouldUseAccelCorrection &&
-                        quality.accelConfidence >= 0.75f &&
-                        std::isfinite(gyroNorm) &&
-                        gyroNorm <= kMaxRecoveryGyroRadS &&
-                        std::isfinite(accelNorm) &&
-                        std::fabs(accelNorm - 1.0f) <= kMaxRecoveryAccelErrorG &&
-                        !quality.shouldRequestFifoRecovery &&
-                        !quality.has(imu_quality_flags::TIMESTAMP_ZERO) &&
-                        !quality.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC) &&
-                        !quality.has(imu_quality_flags::TIMESTAMP_BACKWARDS) &&
-                        !quality.has(imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) &&
-                        !quality.has(imu_quality_flags::TIMESTAMP_LARGE_GAP) &&
-                        !quality.has(imu_quality_flags::FIFO_OVERRUN) &&
-                        !quality.has(imu_quality_flags::FIFO_FULL) &&
-                        !quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG);
+                        quality.accelConfidence >= 0.75f;
 
     if (!stable) {
-        recoveryStableSamples_ = 0;
-        recoveryAccelSum_ = Vec3::zero();
+        // Real motion or a broken FIFO invalidates the accumulated gravity
+        // direction immediately.  Only isolated unusable timestamp/quality
+        // samples are tolerated, so a busy Wi-Fi loop cannot make recovery
+        // impossible without blending two physical orientations together.
+        if (!motionStable || hardStreamFault) {
+            recoveryStableSamples_ = 0;
+            recoveryRejectStreak_ = 0;
+            recoveryAccelSum_ = Vec3::zero();
+            return;
+        }
+        if (recoveryRejectStreak_ < 0xffu) ++recoveryRejectStreak_;
+        if (recoveryRejectStreak_ > MAX_RECOVERY_REJECT_STREAK) {
+            recoveryStableSamples_ = 0;
+            recoveryAccelSum_ = Vec3::zero();
+        }
         return;
     }
 
+    recoveryRejectStreak_ = 0;
     recoveryAccelSum_ += accelG;
     recoveryStableSamples_++;
     if (recoveryStableSamples_ < stableSamplesRequired_) return;
@@ -150,12 +167,14 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
         !sink.reacquireTilt ||
         !sink.reacquireTilt(meanAccel, lastSampleTimestampUs, sink.reacquireTiltUser)) {
         recoveryStableSamples_ = 0;
+        recoveryRejectStreak_ = 0;
         recoveryAccelSum_ = Vec3::zero();
         return;
     }
 
     recoveryActive_ = false;
     recoveryStableSamples_ = 0;
+    recoveryRejectStreak_ = 0;
     recoveryAccelSum_ = Vec3::zero();
     recoveryTiltReacquireCount_++;
     const uint64_t eventTs = quality.dtUs != 0 ? lastSampleTimestampUs : recoveryLastTimestampUs_;
@@ -262,6 +281,8 @@ const char* TrackingStateController::stateName(bool accelCalValid,
 
 void TrackingStateController::printRecoveryStatus(Stream& out) const {
     out.print("tracking_recovery_active="); out.println(recoveryActive_ ? "yes" : "no");
+    out.print("tracking_recovery_stable_samples="); out.println(recoveryStableSamples_);
+    out.print("tracking_recovery_reject_streak="); out.println(recoveryRejectStreak_);
     out.print("tracking_recovery_enter_count="); out.println(recoveryEnterCount_);
     out.print("tracking_recovery_tilt_reacquire_count="); out.println(recoveryTiltReacquireCount_);
     out.print("tracking_recovery_last_flags=0x"); out.println(recoveryLastFlags_, HEX);
