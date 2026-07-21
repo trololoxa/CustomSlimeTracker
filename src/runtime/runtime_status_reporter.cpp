@@ -95,6 +95,9 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
     out.print("prepared_output_sample="); out.println(ps.runtimeSample);
     out.print("prepared_output_quality_flags=0x"); out.println(ps.qualityFlags, HEX);
     out.print("prepared_output_confidence="); out.println(ps.confidence, 6);
+    out.print("prepared_linear_accel_valid="); out.println(preparedValid && ps.linearAccelerationValid ? "yes" : "no");
+    out.print("prepared_linear_accel_norm_g=");
+    out.println(preparedValid && ps.linearAccelerationValid ? ps.linearAccelerationDeviceG.norm() : 0.0f, 6);
     if (preparedValid && ps.timestampUs > 0) {
         const uint64_t nowUs = static_cast<uint64_t>(micros());
         const uint64_t ageUs = nowUs >= ps.timestampUs ? (nowUs - ps.timestampUs) : 0;

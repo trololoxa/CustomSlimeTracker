@@ -373,7 +373,8 @@ tracking-state controller transitions and stationary recovery completion
 AHRS heading-preserving tilt reacquisition after unreconstructable gaps
 Wi-Fi manager state-machine behavior through fake adapters
 UDP endpoint helpers
-SlimeVR packet writer and output-runtime behavior
+SlimeVR packet writer and paired packet 17/4 output-runtime behavior
+coherent prepared motion snapshot, gravity removal and stale-timestamp rejection
 status LED pattern timing and manual/identify overrides
 ```
 

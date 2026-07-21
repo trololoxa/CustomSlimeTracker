@@ -166,10 +166,13 @@ Magnetic heading/reference state is reacquired after the tilt reset.
 
 ### Motion output and new server features
 
-Acceleration packet 4 is not emitted. The prepared output snapshot currently
-contains orientation but no timestamp-coherent linear acceleration, so step
-mounting is not ready. Position packet 27 is also not implemented and should not
-be synthesized by double-integrating IMU acceleration.
+Acceleration packet 4 is emitted immediately after each successful packet 17
+when the same prepared snapshot has valid motion data. The snapshot contains
+exact-timestamp orientation and gravity-removed device-frame acceleration; stale
+AHRS timestamps, missing accel/frame calibration and hard accel faults fail closed.
+Internal acceleration remains in `g` and is converted to SI `m/s^2` only at the
+packet boundary. Position packet 27 is not implemented and must not be synthesized
+by double-integrating IMU acceleration.
 
 ### Remaining protocol work
 

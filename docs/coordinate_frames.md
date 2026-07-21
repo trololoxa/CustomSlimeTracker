@@ -106,8 +106,20 @@ observations. `setup frame calibrate` repeats just this stage.
 
 When `sensorToDeviceValid=false`, the transform is identity and behavior remains
 compatible with the previous baseline, but setup readiness reports the frame as
-missing. Future linear acceleration must be created after this same boundary.
-SlimeVR body-part mounting, recenter and skeleton offsets remain server-owned.
+missing. Linear acceleration is created after this boundary. For the coherent
+prepared snapshot, calibrated accelerometer output is specific force in device
+frame; gravity-removed acceleration is:
+
+```text
+linear_world_g  = q_world_from_device.rotate(accel_device_g) - world_up
+linear_device_g = accel_device_g - q_world_from_device.inverseRotate(world_up)
+```
+
+The snapshot stores `linear_device_g`; `linear_world_g` is derived with the same
+stored quaternion rather than duplicated in RAM. Packet 4 converts the device-frame
+value to `m/s^2` at the protocol boundary. Motion becomes valid only after accel
+calibration and guided sensor-to-device alignment. SlimeVR body-part mounting,
+recenter and skeleton offsets remain server-owned.
 
 ## Magnetometer frame
 

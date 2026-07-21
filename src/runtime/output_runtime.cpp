@@ -41,7 +41,8 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
                                    uint32_t runtimeSamples,
                                    uint64_t timestampUs,
                                    const Ahrs6Dof& ahrs,
-                                   const ImuQualityResult& quality) {
+                                   const ImuQualityResult& quality,
+                                   const Vec3& accelDeviceG) {
 #if TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
     if (!enabled(config)) return;
 
@@ -50,14 +51,32 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
     seqLock_ = startSeq;
 
     const Ahrs6DofStats& ast = ahrs.stats();
-    snapshot_.valid = ahrs.initialized();
+    const bool orientationCoherent =
+        ahrs.initialized() && timestampUs != 0 && ast.lastIntegratedTimestampUs == timestampUs;
+
+    snapshot_.valid = orientationCoherent;
+    snapshot_.linearAccelerationValid = false;
     snapshot_.sequence++;
     snapshot_.runtimeSample = runtimeSamples;
     snapshot_.ahrsUpdateCount = ast.updateCount;
     snapshot_.timestampUs = timestampUs;
-    snapshot_.q = ahrs.quaternionPositiveW();
+    snapshot_.q = orientationCoherent ? ahrs.quaternionPositiveW() : Quat::identity();
+    snapshot_.linearAccelerationDeviceG = Vec3::zero();
     snapshot_.qualityFlags = quality.flags;
     snapshot_.confidence = quality.overallConfidence;
+
+    const bool motionCalibrationReady =
+        config.data.accelCal.valid && config.data.frame.sensorToDeviceValid;
+    if (orientationCoherent && motionCalibrationReady && accelDeviceG.isFinite() &&
+        !quality.has(imu_quality_flags::ACCEL_SATURATED)) {
+        const Vec3 worldUp = ahrs.config().worldUp;
+        const Vec3 gravityDeviceG = snapshot_.q.inverseRotate(worldUp);
+        const Vec3 linearDeviceG = accelDeviceG - gravityDeviceG;
+        if (gravityDeviceG.isFinite() && linearDeviceG.isFinite()) {
+            snapshot_.linearAccelerationDeviceG = linearDeviceG;
+            snapshot_.linearAccelerationValid = true;
+        }
+    }
 
     seqLock_ = startSeq + 1u;
 #else
@@ -66,6 +85,7 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
     (void)timestampUs;
     (void)ahrs;
     (void)quality;
+    (void)accelDeviceG;
 #endif
 }
 

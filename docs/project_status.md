@@ -94,9 +94,8 @@ recorded before behavior-changing patches begin:
 - FIFO/timestamp recovery blocks stale orientation output, keeps post-gap gyro
   prediction active and performs heading-preserving tilt reacquisition after a
   short ordinary stationary window;
-- prepared output contains quaternion only: no timestamp-coherent linear
-  acceleration is sent, so SlimeVR acceleration packet 4 and step mounting are
-  not available;
+- prepared output contains one timestamp-coherent quaternion and device-frame
+  linear-acceleration snapshot; packet 4 is paired with successful packet 17 output;
 - SensorInfo ACK state, firmware FeatureFlags/bundle negotiation, protocol
   switching and control-endpoint validation remain incomplete;
 - SignalStrength packet 19 now preserves signed RSSI dBm instead of the previous

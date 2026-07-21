@@ -157,6 +157,9 @@ public:
                                                const Quat& q,
                                                uint8_t accuracyInfo = 0,
                                                SlimeVRRotationDataType dataType = SlimeVRRotationDataType::Normal);
+    SlimeVRPacketWriteResult writeAcceleration(uint8_t* out, size_t capacity,
+                                               uint8_t sensorId,
+                                               const Vec3& linearAccelerationMps2);
     SlimeVRPacketWriteResult writeBatteryLevel(uint8_t* out, size_t capacity,
                                                float voltage,
                                                float percentage);

@@ -195,6 +195,20 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writeRotationData(uint8_t* out, si
     return finish(cursor);
 }
 
+SlimeVRPacketWriteResult SlimeVRPacketWriter::writeAcceleration(uint8_t* out, size_t capacity,
+                                                                 uint8_t sensorId,
+                                                                 const Vec3& linearAccelerationMps2) {
+    BufferCursor cursor{out, out, capacity};
+    if (writePacketHeader(cursor, SlimeVRSendPacketType::Accel)) {
+        // Packet 4 payload is x/y/z SI linear acceleration followed by sensor id.
+        cursor.writeF32Be(linearAccelerationMps2.x);
+        cursor.writeF32Be(linearAccelerationMps2.y);
+        cursor.writeF32Be(linearAccelerationMps2.z);
+        cursor.writeU8(sensorId);
+    }
+    return finish(cursor);
+}
+
 SlimeVRPacketWriteResult SlimeVRPacketWriter::writeBatteryLevel(uint8_t* out, size_t capacity,
                                                                 float voltage,
                                                                 float percentage) {

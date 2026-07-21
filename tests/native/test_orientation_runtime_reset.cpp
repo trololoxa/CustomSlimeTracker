@@ -35,7 +35,7 @@ static void testDeliberateResetInvalidatesWholeOrientationContract(TestContext& 
     PreparedOutputRuntime prepared;
     ImuQualityResult quality;
     quality.overallConfidence = 0.9f;
-    prepared.update(config, 2, 2000, ahrs, quality);
+    prepared.update(config, 2, 2000, ahrs, quality, Vec3::unitZ());
 
     TrackerPreparedOutputSnapshot before;
     CHECK(ctx, prepared.copy(before));

@@ -217,7 +217,7 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
     if (deps.trackingState.recoveryActive()) {
         deps.preparedOutput.reset();
     } else {
-        deps.preparedOutput.update(deps.config, deps.runtimeSamples, raw.t_us, deps.ahrs, quality);
+        deps.preparedOutput.update(deps.config, deps.runtimeSamples, raw.t_us, deps.ahrs, quality, calibrated.accel_g);
     }
 
     imuPipelineEmitPerSampleOutputs(deps, raw, scaled, calibrated, quality);

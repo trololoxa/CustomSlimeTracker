@@ -88,6 +88,9 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t heartbeatSent = 0;
     uint32_t sensorInfoSent = 0;
     uint32_t rotationSent = 0;
+    uint32_t accelerationSent = 0;
+    uint32_t accelerationSkippedInvalid = 0;
+    uint32_t accelerationSendFailures = 0;
     uint32_t rotationSendDue = 0;
     uint32_t rotationRateLimited = 0;
     uint32_t serviceUpdates = 0;
@@ -235,6 +238,7 @@ private:
         Control,
         Telemetry,
         Rotation,
+        Acceleration,
         Tap,
         ErrorReport,
     };
@@ -305,6 +309,9 @@ private:
     uint32_t heartbeatSent_ = 0;
     uint32_t sensorInfoSent_ = 0;
     uint32_t rotationSent_ = 0;
+    uint32_t accelerationSent_ = 0;
+    uint32_t accelerationSkippedInvalid_ = 0;
+    uint32_t accelerationSendFailures_ = 0;
     uint32_t rotationSendDue_ = 0;
     uint32_t rotationRateLimited_ = 0;
     uint32_t serviceUpdates_ = 0;

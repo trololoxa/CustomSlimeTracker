@@ -23,7 +23,8 @@ public:
                 uint32_t runtimeSamples,
                 uint64_t timestampUs,
                 const Ahrs6Dof& ahrs,
-                const ImuQualityResult& quality);
+                const ImuQualityResult& quality,
+                const Vec3& accelDeviceG);
     bool copy(TrackerPreparedOutputSnapshot& out) const;
 
 private:

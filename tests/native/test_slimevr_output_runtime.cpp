@@ -34,6 +34,7 @@ public:
     std::vector<uint8_t> incoming;
     UdpEndpoint incomingRemote;
     bool incomingPending = false;
+    int failPacketType = -1;
 
     bool begin(uint16_t localPort) override {
         ++beginCalls;
@@ -48,6 +49,7 @@ public:
 
     bool send(const UdpEndpoint& endpoint, const uint8_t* data, size_t len) override {
         if (!isActive || !data || len == 0) return false;
+        if (failPacketType >= 0 && len >= 4u && data[3] == static_cast<uint8_t>(failPacketType)) return false;
         SentPacket p;
         p.endpoint = endpoint;
         p.data.assign(data, data + len);
@@ -156,6 +158,8 @@ int main() {
     snapshots.snapshot.runtimeSample = 123;
     snapshots.snapshot.timestampUs = 456789;
     snapshots.snapshot.q = Quat::identity();
+    snapshots.snapshot.linearAccelerationValid = true;
+    snapshots.snapshot.linearAccelerationDeviceG = Vec3(0.25f, -0.5f, 1.75f);
     snapshots.snapshot.qualityFlags = 0x1234;
     snapshots.snapshot.confidence = 0.99f;
 
@@ -218,6 +222,9 @@ int main() {
     const SlimeVROutputRuntimeStatus st = rt.status();
     CHECK(ctx, st.sensorInfoSent == 1);
     CHECK(ctx, st.rotationSent == 1);
+    CHECK(ctx, st.accelerationSent == 1);
+    CHECK(ctx, st.accelerationSkippedInvalid == 0);
+    CHECK(ctx, st.accelerationSendFailures == 0);
     CHECK(ctx, st.signalStrengthSent == 0);
     CHECK(ctx, st.temperatureSent == 0);
     CHECK(ctx, st.magnetometerAccuracySent == 0);
@@ -242,7 +249,13 @@ int main() {
     CHECK(ctx, udp.sent[1].data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo));
     CHECK(ctx, udp.sent[1].data[17] == 0);
     CHECK(ctx, udp.sent.back().endpoint.ipv4 == 0xC0A80001UL);
-    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
+    CHECK(ctx, udp.sent[udp.sent.size() - 2u].data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::Accel));
+    CHECK(ctx, udp.sent.back().data.size() == SLIMEVR_PACKET_HEADER_SIZE + 13u);
+    CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 12), 0.25f * 9.80665f, 1.0e-5f);
+    CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 16), -0.5f * 9.80665f, 1.0e-5f);
+    CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 20), 1.75f * 9.80665f, 1.0e-5f);
+    CHECK(ctx, udp.sent.back().data[24] == cfg.sensorId);
 
     const size_t sentBeforeTap = udp.sent.size();
     CHECK(ctx, rt.sendTap(2));
@@ -259,14 +272,32 @@ int main() {
 
     snapshots.snapshot.sequence = 2;
     snapshots.snapshot.runtimeSample = 124;
+    snapshots.snapshot.linearAccelerationValid = false;
+    const size_t sentBeforeInvalidAcceleration = udp.sent.size();
     rt.update(1211);
     CHECK(ctx, rt.status().rotationSent == 2);
+    CHECK(ctx, rt.status().accelerationSent == 1);
+    CHECK(ctx, rt.status().accelerationSkippedInvalid == 1);
     CHECK(ctx, rt.status().lastRotationSnapshotSequence == 2);
+    CHECK(ctx, udp.sent.size() == sentBeforeInvalidAcceleration + 1u);
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
+
+    snapshots.snapshot.sequence = 3;
+    snapshots.snapshot.linearAccelerationValid = true;
+    udp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Accel);
+    const size_t sentBeforeAccelerationFailure = udp.sent.size();
+    rt.update(1221);
+    udp.failPacketType = -1;
+    CHECK(ctx, rt.status().rotationSent == 3);
+    CHECK(ctx, rt.status().accelerationSent == 1);
+    CHECK(ctx, rt.status().accelerationSendFailures == 1);
+    CHECK(ctx, udp.sent.size() == sentBeforeAccelerationFailure + 1u);
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
 
     cfg.hasCompletedRestCalibration = true;
     rt.configure(cfg);
     const size_t sentBeforeRestRefresh = udp.sent.size();
-    rt.update(1220);
+    rt.update(1230);
     CHECK(ctx, rt.status().hasCompletedRestCalibration);
     CHECK(ctx, rt.status().sensorInfoSent == 2);
     CHECK(ctx, udp.sent.size() == sentBeforeRestRefresh + 1u);

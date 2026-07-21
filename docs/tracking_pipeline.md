@@ -43,9 +43,14 @@ quality/AHRS processing. Magnetometer data receives the same rotation after
 `magToImu`. With the default disabled transform, behavior remains legacy
 identity-compatible.
 
-The prepared output snapshot currently carries orientation only. SlimeVR
-`RotationData` packet 17 is emitted, but acceleration packet 4 and
-timestamp-coherent linear acceleration are not implemented in this baseline.
+The prepared output snapshot is produced from one accepted IMU sample and carries
+the quaternion plus gravity-removed device-frame acceleration under the same
+timestamp. A snapshot is invalid unless the AHRS integrated or initialized at that
+exact sample timestamp; rejected gyro/timestamp samples therefore cannot relabel a
+stale quaternion as fresh. Motion additionally requires completed accel and
+sensor-to-device calibration; hard accel saturation invalidates acceleration only.
+SlimeVR packet 17 is sent first, then packet 4 is sent from that exact snapshot only
+when rotation transport succeeded. Packet 4 is never emitted alone or recomputed.
 
 ## Trust boundaries
 

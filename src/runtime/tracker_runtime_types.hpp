@@ -49,16 +49,20 @@ struct MachineLogCounters {
     uint32_t biasUpdate = 0;
 };
 
-// Latest orientation snapshot for future non-blocking output transports
-// (WiFi/UDP/SlimeVR). The tracking path owns writes; an output scheduler can
-// copy this snapshot and send it at its own rate without touching AHRS/FIFO.
+// Latest timestamp-coherent motion snapshot for non-blocking output
+// transports. The tracking path owns writes; an output scheduler can copy
+// orientation and acceleration from one accepted IMU sample without touching
+// AHRS/FIFO or recomputing frame transforms.
 struct TrackerPreparedOutputSnapshot {
     bool valid = false;
+    bool linearAccelerationValid = false;
     uint32_t sequence = 0;
     uint32_t runtimeSample = 0;
     uint32_t ahrsUpdateCount = 0;
     uint64_t timestampUs = 0;
     Quat q = Quat::identity();
+    // Gravity-removed acceleration in the same device frame as q, in g.
+    Vec3 linearAccelerationDeviceG = Vec3::zero();
     uint32_t qualityFlags = 0;
     float confidence = 0.0f;
 };

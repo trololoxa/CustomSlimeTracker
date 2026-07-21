@@ -13,10 +13,10 @@ IUdpTransport               host-testable UDP abstraction
 Esp32UdpTransport           WiFiUDP wrapper
 SlimeVRPacketWriter         host-safe packet encoder/parser helpers
 SlimeVROutputRuntime        discovery, server session, telemetry, RotationData
-PreparedOutputRuntime       producer of latest quaternion snapshot
+PreparedOutputRuntime       producer of coherent orientation/motion snapshot
 ```
 
-`SlimeVROutputRuntime` never reads FIFO, AHRS or IMU objects directly. It only copies `TrackerPreparedOutputSnapshot`, which is produced by the tracking path. This keeps Wi-Fi/UDP scheduling separate from sensor fusion.
+`SlimeVROutputRuntime` never reads FIFO, AHRS or IMU objects directly. It only copies `TrackerPreparedOutputSnapshot`, which is produced by the tracking path from one accepted sample. The snapshot owns the quaternion and gravity-removed device-frame acceleration under one timestamp. World-frame acceleration is derived from that quaternion when needed rather than duplicated in RAM. This keeps Wi-Fi/UDP scheduling separate from sensor fusion and prevents packet 4 from recomputing motion against a different quaternion.
 
 Local serial output is also separate from SlimeVR UDP. `stream ...` and `output ...` are developer serial outputs; `slime ...` controls the server transport.
 
@@ -134,11 +134,12 @@ to a user-facing 0..100 percentage. `slime status` exposes the value as
 
 ## Known protocol gaps in the current baseline
 
-The existing UDP runtime is sufficient for orientation tracking, but it does
-not yet implement the complete modern tracker/server contract:
+The UDP runtime now provides coherent orientation plus linear acceleration, but
+it does not yet implement the complete modern tracker/server contract:
 
-- acceleration packet 4 is not emitted, so step mounting does not receive
-  tracker acceleration;
+- acceleration packet 4 is emitted immediately after a successful packet 17
+  from the same snapshot. It carries gravity-removed device-frame acceleration
+  in SI `m/s^2`; invalid acceleration suppresses packet 4 without suppressing rotation;
 - the short SensorInfo acknowledgement packet 15 is not tracked as a confirmed
   state, and SensorInfo is refreshed periodically or on local changes;
 - firmware FeatureFlags packet 22 is not sent, so optional packet bundling is

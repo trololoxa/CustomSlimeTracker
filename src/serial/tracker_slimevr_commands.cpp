@@ -80,6 +80,9 @@ void printSlimeStatusBrief(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("server_ip="); out.println(s.serverIpv4 ? udpIpv4ToCString(s.serverIpv4, ipBuf, sizeof(ipBuf)) : "0.0.0.0");
     out.print("server_port="); out.println(s.serverPort);
     out.print("rotation_sent="); out.println(s.rotationSent);
+    out.print("acceleration_sent="); out.println(s.accelerationSent);
+    out.print("acceleration_skipped_invalid="); out.println(s.accelerationSkippedInvalid);
+    out.print("acceleration_send_failures="); out.println(s.accelerationSendFailures);
     out.print("rotation_suppressed_by_error="); out.println(s.rotationSuppressedByError);
     out.print("rotation_rate_hz="); out.println(s.rotationRateHz);
     out.print("tap_sent="); out.println(s.tapSent);
@@ -143,6 +146,9 @@ void printSlimeDebug(Stream& out, const SlimeVROutputRuntimeStatus& s) {
     out.print("sensor_info_sent="); out.println(s.sensorInfoSent);
     out.print("heartbeat_sent="); out.println(s.heartbeatSent);
     out.print("rotation_sent="); out.println(s.rotationSent);
+    out.print("acceleration_sent="); out.println(s.accelerationSent);
+    out.print("acceleration_skipped_invalid="); out.println(s.accelerationSkippedInvalid);
+    out.print("acceleration_send_failures="); out.println(s.accelerationSendFailures);
     out.print("signal_strength_sent="); out.println(s.signalStrengthSent);
     out.print("temperature_sent="); out.println(s.temperatureSent);
     out.print("battery_sent="); out.println(s.batterySent);

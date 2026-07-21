@@ -61,6 +61,18 @@ int main() {
     CHECK_NEAR(ctx, readF32Be(packet + 26), 0.8944272f, 1.0e-5f); // w normalized
     CHECK(ctx, packet[30] == 42);
 
+    const Vec3 linearAccelerationMps2(2.0f, -4.0f, 8.0f);
+    const SlimeVRPacketWriteResult acceleration =
+        writer.writeAcceleration(packet, sizeof(packet), 7, linearAccelerationMps2);
+    CHECK(ctx, acceleration.ok);
+    CHECK(ctx, acceleration.size == SLIMEVR_PACKET_HEADER_SIZE + 13u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::Accel));
+    CHECK(ctx, readU64Be(packet + 4) == 0x010203040506070aULL);
+    CHECK_NEAR(ctx, readF32Be(packet + 12), 2.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, readF32Be(packet + 16), -4.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, readF32Be(packet + 20), 8.0f, 1.0e-6f);
+    CHECK(ctx, packet[24] == 7);
+
     SlimeVRSensorInfo sensor;
     sensor.sensorId = 3;
     sensor.sensorConfig = 0x1234;

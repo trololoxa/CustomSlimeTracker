@@ -494,7 +494,7 @@ Do not put calibration algorithms into CLI files. CLI files should only parse ar
 There are two output paths with separate ownership:
 
 - local serial developer output: `stream ...`, `output ...`, and machine logs;
-- SlimeVR UDP output: `net ...` / `slime ...`, using prepared quaternion snapshots.
+- SlimeVR UDP output: `net ...` / `slime ...`, using one prepared coherent motion snapshot for packet 17 quaternion and packet 4 device-frame linear acceleration.
 
 The SlimeVR backend is real Wi-Fi/UDP transport, not a fake packet mode. Custom binary output is still not implemented and should remain disabled until it has a real backend.
 

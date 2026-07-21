@@ -15,6 +15,7 @@ constexpr uint32_t SERVER_SILENCE_TIMEOUT_MS = TRACKER_SLIMEVR_SERVER_SILENCE_TI
 constexpr uint32_t SERVER_FOUND_SEND_GRACE_MS = 100;
 constexpr uint16_t ROTATION_RATE_HZ_DEFAULT = 100;
 constexpr uint16_t ROTATION_RATE_HZ_MAX = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
+constexpr float STANDARD_GRAVITY_MPS2 = 9.80665f;
 
 void copyCString(char* dst, size_t dstSize, const char* src) {
     if (!dst || dstSize == 0) return;
@@ -213,6 +214,9 @@ void SlimeVROutputRuntime::resetCounters() {
     heartbeatSent_ = 0;
     sensorInfoSent_ = 0;
     rotationSent_ = 0;
+    accelerationSent_ = 0;
+    accelerationSkippedInvalid_ = 0;
+    accelerationSendFailures_ = 0;
     rotationSendDue_ = 0;
     rotationRateLimited_ = 0;
     serviceUpdates_ = 0;
@@ -387,6 +391,9 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.heartbeatSent = heartbeatSent_;
     s.sensorInfoSent = sensorInfoSent_;
     s.rotationSent = rotationSent_;
+    s.accelerationSent = accelerationSent_;
+    s.accelerationSkippedInvalid = accelerationSkippedInvalid_;
+    s.accelerationSendFailures = accelerationSendFailures_;
     s.rotationSendDue = rotationSendDue_;
     s.rotationRateLimited = rotationRateLimited_;
     s.serviceUpdates = serviceUpdates_;
@@ -785,6 +792,7 @@ uint32_t SlimeVROutputRuntime::activitySignature() const {
     // are useful diagnostics, but they represent no packet/state work and would
     // make every scheduler tick look busy to the app-level idle detector.
     return handshakesSent_ + heartbeatSent_ + sensorInfoSent_ + rotationSent_ +
+           accelerationSent_ + accelerationSkippedInvalid_ + accelerationSendFailures_ +
            rotationSendDue_ + signalStrengthSent_ + temperatureSent_ + batterySent_ +
            batterySendFailures_ + magnetometerAccuracySent_ + tapSent_ + tapSendFailures_ +
            trackerErrorSent_ + trackerErrorSendFailures_ +
@@ -995,6 +1003,23 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         const uint64_t nowUs = static_cast<uint64_t>(nowMs) * 1000ULL;
         const uint64_t ageUs = nowUs >= snapshot.timestampUs ? (nowUs - snapshot.timestampUs) : 0ULL;
         lastRotationSnapshotAgeUs_ = ageUs > 0xffffffffULL ? 0xffffffffUL : static_cast<uint32_t>(ageUs);
+
+        // Packet 4 is coupled to the exact snapshot whose packet 17 was just
+        // accepted by the transport. Never send acceleration on its own or
+        // from a different timestamp/frame.
+        if (!snapshot.linearAccelerationValid) {
+            ++accelerationSkippedInvalid_;
+            return;
+        }
+        const SlimeVRPacketWriteResult accelerationPacket = writer_.writeAcceleration(
+            packetBuffer_,
+            sizeof(packetBuffer_),
+            sensorId_,
+            snapshot.linearAccelerationDeviceG * STANDARD_GRAVITY_MPS2
+        );
+        if (sendPacket(accelerationPacket, serverEndpoint_, PacketPurpose::Acceleration)) {
+            ++accelerationSent_;
+        }
     }
 }
 
@@ -1026,6 +1051,9 @@ void SlimeVROutputRuntime::recordSendFailure(PacketPurpose purpose) {
             break;
         case PacketPurpose::Rotation:
             ++rotationSendFailures_;
+            break;
+        case PacketPurpose::Acceleration:
+            ++accelerationSendFailures_;
             break;
         case PacketPurpose::Tap:
             ++tapTransportSendFailures_;
