@@ -21,6 +21,9 @@ Q,FIFO,CAL,BIAS,BIASUPD,MAG,MAGR,YAW,STATE,LOGSUM,LOGSTAT,TEMPBIN
 ```
 
 Human CLI/status text is intentionally ignored. Replay should depend on stable machine-readable frames only.
+The `LOGVER` row also carries `build_profile`, `pio_env` and `git` fields. The
+parser exposes them under the JSON `logver` object so replay artifacts remain
+traceable to both committed and intermediate dirty builds.
 
 ## Current replay level
 

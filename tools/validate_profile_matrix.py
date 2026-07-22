@@ -25,6 +25,7 @@ DEFAULT_ENVS_RE = re.compile(r"^\s*default_envs\s*=\s*(.+?)\s*(?:[;#].*)?$")
 
 BASE_ENV = "BOARD_LOLIN_C3_MINI"
 DEBUG_ENV = "BOARD_LOLIN_C3_MINI_DEBUG"
+DEBUG_LINKCHECK_ENV = "BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK"
 PRODUCTION_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION"
 PRODUCTION_DIAG_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG"
 SLIM_ENV = "BOARD_LOLIN_C3_MINI_SLIM"
@@ -33,6 +34,7 @@ EXPECTED_DEFAULT_ENVS = (PRODUCTION_DIAG_ENV,)
 EXPECTED_ENVIRONMENTS = {
     BASE_ENV,
     DEBUG_ENV,
+    DEBUG_LINKCHECK_ENV,
     PRODUCTION_ENV,
     PRODUCTION_DIAG_ENV,
     SLIM_ENV,
@@ -172,6 +174,7 @@ def check_forbidden_core(errors: list[str], env: str, actual: set[str]) -> None:
 def main() -> int:
     environments, excludes, profiles, default_envs = parse_platformio()
     errors: list[str] = []
+    platformio_text = PLATFORMIO_INI.read_text(encoding="utf-8")
 
     missing_envs = sorted(EXPECTED_ENVIRONMENTS - environments)
     if missing_envs:
@@ -185,6 +188,29 @@ def main() -> int:
     for env in default_envs:
         if env not in environments:
             errors.append(f"[platformio] default environment does not exist: {env}")
+
+    linkcheck_match = re.search(
+        rf"^\[env:{re.escape(DEBUG_LINKCHECK_ENV)}\]\s*$([\s\S]*?)(?=^\[|\Z)",
+        platformio_text,
+        re.MULTILINE,
+    )
+    if linkcheck_match is None:
+        errors.append(f"[platformio] missing internal Debug link-check section: {DEBUG_LINKCHECK_ENV}")
+    else:
+        linkcheck_section = linkcheck_match.group(1)
+        if f"extends = env:{DEBUG_ENV}" not in linkcheck_section:
+            errors.append(f"{DEBUG_LINKCHECK_ENV}: must extend {DEBUG_ENV}")
+        if "board_build.partitions = partitions/debug_linkcheck.csv" not in linkcheck_section:
+            errors.append(f"{DEBUG_LINKCHECK_ENV}: missing dedicated debug_linkcheck partition")
+        if "board_upload.maximum_size = 3145728" not in linkcheck_section:
+            errors.append(f"{DEBUG_LINKCHECK_ENV}: unexpected link-check maximum app size")
+
+    if "extra_scripts = pre:tools/generate_build_identity.py" not in platformio_text:
+        errors.append("[platformio] automatic build identity pre-script is missing")
+    if not (ROOT / "tools" / "generate_build_identity.py").exists():
+        errors.append("[platformio] build identity pre-script path does not exist")
+    if not (ROOT / "partitions" / "debug_linkcheck.csv").exists():
+        errors.append("[platformio] debug link-check partition file does not exist")
 
     for env, expected in EXPECTED_PROFILE_FLAGS.items():
         actual = profiles.get(env)
@@ -256,7 +282,7 @@ def main() -> int:
 
     print(
         "# validate_profile_matrix: OK "
-        f"(default={default_envs[0]}, Production required={len(PRODUCTION_REQUIRED_EXCLUDES)}, "
+        f"(default={default_envs[0]}, DebugLinkcheck=yes, Production required={len(PRODUCTION_REQUIRED_EXCLUDES)}, "
         f"ProductionDiag required={len(PRODUCTION_DIAG_REQUIRED_EXCLUDES)}, "
         f"Slim required={len(SLIM_REQUIRED_EXCLUDES)})"
     )

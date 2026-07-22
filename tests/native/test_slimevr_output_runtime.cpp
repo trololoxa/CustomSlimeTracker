@@ -4,6 +4,7 @@
 #include <initializer_list>
 #include <vector>
 
+#include "build_config/build_identity.hpp"
 #include "network/udp_transport.hpp"
 #include "network/wifi_manager.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
@@ -195,6 +196,16 @@ int main() {
     CHECK(ctx, udp.sent[0].endpoint.port == 6969);
     CHECK(ctx, udp.sent[0].data.size() >= SLIMEVR_PACKET_HEADER_SIZE);
     CHECK(ctx, udp.sent[0].data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::Handshake));
+    constexpr size_t handshakeFirmwareLengthOffset = SLIMEVR_PACKET_HEADER_SIZE + 7u * sizeof(uint32_t);
+    CHECK(ctx, udp.sent[0].data.size() > handshakeFirmwareLengthOffset);
+    const size_t firmwareLength = udp.sent[0].data[handshakeFirmwareLengthOffset];
+    CHECK(ctx, firmwareLength == std::strlen(trackerBuildFirmwareVersion()));
+    CHECK(ctx, udp.sent[0].data.size() >= handshakeFirmwareLengthOffset + 1u + firmwareLength);
+    CHECK(ctx, std::memcmp(
+        udp.sent[0].data.data() + handshakeFirmwareLengthOffset + 1u,
+        trackerBuildFirmwareVersion(),
+        firmwareLength
+    ) == 0);
     CHECK(ctx, rt.status().handshakesSent == 1);
 
     udp.incoming = {

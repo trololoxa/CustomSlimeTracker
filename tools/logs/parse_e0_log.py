@@ -104,6 +104,7 @@ def parse_rows(path: Path) -> Dict[str, List[List[str]]]:
 
 
 def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dict[str, Any]:
+    logver_rows = rows.get("LOGVER", [])
     q_rows = rows.get("Q", [])
     fifo_rows = rows.get("FIFO", [])
     cal_rows = rows.get("CAL", [])
@@ -262,8 +263,18 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     if any((to_int(flag) & 0x8) != 0 for flag in bias_flags):
         warnings.append("temperature compensation out of calibrated range")
 
+    logver: Dict[str, Any] = {}
+    if logver_rows:
+        latest = logver_rows[-1]
+        if len(latest) >= 3:
+            logver["schema_version"] = latest[1]
+            logver["schema_name"] = latest[2]
+        for i in range(3, len(latest) - 1, 2):
+            logver[latest[i]] = latest[i + 1]
+
     out: Dict[str, Any] = {
         "counts": {k: len(v) for k, v in sorted(rows.items())},
+        "logver": logver,
         "duration_s": round(duration_s, 3),
         "rates_hz": {
             "q": round(ratio(q_count, duration_s), 3),

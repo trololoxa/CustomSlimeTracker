@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Build firmware profiles and save PlatformIO size reports.
 
-This is a lightweight size gate for the optimization work. It intentionally uses
-PlatformIO's own `-t size` target instead of parsing board-specific linker maps.
-The raw report for every environment is saved under build/firmware_size/ so it
-can be attached to optimization notes and compared between patches.
+The normal Debug profile is advisory when it fails only because the wearable
+partition is too small. Product profiles remain strict.
 """
 
 from __future__ import annotations
@@ -13,17 +11,19 @@ import argparse
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Sequence
 
+from check_all_policy import is_size_only_failure, parse_size_metrics
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENVS = (
-    "BOARD_LOLIN_C3_MINI_DEBUG",
     "BOARD_LOLIN_C3_MINI_PRODUCTION",
     "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG",
     "BOARD_LOLIN_C3_MINI_SLIM",
+    "BOARD_LOLIN_C3_MINI_DEBUG",
 )
+DEBUG_ENV = "BOARD_LOLIN_C3_MINI_DEBUG"
 
 
 def pio_executable(explicit: str | None = None) -> str | None:
@@ -35,7 +35,7 @@ def pio_executable(explicit: str | None = None) -> str | None:
     return shutil.which("pio") or shutil.which("platformio")
 
 
-def run_capture(cmd: Sequence[str], output_path: Path) -> None:
+def run_capture(cmd: Sequence[str], output_path: Path) -> tuple[int, str]:
     printable = " ".join(cmd)
     print(f"\n$ {printable}", flush=True)
     proc = subprocess.run(
@@ -48,9 +48,8 @@ def run_capture(cmd: Sequence[str], output_path: Path) -> None:
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(proc.stdout, encoding="utf-8", errors="replace")
-    print(proc.stdout)
-    if proc.returncode != 0:
-        raise subprocess.CalledProcessError(proc.returncode, cmd)
+    print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+    return proc.returncode, proc.stdout
 
 
 def main() -> int:
@@ -70,11 +69,28 @@ def main() -> int:
 
     out_dir = ROOT / "build" / "firmware_size"
     envs = tuple(args.envs or DEFAULT_ENVS)
+    failures: list[str] = []
+    warnings: list[str] = []
     for env in envs:
-        run_capture([pio, "run", "-e", env, "-t", "size"], out_dir / f"{env}.txt")
+        returncode, output = run_capture([pio, "run", "-e", env, "-t", "size"], out_dir / f"{env}.txt")
+        metrics = parse_size_metrics(output)
+        if metrics:
+            print("# SIZE " + env + ": " + " ".join(
+                f"{metric.kind}={metric.percent:.1f}%({metric.used}/{metric.total})" for metric in metrics
+            ))
+        if returncode == 0:
+            continue
+        if env == DEBUG_ENV and is_size_only_failure(output):
+            warnings.append(f"{env}: expected advisory size overflow")
+        else:
+            failures.append(f"{env}: size build failed")
 
     print(f"\n# firmware size reports saved to: {out_dir}")
-    return 0
+    for warning in warnings:
+        print(f"# WARN {warning}")
+    for failure in failures:
+        print(f"# FAIL {failure}")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

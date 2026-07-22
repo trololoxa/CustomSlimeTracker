@@ -44,11 +44,6 @@ void info(Stream& out, const char* msg) {
     out.println(msg ? msg : "");
 }
 
-void warn(Stream& out, const char* msg) {
-    out.print("[WARN ] [SerialCommands] ");
-    out.println(msg ? msg : "");
-}
-
 void error(Stream& out, const char* msg) {
     out.print("[ERROR] [SerialCommands] ");
     out.println(msg ? msg : "");
@@ -60,8 +55,6 @@ void copyBounded(char* dst, size_t dstSize, const char* src) {
     std::strncpy(dst, src, dstSize - 1);
     dst[dstSize - 1] = '\0';
 }
-
-const char* yesNo(bool v) { return v ? "true" : "false"; }
 
 uint8_t statusCode(TrackerSerialCommandContext& ctx) {
     if (!ctx.lsm || !ctx.lsm->isInitialized()) return 3; // sensor/error-ish

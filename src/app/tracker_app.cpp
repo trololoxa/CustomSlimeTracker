@@ -2,6 +2,8 @@
 
 #include "runtime/output_runtime.hpp"
 
+#include "build_config/build_identity.hpp"
+
 #include <cstring>
 
 #if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
@@ -74,6 +76,10 @@ void TrackerApp::setup() {
     out.println("ESP32-C3 + LSM6DSV COMMAND TRACKER FIRMWARE");
     out.print("# build_profile=");
     out.print(trackerBuildProfileName());
+    out.print(" pio_env=");
+    out.print(trackerBuildPioEnvironment());
+    out.print(" git=");
+    out.print(trackerBuildIdentityString());
     out.print(" cli_level=");
     out.println(trackerCliLevelName());
     out.println("==============================================================================");

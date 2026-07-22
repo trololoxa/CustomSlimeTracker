@@ -4,17 +4,28 @@ This is the canonical short description of what the `Upgrades` branch actually
 implements. Detailed design documents remain useful, but this file and the
 source code take precedence over historical roadmaps.
 
-Do not assign a hand-written firmware identity to an archive. Use Git to record
-the exact source revision being built:
+Firmware identity is generated automatically by the PlatformIO pre-build hook
+`tools/generate_build_identity.py`. It never modifies the Git index and writes
+its generated header only under the ignored PlatformIO build directory.
 
-```bash
-git branch --show-current
-git rev-parse --short HEAD
-git status --short
+A clean build reports the committed revision:
+
+```text
+build=BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG git=89cd10ef
 ```
 
-A test report or runtime log is reproducible only when it records the branch,
-commit and build environment.
+An uncommitted patch iteration reports both the base commit and a deterministic
+fingerprint of tracked plus non-ignored untracked worktree content:
+
+```text
+build=BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG git=12ab34cd+7f93a2c1-dirty
+```
+
+This matches the project workflow where a patch is committed only after its
+corrective revisions and hardware tests are complete. Ignored files, `.git`,
+`.pio`, build outputs and the generated identity header do not affect the
+fingerprint. There is deliberately no build timestamp, so rebuilding identical
+content produces identical firmware metadata.
 
 ## Build matrix
 
@@ -26,6 +37,10 @@ BOARD_LOLIN_C3_MINI_PRODUCTION
 BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG
 BOARD_LOLIN_C3_MINI_SLIM
 ```
+
+The additional `BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK` environment is internal to
+`check_all`: it uses the complete Debug source set with a larger no-OTA app
+partition and is not intended for normal upload.
 
 The committed default is:
 

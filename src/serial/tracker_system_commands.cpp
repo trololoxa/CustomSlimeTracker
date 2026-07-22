@@ -3,6 +3,8 @@
 #include <Arduino.h>
 
 #include "defines.h"
+
+#include "build_config/build_identity.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
 #include "connection/lsm6dsv_driver.hpp"
@@ -42,6 +44,10 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("TRACKER SERIAL COMMANDS");
     out.print("# build_profile=");
     out.print(trackerBuildProfileName());
+    out.print(" pio_env=");
+    out.print(trackerBuildPioEnvironment());
+    out.print(" git=");
+    out.print(trackerBuildIdentityString());
     out.print(" cli_level=");
     out.println(trackerCliLevelName());
     out.println("==============================================================================");
@@ -276,6 +282,9 @@ void trackerSerialPrintSetupStatus(TrackerSerialCommandContext& ctx) {
 void trackerSerialPrintStatus(TrackerSerialCommandContext& ctx) {
     Stream& out = trackerSerialSystemStream(ctx);
     out.println("# STATUS");
+    out.print("build_profile="); out.println(trackerBuildProfileName());
+    out.print("build_pio_env="); out.println(trackerBuildPioEnvironment());
+    out.print("build_git="); out.println(trackerBuildIdentityString());
 
     if (ctx.printRuntimeStatus) {
         ctx.printRuntimeStatus(out, ctx.printRuntimeStatusUser);
@@ -451,7 +460,15 @@ bool trackerSerialDispatchSystemCommand(TrackerSerialCommandContext& ctx, int ar
     }
 
     if (trackerSerialSystemIs(argv[0], "version")) {
-        out.println("# tracker firmware proto=serial-cli-v1");
+        out.println("# TRACKER FIRMWARE VERSION");
+        out.println("serial_protocol=serial-cli-v1");
+        out.print("build_profile="); out.println(trackerBuildProfileName());
+        out.print("build_pio_env="); out.println(trackerBuildPioEnvironment());
+        out.print("build_git="); out.println(trackerBuildIdentityString());
+        out.print("build_git_head="); out.println(trackerBuildGitHead());
+        out.print("build_worktree="); out.println(trackerBuildWorktreeFingerprint());
+        out.print("build_dirty="); out.println(trackerBuildGitDirty() ? "yes" : "no");
+        out.print("firmware_version="); out.println(trackerBuildFirmwareVersion());
         return true;
     }
 

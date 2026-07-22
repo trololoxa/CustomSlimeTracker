@@ -1,4 +1,4 @@
-LOGVER,2,E0,mode,full,rate_hz,20,config_crc,0x12345678,config_version,1
+LOGVER,2,E0,mode,full,rate_hz,20,config_crc,0x12345678,config_version,1,build_profile,Debug,pio_env,TEST_ENV,git,deadbeef
 LOGFMT,Q,t_us,seq,dt_us,w,x,y,z,qflags,conf,state,acc_trust,acc_norm_g,acc_var_g2,gyro_trust,gyro_dps,recovery
 LOGFMT,MAGR,t_us,seq,mag_seq,raw_x,raw_y,raw_z,cal_x,cal_y,cal_z,body_x,body_y,body_z,raw_norm,cal_norm,body_norm,raw_flags,reject_flags,trusted
 Q,0,0,8333,1,0,0,0,0x0,0.9900,TRACKING_6DOF,1.0000,1.0000,0.0001,1.0000,0.1000,0

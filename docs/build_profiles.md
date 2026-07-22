@@ -155,6 +155,13 @@ python tools/report_firmware_size.py
 
 It runs PlatformIO's `-t size` target for Debug, Production, Production
 Diagnostic and Slim and stores raw reports under `build/firmware_size/`.
+A size-only overflow of the normal Debug partition is advisory; product profile
+failures remain fatal.
+
+`BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK` is an internal validation environment, not
+an upload/product profile. It inherits the complete Debug source set and warning
+flags but uses `partitions/debug_linkcheck.csv` so `check_all` can distinguish a
+known wearable flash-size limit from real compile/type/link-symbol breakage.
 
 ## Why `build_src_filter` is still used
 

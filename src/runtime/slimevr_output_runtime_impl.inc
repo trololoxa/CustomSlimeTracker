@@ -1,5 +1,7 @@
 #include "runtime/slimevr_output_runtime.hpp"
 
+#include "build_config/build_identity.hpp"
+
 #include <cstring>
 #include <cmath>
 
@@ -1070,7 +1072,7 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
 }
 
 void SlimeVROutputRuntime::makeHandshakeInfo(SlimeVRHandshakeInfo& info) const {
-    info.firmwareVersion = "c3-6dsv-fw";
+    info.firmwareVersion = trackerBuildFirmwareVersion();
     info.vendorName = "CustomSlime";
     info.vendorUrl = "https://github.com";
     info.productName = deviceName_;

@@ -4,6 +4,8 @@
 
 #include "defines.h"
 
+#include "build_config/build_identity.hpp"
+
 namespace tracker {
 
 namespace {
@@ -36,6 +38,8 @@ void printRuntimeBuildConfig(Stream& out) {
     out.println("------------------------------------------------------------------------------");
     out.println("Build/runtime config");
     out.print("build_profile: "); out.println(trackerBuildProfileName());
+    out.print("build_pio_env: "); out.println(trackerBuildPioEnvironment());
+    out.print("build_git: "); out.println(trackerBuildIdentityString());
     out.print("cli_level: "); out.println(trackerCliLevelName());
     out.print("wifi_power_save_compile: "); out.println(TRACKER_WIFI_POWER_SAVE_MODE);
     out.print("wifi_tx_power_compile_quarter_dbm: ");

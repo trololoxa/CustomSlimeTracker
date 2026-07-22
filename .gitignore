@@ -6,6 +6,8 @@
 .codegraph
 cache
 build
+__pycache__/
+*.py[cod]
 
 phase*
 *.zip

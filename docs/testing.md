@@ -114,7 +114,15 @@ python tools/run_standalone_tests.py --extra-cxxflag -fsanitize=undefined
 The native test compiler flags intentionally mirror the diagnostic firmware
 warning profile. The committed default firmware environment is
 `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG`, but host tests stay independent from that
-selection:
+selection. Tool smokes also verify deterministic Git/worktree identity generation
+and PlatformIO build-result classification:
+
+```bash
+python tools/test_build_identity.py
+python tools/test_check_all_policy.py
+```
+
+The warning flags remain:
 
 ```text
 -Wall
@@ -191,6 +199,33 @@ recovery caused by output, and a stable effective rotation deadline rate.
 `LOGSTAT,BACKPRESSURE` means diagnostic data was intentionally omitted. These
 must not coincide with FIFO loss or a reduced steady-state RotationData rate.
 Do not request additional static/motion captures solely for this patch.
+
+## Build identity and `check_all` policy
+
+Every PlatformIO environment runs `tools/generate_build_identity.py` before
+compilation. The generated metadata is shown by `version`, `status`, boot and
+remote-console headers, static/runtime reports, machine-log `LOGVER`, and the
+SlimeVR handshake firmware string.
+
+Use the full local gate before accepting a patch:
+
+```bash
+python tools/check_all.py --require-pio
+```
+
+Mandatory firmware builds are Production, Production Diagnostic and Slim. The
+normal Debug image may exceed the wearable application partition. To avoid
+hiding real Debug regressions, `check_all` first builds the internal
+`BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK` environment with the same source set and
+flags but a larger no-OTA partition. Compile, type and unresolved-symbol errors
+there are fatal. A size-only overflow remains advisory even if the larger
+link-check partition is also exceeded; any non-size compiler/linker diagnostic
+still makes the gate fail. The normal Debug wearable size overflow is reported
+as `PASS WITH WARNINGS`.
+
+Explicit `--pio-env` selections are strict and never downgraded to warnings.
+Raw PlatformIO logs and parsed RAM/Flash summaries are saved under
+`build/check_all/platformio/`.
 
 ## Running firmware diagnostics
 

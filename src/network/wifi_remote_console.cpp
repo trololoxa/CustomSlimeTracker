@@ -1,5 +1,7 @@
 #include "network/wifi_remote_console.hpp"
 
+#include "build_config/build_identity.hpp"
+
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
 #include <cerrno>
 #include <cstring>
@@ -257,6 +259,10 @@ void WifiRemoteConsoleRuntime::acceptClient(WiFiClient& candidate) {
     clientStream_.println("# Tracker remote console");
     clientStream_.print("# build_profile=");
     clientStream_.print(trackerBuildProfileName());
+    clientStream_.print(" pio_env=");
+    clientStream_.print(trackerBuildPioEnvironment());
+    clientStream_.print(" git=");
+    clientStream_.print(trackerBuildIdentityString());
     clientStream_.print(" port=");
     clientStream_.println(static_cast<uint16_t>(TRACKER_REMOTE_CONSOLE_PORT));
     clientStream_.println("# Type: help");

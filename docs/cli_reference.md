@@ -15,7 +15,7 @@ Legend:
 | `help`, `?` | Print command list | No | Human-readable reference. |
 | `status` | Print runtime status | No | Uses runtime status hook when available. |
 | `health` | Print status + quality/FIFO health | No | Uses runtime health hook when available. |
-| `version` | Print CLI protocol marker | No | Lightweight sanity check. |
+| `version` | Print firmware/build identity and CLI protocol | No | Shows profile, PlatformIO environment, Git HEAD, dirty worktree fingerprint and handshake firmware string. |
 | `reboot` | Restart ESP32 | No | Flushes output before restart. |
 | `factory_reset` | Reset runtime config defaults and erase config store | Yes | Reboot recommended after success. |
 | `sleep` | Queue motion-triggered ESP32 light sleep | No | Compiled only with `TRACKER_ENABLE_MOTION_LIGHT_SLEEP=1`; serial/FIFO/Wi-Fi/mag are stopped after the current CLI poll returns, and a qualifying LSM6DSV motion event wakes the tracker. |

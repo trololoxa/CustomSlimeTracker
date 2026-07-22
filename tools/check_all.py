@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run local project quality checks.
+"""Run local project quality checks with profile-aware PlatformIO policy.
 
-The script is intentionally cross-platform: use it directly on Windows
-(`python tools/check_all.py`) or through tools/check_all.sh from Git Bash/WSL.
-PlatformIO builds are optional by default so the native test gate can run on
-machines that do not have the ESP32 toolchain installed.
+Production, Production Diagnostic and Slim are mandatory. The normal Debug
+image is advisory only when it fails specifically because its wearable flash
+partition is too small. A second Debug link-check environment uses a larger
+no-OTA partition so compile/type/link-symbol failures remain fatal.
 """
 
 from __future__ import annotations
@@ -14,16 +14,31 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
+
+from check_all_policy import is_size_only_failure, parse_size_metrics
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PIO_ENVS = (
-    "BOARD_LOLIN_C3_MINI_DEBUG",
+REQUIRED_PIO_ENVS = (
     "BOARD_LOLIN_C3_MINI_PRODUCTION",
     "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG",
     "BOARD_LOLIN_C3_MINI_SLIM",
 )
+DEBUG_ENV = "BOARD_LOLIN_C3_MINI_DEBUG"
+DEBUG_LINKCHECK_ENV = "BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK"
+
+
+@dataclass
+class PioBuildResult:
+    environment: str
+    returncode: int
+    output: str
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
 
 
 def run(cmd: Sequence[str], *, cwd: Path = ROOT) -> None:
@@ -76,6 +91,9 @@ def run_tool_smokes() -> None:
     out_dir = ROOT / "build" / "tool_smoke"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    run([sys.executable, "tools/test_build_identity.py"])
+    run([sys.executable, "tools/test_check_all_policy.py"])
+
     fixture = ROOT / "tests" / "fixtures" / "e0_static_smoke.log"
     if fixture.exists():
         before = out_dir / "e0_static_smoke_before.json"
@@ -124,7 +142,97 @@ def pio_executable(explicit: str | None = None) -> str | None:
     return shutil.which("pio") or shutil.which("platformio")
 
 
-def run_pio_builds(envs: Iterable[str], require_pio: bool, pio_bin: str | None = None) -> None:
+def run_pio_build(pio: str, environment: str, out_dir: Path) -> PioBuildResult:
+    cmd = [pio, "run", "-e", environment]
+    print(f"\n$ {' '.join(cmd)}", flush=True)
+    proc = subprocess.run(
+        cmd,
+        cwd=str(ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"{environment}.log").write_text(proc.stdout, encoding="utf-8", errors="replace")
+    return PioBuildResult(environment, proc.returncode, proc.stdout)
+
+
+def print_size_summary(result: PioBuildResult) -> None:
+    metrics = parse_size_metrics(result.output)
+    if not metrics:
+        return
+    rendered = " ".join(
+        f"{metric.kind}={metric.percent:.1f}%({metric.used}/{metric.total})"
+        for metric in metrics
+    )
+    print(f"# SIZE {result.environment}: {rendered}")
+
+
+def run_default_pio_policy(pio: str) -> tuple[list[str], list[str]]:
+    out_dir = ROOT / "build" / "check_all" / "platformio"
+    failures: list[str] = []
+    warnings: list[str] = []
+
+    for environment in REQUIRED_PIO_ENVS:
+        result = run_pio_build(pio, environment, out_dir)
+        print_size_summary(result)
+        if result.ok:
+            print(f"# PASS {environment}")
+        else:
+            failures.append(f"{environment}: mandatory PlatformIO build failed")
+            print(f"# FAIL {environment}")
+
+    # First prove that the complete Debug source set compiles and links when a
+    # larger app partition removes only the known wearable flash constraint.
+    linkcheck = run_pio_build(pio, DEBUG_LINKCHECK_ENV, out_dir)
+    print_size_summary(linkcheck)
+    linkcheck_size_only = (not linkcheck.ok) and is_size_only_failure(linkcheck.output)
+    if linkcheck.ok:
+        print(f"# PASS {DEBUG_LINKCHECK_ENV} (compile/type/link-symbol validation)")
+    elif linkcheck_size_only:
+        warning = f"{DEBUG_LINKCHECK_ENV}: Debug validation image still exceeds a size region; no non-size build error detected"
+        warnings.append(warning)
+        print(f"# WARN {warning}")
+    else:
+        failures.append(f"{DEBUG_LINKCHECK_ENV}: Debug compile/type/link-symbol validation failed")
+        print(f"# FAIL {DEBUG_LINKCHECK_ENV}")
+
+    debug = run_pio_build(pio, DEBUG_ENV, out_dir)
+    print_size_summary(debug)
+    if debug.ok:
+        print(f"# PASS {DEBUG_ENV}")
+    elif (linkcheck.ok or linkcheck_size_only) and is_size_only_failure(debug.output):
+        warning = f"{DEBUG_ENV}: wearable Debug image exceeds configured size; full Debug link-check passed"
+        warnings.append(warning)
+        print(f"# WARN {warning}")
+    else:
+        failures.append(f"{DEBUG_ENV}: failed for a reason other than an accepted size-only overflow")
+        print(f"# FAIL {DEBUG_ENV}")
+
+    return failures, warnings
+
+
+def run_explicit_pio_envs(pio: str, environments: Sequence[str]) -> tuple[list[str], list[str]]:
+    out_dir = ROOT / "build" / "check_all" / "platformio"
+    failures: list[str] = []
+    for environment in environments:
+        result = run_pio_build(pio, environment, out_dir)
+        print_size_summary(result)
+        if result.ok:
+            print(f"# PASS {environment}")
+        else:
+            failures.append(f"{environment}: explicitly requested build failed")
+            print(f"# FAIL {environment}")
+    return failures, []
+
+
+def run_pio_builds(
+    explicit_envs: Sequence[str] | None,
+    require_pio: bool,
+    pio_bin: str | None = None,
+) -> tuple[list[str], list[str], bool]:
     pio = pio_executable(pio_bin)
     if not pio:
         msg = "PlatformIO executable not found; skipping ESP32 builds."
@@ -132,10 +240,13 @@ def run_pio_builds(envs: Iterable[str], require_pio: bool, pio_bin: str | None =
             raise SystemExit(msg + " Install PlatformIO, set PIO=path-to-pio, or pass --pio-bin path-to-pio.")
         print("\n# " + msg)
         print("# Re-run with --require-pio on a machine where ESP32 compilation is expected.")
-        return
+        return [], [], True
 
-    for env in envs:
-        run([pio, "run", "-e", env])
+    if explicit_envs:
+        failures, warnings = run_explicit_pio_envs(pio, explicit_envs)
+    else:
+        failures, warnings = run_default_pio_policy(pio)
+    return failures, warnings, False
 
 
 def main() -> int:
@@ -150,7 +261,7 @@ def main() -> int:
         "--pio-env",
         action="append",
         dest="pio_envs",
-        help="PlatformIO environment to build; can be passed multiple times",
+        help="strictly build one PlatformIO environment; can be passed multiple times",
     )
     args = parser.parse_args()
 
@@ -162,10 +273,28 @@ def main() -> int:
     if not args.skip_tool_smoke:
         run_tool_smokes()
 
+    failures: list[str] = []
+    warnings: list[str] = []
+    pio_skipped = False
     if not args.skip_pio:
-        run_pio_builds(args.pio_envs or DEFAULT_PIO_ENVS, args.require_pio, args.pio_bin)
+        failures, warnings, pio_skipped = run_pio_builds(args.pio_envs, args.require_pio, args.pio_bin)
 
-    print("\n# check_all: OK")
+    if failures:
+        print("\n# check_all: FAIL")
+        for failure in failures:
+            print(f"# FAIL {failure}")
+        return 1
+
+    if warnings:
+        print("\n# check_all: PASS WITH WARNINGS")
+        for warning in warnings:
+            print(f"# WARN {warning}")
+        return 0
+
+    if pio_skipped:
+        print("\n# check_all: PASS (PlatformIO skipped)")
+    else:
+        print("\n# check_all: PASS")
     return 0
 
 

@@ -88,7 +88,12 @@ protocol_version=19
 board_type=10       LOLIN_C3_MINI
 imu_type=13         LSM6DSV
 mcu_type=6          ESP32_C3
+firmware_version    c3-6dsv-<git identity>
 ```
+
+The handshake firmware string is generated automatically. Clean builds use the
+short Git HEAD; uncommitted test builds use `HEAD+worktree-dirty`, matching the
+identity printed by `version`, `status` and test reports.
 
 Outgoing packets currently used:
 

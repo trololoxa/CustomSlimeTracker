@@ -1,5 +1,7 @@
 #include "runtime/machine_log_runtime.hpp"
 
+#include "build_config/build_identity.hpp"
+
 namespace tracker {
 
 void machineLogPrintU64Dec(Stream& out, uint64_t v) {
@@ -84,7 +86,10 @@ void machineLogEmitHeader(Stream& out,
     out.print("LOGVER,2,E0,mode,"); out.print(machineLogModeName(state.mode));
     out.print(",rate_hz,"); out.print(state.rateHz);
     out.print(",config_crc,0x"); out.print(config.data.crc32, HEX);
-    out.print(",config_version,"); out.println(config.data.version);
+    out.print(",config_version,"); out.print(config.data.version);
+    out.print(",build_profile,"); out.print(trackerBuildProfileName());
+    out.print(",pio_env,"); out.print(trackerBuildPioEnvironment());
+    out.print(",git,"); out.println(trackerBuildIdentityString());
     out.println("LOGFMT,Q,t_us,seq,dt_us,w,x,y,z,qflags,conf,state,acc_trust,acc_norm_g,acc_var_g2,gyro_trust,gyro_dps,recovery");
     out.println("LOGFMT,FIFO,t_us,seq,dt_us,hw_ts,fb_ts,dropped_before,overrun,full,unknown,quality_flags");
     out.println("LOGFMT,CAL,t_us,seq,ax_g,ay_g,az_g,gx_rads,gy_rads,gz_rads,temp_c,quality_flags");

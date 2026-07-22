@@ -1,5 +1,7 @@
 #include "runtime/static_test_runner.hpp"
 
+#include "build_config/build_identity.hpp"
+
 namespace tracker {
 
 float staticTestAvgUs(uint64_t sumUs, uint32_t calls) {
@@ -318,6 +320,9 @@ void StaticTestRunner::finish(Stream& out) {
     out.println("==============================================================================");
     out.println("COMMAND STATIC TEST REPORT");
     out.println("==============================================================================");
+    out.print("build_profile: "); out.println(trackerBuildProfileName());
+    out.print("build_pio_env: "); out.println(trackerBuildPioEnvironment());
+    out.print("build_git: "); out.println(trackerBuildIdentityString());
     out.print("stopped_by_command: "); out.println(t.stopRequested ? "yes" : "no");
     out.print("duration_s: "); out.println(durationS, 3);
     out.print("samples: "); out.println(t.samples);
