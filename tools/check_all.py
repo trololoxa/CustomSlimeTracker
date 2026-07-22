@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Run local project quality checks with profile-aware PlatformIO policy.
 
-Production, Production Diagnostic and Slim are mandatory. The normal Debug
-image is advisory only when it fails specifically because its wearable flash
-partition is too small. A second Debug link-check environment uses a larger
-no-OTA partition so compile/type/link-symbol failures remain fatal.
+Production, Production Diagnostic, Slim, Debug and the explicit Debug
+link-check are mandatory. Every ESP32-C3 profile uses the same 4 MiB no-OTA
+partition table with one 3 MiB factory app, so any image-size overflow is a
+real project-contract failure.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from check_all_policy import is_size_only_failure, parse_size_metrics
+from check_all_policy import parse_size_metrics
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_PIO_ENVS = (
@@ -184,17 +184,14 @@ def run_default_pio_policy(pio: str) -> tuple[list[str], list[str]]:
             failures.append(f"{environment}: mandatory PlatformIO build failed")
             print(f"# FAIL {environment}")
 
-    # First prove that the complete Debug source set compiles and links when a
-    # larger app partition removes only the known wearable flash constraint.
+    # Explicitly compile the complete Debug source set in its dedicated gate.
+    # Every environment now shares the same 3 MiB no-OTA app partition, so a
+    # size overflow is a real project-contract failure rather than an accepted
+    # wearable-layout warning.
     linkcheck = run_pio_build(pio, DEBUG_LINKCHECK_ENV, out_dir)
     print_size_summary(linkcheck)
-    linkcheck_size_only = (not linkcheck.ok) and is_size_only_failure(linkcheck.output)
     if linkcheck.ok:
         print(f"# PASS {DEBUG_LINKCHECK_ENV} (compile/type/link-symbol validation)")
-    elif linkcheck_size_only:
-        warning = f"{DEBUG_LINKCHECK_ENV}: Debug validation image still exceeds a size region; no non-size build error detected"
-        warnings.append(warning)
-        print(f"# WARN {warning}")
     else:
         failures.append(f"{DEBUG_LINKCHECK_ENV}: Debug compile/type/link-symbol validation failed")
         print(f"# FAIL {DEBUG_LINKCHECK_ENV}")
@@ -203,12 +200,8 @@ def run_default_pio_policy(pio: str) -> tuple[list[str], list[str]]:
     print_size_summary(debug)
     if debug.ok:
         print(f"# PASS {DEBUG_ENV}")
-    elif (linkcheck.ok or linkcheck_size_only) and is_size_only_failure(debug.output):
-        warning = f"{DEBUG_ENV}: wearable Debug image exceeds configured size; full Debug link-check passed"
-        warnings.append(warning)
-        print(f"# WARN {warning}")
     else:
-        failures.append(f"{DEBUG_ENV}: failed for a reason other than an accepted size-only overflow")
+        failures.append(f"{DEBUG_ENV}: mandatory Debug build failed")
         print(f"# FAIL {DEBUG_ENV}")
 
     return failures, warnings

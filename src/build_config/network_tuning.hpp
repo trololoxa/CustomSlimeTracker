@@ -259,10 +259,46 @@
 #define TRACKER_SLIMEVR_SERVER_SILENCE_TIMEOUT_MS 15000UL
 #endif
 
+#ifndef TRACKER_SLIMEVR_USE_COMPACT_MOTION_PACKET
+// Experimental packet 23 override. It is not negotiated by the legacy
+// FeatureFlags bit used for packet-100 bundles, and some step-mounting beta
+// branches contain the packet class but omit its parser mapping. Keep it off
+// by default; enable only for a server build explicitly verified to parse 23.
+#define TRACKER_SLIMEVR_USE_COMPACT_MOTION_PACKET 0
+#endif
+
+#ifndef TRACKER_SLIMEVR_ENABLE_BUNDLE_NEGOTIATION
+// Request server FeatureFlags and use packet 100 only after bit 0 confirms
+// PROTOCOL_BUNDLE_SUPPORT. The bundle contains only packet 17 + packet 4.
+#define TRACKER_SLIMEVR_ENABLE_BUNDLE_NEGOTIATION 1
+#endif
+
+#ifndef TRACKER_SLIMEVR_FEATURE_FLAGS_REQUEST_INTERVAL_MS
+#define TRACKER_SLIMEVR_FEATURE_FLAGS_REQUEST_INTERVAL_MS 500UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_FEATURE_FLAGS_REQUEST_ATTEMPTS
+#define TRACKER_SLIMEVR_FEATURE_FLAGS_REQUEST_ATTEMPTS 15U
+#endif
+
+#ifndef TRACKER_SLIMEVR_FALLBACK_ACCEL_RATE_HZ
+// Old servers without packet-100 support receive rotation at the configured
+// pose rate and coherent packet-4 acceleration at this reduced rate. Step
+// mounting integrates real callback timestamps and does not require 100 Hz.
+#define TRACKER_SLIMEVR_FALLBACK_ACCEL_RATE_HZ 50U
+#endif
+
 #ifndef TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD 12UL
   #else
     #define TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD 20UL
   #endif
+#endif
+
+#ifndef TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_RX_GRACE_MS
+// Server heartbeat/ping arrives about every 500 ms. A recent inbound packet
+// proves the UDP session is alive, so transient TX pressure must drop stale
+// pose datagrams rather than reopen the socket and add a reconnect gap.
+#define TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_RX_GRACE_MS 2000UL
 #endif

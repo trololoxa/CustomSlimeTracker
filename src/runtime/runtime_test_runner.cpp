@@ -440,7 +440,15 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     printWifiTxPower(out, "wifi_tx_power_end", end.wifi);
     out.print("slime_server_found_start: "); out.println(yn(start_.slime.serverFound));
     out.print("slime_server_found_end: "); out.println(yn(end.slime.serverFound));
+    out.print("slime_motion_packet_mode: "); out.println(slimevrMotionPacketModeName(end.slime.motionPacketMode));
     out.print("slime_rotation_sent_delta: "); out.println(deltaU32(end.slime.rotationSent, start_.slime.rotationSent));
+    out.print("slime_acceleration_sent_delta: "); out.println(deltaU32(end.slime.accelerationSent, start_.slime.accelerationSent));
+    out.print("slime_bundled_motion_sent_delta: "); out.println(deltaU32(end.slime.bundledMotionSent, start_.slime.bundledMotionSent));
+    out.print("slime_bundled_motion_send_failures_delta: "); out.println(deltaU32(end.slime.bundledMotionSendFailures, start_.slime.bundledMotionSendFailures));
+    out.print("slime_compact_motion_sent_delta: "); out.println(deltaU32(end.slime.compactMotionSent, start_.slime.compactMotionSent));
+    out.print("slime_compact_motion_send_failures_delta: "); out.println(deltaU32(end.slime.compactMotionSendFailures, start_.slime.compactMotionSendFailures));
+    out.print("slime_acceleration_rate_limited_delta: "); out.println(deltaU32(end.slime.accelerationRateLimited, start_.slime.accelerationRateLimited));
+    out.print("slime_feature_flags_sent_delta: "); out.println(deltaU32(end.slime.featureFlagsSent, start_.slime.featureFlagsSent));
     out.print("slime_rotation_send_due_delta: "); out.println(deltaU32(end.slime.rotationSendDue, start_.slime.rotationSendDue));
     out.print("slime_rotation_rate_limited_delta: "); out.println(deltaU32(end.slime.rotationRateLimited, start_.slime.rotationRateLimited));
     out.print("slime_rotation_missed_deadlines_delta: "); out.println(deltaU32(end.slime.rotationMissedDeadlines, start_.slime.rotationMissedDeadlines));
@@ -467,6 +475,7 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.print("slime_unknown_packets_delta: "); out.println(deltaU32(end.slime.unknownPacketsReceived, start_.slime.unknownPacketsReceived));
     out.print("slime_server_silence_resets_delta: "); out.println(deltaU32(end.slime.serverSilenceResets, start_.slime.serverSilenceResets));
     out.print("slime_udp_reopen_requests_delta: "); out.println(deltaU32(end.slime.udpReopenRequests, start_.slime.udpReopenRequests));
+    out.print("slime_udp_reopen_suppressed_recent_rx_delta: "); out.println(deltaU32(end.slime.udpReopenSuppressedRecentRx, start_.slime.udpReopenSuppressedRecentRx));
     out.println("RUNTIME TEST DONE");
     out.println("==============================================================================");
 

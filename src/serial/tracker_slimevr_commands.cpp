@@ -19,6 +19,30 @@ Stream& outFor(TrackerSerialCommandContext& ctx) {
 
 const char* yn(bool v) { return v ? "yes" : "no"; }
 
+bool motionFrameConfigReady(const TrackerSerialCommandContext& ctx) {
+    return ctx.config &&
+           ctx.config->data.accelCal.valid &&
+           ctx.config->data.frame.sensorToDeviceValid;
+}
+
+void printMotionFrameContract(const TrackerSerialCommandContext& ctx,
+                              Stream& out,
+                              const SlimeVROutputRuntimeStatus& s) {
+    const bool protocolReady = slimevr_motion_frame::protocolUsesCorrectedAcceleration(
+        s.protocolVersion
+    );
+    const bool configReady = motionFrameConfigReady(ctx);
+    out.print("motion_frame_contract="); out.println(slimevr_motion_frame::CONTRACT_NAME);
+    out.print("rotation_convention="); out.println(slimevr_motion_frame::ROTATION_CONVENTION_NAME);
+    out.print("acceleration_frame="); out.println(slimevr_motion_frame::ACCELERATION_FRAME_NAME);
+    out.print("acceleration_units="); out.println(slimevr_motion_frame::ACCELERATION_UNITS_NAME);
+    out.print("legacy_acceleration_correction="); out.println(protocolReady ? "no" : "yes");
+    out.print("motion_frame_config_ready="); out.println(yn(configReady));
+    out.print("step_mounting_ready=");
+    out.println(yn(protocolReady && configReady && s.preparedOutputAvailable &&
+                   s.serverFound && s.accelerationSent > 0u && !s.trackerErrorActive));
+}
+
 void serviceNonCliRuntime(TrackerSerialCommandContext& ctx) {
     if (ctx.serviceNonCliRuntime) {
         (void)ctx.serviceNonCliRuntime(ctx.serviceNonCliRuntimeUser);
@@ -87,8 +111,25 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("server_found="); out.println(yn(s.serverFound));
     out.print("server_ip="); out.println(s.serverIpv4 ? udpIpv4ToCString(s.serverIpv4, ipBuf, sizeof(ipBuf)) : "0.0.0.0");
     out.print("server_port="); out.println(s.serverPort);
+    out.print("protocol_version="); out.println(s.protocolVersion);
+    printMotionFrameContract(ctx, out, s);
+    out.print("motion_packet_mode="); out.println(slimevrMotionPacketModeName(s.motionPacketMode));
+    out.print("packet23_available="); out.println(s.compactMotionAvailable ? "yes" : "no");
+    out.print("packet23_enabled="); out.println(s.compactMotionEnabled ? "yes" : "no");
+    out.print("bundle_negotiation_enabled="); out.println(s.bundleNegotiationEnabled ? "yes" : "no");
+    out.print("server_feature_flags_available="); out.println(s.serverFeatureFlagsAvailable ? "yes" : "no");
+    out.print("server_bundle_supported="); out.println(s.serverBundleSupported ? "yes" : "no");
+    out.print("server_compact_bundle_supported="); out.println(s.serverCompactBundleSupported ? "yes" : "no");
+    out.print("fallback_acceleration_rate_hz="); out.println(s.fallbackAccelerationRateHz);
+    out.print("bundled_motion_sent="); out.println(s.bundledMotionSent);
+    out.print("bundled_motion_send_failures="); out.println(s.bundledMotionSendFailures);
+    out.print("acceleration_rate_limited="); out.println(s.accelerationRateLimited);
+    out.print("feature_flags_sent="); out.println(s.featureFlagsSent);
+    out.print("feature_flags_send_failures="); out.println(s.featureFlagsSendFailures);
     out.print("rotation_sent="); out.println(s.rotationSent);
     out.print("acceleration_sent="); out.println(s.accelerationSent);
+    out.print("compact_motion_sent="); out.println(s.compactMotionSent);
+    out.print("compact_motion_send_failures="); out.println(s.compactMotionSendFailures);
     out.print("acceleration_skipped_invalid="); out.println(s.accelerationSkippedInvalid);
     out.print("acceleration_skipped_configuration="); out.println(s.accelerationSkippedConfiguration);
     out.print("acceleration_skipped_component_missing="); out.println(s.accelerationSkippedComponentMissing);
@@ -122,6 +163,7 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("server_silence_resets="); out.println(s.serverSilenceResets);
     out.print("wifi_lost_resets="); out.println(s.wifiLostResets);
     out.print("udp_reopen_requests="); out.println(s.udpReopenRequests);
+    out.print("udp_reopen_suppressed_recent_rx="); out.println(s.udpReopenSuppressedRecentRx);
     serviceNonCliRuntime(ctx);
     out.print("ping_received="); out.println(s.pingReceived);
     out.print("pong_sent="); out.println(s.pongSent);
@@ -167,6 +209,7 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("tracker_health_revision="); out.println(s.trackerHealthRevision);
     out.print("tracker_error_message="); out.println(s.trackerErrorMessage);
     out.print("protocol_version="); out.println(s.protocolVersion);
+    printMotionFrameContract(ctx, out, s);
     out.print("board_type="); out.println(s.boardType);
     out.print("imu_type="); out.println(s.imuType);
     out.print("mcu_type="); out.println(s.mcuType);
@@ -174,8 +217,23 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("handshakes_sent="); out.println(s.handshakesSent);
     out.print("sensor_info_sent="); out.println(s.sensorInfoSent);
     out.print("heartbeat_sent="); out.println(s.heartbeatSent);
+    out.print("motion_packet_mode="); out.println(slimevrMotionPacketModeName(s.motionPacketMode));
+    out.print("packet23_available="); out.println(s.compactMotionAvailable ? "yes" : "no");
+    out.print("packet23_enabled="); out.println(s.compactMotionEnabled ? "yes" : "no");
+    out.print("bundle_negotiation_enabled="); out.println(s.bundleNegotiationEnabled ? "yes" : "no");
+    out.print("server_feature_flags_available="); out.println(s.serverFeatureFlagsAvailable ? "yes" : "no");
+    out.print("server_bundle_supported="); out.println(s.serverBundleSupported ? "yes" : "no");
+    out.print("server_compact_bundle_supported="); out.println(s.serverCompactBundleSupported ? "yes" : "no");
+    out.print("fallback_acceleration_rate_hz="); out.println(s.fallbackAccelerationRateHz);
+    out.print("bundled_motion_sent="); out.println(s.bundledMotionSent);
+    out.print("bundled_motion_send_failures="); out.println(s.bundledMotionSendFailures);
+    out.print("acceleration_rate_limited="); out.println(s.accelerationRateLimited);
+    out.print("feature_flags_sent="); out.println(s.featureFlagsSent);
+    out.print("feature_flags_send_failures="); out.println(s.featureFlagsSendFailures);
     out.print("rotation_sent="); out.println(s.rotationSent);
     out.print("acceleration_sent="); out.println(s.accelerationSent);
+    out.print("compact_motion_sent="); out.println(s.compactMotionSent);
+    out.print("compact_motion_send_failures="); out.println(s.compactMotionSendFailures);
     out.print("acceleration_skipped_invalid="); out.println(s.accelerationSkippedInvalid);
     out.print("acceleration_skipped_configuration="); out.println(s.accelerationSkippedConfiguration);
     out.print("acceleration_skipped_component_missing="); out.println(s.accelerationSkippedComponentMissing);
@@ -228,6 +286,9 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     serviceNonCliRuntime(ctx);
     out.print("next_packet_number="); out.println(s.nextPacketNumber);
     out.print("packets_received="); out.println(s.packetsReceived);
+    out.print("foreign_endpoint_packets_dropped="); out.println(s.foreignEndpointPacketsDropped);
+    out.print("pre_session_packets_dropped="); out.println(s.preSessionPacketsDropped);
+    out.print("malformed_feature_flags="); out.println(s.malformedFeatureFlags);
     out.print("discovery_responses="); out.println(s.discoveryResponses);
     out.print("heartbeat_received="); out.println(s.heartbeatReceived);
     out.print("ping_received="); out.println(s.pingReceived);
@@ -255,6 +316,7 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("server_silence_resets="); out.println(s.serverSilenceResets);
     out.print("wifi_lost_resets="); out.println(s.wifiLostResets);
     out.print("udp_reopen_requests="); out.println(s.udpReopenRequests);
+    out.print("udp_reopen_suppressed_recent_rx="); out.println(s.udpReopenSuppressedRecentRx);
     out.print("consecutive_send_failures="); out.println(s.consecutiveSendFailures);
     serviceNonCliRuntime(ctx);
     out.print("last_handshake_ms="); out.println(s.lastHandshakeMs);

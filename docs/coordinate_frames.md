@@ -153,8 +153,10 @@ Current firmware policy:
 - The firmware estimates where the physical tracker device points.
 - SlimeVR/server-side logic owns body assignment, mounting calibration, recenter,
   body proportions, AutoBone and Stay Aligned.
-- Firmware output uses one fixed native convention until a complete, tested
-  protocol adapter is introduced.
+- The SlimeVR protocol adapter uses the same right-handed device basis for packet
+  23 rotation and acceleration, with packet 17 as rotation-only fallback: `+X right, +Y forward, +Z top/outward`.
+- Handshake protocol version 22 declares corrected acceleration. The server must
+  not apply its legacy extra -90 degree local-Z acceleration correction.
 
 ## Mag heading and yaw correction
 
@@ -198,9 +200,16 @@ SlimeVR Server expects tracker orientation as a quaternion. It does not replace
 local IMU calibration, gyro bias calibration, accel calibration, mag calibration,
 or sensor fusion.
 
-Firmware currently publishes the AHRS device/sensor orientation through prepared
-output snapshots. Local serial output and SlimeVR UDP consume that same snapshot
-boundary instead of reading AHRS/FIFO objects directly.
+Firmware publishes Hamilton `q_world_from_device` and gravity-removed
+`linearAccelerationDeviceG` through one prepared snapshot. After server
+FeatureFlags bit 0 confirms packet-100 support, the SlimeVR adapter places
+float32 packet 17 followed by float32 packet 4 into one bundle datagram. Without
+that negotiated capability it keeps packet 17 at the configured pose rate and
+sends coherent packet 4 at the bounded fallback rate. Packet 23 remains an
+explicitly disabled experimental build option, not the default transport.
+Protocol 22 makes the corrected local-frame contract explicit to the server.
+Local serial output and SlimeVR UDP consume the same snapshot boundary instead
+of reading AHRS/FIFO objects directly.
 The server should remain responsible for:
 
 ```text
@@ -223,3 +232,5 @@ When adding or changing frame-related code:
 4. Keep accel in g before AHRS gravity correction.
 5. Keep body/server offsets out of sensor calibration code.
 6. Add or update native tests for quaternion/frame invariants when possible.
+7. Do not lower the handshake below protocol 22 while corrected device-frame
+   acceleration is emitted; older server behavior rotates acceleration alone.

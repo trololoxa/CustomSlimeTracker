@@ -65,8 +65,15 @@ timestamp. A snapshot is invalid unless the AHRS integrated or initialized at th
 exact sample timestamp; rejected gyro/timestamp samples therefore cannot relabel a
 stale quaternion as fresh. Motion additionally requires completed accel and
 sensor-to-device calibration; hard accel saturation invalidates acceleration only.
-SlimeVR packet 17 is sent first, then packet 4 is sent from that exact snapshot only
-when rotation transport succeeded. Packet 4 is never emitted alone or recomputed.
+When acceleration is valid and the server advertises packet-100 support,
+one bundle carries float32 packet 17 followed by float32 packet 4 from that exact
+snapshot in one UDP datagram. Without negotiated bundle support, packet 17
+remains at pose rate and coherent packet 4 is limited to 50 Hz. If acceleration
+is hard-invalid, packet 17 still sends rotation alone and the skip reason is
+counted. Packet 23 remains compiled only as an explicit experimental override
+and is disabled by default. The protocol boundary preserves the device local
+axes (`+X right, +Y forward, +Z top/outward`) for both values and advertises
+protocol 22, disabling the server's legacy acceleration-only axis correction.
 
 ## Trust boundaries
 

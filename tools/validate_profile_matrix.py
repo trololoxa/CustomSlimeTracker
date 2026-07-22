@@ -17,6 +17,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORMIO_INI = ROOT / "platformio.ini"
 CONFIG_RUNTIME_CPP = ROOT / "src" / "config" / "tracker_config_runtime.cpp"
+TRACKER_PARTITION_CSV = ROOT / "partitions" / "tracker_4mb_no_ota.csv"
+TRACKER_FLASH_SIZE = 0x400000
+TRACKER_APP_OFFSET = 0x10000
+TRACKER_APP_SIZE = 0x300000
 
 ENV_RE = re.compile(r"^\s*\[env:([^\]]+)\]\s*$")
 EXCLUDE_RE = re.compile(r"^\s*-<([^>]+)>\s*(?:[;#].*)?$")
@@ -157,6 +161,78 @@ def parse_platformio() -> tuple[set[str], dict[str, set[str]], dict[str, str], t
     return environments, excludes, profiles, parse_default_envs(default_envs_raw)
 
 
+def parse_partition_csv(path: Path) -> list[tuple[str, str, str, int, int]]:
+    rows: list[tuple[str, str, str, int, int]] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 5:
+            raise ValueError(f"invalid partition row: {raw!r}")
+        rows.append((parts[0], parts[1], parts[2], int(parts[3], 0), int(parts[4], 0)))
+    return rows
+
+
+def validate_partition_contract(errors: list[str], platformio_text: str) -> None:
+    base_match = re.search(
+        rf"^\[env:{re.escape(BASE_ENV)}\]\s*$([\s\S]*?)(?=^\[|\Z)",
+        platformio_text,
+        re.MULTILINE,
+    )
+    if base_match is None:
+        errors.append(f"[platformio] missing hardware base environment: {BASE_ENV}")
+        return
+
+    base_section = base_match.group(1)
+    required_lines = {
+        "board_upload.flash_size = 4MB": "explicit 4 MiB flash contract",
+        "board_build.partitions = partitions/tracker_4mb_no_ota.csv": "shared no-OTA partition",
+        "board_upload.maximum_size = 3145728": "3 MiB application size",
+    }
+    for line, description in required_lines.items():
+        if line not in base_section:
+            errors.append(f"{BASE_ENV}: missing {description}: {line}")
+
+    if not TRACKER_PARTITION_CSV.exists():
+        errors.append(f"[platformio] partition file does not exist: {TRACKER_PARTITION_CSV.relative_to(ROOT)}")
+        return
+
+    try:
+        rows = parse_partition_csv(TRACKER_PARTITION_CSV)
+    except (ValueError, OSError) as exc:
+        errors.append(f"[partition] cannot parse {TRACKER_PARTITION_CSV.name}: {exc}")
+        return
+
+    names = {name for name, _, _, _, _ in rows}
+    if "otadata" in names or any(subtype.startswith("ota_") for _, _, subtype, _, _ in rows):
+        errors.append("[partition] tracker layout must remain no-OTA")
+
+    app_rows = [row for row in rows if row[1] == "app"]
+    if app_rows != [("app0", "app", "factory", TRACKER_APP_OFFSET, TRACKER_APP_SIZE)]:
+        errors.append(
+            "[partition] expected one factory app at "
+            f"0x{TRACKER_APP_OFFSET:X} size 0x{TRACKER_APP_SIZE:X}, got {app_rows!r}"
+        )
+
+    ordered = sorted(rows, key=lambda row: row[3])
+    previous_end = 0
+    for name, _, _, offset, size in ordered:
+        if size <= 0:
+            errors.append(f"[partition] {name}: size must be positive")
+        if offset < previous_end:
+            errors.append(f"[partition] {name}: overlaps previous partition")
+        end = offset + size
+        if end > TRACKER_FLASH_SIZE:
+            errors.append(f"[partition] {name}: end 0x{end:X} exceeds 4 MiB flash")
+        previous_end = max(previous_end, end)
+
+    if previous_end != TRACKER_FLASH_SIZE:
+        errors.append(
+            f"[partition] layout should cover flash through 0x{TRACKER_FLASH_SIZE:X}, "
+            f"got 0x{previous_end:X}"
+        )
+
 def check_required_subset(errors: list[str], env: str, actual: set[str], required: set[str]) -> None:
     missing = sorted(required - actual)
     if missing:
@@ -189,6 +265,8 @@ def main() -> int:
         if env not in environments:
             errors.append(f"[platformio] default environment does not exist: {env}")
 
+    validate_partition_contract(errors, platformio_text)
+
     linkcheck_match = re.search(
         rf"^\[env:{re.escape(DEBUG_LINKCHECK_ENV)}\]\s*$([\s\S]*?)(?=^\[|\Z)",
         platformio_text,
@@ -200,17 +278,16 @@ def main() -> int:
         linkcheck_section = linkcheck_match.group(1)
         if f"extends = env:{DEBUG_ENV}" not in linkcheck_section:
             errors.append(f"{DEBUG_LINKCHECK_ENV}: must extend {DEBUG_ENV}")
-        if "board_build.partitions = partitions/debug_linkcheck.csv" not in linkcheck_section:
-            errors.append(f"{DEBUG_LINKCHECK_ENV}: missing dedicated debug_linkcheck partition")
-        if "board_upload.maximum_size = 3145728" not in linkcheck_section:
-            errors.append(f"{DEBUG_LINKCHECK_ENV}: unexpected link-check maximum app size")
+        if "board_build.partitions" in linkcheck_section or "board_upload.maximum_size" in linkcheck_section:
+            errors.append(
+                f"{DEBUG_LINKCHECK_ENV}: must inherit the shared hardware partition contract "
+                "instead of overriding it"
+            )
 
     if "extra_scripts = pre:tools/generate_build_identity.py" not in platformio_text:
         errors.append("[platformio] automatic build identity pre-script is missing")
     if not (ROOT / "tools" / "generate_build_identity.py").exists():
         errors.append("[platformio] build identity pre-script path does not exist")
-    if not (ROOT / "partitions" / "debug_linkcheck.csv").exists():
-        errors.append("[platformio] debug link-check partition file does not exist")
 
     for env, expected in EXPECTED_PROFILE_FLAGS.items():
         actual = profiles.get(env)
@@ -282,7 +359,7 @@ def main() -> int:
 
     print(
         "# validate_profile_matrix: OK "
-        f"(default={default_envs[0]}, DebugLinkcheck=yes, Production required={len(PRODUCTION_REQUIRED_EXCLUDES)}, "
+        f"(default={default_envs[0]}, partition=4MiB-no-OTA, DebugLinkcheck=yes, Production required={len(PRODUCTION_REQUIRED_EXCLUDES)}, "
         f"ProductionDiag required={len(PRODUCTION_DIAG_REQUIRED_EXCLUDES)}, "
         f"Slim required={len(SLIM_REQUIRED_EXCLUDES)})"
     )

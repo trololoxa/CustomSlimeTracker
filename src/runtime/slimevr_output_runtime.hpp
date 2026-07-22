@@ -33,6 +33,14 @@ enum class SlimeVROutputState : uint8_t {
 
 const char* slimevrOutputStateName(SlimeVROutputState state);
 
+enum class SlimeVRMotionPacketMode : uint8_t {
+    SeparateRotation17Accel4,
+    Bundle100Rotation17Accel4,
+    ExperimentalRotationAcceleration23,
+};
+
+const char* slimevrMotionPacketModeName(SlimeVRMotionPacketMode mode);
+
 struct SlimeVROutputRuntimeConfig {
     bool enabled = false;
     bool discoveryEnabled = true;
@@ -89,6 +97,22 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t sensorInfoSent = 0;
     uint32_t rotationSent = 0;
     uint32_t accelerationSent = 0;
+    uint32_t compactMotionSent = 0;
+    uint32_t compactMotionSendFailures = 0;
+    uint32_t bundledMotionSent = 0;
+    uint32_t bundledMotionSendFailures = 0;
+    uint32_t accelerationRateLimited = 0;
+    uint32_t featureFlagsSent = 0;
+    uint32_t featureFlagsSendFailures = 0;
+    bool compactMotionAvailable = true;
+    bool compactMotionEnabled = TRACKER_SLIMEVR_USE_COMPACT_MOTION_PACKET != 0;
+    bool bundleNegotiationEnabled = TRACKER_SLIMEVR_ENABLE_BUNDLE_NEGOTIATION != 0;
+    bool serverFeatureFlagsAvailable = false;
+    bool serverBundleSupported = false;
+    bool serverCompactBundleSupported = false;
+    bool bundledMotionEnabled = false;
+    SlimeVRMotionPacketMode motionPacketMode = SlimeVRMotionPacketMode::SeparateRotation17Accel4;
+    uint16_t fallbackAccelerationRateHz = TRACKER_SLIMEVR_FALLBACK_ACCEL_RATE_HZ;
     uint32_t accelerationSkippedInvalid = 0;
     uint32_t accelerationSkippedConfiguration = 0;
     uint32_t accelerationSkippedComponentMissing = 0;
@@ -117,6 +141,9 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t rotationDuplicateSnapshot = 0;
     uint32_t rotationSuppressedByError = 0;
     uint32_t packetsReceived = 0;
+    uint32_t foreignEndpointPacketsDropped = 0;
+    uint32_t preSessionPacketsDropped = 0;
+    uint32_t malformedFeatureFlags = 0;
     uint32_t discoveryResponses = 0;
     uint32_t heartbeatReceived = 0;
     uint32_t pingReceived = 0;
@@ -138,6 +165,7 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t serverSilenceResets = 0;
     uint32_t wifiLostResets = 0;
     uint32_t udpReopenRequests = 0;
+    uint32_t udpReopenSuppressedRecentRx = 0;
     uint32_t consecutiveSendFailures = 0;
 
     uint32_t nextPacketNumber = 0;
@@ -218,11 +246,12 @@ public:
 private:
     void transitionTo(SlimeVROutputState state, uint32_t nowMs);
     void resetConnectionState(bool keepCounters);
+    void resetServerFeatureNegotiation();
     void ensureUdp(uint32_t nowMs);
     void pollIncoming(uint32_t nowMs);
-    void handleIncomingPacket(const uint8_t* data, size_t len, const UdpEndpoint& remote, uint32_t nowMs);
+    bool handleIncomingPacket(const uint8_t* data, size_t len, const UdpEndpoint& remote, uint32_t nowMs);
     void handlePingPong(const uint8_t* data, size_t len);
-    void handleFeatureFlags(const uint8_t* data, size_t len);
+    bool handleFeatureFlags(const uint8_t* data, size_t len);
     void handleSetConfigFlag(const uint8_t* data, size_t len, uint32_t nowMs);
     void handleProtocolChange(const uint8_t* data, size_t len);
     void sendAckConfigChange(uint16_t configType);
@@ -230,6 +259,7 @@ private:
     void sendHandshakeTo(const UdpEndpoint& endpoint, uint32_t nowMs);
     void sendSensorInfo(uint32_t nowMs);
     void sendHeartbeat(uint32_t nowMs);
+    void maybeSendFeatureFlags(uint32_t nowMs);
     void maybeSendTelemetry(uint32_t nowMs);
     bool serviceDue(uint32_t nowMs) const;
     uint32_t activitySignature() const;
@@ -242,8 +272,12 @@ private:
     void maybeRecordRotationSuppressedByError(uint32_t nowMs);
     void maybeSendRotation(uint32_t nowMs);
     bool consumeRotationDeadline(uint32_t nowMs);
+    bool consumeFallbackAccelerationDeadline(uint32_t nowMs);
     void resetRotationDeadline();
+    void resetFallbackAccelerationDeadline();
     void armRotationDeadline(uint32_t deadlineMs);
+    SlimeVRMotionPacketMode motionPacketMode() const;
+    bool serverFeatureEnabled(uint8_t bit) const;
     void sendRotation(const TrackerPreparedOutputSnapshot& snapshot, uint32_t nowMs);
     void makeHandshakeInfo(SlimeVRHandshakeInfo& info) const;
     enum class PacketPurpose : uint8_t {
@@ -252,6 +286,7 @@ private:
         Telemetry,
         Rotation,
         Acceleration,
+        MotionCombined,
         Tap,
         ErrorReport,
     };
@@ -308,6 +343,11 @@ private:
 
     uint32_t lastPingId_ = 0;
     uint32_t lastServerFeatureFlags_ = 0;
+    uint8_t serverFeatureFlags_[4] = {};
+    uint8_t serverFeatureFlagsLength_ = 0;
+    bool serverFeatureFlagsAvailable_ = false;
+    uint8_t featureFlagsRequestAttempts_ = 0;
+    uint32_t lastFeatureFlagsRequestMs_ = 0;
     uint8_t lastSetConfigSensorId_ = 0;
     uint16_t lastSetConfigType_ = 0;
     bool lastSetConfigState_ = false;
@@ -323,6 +363,13 @@ private:
     uint32_t sensorInfoSent_ = 0;
     uint32_t rotationSent_ = 0;
     uint32_t accelerationSent_ = 0;
+    uint32_t compactMotionSent_ = 0;
+    uint32_t compactMotionSendFailures_ = 0;
+    uint32_t bundledMotionSent_ = 0;
+    uint32_t bundledMotionSendFailures_ = 0;
+    uint32_t accelerationRateLimited_ = 0;
+    uint32_t featureFlagsSent_ = 0;
+    uint32_t featureFlagsSendFailures_ = 0;
     uint32_t accelerationSkippedInvalid_ = 0;
     uint32_t accelerationSkippedConfiguration_ = 0;
     uint32_t accelerationSkippedComponentMissing_ = 0;
@@ -353,6 +400,9 @@ private:
     uint32_t rotationDuplicateSnapshot_ = 0;
     uint32_t rotationSuppressedByError_ = 0;
     uint32_t packetsReceived_ = 0;
+    uint32_t foreignEndpointPacketsDropped_ = 0;
+    uint32_t preSessionPacketsDropped_ = 0;
+    uint32_t malformedFeatureFlags_ = 0;
     uint32_t discoveryResponses_ = 0;
     uint32_t heartbeatReceived_ = 0;
     uint32_t pingReceived_ = 0;
@@ -374,6 +424,7 @@ private:
     uint32_t serverSilenceResets_ = 0;
     uint32_t wifiLostResets_ = 0;
     uint32_t udpReopenRequests_ = 0;
+    uint32_t udpReopenSuppressedRecentRx_ = 0;
     uint32_t consecutiveSendFailures_ = 0;
     bool udpReopenRequested_ = false;
 
@@ -384,6 +435,8 @@ private:
     uint32_t lastSensorInfoMs_ = 0;
     uint32_t nextRotationDeadlineMs_ = 0;
     bool rotationDeadlineArmed_ = false;
+    uint32_t nextFallbackAccelerationDeadlineMs_ = 0;
+    bool fallbackAccelerationDeadlineArmed_ = false;
     uint32_t lastRotationMs_ = 0;
     uint32_t lastTelemetryMs_ = 0; // legacy/status only after split intervals
     uint32_t lastServiceUpdateMs_ = 0;
@@ -400,6 +453,7 @@ private:
     uint32_t lastRotationSnapshotAgeUs_ = 0;
     uint32_t nextUdpBeginRetryMs_ = 0;
     uint32_t serverFoundSendGraceUntilMs_ = 0;
+    uint32_t lastRuntimeNowMs_ = 0;
 };
 
 } // namespace tracker

@@ -98,9 +98,20 @@ recorded before behavior-changing patches begin:
 - runtime FIFO processing is cooperative across app-loop passes, preserving all
   samples while bounding one pass so the 100 Hz SlimeVR scheduler can run;
 - prepared output contains one timestamp-coherent quaternion and device-frame
-  linear-acceleration snapshot; packet 4 is paired with successful packet 17 output;
-- SensorInfo ACK state, firmware FeatureFlags/bundle negotiation, protocol
-  switching and control-endpoint validation remain incomplete;
+  linear-acceleration snapshot; negotiated packet-100 output bundles float32
+  packet 17 followed by float32 packet 4 into one datagram, while older servers
+  receive packet 17 at pose rate and coherent packet 4 at a 50 Hz fallback rate;
+- SlimeVR protocol 22 advertises the tested corrected acceleration contract:
+  rotation and acceleration share `+X right, +Y forward, +Z top/outward`, with no
+  server legacy acceleration-only local-Z correction;
+- firmware FeatureFlags and packet-100 bundle negotiation are implemented;
+  packet 23 remains an explicitly disabled experimental option. Negotiation and
+  control traffic are bound to the selected server endpoint, while malformed
+  empty FeatureFlags cannot lock the runtime into a false capability state.
+  SensorInfo ACK state and protocol switching remain incomplete;
+- all ESP32-C3 profiles use one committed 4 MiB no-OTA layout with a 3 MiB
+  factory app; the previous Arduino default 1.25 MiB OTA slot could produce a
+  boot loop once the motion-bundle image crossed its real bootable boundary;
 - SignalStrength packet 19 now preserves signed RSSI dBm instead of the previous
   incorrect 0-100 normalization.
 

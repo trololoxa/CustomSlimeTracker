@@ -321,3 +321,18 @@ Phone hotspots are not a final acceptance environment. They can show UDP send
 failures or reopen requests even while RSSI is good. Use them for rough
 thermal/loop testing only; final Wi-Fi policy must be validated on the target
 router/AP.
+
+## Negotiated SlimeVR motion bundles
+
+Protocol-22 motion output requests server FeatureFlags. When bit 0 advertises
+packet-100 support, one 56-byte datagram contains float32 packet 17 followed by
+float32 packet 4 from the same prepared snapshot. This halves normal pose UDP
+transactions without quantization and without changing the 100 Hz scheduler or
+IMU/AHRS path. Servers without bundle support receive packet 17 at pose rate and
+packet 4 at a bounded 50 Hz fallback rate. Packet 23 remains an explicitly
+disabled experimental build option. No path adds sample-rate work, heap
+allocation, a retry queue, or stale-pose backlog.
+
+When the transport is congested, latest-state semantics apply: failed pose is
+dropped rather than retried. A recent inbound server packet suppresses automatic
+UDP reopen so transient TX pressure cannot create a discovery/grace latency gap.

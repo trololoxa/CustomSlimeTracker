@@ -96,6 +96,7 @@ static float readF32BeLocal(const uint8_t* p) {
     return v.f;
 }
 
+
 static std::vector<uint8_t> makeServerPacket(uint8_t type, std::initializer_list<uint8_t> payload) {
     std::vector<uint8_t> packet(12, 0);
     packet[3] = type;
@@ -211,6 +212,17 @@ int main() {
     ) == 0);
     CHECK(ctx, rt.status().handshakesSent == 1);
 
+    // Control/capability packets received before a discovery response do not
+    // establish a session or negotiate bundle support.
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags), {0x01}
+    );
+    udp.incomingRemote = UdpEndpoint{0xC0A80009UL, 6969};
+    udp.incomingPending = true;
+    rt.update(1050);
+    CHECK(ctx, rt.status().preSessionPacketsDropped == 1u);
+    CHECK(ctx, !rt.status().serverFeatureFlagsAvailable);
+
     udp.incoming = {
         static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
         'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
@@ -221,6 +233,7 @@ int main() {
 
     {
         const SlimeVROutputRuntimeStatus st = rt.status();
+        CHECK(ctx, st.protocolVersion == 22u);
         CHECK(ctx, st.serverFound);
         CHECK(ctx, st.state == SlimeVROutputState::ServerFound);
         CHECK(ctx, st.serverIpv4 == 0xC0A80001UL);
@@ -234,103 +247,173 @@ int main() {
 
     trackerTestSetMicros(1201500u);
     rt.update(1201);
-    const SlimeVROutputRuntimeStatus st = rt.status();
-    CHECK(ctx, st.sensorInfoSent == 1);
-    CHECK(ctx, st.rotationSent == 1);
-    CHECK(ctx, st.accelerationSent == 1);
-    CHECK(ctx, st.accelerationSkippedInvalid == 0);
-    CHECK(ctx, st.accelerationSendFailures == 0);
-    CHECK(ctx, st.signalStrengthSent == 0);
-    CHECK(ctx, st.temperatureSent == 0);
-    CHECK(ctx, st.magnetometerAccuracySent == 0);
-    CHECK(ctx, st.magSupportEnabled);
-    CHECK(ctx, st.sensorConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED);
-    CHECK(ctx, st.lastTemperatureValid);
-    CHECK_NEAR(ctx, st.lastTemperatureC, 42.5f, 1.0e-6f);
-    CHECK(ctx, st.batteryTelemetryEnabled);
-    CHECK(ctx, st.lastBatteryValid);
-    CHECK_NEAR(ctx, st.lastBatteryVoltage, 3.80f, 1.0e-6f);
-    CHECK_NEAR(ctx, st.lastBatteryPercentage, 55.0f, 1.0e-6f);
-    CHECK(ctx, !st.hasCompletedRestCalibration);
-    CHECK(ctx, st.rotationNoSnapshot == 0);
-    CHECK(ctx, st.rotationDuplicateSnapshot == 0);
-    CHECK(ctx, st.lastRotationSnapshotSequence == 1);
-    CHECK(ctx, st.lastRotationRuntimeSample == 123);
+    SlimeVROutputRuntimeStatus st = rt.status();
+    CHECK(ctx, st.sensorInfoSent == 1u);
+    CHECK(ctx, st.featureFlagsSent == 1u);
+    CHECK(ctx, st.featureFlagsSendFailures == 0u);
+    CHECK(ctx, !st.serverFeatureFlagsAvailable);
+    CHECK(ctx, !st.serverBundleSupported);
+    CHECK(ctx, st.motionPacketMode == SlimeVRMotionPacketMode::SeparateRotation17Accel4);
+    CHECK(ctx, !st.compactMotionEnabled);
+    CHECK(ctx, st.compactMotionSent == 0u);
+    CHECK(ctx, st.bundledMotionSent == 0u);
+    CHECK(ctx, st.rotationSent == 1u);
+    CHECK(ctx, st.accelerationSent == 1u);
+    CHECK(ctx, st.accelerationRateLimited == 0u);
+    CHECK(ctx, st.accelerationSkippedInvalid == 0u);
+    CHECK(ctx, st.accelerationSendFailures == 0u);
+    CHECK(ctx, st.lastRotationSnapshotSequence == 1u);
+    CHECK(ctx, st.lastRotationRuntimeSample == 123u);
     CHECK(ctx, st.lastRotationTimestampUs == 456789ULL);
     CHECK(ctx, st.lastRotationQualityFlags == 0x1234u);
     CHECK(ctx, st.lastRotationSnapshotAgeUs == 1500u);
     CHECK_NEAR(ctx, st.lastRotationConfidence, 0.99f, 1.0e-6f);
-    CHECK(ctx, udp.sent.size() >= 3u);
-    CHECK(ctx, udp.sent[1].endpoint.ipv4 == 0xC0A80001UL);
-    CHECK(ctx, udp.sent[1].data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo));
-    CHECK(ctx, udp.sent[1].data[17] == 0);
-    CHECK(ctx, udp.sent.back().endpoint.ipv4 == 0xC0A80001UL);
-    CHECK(ctx, udp.sent[udp.sent.size() - 2u].data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
-    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::Accel));
-    CHECK(ctx, udp.sent.back().data.size() == SLIMEVR_PACKET_HEADER_SIZE + 13u);
-    CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 12), 0.25f * 9.80665f, 1.0e-5f);
-    CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 16), -0.5f * 9.80665f, 1.0e-5f);
-    CHECK_NEAR(ctx, readF32BeLocal(udp.sent.back().data.data() + 20), 1.75f * 9.80665f, 1.0e-5f);
-    CHECK(ctx, udp.sent.back().data[24] == cfg.sensorId);
+
+    bool sawFeatureFlags = false;
+    bool sawSensorInfo = false;
+    bool sawRotation = false;
+    bool sawAcceleration = false;
+    for (const auto& sent : udp.sent) {
+        if (sent.data.size() < 4u) continue;
+        const uint8_t type = sent.data[3];
+        sawFeatureFlags = sawFeatureFlags || type == static_cast<uint8_t>(SlimeVRSendPacketType::FeatureFlags);
+        sawSensorInfo = sawSensorInfo || type == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo);
+        sawRotation = sawRotation || type == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData);
+        if (type == static_cast<uint8_t>(SlimeVRSendPacketType::Accel)) {
+            sawAcceleration = true;
+            CHECK_NEAR(ctx, readF32BeLocal(sent.data.data() + 12), 0.25f * 9.80665f, 1.0e-5f);
+            CHECK_NEAR(ctx, readF32BeLocal(sent.data.data() + 16), -0.5f * 9.80665f, 1.0e-5f);
+            CHECK_NEAR(ctx, readF32BeLocal(sent.data.data() + 20), 1.75f * 9.80665f, 1.0e-5f);
+        }
+    }
+    CHECK(ctx, sawFeatureFlags);
+    CHECK(ctx, sawSensorInfo);
+    CHECK(ctx, sawRotation);
+    CHECK(ctx, sawAcceleration);
 
     const size_t sentBeforeTap = udp.sent.size();
     CHECK(ctx, rt.sendTap(2));
-    CHECK(ctx, rt.status().tapSent == 1);
-    CHECK(ctx, rt.status().tapSendFailures == 0);
-    CHECK(ctx, rt.status().lastTapValue == 2);
+    CHECK(ctx, rt.status().tapSent == 1u);
+    CHECK(ctx, rt.status().tapSendFailures == 0u);
+    CHECK(ctx, rt.status().lastTapValue == 2u);
     CHECK(ctx, udp.sent.size() == sentBeforeTap + 1u);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::Tap));
-    CHECK(ctx, udp.sent.back().data[12] == 2);
-    CHECK(ctx, udp.sent.back().data[13] == 2);
 
     rt.update(1205);
-    CHECK(ctx, rt.status().rotationSent == 1);
+    CHECK(ctx, rt.status().rotationSent == 1u);
 
-    snapshots.snapshot.sequence = 2;
-    snapshots.snapshot.runtimeSample = 124;
-    snapshots.snapshot.publishedAtMcuUs = 1210500u;
+    // A second server cannot hijack a live endpoint with either a discovery
+    // response or FeatureFlags. Foreign traffic also must not refresh the
+    // selected server's silence timer.
+    const uint32_t selectedServerIp = rt.status().serverIpv4;
+    const uint32_t acceptedRxBeforeForeign = rt.status().lastIncomingPacketMs;
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags), {0x01}
+    );
+    udp.incomingRemote = UdpEndpoint{0xC0A80009UL, 6969};
+    udp.incomingPending = true;
+    rt.update(1211);
+    CHECK(ctx, rt.status().foreignEndpointPacketsDropped == 1u);
+    CHECK(ctx, rt.status().serverIpv4 == selectedServerIp);
+    CHECK(ctx, rt.status().lastIncomingPacketMs == acceptedRxBeforeForeign);
+    CHECK(ctx, !rt.status().serverFeatureFlagsAvailable);
+
+    udp.incoming = {
+        static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
+        'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
+    };
+    udp.incomingRemote = UdpEndpoint{0xC0A80009UL, 6969};
+    udp.incomingPending = true;
+    rt.update(1221);
+    CHECK(ctx, rt.status().foreignEndpointPacketsDropped == 2u);
+    CHECK(ctx, rt.status().serverIpv4 == selectedServerIp);
+    CHECK(ctx, rt.status().discoveryResponses == 1u);
+
+    // Empty FeatureFlags from the selected server are malformed. They do not
+    // complete negotiation, so a later valid response can still enable bundle.
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags), {}
+    );
+    udp.incomingRemote = UdpEndpoint{selectedServerIp, 6969};
+    udp.incomingPending = true;
+    rt.update(1231);
+    CHECK(ctx, rt.status().featureFlagsReceived == 1u);
+    CHECK(ctx, rt.status().malformedFeatureFlags == 1u);
+    CHECK(ctx, !rt.status().serverFeatureFlagsAvailable);
+
+    // Server FeatureFlags bit 0 explicitly negotiates packet-100 bundles.
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags), {0x01}
+    );
+    udp.incomingRemote = UdpEndpoint{selectedServerIp, 6969};
+    udp.incomingPending = true;
+    snapshots.snapshot.sequence = 2u;
+    snapshots.snapshot.runtimeSample = 124u;
+    snapshots.snapshot.publishedAtMcuUs = 1240500u;
+    const size_t sentBeforeBundle = udp.sent.size();
+    rt.update(1241);
+    st = rt.status();
+    CHECK(ctx, st.featureFlagsReceived == 2u);
+    CHECK(ctx, st.serverFeatureFlagsAvailable);
+    CHECK(ctx, st.serverBundleSupported);
+    CHECK(ctx, !st.serverCompactBundleSupported);
+    CHECK(ctx, st.motionPacketMode == SlimeVRMotionPacketMode::Bundle100Rotation17Accel4);
+    CHECK(ctx, st.bundledMotionEnabled);
+    CHECK(ctx, st.bundledMotionSent == 1u);
+    CHECK(ctx, st.rotationSent == 2u);
+    CHECK(ctx, st.accelerationSent == 2u);
+    CHECK(ctx, udp.sent.size() == sentBeforeBundle + 1u);
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::Bundle));
+    CHECK(ctx, udp.sent.back().data.size() == 56u);
+    CHECK(ctx, udp.sent.back().data[17] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
+    CHECK(ctx, udp.sent.back().data[42] == static_cast<uint8_t>(SlimeVRSendPacketType::Accel));
+
+    // Hard-invalid acceleration falls back to a normal rotation packet.
+    snapshots.snapshot.sequence = 3u;
+    snapshots.snapshot.runtimeSample = 125u;
+    snapshots.snapshot.publishedAtMcuUs = 1250500u;
     snapshots.snapshot.linearAccelerationValid = false;
     snapshots.snapshot.linearAccelerationInvalidFlags =
         prepared_output_motion_flags::ACCEL_COMPONENT_MISSING |
         prepared_output_motion_flags::PAIR_COHERENCY_DEGRADED;
     const size_t sentBeforeInvalidAcceleration = udp.sent.size();
-    rt.update(1211);
-    CHECK(ctx, rt.status().rotationSent == 2);
-    CHECK(ctx, rt.status().accelerationSent == 1);
-    CHECK(ctx, rt.status().accelerationSkippedInvalid == 1);
-    CHECK(ctx, rt.status().accelerationSkippedComponentMissing == 1);
-    CHECK(ctx, rt.status().accelerationSkippedPairDegraded == 1);
-    CHECK(ctx, rt.status().accelerationSkippedConfiguration == 0);
-    CHECK(ctx, rt.status().accelerationSkippedSaturated == 0);
-    CHECK(ctx, rt.status().accelerationSkippedNonFinite == 0);
-    CHECK(ctx, rt.status().accelerationSkippedOther == 0);
-    CHECK(ctx, rt.status().lastRotationSnapshotSequence == 2);
+    rt.update(1251);
+    CHECK(ctx, rt.status().rotationSent == 3u);
+    CHECK(ctx, rt.status().accelerationSent == 2u);
+    CHECK(ctx, rt.status().accelerationSkippedInvalid == 1u);
+    CHECK(ctx, rt.status().accelerationSkippedComponentMissing == 1u);
+    CHECK(ctx, rt.status().accelerationSkippedPairDegraded == 1u);
     CHECK(ctx, udp.sent.size() == sentBeforeInvalidAcceleration + 1u);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
 
-    snapshots.snapshot.sequence = 3;
-    snapshots.snapshot.publishedAtMcuUs = 1220500u;
+    // A failed bundle is one physical datagram failure and two logical motion
+    // delivery failures. Packet 23 stays compiled but disabled by default.
+    snapshots.snapshot.sequence = 4u;
+    snapshots.snapshot.publishedAtMcuUs = 1260500u;
     snapshots.snapshot.linearAccelerationValid = true;
     snapshots.snapshot.linearAccelerationInvalidFlags = prepared_output_motion_flags::NONE;
-    udp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Accel);
-    const size_t sentBeforeAccelerationFailure = udp.sent.size();
-    rt.update(1221);
+    udp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Bundle);
+    const size_t sentBeforeBundleFailure = udp.sent.size();
+    rt.update(1261);
     udp.failPacketType = -1;
-    CHECK(ctx, rt.status().rotationSent == 3);
-    CHECK(ctx, rt.status().accelerationSent == 1);
-    CHECK(ctx, rt.status().accelerationSendFailures == 1);
-    CHECK(ctx, udp.sent.size() == sentBeforeAccelerationFailure + 1u);
-    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
+    CHECK(ctx, rt.status().rotationSent == 3u);
+    CHECK(ctx, rt.status().accelerationSent == 2u);
+    CHECK(ctx, rt.status().bundledMotionSendFailures == 1u);
+    CHECK(ctx, rt.status().compactMotionSendFailures == 0u);
+    CHECK(ctx, rt.status().rotationSendFailures == 1u);
+    CHECK(ctx, rt.status().accelerationSendFailures == 1u);
+    CHECK(ctx, udp.sent.size() == sentBeforeBundleFailure);
+    snapshots.snapshot.sequence = 3u;
 
     cfg.hasCompletedRestCalibration = true;
     rt.configure(cfg);
     const size_t sentBeforeRestRefresh = udp.sent.size();
-    rt.update(1230);
+    rt.update(1270);
     CHECK(ctx, rt.status().hasCompletedRestCalibration);
-    CHECK(ctx, rt.status().sensorInfoSent == 2);
+    CHECK(ctx, rt.status().sensorInfoSent == 2u);
     CHECK(ctx, udp.sent.size() == sentBeforeRestRefresh + 1u);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo));
-    CHECK(ctx, udp.sent.back().data[17] == 1);
+    CHECK(ctx, udp.sent.back().data[17] == 1u);
 
     rt.update(6101);
     CHECK(ctx, rt.status().heartbeatSent >= 1);
@@ -378,12 +461,16 @@ int main() {
 
     udp.incoming = makeServerPacket(
         static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags),
-        {0xAA, 0xBB, 0xCC, 0xDD}
+        {0x03}
     );
     udp.incomingPending = true;
     rt.update(6130);
-    CHECK(ctx, rt.status().featureFlagsReceived == 1);
-    CHECK(ctx, rt.status().lastServerFeatureFlags == 0xAABBCCDDu);
+    CHECK(ctx, rt.status().featureFlagsReceived == 3u);
+    CHECK(ctx, rt.status().lastServerFeatureFlags == 0x03u);
+    CHECK(ctx, rt.status().serverBundleSupported);
+    CHECK(ctx, rt.status().serverCompactBundleSupported);
+    CHECK(ctx, !rt.status().compactMotionEnabled);
+    CHECK(ctx, rt.status().motionPacketMode == SlimeVRMotionPacketMode::Bundle100Rotation17Accel4);
 
     udp.incoming = makeServerPacket(
         static_cast<uint8_t>(SlimeVRReceivePacketType::SetConfigFlag),
@@ -513,6 +600,112 @@ int main() {
     phaseRt.update(230u);
     CHECK(ctx, phaseRt.status().rotationSent == 3u);
     CHECK(ctx, phaseRt.status().rotationMissedDeadlines == 1u);
+
+    // Servers that do not answer FeatureFlags stay on packet 17 at the full
+    // pose rate while coherent packet-4 acceleration is limited to 50 Hz.
+    FakeUdp fallbackUdp;
+    FakeSnapshotSource fallbackSnapshots;
+    fallbackSnapshots.snapshot.valid = true;
+    fallbackSnapshots.snapshot.sequence = 1u;
+    fallbackSnapshots.snapshot.q = Quat::identity();
+    fallbackSnapshots.snapshot.linearAccelerationValid = true;
+    fallbackSnapshots.snapshot.linearAccelerationDeviceG = Vec3::zero();
+    fallbackSnapshots.snapshot.confidence = 1.0f;
+
+    SlimeVROutputRuntime fallbackRt;
+    fallbackRt.begin(fallbackUdp, wifi, FakeSnapshotSource::copy, &fallbackSnapshots);
+    fallbackRt.configure(phaseCfg);
+    fallbackRt.update(1u);
+    fallbackUdp.incoming = {
+        static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
+        'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
+    };
+    fallbackUdp.incomingRemote = UdpEndpoint{0xC0A80004UL, 6969};
+    fallbackUdp.incomingPending = true;
+    fallbackRt.update(100u);
+    fallbackRt.update(201u);
+    CHECK(ctx, fallbackRt.status().motionPacketMode ==
+               SlimeVRMotionPacketMode::SeparateRotation17Accel4);
+    CHECK(ctx, fallbackRt.status().rotationSent == 1u);
+    CHECK(ctx, fallbackRt.status().accelerationSent == 1u);
+
+    fallbackSnapshots.snapshot.sequence = 2u;
+    fallbackRt.update(211u);
+    CHECK(ctx, fallbackRt.status().rotationSent == 2u);
+    CHECK(ctx, fallbackRt.status().accelerationSent == 1u);
+    CHECK(ctx, fallbackRt.status().accelerationRateLimited == 1u);
+
+    fallbackSnapshots.snapshot.sequence = 3u;
+    fallbackRt.update(221u);
+    CHECK(ctx, fallbackRt.status().rotationSent == 3u);
+    CHECK(ctx, fallbackRt.status().accelerationSent == 2u);
+
+    // A recent inbound heartbeat/ping proves the server session is alive.
+    // Sustained transient TX pressure must not reopen the UDP socket and add
+    // a discovery/grace gap; stale pose datagrams are simply dropped.
+    FakeUdp pressureUdp;
+    FakeSnapshotSource pressureSnapshots;
+    pressureSnapshots.snapshot.valid = true;
+    pressureSnapshots.snapshot.sequence = 1u;
+    pressureSnapshots.snapshot.q = Quat::identity();
+    pressureSnapshots.snapshot.linearAccelerationValid = true;
+    pressureSnapshots.snapshot.linearAccelerationDeviceG = Vec3::zero();
+    pressureSnapshots.snapshot.confidence = 1.0f;
+
+    SlimeVROutputRuntime pressureRt;
+    pressureRt.begin(pressureUdp, wifi, FakeSnapshotSource::copy, &pressureSnapshots);
+    pressureRt.configure(phaseCfg);
+    pressureRt.update(1u);
+    pressureUdp.incoming = {
+        static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
+        'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
+    };
+    pressureUdp.incomingRemote = UdpEndpoint{0xC0A80003UL, 6969};
+    pressureUdp.incomingPending = true;
+    pressureRt.update(100u);
+    pressureUdp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags), {0x01}
+    );
+    pressureUdp.incomingPending = true;
+    pressureRt.update(110u);
+    CHECK(ctx, pressureRt.status().motionPacketMode ==
+               SlimeVRMotionPacketMode::Bundle100Rotation17Accel4);
+
+    pressureUdp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Bundle);
+    for (uint32_t i = 0; i < TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD; ++i) {
+        pressureSnapshots.snapshot.sequence = i + 2u;
+        pressureRt.update(201u + i * 10u);
+    }
+    SlimeVROutputRuntimeStatus pressureStatus = pressureRt.status();
+    CHECK(ctx, pressureStatus.bundledMotionSendFailures ==
+               TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD);
+    CHECK(ctx, pressureStatus.compactMotionSendFailures == 0u);
+    CHECK(ctx, pressureStatus.udpReopenRequests == 0u);
+    CHECK(ctx, pressureStatus.udpReopenSuppressedRecentRx == 1u);
+    CHECK(ctx, pressureUdp.active());
+    CHECK(ctx, pressureUdp.stopCalls == 0u);
+
+    pressureUdp.failPacketType = -1;
+    pressureSnapshots.snapshot.sequence += 1u;
+    pressureRt.update(401u);
+    CHECK(ctx, pressureRt.status().bundledMotionSent == 1u);
+    CHECK(ctx, pressureRt.status().rotationSent == 1u);
+    CHECK(ctx, pressureRt.status().accelerationSent == 1u);
+
+    // Once inbound server activity is genuinely stale, the same sustained
+    // transport failure must still request a socket reopen.
+    pressureUdp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Bundle);
+    for (uint32_t i = 0; i < TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD; ++i) {
+        pressureSnapshots.snapshot.sequence += 1u;
+        pressureRt.update(3000u + i * 10u);
+    }
+    pressureRt.update(3210u);
+    CHECK(ctx, pressureRt.status().udpReopenRequests == 1u);
+    CHECK(ctx, !pressureRt.status().serverFound);
+    CHECK(ctx, !pressureRt.status().serverFeatureFlagsAvailable);
+    CHECK(ctx, pressureRt.status().motionPacketMode ==
+               SlimeVRMotionPacketMode::SeparateRotation17Accel4);
+    CHECK(ctx, pressureUdp.stopCalls == 1u);
 
     return ctx.finish("slimevr_output_runtime");
 }

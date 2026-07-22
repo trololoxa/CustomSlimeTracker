@@ -213,15 +213,13 @@ Use the full local gate before accepting a patch:
 python tools/check_all.py --require-pio
 ```
 
-Mandatory firmware builds are Production, Production Diagnostic and Slim. The
-normal Debug image may exceed the wearable application partition. To avoid
-hiding real Debug regressions, `check_all` first builds the internal
-`BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK` environment with the same source set and
-flags but a larger no-OTA partition. Compile, type and unresolved-symbol errors
-there are fatal. A size-only overflow remains advisory even if the larger
-link-check partition is also exceeded; any non-size compiler/linker diagnostic
-still makes the gate fail. The normal Debug wearable size overflow is reported
-as `PASS WITH WARNINGS`.
+Mandatory firmware builds are Production, Production Diagnostic, Slim, Debug
+and the explicit `BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK` gate. Every environment
+inherits the same committed 4 MiB no-OTA layout with one 3 MiB factory app, so
+there is no smaller wearable partition whose overflow may be downgraded to a
+warning. Any compile, type, unresolved-symbol or image-size failure is fatal.
+The link-check environment remains separate only to preserve an explicit full
+Debug source/link validation step.
 
 Explicit `--pio-env` selections are strict and never downgraded to warnings.
 Raw PlatformIO logs and parsed RAM/Flash summaries are saved under
@@ -434,7 +432,7 @@ tracking-state controller transitions and stationary recovery completion
 AHRS heading-preserving tilt reacquisition after unreconstructable gaps
 Wi-Fi manager state-machine behavior through fake adapters
 UDP endpoint helpers
-SlimeVR packet writer and paired packet 17/4 output-runtime behavior
+SlimeVR packet writer, negotiated packet-100 bundle, fallback-rate and explicit packet-23 behavior
 coherent prepared motion snapshot, gravity removal and stale-timestamp rejection
 status LED pattern timing and manual/identify overrides
 ```
@@ -684,9 +682,66 @@ loss may increment them, but must not request FIFO recovery, stop gyro
 integration, or make linear acceleration valid for that degraded sample.
 
 A dynamic `ACCEL_NORM_OUTLIER` is different: it must disable use of accel as an
-AHRS gravity observation without suppressing packet 4. During motion,
+AHRS gravity observation without suppressing motion output. During movement,
 `acceleration_sent_delta` should therefore track `rotation_sent_delta` unless a
 separate `acceleration_skipped_*_delta` counter identifies a hard invalidity.
 `slime_last_rotation_snapshot_age_us` is MCU publish-to-send age and should stay
 near the output period; it no longer compares the LSM6DSV timestamp epoch with
 ESP32 `micros()`.
+
+
+## Protocol 22 motion-frame acceptance
+
+`test_slimevr_motion_frame` locks the rotation/acceleration local-frame
+contract. It verifies that the protocol adapter preserves device axes while
+converting acceleration from `g` to `m/s^2`, keeps Hamilton
+`q_world_from_device`, and emulates current server processing. The protocol-22 branch must reproduce one
+coherent world-space motion vector; the legacy pre-22 extra -90 degree local-Z
+acceleration correction must demonstrably disagree.
+
+After flashing `c3-6dsv-motion-bundle-hardened` in ProductionDiag:
+
+```text
+slime status
+motion on
+# move the tracker strongly along its marked +X, +Y and +Z directions
+motion status
+```
+
+Expected status includes:
+
+```text
+protocol_version=22
+motion_frame_contract=device_x_right_y_forward_z_up
+rotation_convention=world_from_device
+acceleration_frame=device
+acceleration_units=mps2
+legacy_acceleration_correction=no
+motion_frame_config_ready=yes
+step_mounting_ready=yes
+motion_packet_mode=bundle_100_rotation_17_accel_4
+packet23_available=yes
+packet23_enabled=no
+server_feature_flags_available=yes
+server_bundle_supported=yes
+```
+
+During movement on a bundle-capable server, `bundled_motion_sent`,
+`acceleration_sent`, and `rotation_sent` should advance together and all hard
+`acceleration_skipped_*` reasons should remain zero.
+`bundled_motion_send_failures_delta` and `udp_send_failures_delta` should remain
+zero. A server that does not answer FeatureFlags must report
+`rotation_17_plus_accel_4_fallback`; rotation remains at the configured rate,
+while `acceleration_rate_limited_delta` confirms the 50 Hz packet-4 fallback.
+Under an intentionally weak link,
+`udp_reopen_suppressed_recent_rx_delta` may rise, but `udp_reopen_requests` must
+not rise while ping/heartbeat reception continues. `foreign_endpoint_packets_dropped`,
+`pre_session_packets_dropped` and `malformed_feature_flags` should remain zero on
+a normal single-server LAN. The definitive directional acceptance is a successful
+server step-mounting run; ordinary quaternion FBT can look correct even when
+acceleration alone has the wrong local axes.
+
+The build-profile validator also verifies that every ESP32-C3 environment inherits
+`partitions/tracker_4mb_no_ota.csv`, that the factory app is exactly 3 MiB at
+`0x10000`, that no OTA slot exists and that the complete layout ends at the 4 MiB
+flash boundary.

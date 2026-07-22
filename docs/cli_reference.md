@@ -300,13 +300,26 @@ The firmware currently handles the server-to-tracker packets needed for a normal
 
 - packet `0`/`1` HeartBeat: counted and answered with tracker heartbeat packet `0`.
 - packet `10` PingPong: reads `pingId:u32be` and echoes it with tracker packet `10`, so the server can compute ping instead of showing a timeout placeholder.
-- packet `22` FeatureFlags: stored for diagnostics. The current firmware does not enable optional behavior from these flags yet.
+- packet `22` FeatureFlags: stored and used for capability negotiation. Server bit 0 enables packet-100 bundles; packet 23 is not inferred from that bit and remains disabled by default.
 - packet `25` SetConfigFlag: reads `sensorId:u8`, `configType:u16be`, `state:u8`. For config type `0x0001` the firmware treats it as the runtime magnetometer/yaw enable toggle, applies it without writing NVS, refreshes `SensorInfo`, and sends packet `24` AckConfigChange.
-- packet `200` ProtocolChange: stored for diagnostics only. The firmware stays on UDP protocol v19.
+- packet `200` ProtocolChange: stored for diagnostics only. The firmware stays on UDP protocol v22.
 
 Use `slime status` to inspect `ping_received`, `pong_sent`, `feature_flags_received`, `set_config_flag_*`, `ack_config_sent`, `protocol_change_received`, and `unknown_packets_received`.
 
-Current protocol limitations: the firmware emits timestamp-coherent linear acceleration packet 4 beside each successful rotation packet when acceleration is valid. Dynamic accel-norm outliers disable AHRS gravity correction but remain valid motion output; only missing/degraded accel components, saturation, invalid calibration/frame state, or non-finite vectors suppress packet 4. `slime status`, `perf tracking`, and `motion status` expose separate skip-reason counters; one skipped snapshot can increment more than one reason counter. The firmware does not yet send its own FeatureFlags, negotiate bundles, maintain a short SensorInfo-ACK confirmation state, or apply ProtocolChange. These remain explicit future protocol work.
+The firmware sends its FeatureFlags after server discovery. When the server
+returns bit 0, valid timestamp-coherent rotation and linear acceleration are
+serialized as packet-100 inner packet 17 followed by packet 4, preserving
+float32 values and one-datagram coherence. Without that capability, rotation
+stays at the configured pose rate while packet-4 acceleration is bounded to
+50 Hz. Packet 23 remains available only through an explicit compile-time
+experimental override and `packet23_enabled=no` is the normal status. Hard-invalid
+acceleration falls back to rotation-only packet 17. Dynamic accel-norm outliers
+disable AHRS gravity correction but remain valid motion output. Protocol 22
+states that acceleration uses the corrected device frame shared with quaternion
+(`+X right, +Y forward, +Z top/outward`), so the server does not apply its legacy
+acceleration-only -90 degree local-Z correction. `slime status`, `slime debug`,
+`perf tracking`, and `motion status` expose mode, negotiation and skip counters.
+SensorInfo ACK state and ProtocolChange application remain future protocol work.
 
 ## SlimeVR Server serial compatibility
 

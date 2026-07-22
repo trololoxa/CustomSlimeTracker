@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "core/math.hpp"
+#include "output/slimevr_motion_frame.hpp"
 
 namespace tracker {
 
@@ -18,7 +19,6 @@ namespace tracker {
 // Packet type values below fit into the low byte, so the first four bytes are
 // normally 00 00 00 <type>.
 
-constexpr uint8_t SLIMEVR_PROTOCOL_VERSION = 19;
 constexpr uint16_t SLIMEVR_DEFAULT_SERVER_PORT = 6969;
 constexpr size_t SLIMEVR_PACKET_HEADER_SIZE = 12;
 constexpr size_t SLIMEVR_DISCOVERY_RESPONSE_SIZE = 13;
@@ -39,6 +39,13 @@ constexpr uint16_t SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED =
 constexpr uint16_t SLIMEVR_CONFIG_TYPE_MAGNETOMETER = 0x0001u;
 constexpr uint8_t SLIMEVR_SENSOR_ID_GLOBAL = 0xffu;
 
+// FeatureFlags use bit indices packed least-significant-bit first per byte.
+constexpr uint8_t SLIMEVR_SERVER_FEATURE_PROTOCOL_BUNDLE_SUPPORT = 0u;
+constexpr uint8_t SLIMEVR_SERVER_FEATURE_PROTOCOL_BUNDLE_COMPACT_SUPPORT = 1u;
+constexpr uint8_t SLIMEVR_FIRMWARE_FEATURE_SENSOR_CONFIG = 2u;
+constexpr uint8_t SLIMEVR_FIRMWARE_FEATURE_FLAGS =
+    static_cast<uint8_t>(1u << SLIMEVR_FIRMWARE_FEATURE_SENSOR_CONFIG);
+
 enum class SlimeVRSendPacketType : uint8_t {
     HeartBeat = 0,
     Handshake = 3,
@@ -54,6 +61,7 @@ enum class SlimeVRSendPacketType : uint8_t {
     SignalStrength = 19,
     Temperature = 20,
     FeatureFlags = 22,
+    RotationAndAcceleration = 23,
     AcknowledgeConfigChange = 24,
     FlexData = 26,
     Bundle = 100,
@@ -160,6 +168,24 @@ public:
     SlimeVRPacketWriteResult writeAcceleration(uint8_t* out, size_t capacity,
                                                uint8_t sensorId,
                                                const Vec3& linearAccelerationMps2);
+    SlimeVRPacketWriteResult writeRotationAndAcceleration(
+        uint8_t* out,
+        size_t capacity,
+        uint8_t sensorId,
+        const Quat& q,
+        const Vec3& linearAccelerationMps2
+    );
+    SlimeVRPacketWriteResult writeRotationAccelerationBundle(
+        uint8_t* out,
+        size_t capacity,
+        uint8_t sensorId,
+        const Quat& q,
+        uint8_t accuracyInfo,
+        const Vec3& linearAccelerationMps2,
+        SlimeVRRotationDataType dataType = SlimeVRRotationDataType::Normal
+    );
+    SlimeVRPacketWriteResult writeFeatureFlags(uint8_t* out, size_t capacity,
+                                               const uint8_t* flags, size_t flagsLength);
     SlimeVRPacketWriteResult writeBatteryLevel(uint8_t* out, size_t capacity,
                                                float voltage,
                                                float percentage);
@@ -201,6 +227,7 @@ private:
         bool ensure(size_t n);
         bool writeU8(uint8_t value);
         bool writeU16Be(uint16_t value);
+        bool writeI16Be(int16_t value);
         bool writeU32Be(uint32_t value);
         bool writeU64Be(uint64_t value);
         bool writeF32Be(float value);

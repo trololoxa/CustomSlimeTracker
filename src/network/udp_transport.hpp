@@ -13,6 +13,10 @@ struct UdpEndpoint {
     uint16_t port = 0;
 
     bool valid() const { return ipv4 != 0 && port != 0; }
+    bool operator==(const UdpEndpoint& other) const {
+        return ipv4 == other.ipv4 && port == other.port;
+    }
+    bool operator!=(const UdpEndpoint& other) const { return !(*this == other); }
 };
 
 class IUdpTransport {

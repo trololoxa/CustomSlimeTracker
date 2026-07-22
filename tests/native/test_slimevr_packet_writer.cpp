@@ -9,6 +9,10 @@ using namespace tracker;
 
 namespace {
 
+uint16_t readU16Be(const uint8_t* p) {
+    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | p[1]);
+}
+
 uint32_t readU32Be(const uint8_t* p) {
     return (static_cast<uint32_t>(p[0]) << 24) |
            (static_cast<uint32_t>(p[1]) << 16) |
@@ -29,6 +33,12 @@ float readF32Be(const uint8_t* p) {
     float value = 0.0f;
     std::memcpy(&value, &bits, sizeof(value));
     return value;
+}
+
+int16_t readI16Be(const uint8_t* p) {
+    return static_cast<int16_t>(
+        (static_cast<uint16_t>(p[0]) << 8) | static_cast<uint16_t>(p[1])
+    );
 }
 
 } // namespace
@@ -73,6 +83,54 @@ int main() {
     CHECK_NEAR(ctx, readF32Be(packet + 20), 8.0f, 1.0e-6f);
     CHECK(ctx, packet[24] == 7);
 
+    const SlimeVRPacketWriteResult compactMotion =
+        writer.writeRotationAndAcceleration(packet, sizeof(packet), 7, rawQ, linearAccelerationMps2);
+    CHECK(ctx, compactMotion.ok);
+    CHECK(ctx, compactMotion.size == SLIMEVR_PACKET_HEADER_SIZE + 15u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::RotationAndAcceleration));
+    CHECK(ctx, readU64Be(packet + 4) == 0x010203040506070bULL);
+    CHECK(ctx, packet[12] == 7);
+    CHECK(ctx, readI16Be(packet + 13) == 0);
+    CHECK_NEAR(ctx, static_cast<float>(readI16Be(packet + 15)) / 32768.0f, 0.4472136f, 4.0e-5f);
+    CHECK(ctx, readI16Be(packet + 17) == 0);
+    CHECK_NEAR(ctx, static_cast<float>(readI16Be(packet + 19)) / 32768.0f, 0.8944272f, 4.0e-5f);
+    CHECK_NEAR(ctx, static_cast<float>(readI16Be(packet + 21)) / 128.0f, 2.0f, 4.0e-3f);
+    CHECK_NEAR(ctx, static_cast<float>(readI16Be(packet + 23)) / 128.0f, -4.0f, 4.0e-3f);
+    CHECK_NEAR(ctx, static_cast<float>(readI16Be(packet + 25)) / 128.0f, 8.0f, 4.0e-3f);
+
+    const SlimeVRPacketWriteResult bundle = writer.writeRotationAccelerationBundle(
+        packet, sizeof(packet), 7, rawQ, 42, linearAccelerationMps2
+    );
+    CHECK(ctx, bundle.ok);
+    CHECK(ctx, bundle.size == 56u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::Bundle));
+    CHECK(ctx, readU64Be(packet + 4) == 0x010203040506070cULL);
+    CHECK(ctx, readU16Be(packet + 12) == 23u);
+    CHECK(ctx, readU32Be(packet + 14) == static_cast<uint32_t>(SlimeVRSendPacketType::RotationData));
+    CHECK(ctx, packet[18] == 7u);
+    CHECK(ctx, packet[19] == static_cast<uint8_t>(SlimeVRRotationDataType::Normal));
+    CHECK_NEAR(ctx, readF32Be(packet + 20), 0.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, readF32Be(packet + 24), 0.4472136f, 1.0e-5f);
+    CHECK_NEAR(ctx, readF32Be(packet + 28), 0.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, readF32Be(packet + 32), 0.8944272f, 1.0e-5f);
+    CHECK(ctx, packet[36] == 42u);
+    CHECK(ctx, readU16Be(packet + 37) == 17u);
+    CHECK(ctx, readU32Be(packet + 39) == static_cast<uint32_t>(SlimeVRSendPacketType::Accel));
+    CHECK_NEAR(ctx, readF32Be(packet + 43), 2.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, readF32Be(packet + 47), -4.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, readF32Be(packet + 51), 8.0f, 1.0e-6f);
+    CHECK(ctx, packet[55] == 7u);
+
+    const uint8_t firmwareFlags[] = {SLIMEVR_FIRMWARE_FEATURE_FLAGS};
+    const SlimeVRPacketWriteResult featureFlags = writer.writeFeatureFlags(
+        packet, sizeof(packet), firmwareFlags, sizeof(firmwareFlags)
+    );
+    CHECK(ctx, featureFlags.ok);
+    CHECK(ctx, featureFlags.size == SLIMEVR_PACKET_HEADER_SIZE + 1u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::FeatureFlags));
+    CHECK(ctx, packet[12] == static_cast<uint8_t>(1u << SLIMEVR_FIRMWARE_FEATURE_SENSOR_CONFIG));
+    CHECK(ctx, (packet[12] & 0x01u) == 0u); // Firmware does not claim server bundle capability.
+
     SlimeVRSensorInfo sensor;
     sensor.sensorId = 3;
     sensor.sensorConfig = 0x1234;
@@ -92,6 +150,9 @@ int main() {
     CHECK(ctx, packet[17] == 1); // hasCompletedRestCalibration
     CHECK(ctx, packet[18] == 5); // tracker position
     CHECK(ctx, packet[19] == static_cast<uint8_t>(SlimeVRSensorDataType::Rotation));
+
+    CHECK(ctx, SLIMEVR_PROTOCOL_VERSION == 22u);
+    CHECK(ctx, slimevr_motion_frame::protocolUsesCorrectedAcceleration(SLIMEVR_PROTOCOL_VERSION));
 
     SlimeVRHandshakeInfo handshakeInfo;
     handshakeInfo.firmwareVersion = "fw";

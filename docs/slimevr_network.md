@@ -16,7 +16,7 @@ SlimeVROutputRuntime        discovery, server session, telemetry, RotationData
 PreparedOutputRuntime       producer of coherent orientation/motion snapshot
 ```
 
-`SlimeVROutputRuntime` never reads FIFO, AHRS or IMU objects directly. It only copies `TrackerPreparedOutputSnapshot`, which is produced by the tracking path from one accepted sample. The snapshot owns the quaternion and gravity-removed device-frame acceleration under one timestamp. World-frame acceleration is derived from that quaternion when needed rather than duplicated in RAM. This keeps Wi-Fi/UDP scheduling separate from sensor fusion and prevents packet 4 from recomputing motion against a different quaternion.
+`SlimeVROutputRuntime` never reads FIFO, AHRS or IMU objects directly. It only copies `TrackerPreparedOutputSnapshot`, which is produced by the tracking path from one accepted sample. The snapshot owns the quaternion and gravity-removed device-frame acceleration under one timestamp. World-frame acceleration is derived from that quaternion when needed rather than duplicated in RAM. This keeps Wi-Fi/UDP scheduling separate from sensor fusion and prevents the network encoder from recomputing motion against a different quaternion.
 
 Local serial output is also separate from SlimeVR UDP. `stream ...` and `output ...` are developer serial outputs; `slime ...` controls the server transport.
 
@@ -84,11 +84,11 @@ No serial `output mode slimevr` exists anymore. `slime start` is a runtime comma
 Current firmware metadata:
 
 ```text
-protocol_version=19
+protocol_version=22
 board_type=10       LOLIN_C3_MINI
 imu_type=13         LSM6DSV
 mcu_type=6          ESP32_C3
-firmware_version    c3-6dsv-fifo-coherency
+firmware_version    c3-6dsv-motion-bundle
 ```
 
 The feature version names the currently completed firmware capability and is
@@ -101,7 +101,10 @@ Outgoing packets currently used:
 ```text
 Handshake / discovery
 SensorInfo
-RotationData
+FeatureFlags packet 22
+Bundle packet 100 containing packet 17 then packet 4, when negotiated
+RotationData packet 17
+Acceleration packet 4 fallback
 HeartBeat
 PingPong response
 AcknowledgeConfigChange
@@ -112,13 +115,16 @@ SignalStrength
 Temperature
 ```
 
+Packet 23 remains compiled as an explicitly experimental encoder but is disabled
+by default. It is not selected merely because the server reports bundle support.
+
 Incoming packets currently handled:
 
 ```text
 Discovery response: raw 0x03 + "Hey OVR =D 5"
 Heartbeat packet 0/1
 PingPong packet 10
-FeatureFlags packet 22, stored for diagnostics but not acted on
+FeatureFlags packet 22, used for capability negotiation
 SetConfigFlag packet 25, used for runtime magnetometer/yaw toggle
 ProtocolChange packet 200, counted but not acted on
 ```
@@ -131,7 +137,75 @@ Magnetometer capability is advertised via `SensorInfo.sensor_config`:
 0x3 = mag supported, enabled
 ```
 
-The firmware intentionally does not send periodic dummy `MagnetometerAccuracy` packets. Packet 18 should only be emitted if a real mag-calibration/accuracy workflow starts using it.
+The firmware intentionally does not send periodic dummy `MagnetometerAccuracy`
+packets. Packet 18 should only be emitted if a real mag-calibration/accuracy
+workflow starts using it.
+
+### Negotiated motion transport
+
+After discovery, firmware sends packet 22 with its firmware FeatureFlags. Server
+FeatureFlags bit 0 means `PROTOCOL_BUNDLE_SUPPORT`. Only after receiving that bit
+does runtime select:
+
+```text
+outer packet 100
+  inner packet 17: float32 quaternion
+  inner packet 4:  float32 SI linear acceleration
+```
+
+The inner order is rotation first and acceleration second. Both values come from
+one prepared snapshot, packet 100 uses one outer packet number and one UDP
+datagram, and no Q15/Q7 quantization is introduced. Battery, temperature, RSSI,
+heartbeat, SensorInfo, ping/pong, tap, errors and config acknowledgements remain
+separate service/control packets.
+
+A server that does not answer FeatureFlags, or answers without bundle bit 0,
+uses the compatibility path:
+
+```text
+packet 17 at configured pose rate
+packet 4 at TRACKER_SLIMEVR_FALLBACK_ACCEL_RATE_HZ (default 50 Hz)
+```
+
+Step mounting receives real callback timestamps and does not require a fixed
+100 Hz acceleration cadence. The fallback preserves coherent samples while
+reducing pose datagram pressure from 200 to 150 datagrams per second at a 100 Hz
+rotation rate.
+
+`TRACKER_SLIMEVR_USE_COMPACT_MOTION_PACKET=1` is an explicit experimental
+override for packet 23. The normal build keeps it at zero because packet 23 has
+no legacy capability bit that proves a specific beta server parser actually
+accepts it. Diagnostics therefore show both availability and use:
+
+```text
+packet23_available=yes
+packet23_enabled=no
+motion_packet_mode=bundle_100_rotation_17_accel_4
+```
+
+or, on an older server:
+
+```text
+motion_packet_mode=rotation_17_plus_accel_4_fallback
+fallback_acceleration_rate_hz=50
+```
+
+`send_failures` counts failed physical datagrams. A failed packet-100 motion
+bundle increments `bundled_motion_send_failures` and both logical
+`rotation_send_failures` and `acceleration_send_failures`. A failed experimental
+packet 23 uses `compact_motion_send_failures` instead.
+
+Transient TX failure no longer reopens a session while a server heartbeat or
+ping was received within `TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_RX_GRACE_MS`. In
+that case stale pose is dropped and `udp_reopen_suppressed_recent_rx` increments.
+A truly silent session still reopens after the configured failure threshold.
+
+After discovery, only the selected server IP/port may send FeatureFlags, ping,
+heartbeat, config or protocol-control packets. Foreign endpoints cannot replace
+the live server, negotiate bundle mode or refresh the silence timer. Empty
+FeatureFlags are counted as malformed and leave negotiation pending so a later
+valid response can recover. Inspect `foreign_endpoint_packets_dropped`,
+`pre_session_packets_dropped` and `malformed_feature_flags` in `slime debug`.
 
 `SignalStrength` packet 19 carries one signed RSSI value in dBm. For example,
 `-68 dBm` is encoded as the two's-complement byte `0xBC`; it is not normalized
@@ -140,26 +214,25 @@ to a user-facing 0..100 percentage. `slime status` exposes the value as
 
 ## Known protocol gaps in the current baseline
 
-The UDP runtime now provides coherent orientation plus linear acceleration, but
-it does not yet implement the complete modern tracker/server contract:
+The UDP runtime now provides coherent orientation plus linear acceleration and
+negotiates packet-100 bundles, but it does not yet implement the complete modern
+tracker/server contract:
 
-- acceleration packet 4 is emitted immediately after a successful packet 17
-  from the same snapshot. It carries gravity-removed device-frame acceleration
-  in SI `m/s^2`; invalid acceleration suppresses packet 4 without suppressing
-  rotation. Dynamic accel-norm outliers disable AHRS gravity correction but do
-  not invalidate motion output. Separate counters identify configuration/frame,
-  missing-component, pair-degraded, saturation, non-finite, and fallback skips;
+- protocol version 22 advertises corrected tracker acceleration. Rotation and
+  acceleration use the right-handed device basis `+X right, +Y forward, +Z
+  top/outward`; the server therefore does not apply its historical extra -90
+  degree local-Z acceleration correction;
+- valid motion uses a negotiated float32 packet-100 bundle when available;
+  otherwise packet 17 stays at pose rate and coherent packet 4 is limited to
+  50 Hz. Hard-invalid acceleration never suppresses valid rotation;
+- packet 23 remains an explicitly disabled experimental mode because no legacy
+  server FeatureFlag proves parser compatibility;
 - the short SensorInfo acknowledgement packet 15 is not tracked as a confirmed
   state, and SensorInfo is refreshed periodically or on local changes;
-- firmware FeatureFlags packet 22 is not sent, so optional packet bundling is
-  not negotiated;
-- received server FeatureFlags are stored only for diagnostics;
-- ProtocolChange is counted but does not switch protocol;
-- normal control packets are not yet hardened to the established server
-  endpoint before they refresh session activity or change runtime flags.
+- ProtocolChange is counted but does not switch protocol.
 
-These are planned protocol upgrades. Documentation must not describe them as
-already active.
+These are the remaining protocol upgrades. Documentation must not describe them
+as already active.
 
 ## CLI diagnostics
 

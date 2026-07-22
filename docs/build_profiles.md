@@ -154,14 +154,19 @@ python tools/report_firmware_size.py
 ```
 
 It runs PlatformIO's `-t size` target for Debug, Production, Production
-Diagnostic and Slim and stores raw reports under `build/firmware_size/`.
-A size-only overflow of the normal Debug partition is advisory; product profile
-failures remain fatal.
+Diagnostic and Slim and stores raw reports under `build/firmware_size/`. All
+profiles share `partitions/tracker_4mb_no_ota.csv`: one 3 MiB factory app on the
+tracker's 4 MiB flash. The project does not implement OTA, so the Arduino
+default two-slot layout must not be used. Any profile size overflow is fatal.
 
 `BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK` is an internal validation environment, not
-an upload/product profile. It inherits the complete Debug source set and warning
-flags but uses `partitions/debug_linkcheck.csv` so `check_all` can distinguish a
-known wearable flash-size limit from real compile/type/link-symbol breakage.
+an upload/product profile. It inherits the complete Debug source set, warning
+flags and the same production partition contract, and exists only as an explicit
+compile/type/link-symbol gate in `check_all`.
+
+After changing from an older OTA partition, perform a normal PlatformIO upload
+that writes `partitions.bin`; copying only `firmware.bin` is insufficient because
+the bootloader would still use the old flash layout.
 
 ## Why `build_src_filter` is still used
 

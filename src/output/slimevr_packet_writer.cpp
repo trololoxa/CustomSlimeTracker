@@ -24,6 +24,14 @@ const char* safeCString(const char* str) {
     return str ? str : "";
 }
 
+int16_t quantizeSignedQ(float value, float scale) {
+    float scaled = value * scale;
+    if (scaled >= 32767.0f) return 32767;
+    if (scaled <= -32768.0f) return static_cast<int16_t>(-32768);
+    scaled += scaled >= 0.0f ? 0.5f : -0.5f;
+    return static_cast<int16_t>(scaled);
+}
+
 } // namespace
 
 size_t SlimeVRPacketWriter::BufferCursor::size() const {
@@ -58,6 +66,10 @@ bool SlimeVRPacketWriter::BufferCursor::writeU16Be(uint16_t value) {
     *ptr++ = static_cast<uint8_t>((value >> 8) & 0xffu);
     *ptr++ = static_cast<uint8_t>(value & 0xffu);
     return true;
+}
+
+bool SlimeVRPacketWriter::BufferCursor::writeI16Be(int16_t value) {
+    return writeU16Be(static_cast<uint16_t>(value));
 }
 
 bool SlimeVRPacketWriter::BufferCursor::writeU32Be(uint32_t value) {
@@ -183,7 +195,7 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writeRotationData(uint8_t* out, si
                                                                 SlimeVRRotationDataType dataType) {
     BufferCursor cursor{out, out, capacity};
     if (writePacketHeader(cursor, SlimeVRSendPacketType::RotationData)) {
-        const Quat normalized = q.normalized().withPositiveW();
+        const Quat normalized = slimevr_motion_frame::rotationWireFromWorldDevice(q);
         cursor.writeU8(sensorId);
         cursor.writeU8(static_cast<uint8_t>(dataType));
         cursor.writeF32Be(normalized.x);
@@ -205,6 +217,83 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writeAcceleration(uint8_t* out, si
         cursor.writeF32Be(linearAccelerationMps2.y);
         cursor.writeF32Be(linearAccelerationMps2.z);
         cursor.writeU8(sensorId);
+    }
+    return finish(cursor);
+}
+
+SlimeVRPacketWriteResult SlimeVRPacketWriter::writeRotationAndAcceleration(
+    uint8_t* out,
+    size_t capacity,
+    uint8_t sensorId,
+    const Quat& q,
+    const Vec3& linearAccelerationMps2
+) {
+    BufferCursor cursor{out, out, capacity};
+    if (writePacketHeader(cursor, SlimeVRSendPacketType::RotationAndAcceleration)) {
+        const Quat normalized = slimevr_motion_frame::rotationWireFromWorldDevice(q);
+        cursor.writeU8(sensorId);
+        // Packet 23 uses signed Q15 quaternion components and signed Q7
+        // acceleration in m/s^2. The server normalizes the decoded quaternion.
+        cursor.writeI16Be(quantizeSignedQ(normalized.x, 32768.0f));
+        cursor.writeI16Be(quantizeSignedQ(normalized.y, 32768.0f));
+        cursor.writeI16Be(quantizeSignedQ(normalized.z, 32768.0f));
+        cursor.writeI16Be(quantizeSignedQ(normalized.w, 32768.0f));
+        cursor.writeI16Be(quantizeSignedQ(linearAccelerationMps2.x, 128.0f));
+        cursor.writeI16Be(quantizeSignedQ(linearAccelerationMps2.y, 128.0f));
+        cursor.writeI16Be(quantizeSignedQ(linearAccelerationMps2.z, 128.0f));
+    }
+    return finish(cursor);
+}
+
+
+SlimeVRPacketWriteResult SlimeVRPacketWriter::writeRotationAccelerationBundle(
+    uint8_t* out,
+    size_t capacity,
+    uint8_t sensorId,
+    const Quat& q,
+    uint8_t accuracyInfo,
+    const Vec3& linearAccelerationMps2,
+    SlimeVRRotationDataType dataType
+) {
+    BufferCursor cursor{out, out, capacity};
+    if (writePacketHeader(cursor, SlimeVRSendPacketType::Bundle)) {
+        const Quat normalized = slimevr_motion_frame::rotationWireFromWorldDevice(q);
+
+        // Packet-100 inner records have a u16 length and contain packet type
+        // plus payload, but no inner packet number. Preserve rotation-before-
+        // acceleration ordering so step mounting observes both from one
+        // coherent prepared snapshot.
+        constexpr uint16_t rotationInnerSize = 4u + 19u;
+        cursor.writeU16Be(rotationInnerSize);
+        cursor.writeU32Be(static_cast<uint32_t>(SlimeVRSendPacketType::RotationData));
+        cursor.writeU8(sensorId);
+        cursor.writeU8(static_cast<uint8_t>(dataType));
+        cursor.writeF32Be(normalized.x);
+        cursor.writeF32Be(normalized.y);
+        cursor.writeF32Be(normalized.z);
+        cursor.writeF32Be(normalized.w);
+        cursor.writeU8(accuracyInfo);
+
+        constexpr uint16_t accelerationInnerSize = 4u + 13u;
+        cursor.writeU16Be(accelerationInnerSize);
+        cursor.writeU32Be(static_cast<uint32_t>(SlimeVRSendPacketType::Accel));
+        cursor.writeF32Be(linearAccelerationMps2.x);
+        cursor.writeF32Be(linearAccelerationMps2.y);
+        cursor.writeF32Be(linearAccelerationMps2.z);
+        cursor.writeU8(sensorId);
+    }
+    return finish(cursor);
+}
+
+SlimeVRPacketWriteResult SlimeVRPacketWriter::writeFeatureFlags(
+    uint8_t* out,
+    size_t capacity,
+    const uint8_t* flags,
+    size_t flagsLength
+) {
+    BufferCursor cursor{out, out, capacity};
+    if (writePacketHeader(cursor, SlimeVRSendPacketType::FeatureFlags)) {
+        if (flagsLength != 0u) cursor.writeBytes(flags, flagsLength);
     }
     return finish(cursor);
 }

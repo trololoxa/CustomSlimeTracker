@@ -130,7 +130,7 @@ Incoming handling includes:
 - discovery response;
 - heartbeat;
 - PingPong;
-- server FeatureFlags storage for diagnostics;
+- firmware/server FeatureFlags exchange and packet-100 bundle negotiation;
 - SetConfigFlag for the runtime magnetometer/yaw toggle;
 - ProtocolChange accounting without a protocol switch.
 
@@ -205,23 +205,28 @@ intact. External/manual FIFO resets explicitly discard any local pre-reset batch
 
 ### Motion output and new server features
 
-Acceleration packet 4 is emitted immediately after each successful packet 17
-when the same prepared snapshot has valid motion data. The snapshot contains
-exact-timestamp orientation and gravity-removed device-frame acceleration; stale
-AHRS timestamps, missing accel/frame calibration and hard accel faults fail closed.
-Internal acceleration remains in `g` and is converted to SI `m/s^2` only at the
-packet boundary. Position packet 27 is not implemented and must not be synthesized
+Valid motion snapshots use negotiated packet-100 output when the server
+advertises bundle support. The bundle contains float32 packet 17 followed by
+float32 packet 4 from one prepared snapshot. Hard-invalid acceleration falls
+back to rotation-only packet 17; rotation is never suppressed only because
+motion acceleration is unavailable. Servers without bundle support receive
+packet 17 at pose rate and coherent packet 4 at a 50 Hz fallback rate. Packet 23
+remains an explicitly disabled experimental compile-time option. Internal
+acceleration remains in `g` and is converted to SI `m/s^2` at the packet
+boundary. The handshake uses protocol 22, so the server accepts corrected
+device-frame acceleration without the historical extra -90 degree local-Z
+correction. Rotation and acceleration therefore share the same local basis and
+sample boundary, which is the firmware-side requirement for acceleration-based
+step mounting. Position packet 27 is not implemented and must not be synthesized
 by double-integrating IMU acceleration.
 
 ### Remaining protocol work
 
 - SensorInfo acknowledgement packet 15 is not tracked as an acknowledged-state
   machine; SensorInfo is refreshed periodically or when requested locally.
-- Firmware FeatureFlags packet 22 is not sent, so bundle capability is not
-  negotiated.
-- Server FeatureFlags are stored but do not enable optional behavior.
+- Packet 23 has no compatible legacy negotiation path and remains disabled by
+  default; only an explicitly verified server build should enable it.
 - ProtocolChange is recorded but not applied.
-- Control-packet source endpoint validation still needs hardening.
 
 ## Test policy
 
