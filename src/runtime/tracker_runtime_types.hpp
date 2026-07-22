@@ -47,6 +47,7 @@ struct MachineLogCounters {
     uint32_t state = 0;
     uint32_t bias = 0;
     uint32_t biasUpdate = 0;
+    uint32_t backpressureDrop = 0;
 };
 
 // Latest timestamp-coherent motion snapshot for non-blocking output

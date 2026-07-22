@@ -181,6 +181,11 @@ struct TrackerSerialCommandContext {
     void (*printRemoteConsoleStatus)(Stream& out, void* user) = nullptr;
     void* printRemoteConsoleStatusUser = nullptr;
 
+    void (*printConsoleOutputStatus)(Stream& out, void* user) = nullptr;
+    void* printConsoleOutputStatusUser = nullptr;
+    void (*resetConsoleOutputState)(void* user) = nullptr;
+    void* resetConsoleOutputStateUser = nullptr;
+
     void (*emitLogHeader)(Stream& out, void* user) = nullptr;
     void* emitLogHeaderUser = nullptr;
 

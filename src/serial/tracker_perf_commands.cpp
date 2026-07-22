@@ -111,6 +111,9 @@ void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
     out.print("rotation_sent_delta="); out.println(rotationSent);
     out.print("rotation_sent_rate_hz="); out.println(ratePerSecond(rotationSent, windowMs), 3);
     out.print("rotation_delivery_pct="); out.println(deliveryPct, 2);
+    out.print("rotation_missed_deadlines_delta="); out.println(deltaU32(slime.rotationMissedDeadlines, g_trackingPerfBaseline.slime.rotationMissedDeadlines));
+    out.print("rotation_late_events_delta="); out.println(deltaU32(slime.rotationLateEvents, g_trackingPerfBaseline.slime.rotationLateEvents));
+    out.print("rotation_lateness_max_ms="); out.println(slime.rotationLatenessMaxMs);
     out.print("rotation_no_snapshot_delta="); out.println(deltaU32(slime.rotationNoSnapshot, g_trackingPerfBaseline.slime.rotationNoSnapshot));
     out.print("rotation_send_failures_delta="); out.println(deltaU32(slime.rotationSendFailures, g_trackingPerfBaseline.slime.rotationSendFailures));
     out.print("acceleration_sent_delta="); out.println(deltaU32(slime.accelerationSent, g_trackingPerfBaseline.slime.accelerationSent));
@@ -132,6 +135,9 @@ void printSlimeQuick(Stream& out, const SlimeVROutputRuntime* slime) {
     out.print("slime_rotation_sent="); out.println(s.rotationSent);
     out.print("slime_rotation_send_due="); out.println(s.rotationSendDue);
     out.print("slime_rotation_rate_limited="); out.println(s.rotationRateLimited);
+    out.print("slime_rotation_missed_deadlines="); out.println(s.rotationMissedDeadlines);
+    out.print("slime_rotation_late_events="); out.println(s.rotationLateEvents);
+    out.print("slime_rotation_lateness_max_ms="); out.println(s.rotationLatenessMaxMs);
     out.print("slime_rotation_no_snapshot="); out.println(s.rotationNoSnapshot);
     out.print("slime_rotation_duplicate_snapshot="); out.println(s.rotationDuplicateSnapshot);
     out.print("slime_rotation_send_failures="); out.println(s.rotationSendFailures);

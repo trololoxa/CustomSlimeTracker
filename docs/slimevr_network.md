@@ -188,6 +188,18 @@ Manual rotation rate change:
 slime rate 100
 ```
 
+The scheduler keeps an absolute phase. If a loop reaches a deadline late, it
+advances directly to the nearest future deadline, sends at most one latest
+snapshot and records any skipped periods. It does not set the next phase from
+the late call and does not send stale catch-up bursts. Relevant diagnostics are:
+
+```text
+rotation_missed_deadlines
+rotation_late_events
+rotation_lateness_sum_ms
+rotation_lateness_max_ms
+```
+
 `100 Hz` is the default target because it gives smooth SlimeVR preview/tracking
 and the optimized ESP32-C3 runtime targets it with an 18-word FIFO watermark,
 an 8 MHz SPI default and a RAM-backed work queue. It is not a protocol requirement. For thermal experiments or battery-focused

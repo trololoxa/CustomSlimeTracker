@@ -58,6 +58,10 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.setRemoteConsoleEnabledUser = hooks.setRemoteConsoleEnabledUser;
     ctx.printRemoteConsoleStatus = hooks.printRemoteConsoleStatus;
     ctx.printRemoteConsoleStatusUser = hooks.printRemoteConsoleStatusUser;
+    ctx.printConsoleOutputStatus = hooks.printConsoleOutputStatus;
+    ctx.printConsoleOutputStatusUser = hooks.printConsoleOutputStatusUser;
+    ctx.resetConsoleOutputState = hooks.resetConsoleOutputState;
+    ctx.resetConsoleOutputStateUser = hooks.resetConsoleOutputStateUser;
     ctx.emitLogHeader = hooks.emitLogHeader;
     ctx.emitLogHeaderUser = hooks.emitLogHeaderUser;
     ctx.printLogSummary = hooks.printLogSummary;

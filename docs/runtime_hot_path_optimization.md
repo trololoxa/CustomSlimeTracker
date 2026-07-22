@@ -138,6 +138,9 @@ RotationData stays fresh (`slime_rotation_sample_lag_end: 0`).
 ```text
 slime_rotation_send_due_delta
 slime_rotation_rate_limited_delta
+slime_rotation_missed_deadlines_delta
+slime_rotation_late_events_delta
+slime_rotation_lateness_max_ms_end
 slime_rotation_no_snapshot_delta
 slime_rotation_duplicate_snapshot_delta
 slime_rotation_snapshot_age_us_end
@@ -149,6 +152,13 @@ slime_discovery_send_failures_delta
 slime_tap_transport_send_failures_delta
 slime_consecutive_send_failures_end
 ```
+
+The rotation scheduler is phase-locked to an absolute next deadline. A late
+loop advances the deadline by the number of elapsed periods, records skipped
+deadlines, and sends at most one current snapshot. It never re-phases the 100 Hz
+clock from the late call and never emits a burst of stale catch-up packets.
+`slime_rotation_missed_deadlines_delta` therefore measures scheduler service
+misses rather than UDP send failures.
 
 `slime_rotation_sample_lag_end` is the trustworthy end-of-test freshness metric:
 it compares the last sent RotationData sample with the current runtime sample
@@ -162,12 +172,30 @@ latency unless the sample lag also confirms it.
 - Debug keeps the 100 Hz target output for diagnostics.
 - Production keeps the 100 Hz target output unless future runtime tests prove a
   lower product default is acceptable.
-- Slim intentionally clamps SlimeVR output to 50 Hz to reduce Wi-Fi work while
-  preserving the local FIFO/AHRS cadence.
+- Slim currently forces 125 Hz from the build profile so a stale NVS rate cannot
+  silently lower its tracking output. Any future battery-oriented reduction must
+  be an explicit measured product change.
 
 A measured RotationData rate around 68-73 Hz with zero `no_snapshot`, zero
 `duplicate_snapshot` and zero `sample_lag` means the sender is limited by the
 prepared-output cadence, not by missing AHRS data.
+
+## Bounded diagnostic output
+
+USB Serial and the Wi-Fi remote console use independent fixed-memory duplex
+stream adapters. Input remains direct. Output is staged by complete line, copied
+atomically into a bounded ring, and drained only after FIFO/AHRS and SlimeVR UDP
+work. A saturated queue drops a whole diagnostic record rather than arbitrary
+bytes, so later command responses cannot be glued onto truncated prefixes.
+
+Drains keep both byte and time budgets. USB additionally uses exponential stall
+backoff and discards stale undeliverable boot text after five seconds, avoiding
+thousands of empty drain attempts when no host is attached. Machine-log
+producers reserve capacity before expensive formatting.
+
+Use `console status` to inspect queue/record capacities, staged bytes, complete
+record drops, warning notices and stalls. A non-zero drop count invalidates a
+high-rate machine-log capture, but does not indicate lost IMU samples.
 
 ## Idle/yield experiment
 

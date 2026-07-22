@@ -68,6 +68,9 @@
 #if TRACKER_HAS_SERIAL_CLI
 #include "serial/tracker_serial_commands.hpp"
 #endif
+#if TRACKER_HAS_SERIAL_CONSOLE
+#include "serial/bounded_duplex_stream.hpp"
+#endif
 
 using namespace tracker;
 
@@ -106,6 +109,16 @@ static TrackerSerialStreamState g_streamState;
 #endif
 #if TRACKER_HAS_MACHINE_LOG
 static TrackerSerialLogState g_logState;
+#endif
+#if TRACKER_HAS_SERIAL_CONSOLE
+static BoundedDuplexStream<
+    TRACKER_SERIAL_OUTPUT_QUEUE_BYTES,
+    TRACKER_SERIAL_OUTPUT_RECORD_BYTES
+> g_serialConsoleStream;
+static uint32_t g_lastSerialOutputDrainMs = 0;
+static uint32_t g_serialOutputDrainBackoffMs = TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS;
+static uint32_t g_serialOutputStallStartMs = 0;
+static uint32_t g_serialOutputStaleDiscards = 0;
 #endif
 #if TRACKER_HAS_SERIAL_CLI
 static TrackerSerialCommandContext g_cmdCtx;

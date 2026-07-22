@@ -75,6 +75,46 @@
   #endif
 #endif
 
+// Telnet carries the long diagnostic reports, so its queue is intentionally
+// sized for complete perf/motion/slime bursts. The tracker currently has ample
+// RAM headroom; reduce this compile-time value first if a future subsystem needs
+// memory, rather than increasing the drain rate and competing with RotationData.
+#ifndef TRACKER_REMOTE_CONSOLE_OUTPUT_QUEUE_BYTES
+  #if TRACKER_BUILD_IS_DEBUG || TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_QUEUE_BYTES 8192
+  #else
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_QUEUE_BYTES 1
+  #endif
+#endif
+
+#ifndef TRACKER_REMOTE_CONSOLE_OUTPUT_RECORD_BYTES
+  #if TRACKER_BUILD_IS_DEBUG || TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_RECORD_BYTES 768
+  #else
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_RECORD_BYTES 1
+  #endif
+#endif
+
+#ifndef TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN
+  #if TRACKER_BUILD_IS_DEBUG
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN 128
+  #elif TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN 64
+  #else
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN 0
+  #endif
+#endif
+
+#ifndef TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS
+  #if TRACKER_BUILD_IS_DEBUG
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS 4UL
+  #elif TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS 5UL
+  #else
+    #define TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS 0UL
+  #endif
+#endif
+
 // Network/SlimeVR update budget. This does not affect IMU/FIFO/AHRS cadence;
 // it only avoids spinning Wi-Fi/UDP state machines on every high-rate loop.
 // The values remain well below RotationData periods (100 Hz = 10 ms, Slim

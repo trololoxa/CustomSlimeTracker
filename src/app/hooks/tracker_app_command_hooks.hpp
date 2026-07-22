@@ -116,7 +116,7 @@ static void emitMachineLogFrame(const Lsm6dsv::RawSample& raw,
                                 const Lsm6dsv::Sample& calibrated,
                                 const ImuQualityResult& quality) {
 #if TRACKER_ENABLE_MACHINE_LOG
-    machineLogEmitFrame(Serial,
+    machineLogEmitFrame(appConsoleOutput(),
                         g_logState,
                         g_logCounters,
                         g_lastBiasLogEmitUs,
@@ -145,7 +145,7 @@ static void emitMachineLogMagFrame(const MagProcessedSample& mag,
                                    uint32_t rejectFlagsForUse,
                                    bool trustedForUse) {
 #if TRACKER_ENABLE_MACHINE_LOG
-    machineLogEmitMagFrame(Serial,
+    machineLogEmitMagFrame(appConsoleOutput(),
                            g_logState,
                            g_logCounters,
                            mag,
@@ -210,7 +210,7 @@ static bool startStaticTestHook(uint32_t durationMs, void* user) {
         (g_magHeadingRef.valid && g_lastMagHeading.valid)
             ? magHeadingErrorToReferenceDeg(g_lastMagHeading)
             : 0.0f;
-    return g_staticTestRunner.start(durationMs, Serial, magErrorStartDeg);
+    return g_staticTestRunner.start(durationMs, appConsoleOutput(), magErrorStartDeg);
 #else
     (void)durationMs;
     return false;
@@ -238,7 +238,7 @@ static void printStaticTestStatus(Stream& out, void* user) {
 static bool startRuntimeTestHook(uint32_t durationMs, void* user) {
     (void)user;
 #if TRACKER_ENABLE_RUNTIME_TEST
-    return g_runtimeTestRunner.start(durationMs, millis(), Serial);
+    return g_runtimeTestRunner.start(durationMs, millis(), appConsoleOutput());
 #else
     (void)durationMs;
     return false;
@@ -277,6 +277,43 @@ static void printRemoteConsoleStatusHook(Stream& out, void* user) {
 }
 #endif
 
+static void printConsoleOutputStatusHook(Stream& out, void* user) {
+    (void)user;
+    out.println("# CONSOLE OUTPUT STATUS");
+#if TRACKER_HAS_SERIAL_CONSOLE
+    printBoundedDuplexStreamStatus(out, "serial_output", g_serialConsoleStream.status());
+    out.print("serial_output_drain_bytes="); out.println(TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN);
+    out.print("serial_output_drain_interval_ms="); out.println(TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS);
+    out.print("serial_output_current_backoff_ms="); out.println(g_serialOutputDrainBackoffMs);
+    out.print("serial_output_stale_discard_ms="); out.println(TRACKER_SERIAL_OUTPUT_STALE_DISCARD_MS);
+    out.print("serial_output_stale_discards="); out.println(g_serialOutputStaleDiscards);
+#else
+    out.println("serial_output_compiled=no");
+#endif
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    const WifiRemoteConsoleStatus remote = g_wifiRemoteConsole.status();
+    printBoundedDuplexStreamStatus(out, "remote_console_output", remote.output);
+    out.print("remote_console_output_drain_bytes="); out.println(TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN);
+    out.print("remote_console_output_drain_interval_ms="); out.println(TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS);
+#else
+    out.println("remote_console_output_compiled=no");
+#endif
+}
+
+static void resetConsoleOutputStateHook(void* user) {
+    (void)user;
+#if TRACKER_HAS_SERIAL_CONSOLE
+    g_serialConsoleStream.resetOutputState();
+    g_lastSerialOutputDrainMs = 0u;
+    g_serialOutputDrainBackoffMs = TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS;
+    g_serialOutputStallStartMs = 0u;
+    g_serialOutputStaleDiscards = 0u;
+#endif
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    g_wifiRemoteConsole.resetOutputState();
+#endif
+}
+
 static bool fitGyroTempFromLastStaticHook(bool persist, Stream& out, void* user);
 static bool fitGyroTempFromCaptureHook(const StaticRuntimeTest* capture, bool persist, Stream& out, void* user);
 static bool fitGyroTempFromCaptureRamHook(const StaticRuntimeTest* capture, Stream& out, void* user);
@@ -289,7 +326,7 @@ static bool serviceNonCliRuntimeHook(void* user) {
 
 static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     TrackerCommandRuntimeObjects objects;
-    objects.io = &Serial;
+    objects.io = &appConsoleOutput();
     objects.config = &g_config;
     objects.configStore = &g_configStore;
     objects.networkConfig = &g_networkConfig;
@@ -352,6 +389,8 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     hooks.setRemoteConsoleEnabled = setRemoteConsoleEnabledHook;
     hooks.printRemoteConsoleStatus = printRemoteConsoleStatusHook;
 #endif
+    hooks.printConsoleOutputStatus = printConsoleOutputStatusHook;
+    hooks.resetConsoleOutputState = resetConsoleOutputStateHook;
 #if TRACKER_ENABLE_MACHINE_LOG
     hooks.emitLogHeader = emitMachineLogHeader;
     hooks.printLogSummary = printLogSummary;

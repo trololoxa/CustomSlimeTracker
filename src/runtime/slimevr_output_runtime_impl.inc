@@ -156,7 +156,7 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
         resetConnectionState(true);
     } else {
         if (rotationRateChanged) {
-            lastRotationAttemptMs_ = 0;
+            resetRotationDeadline();
         }
         if (restCalibrationChanged) {
             requestSensorInfoRefresh();
@@ -205,7 +205,7 @@ void SlimeVROutputRuntime::setTrackerHealth(const TrackerHealthSnapshot& health)
     if (changed) {
         requestSensorInfoRefresh();
         lastTrackerErrorMs_ = 0;
-        lastRotationAttemptMs_ = 0;
+        resetRotationDeadline();
     }
 }
 
@@ -219,6 +219,10 @@ void SlimeVROutputRuntime::resetCounters() {
     accelerationSendFailures_ = 0;
     rotationSendDue_ = 0;
     rotationRateLimited_ = 0;
+    rotationMissedDeadlines_ = 0;
+    rotationLateEvents_ = 0;
+    rotationLatenessSumMs_ = 0;
+    rotationLatenessMaxMs_ = 0;
     serviceUpdates_ = 0;
     serviceSkips_ = 0;
     signalStrengthSent_ = 0;
@@ -396,6 +400,10 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.accelerationSendFailures = accelerationSendFailures_;
     s.rotationSendDue = rotationSendDue_;
     s.rotationRateLimited = rotationRateLimited_;
+    s.rotationMissedDeadlines = rotationMissedDeadlines_;
+    s.rotationLateEvents = rotationLateEvents_;
+    s.rotationLatenessSumMs = rotationLatenessSumMs_;
+    s.rotationLatenessMaxMs = rotationLatenessMaxMs_;
     s.serviceUpdates = serviceUpdates_;
     s.serviceSkips = serviceSkips_;
     s.signalStrengthSent = signalStrengthSent_;
@@ -496,7 +504,7 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastIncomingPacketMs_ = 0;
     lastHeartbeatMs_ = 0;
     lastSensorInfoMs_ = 0;
-    lastRotationAttemptMs_ = 0;
+    resetRotationDeadline();
     lastRotationMs_ = 0;
     lastTelemetryMs_ = 0;
     lastServiceUpdateMs_ = 0;
@@ -577,7 +585,7 @@ void SlimeVROutputRuntime::handleIncomingPacket(const uint8_t* data,
         lastSignalTelemetryMs_ = nowMs;
         lastTemperatureTelemetryMs_ = nowMs;
         lastBatteryTelemetryMs_ = nowMs;
-        lastRotationAttemptMs_ = nowMs;
+        armRotationDeadline(serverFoundSendGraceUntilMs_);
         lastSensorInfoMs_ = 0;
         lastTrackerErrorMs_ = 0;
         return;
@@ -922,11 +930,53 @@ void SlimeVROutputRuntime::maybeSendTrackerError(uint32_t nowMs) {
 }
 
 void SlimeVROutputRuntime::maybeRecordRotationSuppressedByError(uint32_t nowMs) {
-    if (lastRotationAttemptMs_ != 0 && nowMs - lastRotationAttemptMs_ < rotationPeriodMs()) {
-        return;
-    }
-    lastRotationAttemptMs_ = nowMs;
+    if (!consumeRotationDeadline(nowMs)) return;
     ++rotationSuppressedByError_;
+}
+
+void SlimeVROutputRuntime::resetRotationDeadline() {
+    nextRotationDeadlineMs_ = 0u;
+    rotationDeadlineArmed_ = false;
+}
+
+void SlimeVROutputRuntime::armRotationDeadline(uint32_t deadlineMs) {
+    nextRotationDeadlineMs_ = deadlineMs;
+    rotationDeadlineArmed_ = true;
+}
+
+bool SlimeVROutputRuntime::consumeRotationDeadline(uint32_t nowMs) {
+    const uint32_t periodMs = rotationPeriodMs();
+    if (!rotationDeadlineArmed_) {
+        // Preserve the legacy first-attempt behavior after a health/rate reset:
+        // the current fresh snapshot is due immediately, then phase continues
+        // from a future absolute deadline.
+        armRotationDeadline(nowMs + periodMs);
+        return true;
+    }
+
+    if (static_cast<int32_t>(nowMs - nextRotationDeadlineMs_) < 0) {
+        ++rotationRateLimited_;
+        return false;
+    }
+
+    const uint32_t latenessMs = nowMs - nextRotationDeadlineMs_;
+    uint32_t elapsedPeriods = 1u;
+    if (latenessMs >= periodMs) {
+        elapsedPeriods += latenessMs / periodMs;
+    }
+    if (elapsedPeriods > 1u) {
+        rotationMissedDeadlines_ += elapsedPeriods - 1u;
+    }
+    if (latenessMs > 0u) {
+        ++rotationLateEvents_;
+        rotationLatenessSumMs_ += latenessMs;
+        if (latenessMs > rotationLatenessMaxMs_) rotationLatenessMaxMs_ = latenessMs;
+    }
+
+    // Preserve phase and jump directly to the nearest future deadline. Never
+    // emit a burst of stale packets to catch up missed periods.
+    nextRotationDeadlineMs_ += elapsedPeriods * periodMs;
+    return true;
 }
 
 uint32_t SlimeVROutputRuntime::rotationPeriodMs() const {
@@ -960,11 +1010,7 @@ int8_t SlimeVROutputRuntime::signalStrengthFromRssi(int32_t rssiDbm) {
 void SlimeVROutputRuntime::maybeSendRotation(uint32_t nowMs) {
     if (!serverEndpoint_.valid()) return;
     if (!copyOutputSnapshot_) return;
-    if (lastRotationAttemptMs_ != 0 && nowMs - lastRotationAttemptMs_ < rotationPeriodMs()) {
-        ++rotationRateLimited_;
-        return;
-    }
-    lastRotationAttemptMs_ = nowMs;
+    if (!consumeRotationDeadline(nowMs)) return;
     ++rotationSendDue_;
 
     TrackerPreparedOutputSnapshot snapshot;

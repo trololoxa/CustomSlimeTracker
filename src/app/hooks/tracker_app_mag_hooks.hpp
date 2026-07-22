@@ -76,7 +76,7 @@ static MagRuntimeControllerDeps makeMagRuntimeControllerDeps() {
     callbacks.recordStaticMagYawSample = magControllerRecordStaticMagYawSampleCallback;
 
     MagRuntimeControllerDeps deps;
-    deps.out = &Serial;
+    deps.out = &appConsoleOutput();
     deps.config = &g_config;
     deps.configStore = &g_configStore;
     deps.hub = &lsmHub;
@@ -150,7 +150,7 @@ static void trackingEmitStateEventCallback(const char* state,
 
 static TrackingStateEventSink makeTrackingEventSink() {
     TrackingStateEventSink sink;
-    sink.out = trackerConsoleTrackingMessagesSuppressed(millis()) ? nullptr : &Serial;
+    sink.out = trackerConsoleTrackingMessagesSuppressed(millis()) ? nullptr : &appConsoleOutput();
     sink.confidence = g_lastOutputConfidence;
     sink.hasRecoverableOrientation = g_ahrs6dof.initialized();
     sink.prepareRecovery = trackingPrepareRecoveryCallback;

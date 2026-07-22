@@ -26,6 +26,21 @@ const char* machineLogModeName(TrackerLogMode mode) {
     return "unknown";
 }
 
+namespace {
+
+constexpr size_t MACHINE_LOG_STATE_RESERVE_BYTES = 192u;
+constexpr size_t MACHINE_LOG_BASIC_RESERVE_BYTES = 640u;
+constexpr size_t MACHINE_LOG_FULL_RESERVE_BYTES = 1280u;
+constexpr size_t MACHINE_LOG_MAG_BASIC_RESERVE_BYTES = 640u;
+constexpr size_t MACHINE_LOG_MAG_FULL_RESERVE_BYTES = 1280u;
+
+bool machineLogOutputHasRoom(Stream& out, size_t reserveBytes) {
+    const int writable = out.availableForWrite();
+    return writable > 0 && static_cast<size_t>(writable) >= reserveBytes;
+}
+
+} // namespace
+
 bool machineLogDue(TrackerSerialLogState& state, uint32_t nowUs) {
     if (!state.enabled()) return false;
     const uint32_t period = state.periodUs();
@@ -91,6 +106,10 @@ void machineLogEmitStateEvent(Stream& out,
                                      uint32_t flags,
                                      float confidence) {
     if (!state.enabled()) return;
+    if (!machineLogOutputHasRoom(out, MACHINE_LOG_STATE_RESERVE_BYTES)) {
+        ++counters.backpressureDrop;
+        return;
+    }
     const uint32_t seq = state.sequence++;
     out.print("STATE,"); machineLogPrintU64Dec(out, tUs);
     out.print(','); out.print(seq);
@@ -173,6 +192,9 @@ void machineLogPrintSummary(Stream& out,
     out.print(runtimeBias.lastAppliedDeltaDps.norm(), 8); out.print(',');
     out.print(runtimeBias.runtimeTrimRadS.norm() * MATH_RAD_TO_DEG, 8); out.print(',');
     out.println(counters.biasUpdate);
+
+    out.print("LOGSTAT,BACKPRESSURE,");
+    out.println(counters.backpressureDrop);
 }
 
 const char* machineLogBiasSource(const RuntimeGyroBiasEstimator& runtimeBias,
@@ -223,6 +245,13 @@ void machineLogEmitFrame(Stream& out,
     // machine log is disabled, which is the normal tracking/WiFi path.
     if (!state.enabled()) return;
     if (!machineLogDue(state, micros())) return;
+    const size_t reserveBytes = state.mode == TrackerLogMode::Full
+        ? MACHINE_LOG_FULL_RESERVE_BYTES
+        : MACHINE_LOG_BASIC_RESERVE_BYTES;
+    if (!machineLogOutputHasRoom(out, reserveBytes)) {
+        ++counters.backpressureDrop;
+        return;
+    }
 
     const uint32_t seq = state.sequence++;
     const Ahrs6DofStats& ast = ahrs.stats();
@@ -314,6 +343,13 @@ void machineLogEmitMagFrame(Stream& out,
 #else
     if (!state.enabled()) return;
     if (!machineLogMagDue(state, micros())) return;
+    const size_t reserveBytes = state.mode == TrackerLogMode::Full
+        ? MACHINE_LOG_MAG_FULL_RESERVE_BYTES
+        : MACHINE_LOG_MAG_BASIC_RESERVE_BYTES;
+    if (!machineLogOutputHasRoom(out, reserveBytes)) {
+        ++counters.backpressureDrop;
+        return;
+    }
 
     const uint32_t seq = state.sequence++;
     const uint32_t nowMs = millis();

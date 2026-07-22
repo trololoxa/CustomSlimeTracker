@@ -154,31 +154,7 @@ void TrackerApp::loop() {
 #endif
 
     bool remoteConsoleWorked = false;
-#if TRACKER_HAS_SERIAL_CLI
-#if TRACKER_ENABLE_LOOP_TIMING
-    sectionStartUs = micros();
-#endif
-#if TRACKER_HAS_RUNTIME_PROFILER
-    if (profilerActive) profilerSectionStartUs = micros();
-#endif
-    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
-#if TRACKER_HAS_RUNTIME_PROFILER
-    if (profilerActive) {
-        profiler->record(RuntimeProfiler::Section::Cli, micros() - profilerSectionStartUs, false, profilerNowMs);
-        profilerSectionStartUs = micros();
-    }
-#endif
-    remoteConsoleWorked = callBool(deps_.callbacks.updateRemoteConsoleRuntime);
-#if TRACKER_HAS_RUNTIME_PROFILER
-    if (profilerActive) {
-        profiler->record(RuntimeProfiler::Section::RemoteConsole, micros() - profilerSectionStartUs, remoteConsoleWorked, profilerNowMs);
-    }
-#endif
-#if TRACKER_ENABLE_LOOP_TIMING
-    timing.cliUs += micros() - sectionStartUs;
-#endif
-#endif
-
+    bool serialConsoleWorked = false;
 #if TRACKER_ENABLE_LOOP_TIMING
     sectionStartUs = micros();
 #endif
@@ -238,6 +214,41 @@ void TrackerApp::loop() {
     timing.ledWorked = ledWorked;
 #endif
 
+    // Tracking delivery has priority over all diagnostic I/O. CLI command
+    // dispatch, telnet socket work and output drains run only after FIFO/AHRS
+    // and SlimeVR UDP have been serviced for this loop.
+#if TRACKER_ENABLE_LOOP_TIMING
+    sectionStartUs = micros();
+#endif
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) profilerSectionStartUs = micros();
+#endif
+#if TRACKER_HAS_SERIAL_CLI
+    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+#endif
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Cli, micros() - profilerSectionStartUs, false, profilerNowMs);
+        profilerSectionStartUs = micros();
+    }
+#endif
+    remoteConsoleWorked = callBool(deps_.callbacks.updateRemoteConsoleRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::RemoteConsole, micros() - profilerSectionStartUs, remoteConsoleWorked, profilerNowMs);
+        profilerSectionStartUs = micros();
+    }
+#endif
+    serialConsoleWorked = callBool(deps_.callbacks.updateSerialConsoleRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Cli, micros() - profilerSectionStartUs, serialConsoleWorked, profilerNowMs);
+    }
+#endif
+#if TRACKER_ENABLE_LOOP_TIMING
+    timing.cliUs += micros() - sectionStartUs;
+#endif
+
 #if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
     // Light sleep is deliberately entered after the network state machine has
     // observed the current server state, but before the next ordinary loop
@@ -294,6 +305,7 @@ void TrackerApp::loop() {
 
     const bool anyWork = sensorRecoveryWorked ||
                          fifoWorked ||
+                         serialConsoleWorked ||
                          batteryWorked ||
                          networkWorked ||
                          tapWorked ||
@@ -785,6 +797,7 @@ void TrackerApp::serviceRuntimeForBlockingCommand() {
     if (sensorRuntimeReady_) {
         (void)processFifoRuntime();
     }
+    (void)callBool(deps_.callbacks.updateSerialConsoleRuntime);
     (void)callBool(deps_.callbacks.updateBatteryRuntime);
     (void)callBool(deps_.callbacks.updateNetworkRuntime);
     if (sensorRuntimeReady_) {

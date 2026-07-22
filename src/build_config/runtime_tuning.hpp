@@ -28,6 +28,64 @@
   #endif
 #endif
 
+// Bounded asynchronous USB console output. Serial is primarily used by the
+// SlimeVR setup compatibility commands, so it keeps a smaller queue than the
+// telnet diagnostic console. Both the queue and per-record staging capacities
+// are compile-time knobs and may be reduced if a future feature needs RAM.
+#ifndef TRACKER_SERIAL_OUTPUT_QUEUE_BYTES
+  #if TRACKER_BUILD_IS_SLIM
+    #define TRACKER_SERIAL_OUTPUT_QUEUE_BYTES 1
+  #elif TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_SERIAL_OUTPUT_QUEUE_BYTES 1536
+  #else
+    #define TRACKER_SERIAL_OUTPUT_QUEUE_BYTES 2048
+  #endif
+#endif
+
+#ifndef TRACKER_SERIAL_OUTPUT_RECORD_BYTES
+  #if TRACKER_BUILD_IS_SLIM
+    #define TRACKER_SERIAL_OUTPUT_RECORD_BYTES 1
+  #else
+    #define TRACKER_SERIAL_OUTPUT_RECORD_BYTES 512
+  #endif
+#endif
+
+#ifndef TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN
+  #if TRACKER_BUILD_IS_SLIM
+    #define TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN 0
+  #elif TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN 48
+  #else
+    #define TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN 64
+  #endif
+#endif
+
+#ifndef TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS
+  #if TRACKER_BUILD_IS_SLIM
+    #define TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS 0UL
+  #elif TRACKER_BUILD_IS_PRODUCTION
+    #define TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS 4UL
+  #else
+    #define TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS 2UL
+  #endif
+#endif
+
+#ifndef TRACKER_SERIAL_OUTPUT_STALL_BACKOFF_MAX_MS
+  #if TRACKER_BUILD_IS_SLIM
+    #define TRACKER_SERIAL_OUTPUT_STALL_BACKOFF_MAX_MS 0UL
+  #else
+    #define TRACKER_SERIAL_OUTPUT_STALL_BACKOFF_MAX_MS 250UL
+  #endif
+#endif
+
+#ifndef TRACKER_SERIAL_OUTPUT_STALE_DISCARD_MS
+  #if TRACKER_BUILD_IS_SLIM
+    #define TRACKER_SERIAL_OUTPUT_STALE_DISCARD_MS 0UL
+  #else
+    #define TRACKER_SERIAL_OUTPUT_STALE_DISCARD_MS 5000UL
+  #endif
+#endif
+
 #ifndef TRACKER_BOOT_SERIAL_SETTLE_DELAY_MS
 #define TRACKER_BOOT_SERIAL_SETTLE_DELAY_MS 2000UL
 #endif

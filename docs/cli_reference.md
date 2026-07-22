@@ -21,6 +21,8 @@ Legend:
 | `sleep` | Queue motion-triggered ESP32 light sleep | No | Compiled only with `TRACKER_ENABLE_MOTION_LIGHT_SLEEP=1`; serial/FIFO/Wi-Fi/mag are stopped after the current CLI poll returns, and a qualifying LSM6DSV motion event wakes the tracker. |
 | `remote status` | Print Wi-Fi TCP console state | No | Available when `TRACKER_ENABLE_WIFI_REMOTE_CONSOLE=1`. |
 | `remote off` / `remote on` | Stop/start the Wi-Fi TCP console for the current boot | No | `remote off` closes the TCP client/server so it stops adding normal-loop work. |
+| `console status` | Print bounded USB Serial and telnet output state | No | Shows queue/record capacity, staged and queued bytes, complete-record drops, warning notices, drain stalls and the current USB stall backoff. |
+| `console reset` | Reset bounded-output queues and counters | Runtime | Discards stale queued/staged console text, then starts fresh counters. It does not touch IMU/FIFO queues. |
 
 ## Config
 
@@ -187,7 +189,9 @@ nc <tracker-ip> 7777
 ```
 
 Use it for cable-free `setup calibration`, then run `remote off` to close the
-TCP client/server for the current boot. During `setup calibration`, the
+TCP client/server for the current boot. Both USB and TCP command output use
+fixed-size, byte-budgeted queues; use `console status` after a diagnostic burst
+to confirm that no output was dropped. During `setup calibration`, the
 firmware keeps an already connected Wi-Fi link instead of forcing a reconnect
 at the temperature stage, so the TCP console should stay attached. Slim
 compiles this feature out. See `docs/wifi_remote_console.md` for details.

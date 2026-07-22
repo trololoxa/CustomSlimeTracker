@@ -439,6 +439,9 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.print("slime_rotation_sent_delta: "); out.println(deltaU32(end.slime.rotationSent, start_.slime.rotationSent));
     out.print("slime_rotation_send_due_delta: "); out.println(deltaU32(end.slime.rotationSendDue, start_.slime.rotationSendDue));
     out.print("slime_rotation_rate_limited_delta: "); out.println(deltaU32(end.slime.rotationRateLimited, start_.slime.rotationRateLimited));
+    out.print("slime_rotation_missed_deadlines_delta: "); out.println(deltaU32(end.slime.rotationMissedDeadlines, start_.slime.rotationMissedDeadlines));
+    out.print("slime_rotation_late_events_delta: "); out.println(deltaU32(end.slime.rotationLateEvents, start_.slime.rotationLateEvents));
+    out.print("slime_rotation_lateness_max_ms_end: "); out.println(end.slime.rotationLatenessMaxMs);
     out.print("slime_service_updates_delta: "); out.println(deltaU32(end.slime.serviceUpdates, start_.slime.serviceUpdates));
     out.print("slime_service_skips_delta: "); out.println(deltaU32(end.slime.serviceSkips, start_.slime.serviceSkips));
     out.print("slime_rotation_no_snapshot_delta: "); out.println(deltaU32(end.slime.rotationNoSnapshot, start_.slime.rotationNoSnapshot));

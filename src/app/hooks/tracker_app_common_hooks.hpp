@@ -3,6 +3,14 @@
 // Common app hooks: lightweight counters, logging glue, FIFO wait glue, bootstrap deps, and runtime bias callbacks.
 // This file is included by app/tracker_app_hooks.hpp after shared app dependencies.
 
+static Stream& appConsoleOutput() {
+#if TRACKER_HAS_SERIAL_CONSOLE
+    return g_serialConsoleStream;
+#else
+    return Serial;
+#endif
+}
+
 static void recordFifoProcessTime(uint32_t dtUs) {
 #if TRACKER_HAS_HOTPATH_PERF
     g_perf.fifoProcessCalls++;
@@ -33,7 +41,7 @@ static void emitMachineLogHeader(Stream& out, void* user) {
 
 static void emitLogStateEvent(const char* state, const char* reason, uint64_t tUs, uint32_t flags, float confidence) {
 #if TRACKER_ENABLE_MACHINE_LOG
-    machineLogEmitStateEvent(Serial, g_logState, g_logCounters, state, reason, tUs, flags, confidence);
+    machineLogEmitStateEvent(appConsoleOutput(), g_logState, g_logCounters, state, reason, tUs, flags, confidence);
 #else
     (void)state;
     (void)reason;
@@ -67,7 +75,7 @@ static bool waitFifoEventForCalibration(uint32_t timeoutMs, void* user) {
 #endif
 static TrackerBootstrapDeps makeTrackerBootstrapDeps() {
     TrackerBootstrapDeps deps;
-    deps.out = &Serial;
+    deps.out = &appConsoleOutput();
     deps.spi = &SPI;
     deps.lsmBus = &lsmBus;
     deps.lsm = &lsm;

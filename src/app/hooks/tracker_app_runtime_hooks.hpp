@@ -16,8 +16,8 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     if (!consoleSuppressed &&
         (!g_trackingState.recoveryActive() || nowMs - g_lastRecoveryConsolePrintMs >= RECOVERY_CONSOLE_THROTTLE_MS)) {
         g_lastRecoveryConsolePrintMs = nowMs;
-        Serial.print("# WARN FIFO recovery requested quality_flags=0x");
-        Serial.println(quality.flags, HEX);
+        appConsoleOutput().print("# WARN FIFO recovery requested quality_flags=0x");
+        appConsoleOutput().println(quality.flags, HEX);
     }
 
     const uint64_t ts = raw.t_us != 0 ? raw.t_us : lsmFifo.stats().lastAssignedTimestampUs;
@@ -39,7 +39,7 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
     resetFifoRuntimeCounters();
 
     if (!resetOk && !trackerConsoleTrackingMessagesSuppressed(millis())) {
-        Serial.println("# ERR FIFO reset failed during recovery");
+        appConsoleOutput().println("# ERR FIFO reset failed during recovery");
     }
 }
 
@@ -205,7 +205,7 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
 #else
         nullptr,
 #endif
-        Serial,
+        appConsoleOutput(),
         g_runtimeSamples,
         g_lastSampleTimestampUs,
         g_latestTempC,
@@ -413,16 +413,16 @@ static void setupBatteryRuntime() {
     g_batteryRuntime.update(millis());
 
 #if TRACKER_ENABLE_SERIAL_CONSOLE
-    Serial.print("# battery_runtime_enabled=");
-    Serial.print(cfg.enabled ? "yes" : "no");
-    Serial.print(" pin=");
-    Serial.print(cfg.adcPin);
-    Serial.print(" divider=");
-    Serial.print(cfg.rTopOhms, 0);
-    Serial.print('/');
-    Serial.print(cfg.rBottomOhms, 0);
-    Serial.print(" backend=");
-    Serial.println(appBatteryAdcBackendName());
+    appConsoleOutput().print("# battery_runtime_enabled=");
+    appConsoleOutput().print(cfg.enabled ? "yes" : "no");
+    appConsoleOutput().print(" pin=");
+    appConsoleOutput().print(cfg.adcPin);
+    appConsoleOutput().print(" divider=");
+    appConsoleOutput().print(cfg.rTopOhms, 0);
+    appConsoleOutput().print('/');
+    appConsoleOutput().print(cfg.rBottomOhms, 0);
+    appConsoleOutput().print(" backend=");
+    appConsoleOutput().println(appBatteryAdcBackendName());
 #endif
 }
 
@@ -656,15 +656,15 @@ static void startNetworkRuntimeFromCurrentConfig(bool printStartup) {
 
 #if TRACKER_ENABLE_SERIAL_CONSOLE
     if (printStartup) {
-        Serial.print("# network_config_loaded_from_nvs=");
-        Serial.println(g_networkConfigLoadedFromNvs ? "yes" : "no");
-        Serial.print("# wifi_enabled=");
-        Serial.println(g_networkConfig.data.wifiEnabled ? "yes" : "no");
+        appConsoleOutput().print("# network_config_loaded_from_nvs=");
+        appConsoleOutput().println(g_networkConfigLoadedFromNvs ? "yes" : "no");
+        appConsoleOutput().print("# wifi_enabled=");
+        appConsoleOutput().println(g_networkConfig.data.wifiEnabled ? "yes" : "no");
         if (g_networkConfig.data.wifiEnabled) {
-            Serial.println("# wifi connection is non-blocking; use: net status");
+            appConsoleOutput().println("# wifi connection is non-blocking; use: net status");
         }
         if (slimeAutostart) {
-            Serial.println("# slimevr_autostart=yes; use: slime status");
+            appConsoleOutput().println("# slimevr_autostart=yes; use: slime status");
         }
     }
 #else
@@ -755,12 +755,12 @@ static void setupStatusLedRuntime() {
     g_statusLedRuntime.update(millis());
 
 #if TRACKER_ENABLE_SERIAL_CONSOLE
-    Serial.print("# status_led_enabled=");
-    Serial.print(cfg.enabled ? "yes" : "no");
-    Serial.print(" pin=");
-    Serial.print(static_cast<int>(cfg.pin));
-    Serial.print(" active_low=");
-    Serial.println(cfg.activeLow ? "yes" : "no");
+    appConsoleOutput().print("# status_led_enabled=");
+    appConsoleOutput().print(cfg.enabled ? "yes" : "no");
+    appConsoleOutput().print(" pin=");
+    appConsoleOutput().print(static_cast<int>(cfg.pin));
+    appConsoleOutput().print(" active_low=");
+    appConsoleOutput().println(cfg.activeLow ? "yes" : "no");
 #endif
 }
 
@@ -803,7 +803,7 @@ static const char* tapDiagnosticKindName(TapDiagnosticKind kind) {
 
 static void emitTapDiagnosticLine(const char* line) {
 #if TRACKER_ENABLE_SERIAL_CONSOLE
-    Serial.println(line);
+    appConsoleOutput().println(line);
 #endif
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
     (void)g_wifiRemoteConsole.writeDiagnosticLine(line);
@@ -874,10 +874,10 @@ static void setupTapRuntime() {
 
     const bool ok = g_tapRuntime.configure(cfg);
 #if TRACKER_ENABLE_SERIAL_CONSOLE
-    Serial.print("# tap_runtime_enabled=");
-    Serial.print(cfg.enabled ? "yes" : "no");
-    Serial.print(" hardware=");
-    Serial.println(ok ? "ok" : "fail");
+    appConsoleOutput().print("# tap_runtime_enabled=");
+    appConsoleOutput().print(cfg.enabled ? "yes" : "no");
+    appConsoleOutput().print(" hardware=");
+    appConsoleOutput().println(ok ? "ok" : "fail");
 #endif
 }
 
@@ -888,12 +888,58 @@ static bool updateTapRuntime() {
 #endif // TRACKER_ENABLE_TAP_RUNTIME
 
 
+#if TRACKER_HAS_SERIAL_CONSOLE
+static bool updateSerialConsoleRuntime() {
+    if (!g_serialConsoleStream.hasPending()) {
+        g_serialOutputDrainBackoffMs = TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS;
+        g_serialOutputStallStartMs = 0u;
+        return false;
+    }
+
+    const uint32_t nowMs = millis();
+    if (g_lastSerialOutputDrainMs != 0u &&
+        static_cast<uint32_t>(nowMs - g_lastSerialOutputDrainMs) < g_serialOutputDrainBackoffMs) {
+        return false;
+    }
+    g_lastSerialOutputDrainMs = nowMs;
+
+    const size_t drained = g_serialConsoleStream.drain(TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN);
+    if (drained > 0u) {
+        g_serialOutputDrainBackoffMs = TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS;
+        g_serialOutputStallStartMs = 0u;
+        return true;
+    }
+
+    if (g_serialOutputStallStartMs == 0u) g_serialOutputStallStartMs = nowMs;
+    if (TRACKER_SERIAL_OUTPUT_STALE_DISCARD_MS > 0u &&
+        static_cast<uint32_t>(nowMs - g_serialOutputStallStartMs) >= TRACKER_SERIAL_OUTPUT_STALE_DISCARD_MS) {
+        (void)g_serialConsoleStream.discardPending();
+        ++g_serialOutputStaleDiscards;
+        g_serialOutputDrainBackoffMs = TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS;
+        g_serialOutputStallStartMs = 0u;
+        return true;
+    }
+
+    uint32_t nextBackoff = g_serialOutputDrainBackoffMs * 2u;
+    if (nextBackoff < g_serialOutputDrainBackoffMs ||
+        nextBackoff > TRACKER_SERIAL_OUTPUT_STALL_BACKOFF_MAX_MS) {
+        nextBackoff = TRACKER_SERIAL_OUTPUT_STALL_BACKOFF_MAX_MS;
+    }
+    if (nextBackoff < TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS) {
+        nextBackoff = TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS;
+    }
+    g_serialOutputDrainBackoffMs = nextBackoff;
+    return false;
+}
+#endif
+
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
 static bool updateRemoteConsoleRuntime() {
     return g_wifiRemoteConsole.update(
         g_wifiManager.connected(),
         millis(),
-        TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP
+        TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP,
+        TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN
     );
 }
 #endif
@@ -953,7 +999,7 @@ static TrackerAppDeps makeTrackerAppDeps() {
 
     deps.bootstrap = makeTrackerBootstrapDeps();
 
-    deps.runtime.out = &Serial;
+    deps.runtime.out = &appConsoleOutput();
     deps.runtime.config = &g_config;
     deps.runtime.configLoadedFromNvs = &g_configLoadedFromNvs;
     deps.runtime.fifo = &lsmFifo;
@@ -995,6 +1041,9 @@ static TrackerAppDeps makeTrackerAppDeps() {
 #endif
     deps.callbacks.publishHealthState = publishTrackerHealthState;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
+#if TRACKER_HAS_SERIAL_CONSOLE
+    deps.callbacks.updateSerialConsoleRuntime = updateSerialConsoleRuntime;
+#endif
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
     deps.callbacks.updateRemoteConsoleRuntime = updateRemoteConsoleRuntime;
 #endif

@@ -48,6 +48,7 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("[core]");
     out.println("  help | ?");
     out.println("  status | health | version | reboot | factory_reset");
+    out.println("  console status | reset            (bounded Serial/telnet output queues)");
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     out.println("  sleep                              (enter motion light sleep; move tracker to wake)");
 #endif
@@ -374,6 +375,29 @@ bool trackerSerialDispatchSystemCommand(TrackerSerialCommandContext& ctx, int ar
         } else {
             tracker_serial_detail::printErr(out, "usage: setup status");
         }
+        return true;
+    }
+
+    if (trackerSerialSystemIs(argv[0], "console")) {
+        if (argc < 2 || trackerSerialSystemIs(argv[1], "status")) {
+            if (ctx.printConsoleOutputStatus) {
+                ctx.printConsoleOutputStatus(out, ctx.printConsoleOutputStatusUser);
+            } else {
+                out.println("# CONSOLE OUTPUT STATUS");
+                out.println("console_output_wired=no");
+            }
+            return true;
+        }
+        if (trackerSerialSystemIs(argv[1], "reset")) {
+            if (ctx.resetConsoleOutputState) {
+                ctx.resetConsoleOutputState(ctx.resetConsoleOutputStateUser);
+                tracker_serial_detail::printOk(out, "console output queues and counters reset");
+            } else {
+                tracker_serial_detail::printErr(out, "console output reset hook missing");
+            }
+            return true;
+        }
+        tracker_serial_detail::printErr(out, "usage: console status|reset");
         return true;
     }
 

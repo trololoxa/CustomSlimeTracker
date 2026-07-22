@@ -1,5 +1,11 @@
 #include "network/wifi_remote_console.hpp"
 
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+#include <cerrno>
+#include <cstring>
+#include <sys/socket.h>
+#endif
+
 namespace tracker {
 
 void WifiRemoteConsoleRuntime::begin(const TrackerSerialCommandContext& baseContext) {
@@ -16,11 +22,15 @@ void WifiRemoteConsoleRuntime::begin(const TrackerSerialCommandContext& baseCont
 #endif
 }
 
-bool WifiRemoteConsoleRuntime::update(bool wifiConnected, uint32_t nowMs, size_t maxBytesPerUpdate) {
-    (void)nowMs;
+bool WifiRemoteConsoleRuntime::update(bool wifiConnected,
+                                      uint32_t nowMs,
+                                      size_t maxInputBytesPerUpdate,
+                                      size_t maxOutputBytesPerUpdate) {
 #if !TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
     (void)wifiConnected;
-    (void)maxBytesPerUpdate;
+    (void)nowMs;
+    (void)maxInputBytesPerUpdate;
+    (void)maxOutputBytesPerUpdate;
     return false;
 #else
     if (!configured_) return false;
@@ -62,10 +72,20 @@ bool WifiRemoteConsoleRuntime::update(bool wifiConnected, uint32_t nowMs, size_t
             stopClient();
             worked = true;
         } else {
-            const size_t consumed = cli_.poll(maxBytesPerUpdate);
-            if (consumed > 0) {
+            const size_t consumed = cli_.poll(maxInputBytesPerUpdate);
+            if (consumed > 0u) {
                 bytesIn_ += static_cast<uint32_t>(consumed);
                 worked = true;
+            }
+
+            const bool drainDue = clientStream_.hasPending() &&
+                                  maxOutputBytesPerUpdate > 0u &&
+                                  (lastOutputDrainMs_ == 0u ||
+                                   static_cast<uint32_t>(nowMs - lastOutputDrainMs_) >=
+                                       TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS);
+            if (drainDue) {
+                lastOutputDrainMs_ = nowMs;
+                worked = drainClientOutput(maxOutputBytesPerUpdate) > 0u || worked;
             }
         }
     }
@@ -81,6 +101,42 @@ void WifiRemoteConsoleRuntime::suspend() {
 #endif
 }
 
+void WifiRemoteConsoleRuntime::flushClientOutput(void* user) {
+    auto* self = static_cast<WifiRemoteConsoleRuntime*>(user);
+    if (!self) return;
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    (void)self->drainClientOutput(TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN);
+#endif
+}
+
+size_t WifiRemoteConsoleRuntime::drainClientOutput(size_t byteBudget) {
+#if !TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    (void)byteBudget;
+    return 0u;
+#else
+    if (!clientConnected_ || !client_ || byteBudget == 0u) return 0u;
+
+    bool fatalSocketError = false;
+    const size_t drained = clientStream_.drainWith(
+        byteBudget,
+        [this, &fatalSocketError](const uint8_t* data, size_t len) -> size_t {
+            const int socketFd = client_.fd();
+            if (socketFd < 0) {
+                fatalSocketError = true;
+                return 0u;
+            }
+            const int written = ::send(socketFd, data, len, MSG_DONTWAIT);
+            if (written > 0) return static_cast<size_t>(written);
+            if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0u;
+            fatalSocketError = true;
+            return 0u;
+        });
+
+    if (fatalSocketError) stopClient();
+    return drained;
+#endif
+}
+
 bool WifiRemoteConsoleRuntime::writeDiagnosticLine(const char* line) {
 #if !TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
     (void)line;
@@ -89,7 +145,13 @@ bool WifiRemoteConsoleRuntime::writeDiagnosticLine(const char* line) {
     if (!line || !configured_ || !enabled_ || !client_ || !client_.connected()) {
         return false;
     }
-    return client_.println(line) > 0;
+    const size_t len = std::strlen(line);
+    const size_t recordBytes = len + 2u;
+    if (!clientStream_.canAccept(recordBytes)) {
+        clientStream_.recordDroppedRecord(recordBytes);
+        return false;
+    }
+    return clientStream_.println(line) == recordBytes;
 #endif
 }
 
@@ -115,7 +177,18 @@ WifiRemoteConsoleStatus WifiRemoteConsoleRuntime::status() const {
     s.droppedClients = droppedClients_;
     s.bytesIn = bytesIn_;
     s.bytesDropped = bytesDropped_;
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    s.output = clientStream_.status();
+#endif
     return s;
+}
+
+void WifiRemoteConsoleRuntime::resetOutputState() {
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    clientStream_.resetOutputState();
+#endif
+    bytesDropped_ = 0u;
+    lastOutputDrainMs_ = 0u;
 }
 
 void WifiRemoteConsoleRuntime::printStatus(Stream& out) const {
@@ -131,6 +204,7 @@ void WifiRemoteConsoleRuntime::printStatus(Stream& out) const {
     out.print("remote_console_dropped_clients="); out.println(s.droppedClients);
     out.print("remote_console_bytes_in="); out.println(s.bytesIn);
     out.print("remote_console_bytes_dropped="); out.println(s.bytesDropped);
+    printBoundedDuplexStreamStatus(out, "remote_console_output", s.output);
 }
 
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
@@ -153,8 +227,10 @@ void WifiRemoteConsoleRuntime::stopServer() {
 }
 
 void WifiRemoteConsoleRuntime::stopClient() {
+    bytesDropped_ += static_cast<uint32_t>(clientStream_.discardPending());
+    lastOutputDrainMs_ = 0u;
+    clientStream_.detach(false);
     if (client_) {
-        client_.flush();
         client_.stop();
     }
     if (clientConnected_) {
@@ -169,18 +245,21 @@ void WifiRemoteConsoleRuntime::acceptClient(WiFiClient& candidate) {
 #if defined(ARDUINO_ARCH_ESP32)
     client_.setNoDelay(true);
 #endif
+    clientStream_.begin(client_);
+    clientStream_.setFlushHandler(flushClientOutput, this);
+    lastOutputDrainMs_ = 0u;
     clientContext_ = baseContext_;
-    clientContext_.io = &client_;
+    clientContext_.io = &clientStream_;
     cli_.begin(clientContext_);
     clientConnected_ = true;
     ++acceptedClients_;
 
-    client_.println("# Tracker remote console");
-    client_.print("# build_profile=");
-    client_.print(trackerBuildProfileName());
-    client_.print(" port=");
-    client_.println(static_cast<uint16_t>(TRACKER_REMOTE_CONSOLE_PORT));
-    client_.println("# Type: help");
+    clientStream_.println("# Tracker remote console");
+    clientStream_.print("# build_profile=");
+    clientStream_.print(trackerBuildProfileName());
+    clientStream_.print(" port=");
+    clientStream_.println(static_cast<uint16_t>(TRACKER_REMOTE_CONSOLE_PORT));
+    clientStream_.println("# Type: help");
 }
 #endif
 

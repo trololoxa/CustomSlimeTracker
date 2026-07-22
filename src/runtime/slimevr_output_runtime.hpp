@@ -93,6 +93,10 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t accelerationSendFailures = 0;
     uint32_t rotationSendDue = 0;
     uint32_t rotationRateLimited = 0;
+    uint32_t rotationMissedDeadlines = 0;
+    uint32_t rotationLateEvents = 0;
+    uint32_t rotationLatenessSumMs = 0;
+    uint32_t rotationLatenessMaxMs = 0;
     uint32_t serviceUpdates = 0;
     uint32_t serviceSkips = 0;
     uint32_t signalStrengthSent = 0;
@@ -231,6 +235,9 @@ private:
     void maybeSendTrackerError(uint32_t nowMs);
     void maybeRecordRotationSuppressedByError(uint32_t nowMs);
     void maybeSendRotation(uint32_t nowMs);
+    bool consumeRotationDeadline(uint32_t nowMs);
+    void resetRotationDeadline();
+    void armRotationDeadline(uint32_t deadlineMs);
     void sendRotation(const TrackerPreparedOutputSnapshot& snapshot, uint32_t nowMs);
     void makeHandshakeInfo(SlimeVRHandshakeInfo& info) const;
     enum class PacketPurpose : uint8_t {
@@ -314,6 +321,10 @@ private:
     uint32_t accelerationSendFailures_ = 0;
     uint32_t rotationSendDue_ = 0;
     uint32_t rotationRateLimited_ = 0;
+    uint32_t rotationMissedDeadlines_ = 0;
+    uint32_t rotationLateEvents_ = 0;
+    uint32_t rotationLatenessSumMs_ = 0;
+    uint32_t rotationLatenessMaxMs_ = 0;
     uint32_t serviceUpdates_ = 0;
     uint32_t serviceSkips_ = 0;
     uint32_t signalStrengthSent_ = 0;
@@ -359,7 +370,8 @@ private:
     uint32_t lastStateChangeMs_ = 0;
     uint32_t lastHeartbeatMs_ = 0;
     uint32_t lastSensorInfoMs_ = 0;
-    uint32_t lastRotationAttemptMs_ = 0;
+    uint32_t nextRotationDeadlineMs_ = 0;
+    bool rotationDeadlineArmed_ = false;
     uint32_t lastRotationMs_ = 0;
     uint32_t lastTelemetryMs_ = 0; // legacy/status only after split intervals
     uint32_t lastServiceUpdateMs_ = 0;

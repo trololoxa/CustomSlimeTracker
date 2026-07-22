@@ -74,6 +74,11 @@ struct TrackerCommandRuntimeHooks {
     decltype(TrackerSerialCommandContext::printRemoteConsoleStatus) printRemoteConsoleStatus = nullptr;
     void* printRemoteConsoleStatusUser = nullptr;
 
+    decltype(TrackerSerialCommandContext::printConsoleOutputStatus) printConsoleOutputStatus = nullptr;
+    void* printConsoleOutputStatusUser = nullptr;
+    decltype(TrackerSerialCommandContext::resetConsoleOutputState) resetConsoleOutputState = nullptr;
+    void* resetConsoleOutputStateUser = nullptr;
+
     decltype(TrackerSerialCommandContext::emitLogHeader) emitLogHeader = nullptr;
     void* emitLogHeaderUser = nullptr;
 

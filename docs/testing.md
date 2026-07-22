@@ -27,6 +27,7 @@ Native tests are for pure or mostly-pure logic:
 - `network/udp_transport.hpp` host-safe endpoint helpers.
 - `output/slimevr_packet_writer.hpp` packet encoding/parsing helpers.
 - `runtime/slimevr_output_runtime.hpp` host-safe session/output state rules.
+- `serial/bounded_duplex_stream.hpp` bounded queue, byte-budget drain, stall and drop rules.
 
 Native tests are intentionally not a replacement for firmware tests. They do
 not verify SPI, GPIO interrupts, LSM6DSV FIFO timing, QMC6309 sensor-hub traffic,
@@ -165,6 +166,31 @@ mandatory response to every patch. Prefer one short test that crosses the exact
 hardware boundary changed by the patch. Do not ask for several ideal-condition
 captures when the same regression can be proven by native tests or a fake
 transport.
+
+## Real-time output resilience acceptance
+
+The host gate covers phase-locked rotation deadlines, jitter/late-loop catch-up,
+`millis()` wraparound, complete-record admission/drop behavior, oversized-line
+rejection, ring wrap, partial drains, drop-warning insertion, reset semantics,
+stalled sinks and empty-drain no-op behavior. Compile-only coverage includes the
+machine-log producer backpressure path.
+Only one hardware test is required for this patch:
+
+```text
+perf on
+motion on
+tap log on
+# generate several minutes of USB/telnet diagnostic output
+console status
+perf tracking
+```
+
+Acceptance requires `fifo_overrun_delta=0`, `fifo_full_delta=0`, no tracking
+recovery caused by output, and a stable effective rotation deadline rate.
+`serial_output_bytes_dropped`, `remote_console_output_bytes_dropped` or a non-zero
+`LOGSTAT,BACKPRESSURE` means diagnostic data was intentionally omitted. These
+must not coincide with FIFO loss or a reduced steady-state RotationData rate.
+Do not request additional static/motion captures solely for this patch.
 
 ## Running firmware diagnostics
 

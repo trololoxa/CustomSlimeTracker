@@ -182,6 +182,11 @@ void emitRuntimeBiasUpdateLog(const RuntimeGyroBiasUpdateDeps& deps,
                                      uint32_t flags) {
     if (!deps.logEnabled || deps.logSequence == nullptr || deps.logStream == nullptr) return;
     Stream& out = *deps.logStream;
+    constexpr int RUNTIME_BIAS_LOG_RESERVE_BYTES = 640;
+    if (out.availableForWrite() < RUNTIME_BIAS_LOG_RESERVE_BYTES) {
+        if (deps.logCounters != nullptr) ++deps.logCounters->backpressureDrop;
+        return;
+    }
     const uint32_t seq = (*deps.logSequence)++;
     out.print("BIASUPD,"); runtime_bias_detail::printU64Dec(out, tUs);
     out.print(','); out.print(seq);

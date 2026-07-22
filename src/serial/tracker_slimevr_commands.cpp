@@ -94,6 +94,10 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("rotation_suppressed_by_error="); out.println(s.rotationSuppressedByError);
     out.print("rotation_send_due="); out.println(s.rotationSendDue);
     out.print("rotation_rate_limited="); out.println(s.rotationRateLimited);
+    out.print("rotation_missed_deadlines="); out.println(s.rotationMissedDeadlines);
+    out.print("rotation_late_events="); out.println(s.rotationLateEvents);
+    out.print("rotation_lateness_sum_ms="); out.println(s.rotationLatenessSumMs);
+    out.print("rotation_lateness_max_ms="); out.println(s.rotationLatenessMaxMs);
     out.print("service_updates="); out.println(s.serviceUpdates);
     out.print("service_skips="); out.println(s.serviceSkips);
     out.print("rotation_rate_hz="); out.println(s.rotationRateHz);

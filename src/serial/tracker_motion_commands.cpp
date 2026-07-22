@@ -30,6 +30,8 @@ struct MotionSlimeBaseline {
     uint32_t rotationSent = 0;
     uint32_t rotationSendDue = 0;
     uint32_t rotationRateLimited = 0;
+    uint32_t rotationMissedDeadlines = 0;
+    uint32_t rotationLateEvents = 0;
     uint32_t rotationNoSnapshot = 0;
     uint32_t rotationDuplicateSnapshot = 0;
     uint32_t rotationSendFailures = 0;
@@ -54,6 +56,8 @@ void captureMotionSlimeBaseline(const SlimeVROutputRuntime* slime) {
     g_motionSlimeBaseline.rotationSent = s.rotationSent;
     g_motionSlimeBaseline.rotationSendDue = s.rotationSendDue;
     g_motionSlimeBaseline.rotationRateLimited = s.rotationRateLimited;
+    g_motionSlimeBaseline.rotationMissedDeadlines = s.rotationMissedDeadlines;
+    g_motionSlimeBaseline.rotationLateEvents = s.rotationLateEvents;
     g_motionSlimeBaseline.rotationNoSnapshot = s.rotationNoSnapshot;
     g_motionSlimeBaseline.rotationDuplicateSnapshot = s.rotationDuplicateSnapshot;
     g_motionSlimeBaseline.rotationSendFailures = s.rotationSendFailures;
@@ -156,6 +160,8 @@ void printSlimeMotion(Stream& out, const SlimeVROutputRuntime* slime, uint32_t w
     const uint32_t rotationSentDelta = hasBaseline ? deltaU32(s.rotationSent, g_motionSlimeBaseline.rotationSent) : s.rotationSent;
     const uint32_t rotationDueDelta = hasBaseline ? deltaU32(s.rotationSendDue, g_motionSlimeBaseline.rotationSendDue) : s.rotationSendDue;
     const uint32_t rotationRateLimitedDelta = hasBaseline ? deltaU32(s.rotationRateLimited, g_motionSlimeBaseline.rotationRateLimited) : s.rotationRateLimited;
+    const uint32_t rotationMissedDeadlineDelta = hasBaseline ? deltaU32(s.rotationMissedDeadlines, g_motionSlimeBaseline.rotationMissedDeadlines) : s.rotationMissedDeadlines;
+    const uint32_t rotationLateEventDelta = hasBaseline ? deltaU32(s.rotationLateEvents, g_motionSlimeBaseline.rotationLateEvents) : s.rotationLateEvents;
     const uint32_t rotationNoSnapshotDelta = hasBaseline ? deltaU32(s.rotationNoSnapshot, g_motionSlimeBaseline.rotationNoSnapshot) : s.rotationNoSnapshot;
     const uint32_t rotationDuplicateDelta = hasBaseline ? deltaU32(s.rotationDuplicateSnapshot, g_motionSlimeBaseline.rotationDuplicateSnapshot) : s.rotationDuplicateSnapshot;
     const uint32_t rotationSendFailuresDelta = hasBaseline ? deltaU32(s.rotationSendFailures, g_motionSlimeBaseline.rotationSendFailures) : s.rotationSendFailures;
@@ -170,6 +176,10 @@ void printSlimeMotion(Stream& out, const SlimeVROutputRuntime* slime, uint32_t w
     out.print("slime_rotation_send_due_rate_hz="); out.println(ratePerSecond(rotationDueDelta, windowMs), 3);
     out.print("slime_rotation_rate_limited="); out.println(s.rotationRateLimited);
     out.print("slime_rotation_rate_limited_delta="); out.println(rotationRateLimitedDelta);
+    out.print("slime_rotation_missed_deadlines="); out.println(s.rotationMissedDeadlines);
+    out.print("slime_rotation_missed_deadlines_delta="); out.println(rotationMissedDeadlineDelta);
+    out.print("slime_rotation_late_events_delta="); out.println(rotationLateEventDelta);
+    out.print("slime_rotation_lateness_max_ms="); out.println(s.rotationLatenessMaxMs);
     out.print("slime_rotation_no_snapshot="); out.println(s.rotationNoSnapshot);
     out.print("slime_rotation_no_snapshot_delta="); out.println(rotationNoSnapshotDelta);
     out.print("slime_rotation_duplicate_snapshot="); out.println(s.rotationDuplicateSnapshot);
