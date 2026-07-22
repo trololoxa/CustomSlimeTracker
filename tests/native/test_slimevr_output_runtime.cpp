@@ -1,5 +1,7 @@
 #include "test_common.hpp"
 
+#include <Arduino.h>
+
 #include <cstring>
 #include <initializer_list>
 #include <vector>
@@ -158,6 +160,7 @@ int main() {
     snapshots.snapshot.sequence = 1;
     snapshots.snapshot.runtimeSample = 123;
     snapshots.snapshot.timestampUs = 456789;
+    snapshots.snapshot.publishedAtMcuUs = 1200000u;
     snapshots.snapshot.q = Quat::identity();
     snapshots.snapshot.linearAccelerationValid = true;
     snapshots.snapshot.linearAccelerationDeviceG = Vec3(0.25f, -0.5f, 1.75f);
@@ -229,6 +232,7 @@ int main() {
         CHECK(ctx, st.batterySent == 0);
     }
 
+    trackerTestSetMicros(1201500u);
     rt.update(1201);
     const SlimeVROutputRuntimeStatus st = rt.status();
     CHECK(ctx, st.sensorInfoSent == 1);
@@ -254,6 +258,7 @@ int main() {
     CHECK(ctx, st.lastRotationRuntimeSample == 123);
     CHECK(ctx, st.lastRotationTimestampUs == 456789ULL);
     CHECK(ctx, st.lastRotationQualityFlags == 0x1234u);
+    CHECK(ctx, st.lastRotationSnapshotAgeUs == 1500u);
     CHECK_NEAR(ctx, st.lastRotationConfidence, 0.99f, 1.0e-6f);
     CHECK(ctx, udp.sent.size() >= 3u);
     CHECK(ctx, udp.sent[1].endpoint.ipv4 == 0xC0A80001UL);
@@ -283,18 +288,30 @@ int main() {
 
     snapshots.snapshot.sequence = 2;
     snapshots.snapshot.runtimeSample = 124;
+    snapshots.snapshot.publishedAtMcuUs = 1210500u;
     snapshots.snapshot.linearAccelerationValid = false;
+    snapshots.snapshot.linearAccelerationInvalidFlags =
+        prepared_output_motion_flags::ACCEL_COMPONENT_MISSING |
+        prepared_output_motion_flags::PAIR_COHERENCY_DEGRADED;
     const size_t sentBeforeInvalidAcceleration = udp.sent.size();
     rt.update(1211);
     CHECK(ctx, rt.status().rotationSent == 2);
     CHECK(ctx, rt.status().accelerationSent == 1);
     CHECK(ctx, rt.status().accelerationSkippedInvalid == 1);
+    CHECK(ctx, rt.status().accelerationSkippedComponentMissing == 1);
+    CHECK(ctx, rt.status().accelerationSkippedPairDegraded == 1);
+    CHECK(ctx, rt.status().accelerationSkippedConfiguration == 0);
+    CHECK(ctx, rt.status().accelerationSkippedSaturated == 0);
+    CHECK(ctx, rt.status().accelerationSkippedNonFinite == 0);
+    CHECK(ctx, rt.status().accelerationSkippedOther == 0);
     CHECK(ctx, rt.status().lastRotationSnapshotSequence == 2);
     CHECK(ctx, udp.sent.size() == sentBeforeInvalidAcceleration + 1u);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData));
 
     snapshots.snapshot.sequence = 3;
+    snapshots.snapshot.publishedAtMcuUs = 1220500u;
     snapshots.snapshot.linearAccelerationValid = true;
+    snapshots.snapshot.linearAccelerationInvalidFlags = prepared_output_motion_flags::NONE;
     udp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Accel);
     const size_t sentBeforeAccelerationFailure = udp.sent.size();
     rt.update(1221);

@@ -50,6 +50,15 @@ struct MachineLogCounters {
     uint32_t backpressureDrop = 0;
 };
 
+namespace prepared_output_motion_flags {
+static constexpr uint8_t NONE = 0u;
+static constexpr uint8_t CONFIGURATION_NOT_READY = 1u << 0;
+static constexpr uint8_t ACCEL_COMPONENT_MISSING = 1u << 1;
+static constexpr uint8_t PAIR_COHERENCY_DEGRADED = 1u << 2;
+static constexpr uint8_t ACCEL_SATURATED = 1u << 3;
+static constexpr uint8_t NON_FINITE = 1u << 4;
+}
+
 // Latest timestamp-coherent motion snapshot for non-blocking output
 // transports. The tracking path owns writes; an output scheduler can copy
 // orientation and acceleration from one accepted IMU sample without touching
@@ -57,10 +66,14 @@ struct MachineLogCounters {
 struct TrackerPreparedOutputSnapshot {
     bool valid = false;
     bool linearAccelerationValid = false;
+    uint8_t linearAccelerationInvalidFlags = prepared_output_motion_flags::NONE;
     uint32_t sequence = 0;
     uint32_t runtimeSample = 0;
     uint32_t ahrsUpdateCount = 0;
     uint64_t timestampUs = 0;
+    // MCU-clock publication time. Unlike timestampUs, this shares the same
+    // micros() epoch as the network scheduler and is safe for age metrics.
+    uint32_t publishedAtMcuUs = 0;
     Quat q = Quat::identity();
     // Gravity-removed acceleration in the same device frame as q, in g.
     Vec3 linearAccelerationDeviceG = Vec3::zero();

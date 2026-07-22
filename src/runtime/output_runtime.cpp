@@ -63,16 +63,22 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
         return;
     }
 
+    // Read the MCU clock only for an actual publication (roughly the output
+    // snapshot rate), not for every 960 Hz IMU sample.
+    const uint32_t publishedAtMcuUs = micros();
+
     uint32_t startSeq = seqLock_ + 1u;
     if ((startSeq & 1u) == 0u) startSeq++;
     seqLock_ = startSeq;
 
     snapshot_.valid = orientationCoherent;
     snapshot_.linearAccelerationValid = false;
+    snapshot_.linearAccelerationInvalidFlags = prepared_output_motion_flags::NONE;
     snapshot_.sequence++;
     snapshot_.runtimeSample = runtimeSamples;
     snapshot_.ahrsUpdateCount = ast.updateCount;
     snapshot_.timestampUs = timestampUs;
+    snapshot_.publishedAtMcuUs = publishedAtMcuUs;
     snapshot_.q = orientationCoherent ? ahrs.quaternionPositiveW() : Quat::identity();
     snapshot_.linearAccelerationDeviceG = Vec3::zero();
     snapshot_.qualityFlags = quality.flags;
@@ -80,16 +86,39 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
 
     const bool motionCalibrationReady =
         config.data.accelCal.valid && config.data.frame.sensorToDeviceValid;
-    if (orientationCoherent && motionCalibrationReady && accelDeviceG.isFinite() &&
-        !quality.has(imu_quality_flags::ACCEL_SATURATED)) {
+    uint8_t motionInvalidFlags = prepared_output_motion_flags::NONE;
+    if (!motionCalibrationReady) {
+        motionInvalidFlags |= prepared_output_motion_flags::CONFIGURATION_NOT_READY;
+    }
+    if (quality.has(imu_quality_flags::ACCEL_COMPONENT_MISSING)) {
+        motionInvalidFlags |= prepared_output_motion_flags::ACCEL_COMPONENT_MISSING;
+    }
+    if (quality.has(imu_quality_flags::FIFO_PAIR_DEGRADED)) {
+        motionInvalidFlags |= prepared_output_motion_flags::PAIR_COHERENCY_DEGRADED;
+    }
+    if (quality.has(imu_quality_flags::ACCEL_SATURATED)) {
+        motionInvalidFlags |= prepared_output_motion_flags::ACCEL_SATURATED;
+    }
+    if (!accelDeviceG.isFinite()) {
+        motionInvalidFlags |= prepared_output_motion_flags::NON_FINITE;
+    }
+
+    // ACCEL_NORM_OUTLIER intentionally does not invalidate motion output. It
+    // disables gravity correction in the AHRS because the sample contains
+    // dynamic acceleration, but that same dynamic component is the signal
+    // SlimeVR packet 4 and step mounting need.
+    if (orientationCoherent && quality.shouldUseAccelOutput && motionInvalidFlags == 0u) {
         const Vec3 worldUp = ahrs.config().worldUp;
         const Vec3 gravityDeviceG = snapshot_.q.inverseRotate(worldUp);
         const Vec3 linearDeviceG = accelDeviceG - gravityDeviceG;
         if (gravityDeviceG.isFinite() && linearDeviceG.isFinite()) {
             snapshot_.linearAccelerationDeviceG = linearDeviceG;
             snapshot_.linearAccelerationValid = true;
+        } else {
+            motionInvalidFlags |= prepared_output_motion_flags::NON_FINITE;
         }
     }
+    snapshot_.linearAccelerationInvalidFlags = motionInvalidFlags;
 
     lastPublishedTimestampUs_ = orientationCoherent ? timestampUs : 0u;
     seqLock_ = startSeq + 1u;

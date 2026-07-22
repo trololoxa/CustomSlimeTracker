@@ -160,12 +160,11 @@ clock from the late call and never emits a burst of stale catch-up packets.
 `slime_rotation_missed_deadlines_delta` therefore measures scheduler service
 misses rather than UDP send failures.
 
-`slime_rotation_sample_lag_end` is the trustworthy end-of-test freshness metric:
-it compares the last sent RotationData sample with the current runtime sample
-count. `slime_rotation_snapshot_age_us_end` is kept for compatibility, but the
-IMU FIFO timestamp does not necessarily share the same epoch as `millis()`, so a
-large value there should not be interpreted as a real multi-second quaternion
-latency unless the sample lag also confirms it.
+`slime_rotation_sample_lag_end` compares the last sent RotationData sample
+with the current runtime sample count. `slime_rotation_snapshot_age_us_end` now
+measures publish-to-send age entirely in the ESP32 `micros()` clock domain. The
+hardware FIFO timestamp remains available separately as the sample identity but
+is never subtracted from MCU time, because the two clocks have unrelated epochs.
 
 ## Current output policy
 

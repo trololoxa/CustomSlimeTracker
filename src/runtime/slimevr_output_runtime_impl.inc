@@ -1,5 +1,7 @@
 #include "runtime/slimevr_output_runtime.hpp"
 
+#include <Arduino.h>
+
 #include "build_config/build_identity.hpp"
 
 #include <cstring>
@@ -218,6 +220,12 @@ void SlimeVROutputRuntime::resetCounters() {
     rotationSent_ = 0;
     accelerationSent_ = 0;
     accelerationSkippedInvalid_ = 0;
+    accelerationSkippedConfiguration_ = 0;
+    accelerationSkippedComponentMissing_ = 0;
+    accelerationSkippedPairDegraded_ = 0;
+    accelerationSkippedSaturated_ = 0;
+    accelerationSkippedNonFinite_ = 0;
+    accelerationSkippedOther_ = 0;
     accelerationSendFailures_ = 0;
     rotationSendDue_ = 0;
     rotationRateLimited_ = 0;
@@ -399,6 +407,12 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.rotationSent = rotationSent_;
     s.accelerationSent = accelerationSent_;
     s.accelerationSkippedInvalid = accelerationSkippedInvalid_;
+    s.accelerationSkippedConfiguration = accelerationSkippedConfiguration_;
+    s.accelerationSkippedComponentMissing = accelerationSkippedComponentMissing_;
+    s.accelerationSkippedPairDegraded = accelerationSkippedPairDegraded_;
+    s.accelerationSkippedSaturated = accelerationSkippedSaturated_;
+    s.accelerationSkippedNonFinite = accelerationSkippedNonFinite_;
+    s.accelerationSkippedOther = accelerationSkippedOther_;
     s.accelerationSendFailures = accelerationSendFailures_;
     s.rotationSendDue = rotationSendDue_;
     s.rotationRateLimited = rotationRateLimited_;
@@ -1048,15 +1062,35 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         lastRotationTimestampUs_ = snapshot.timestampUs;
         lastRotationQualityFlags_ = snapshot.qualityFlags;
         lastRotationConfidence_ = snapshot.confidence;
-        const uint64_t nowUs = static_cast<uint64_t>(nowMs) * 1000ULL;
-        const uint64_t ageUs = nowUs >= snapshot.timestampUs ? (nowUs - snapshot.timestampUs) : 0ULL;
-        lastRotationSnapshotAgeUs_ = ageUs > 0xffffffffULL ? 0xffffffffUL : static_cast<uint32_t>(ageUs);
+        // timestampUs is reconstructed in the LSM6DSV hardware epoch and
+        // cannot be subtracted from millis()/micros(). publishedAtMcuUs is
+        // captured in the MCU clock domain specifically for this age metric.
+        lastRotationSnapshotAgeUs_ = micros() - snapshot.publishedAtMcuUs;
 
         // Packet 4 is coupled to the exact snapshot whose packet 17 was just
         // accepted by the transport. Never send acceleration on its own or
         // from a different timestamp/frame.
         if (!snapshot.linearAccelerationValid) {
             ++accelerationSkippedInvalid_;
+            const uint8_t reasons = snapshot.linearAccelerationInvalidFlags;
+            if ((reasons & prepared_output_motion_flags::CONFIGURATION_NOT_READY) != 0u) {
+                ++accelerationSkippedConfiguration_;
+            }
+            if ((reasons & prepared_output_motion_flags::ACCEL_COMPONENT_MISSING) != 0u) {
+                ++accelerationSkippedComponentMissing_;
+            }
+            if ((reasons & prepared_output_motion_flags::PAIR_COHERENCY_DEGRADED) != 0u) {
+                ++accelerationSkippedPairDegraded_;
+            }
+            if ((reasons & prepared_output_motion_flags::ACCEL_SATURATED) != 0u) {
+                ++accelerationSkippedSaturated_;
+            }
+            if ((reasons & prepared_output_motion_flags::NON_FINITE) != 0u) {
+                ++accelerationSkippedNonFinite_;
+            }
+            if (reasons == prepared_output_motion_flags::NONE) {
+                ++accelerationSkippedOther_;
+            }
             return;
         }
         const SlimeVRPacketWriteResult accelerationPacket = writer_.writeAcceleration(

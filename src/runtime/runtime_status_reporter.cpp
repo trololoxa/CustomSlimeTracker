@@ -118,12 +118,13 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
     out.print("prepared_output_quality_flags=0x"); out.println(ps.qualityFlags, HEX);
     out.print("prepared_output_confidence="); out.println(ps.confidence, 6);
     out.print("prepared_linear_accel_valid="); out.println(preparedValid && ps.linearAccelerationValid ? "yes" : "no");
+    out.print("prepared_linear_accel_invalid_flags=0x"); out.println(ps.linearAccelerationInvalidFlags, HEX);
     out.print("prepared_linear_accel_norm_g=");
     out.println(preparedValid && ps.linearAccelerationValid ? ps.linearAccelerationDeviceG.norm() : 0.0f, 6);
-    if (preparedValid && ps.timestampUs > 0) {
-        const uint64_t nowUs = static_cast<uint64_t>(micros());
-        const uint64_t ageUs = nowUs >= ps.timestampUs ? (nowUs - ps.timestampUs) : 0;
-        out.print("prepared_output_age_ms="); out.println(static_cast<uint32_t>(ageUs / 1000ULL));
+    if (preparedValid) {
+        const uint32_t ageUs = micros() - ps.publishedAtMcuUs;
+        out.print("prepared_output_publish_age_us="); out.println(ageUs);
+        out.print("prepared_output_age_ms="); out.println(ageUs / 1000u);
     }
     serviceNonCliRuntime(deps);
 
@@ -148,6 +149,13 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
     out.print("imu_samples_produced="); out.println(fs.imuSamplesProduced);
     out.print("gyro_words="); out.println(fs.gyroWords);
     out.print("accel_words="); out.println(fs.accelWords);
+    out.print("complete_pairs_produced="); out.println(fs.completePairsProduced);
+    out.print("gyro_only_samples_produced="); out.println(fs.gyroOnlySamplesProduced);
+    out.print("gyro_pending_replaced="); out.println(fs.gyroPendingReplaced);
+    out.print("accel_pending_replaced="); out.println(fs.accelPendingReplaced);
+    out.print("pair_counter_mismatches="); out.println(fs.pairCounterMismatches);
+    out.print("pair_counter_offset_locks="); out.println(fs.pairCounterOffsetLocks);
+    out.print("pair_counter_offset_relocks="); out.println(fs.pairCounterOffsetRelocks);
     out.print("timestamp_words="); out.println(fs.timestampWords);
     out.print("temperature_words="); out.println(fs.tempWords);
     out.print("sensorhub0_words="); out.println(fs.sensorHubSlave0Words);

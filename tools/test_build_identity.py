@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from build_identity import collect_build_identity, render_generated_header, write_if_changed
+from build_identity import FIRMWARE_FEATURE_VERSION, collect_build_identity, render_generated_header, write_if_changed
 
 
 @unittest.skipUnless(shutil.which("git"), "git executable is required")
@@ -65,6 +65,7 @@ class BuildIdentityTests(unittest.TestCase):
         self.assertFalse(write_if_changed(path, content))
         self.assertIn(identity.head, path.read_text(encoding="utf-8"))
         self.assertIn("TEST_ENV", path.read_text(encoding="utf-8"))
+        self.assertIn(FIRMWARE_FEATURE_VERSION, path.read_text(encoding="utf-8"))
 
     def test_platformio_hook_generates_header_and_include_path(self) -> None:
         script = Path(__file__).with_name("generate_build_identity.py")

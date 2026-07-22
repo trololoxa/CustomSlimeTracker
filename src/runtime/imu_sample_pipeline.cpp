@@ -108,6 +108,7 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
         deps.motionDiagnostics->recordSample(raw, calibrated, quality, millis());
     }
 #endif
+    const bool hasCoherentAccel = quality.shouldUseAccelCorrection && quality.accelNormValid;
 #if TRACKER_HAS_STATIC_TEST || TRACKER_HAS_CALIBRATION_UI
     // Temperature models are stored in native sensor frame. Keep calibration
     // captures in that frame even when normal AHRS/output operates in device
@@ -116,16 +117,18 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
         imuPipelineMakeSensorFrameCalibratedSample(deps, scaled);
 #endif
 #if TRACKER_HAS_STATIC_TEST
-    if (deps.staticTestRunner != nullptr) {
+    if (deps.staticTestRunner != nullptr && hasCoherentAccel) {
         deps.staticTestRunner->updateSample(sensorFrameCalibrated, quality, deps.out);
     }
 #endif
 #if TRACKER_HAS_CALIBRATION_UI
-    if (deps.gyroTempCapture != nullptr) {
+    if (deps.gyroTempCapture != nullptr && hasCoherentAccel) {
         deps.gyroTempCapture->updateSample(sensorFrameCalibrated, quality, millis());
     }
 #endif
-    imuPipelineUpdateRuntimeGyroBiasEstimator(deps, scaled, calibrated, quality, raw.t_us);
+    if (hasCoherentAccel) {
+        imuPipelineUpdateRuntimeGyroBiasEstimator(deps, scaled, calibrated, quality, raw.t_us);
+    }
 }
 
 FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
@@ -140,6 +143,14 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
     Lsm6dsv::Sample scaled = deps.lsm.scale(raw);
     scaled.temp_c = deps.latestTempC;
     Lsm6dsv::Sample calibrated = imuPipelineMakeCalibratedSample(deps, scaled);
+    if ((raw.components & Lsm6dsv::SAMPLE_COMPONENT_ACCEL) == 0u) {
+        // A gyro-only continuity sample must not expose an accel value
+        // synthesized by applying bias/matrix calibration to zero raw
+        // counts. Quality/recovery already reject the missing component;
+        // zeroing it here also keeps diagnostics and future consumers safe.
+        scaled.accel_g = Vec3::zero();
+        calibrated.accel_g = Vec3::zero();
+    }
 
     if (deps.lastScaledSample != nullptr) {
         *deps.lastScaledSample = scaled;

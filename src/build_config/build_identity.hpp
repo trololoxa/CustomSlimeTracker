@@ -1,5 +1,7 @@
 #pragma once
 
+#include "build_config/firmware_feature_version.hpp"
+
 // PlatformIO adds a generated include directory before compiling project
 // sources. Native tests and non-PlatformIO tooling intentionally use the
 // fallback values below.
@@ -12,7 +14,7 @@
 #define TRACKER_BUILD_GIT_DIRTY 0
 #define TRACKER_BUILD_IDENTITY_STRING "unknown"
 #define TRACKER_BUILD_PIO_ENVIRONMENT "native-or-unknown"
-#define TRACKER_BUILD_FIRMWARE_VERSION "c3-6dsv-unknown"
+#define TRACKER_BUILD_FIRMWARE_VERSION TRACKER_FIRMWARE_FEATURE_VERSION
 #endif
 
 namespace tracker {

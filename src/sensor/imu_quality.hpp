@@ -16,7 +16,7 @@ namespace tracker {
 //   - Detect timestamp gaps / non-monotonic timestamps.
 //   - Track FIFO overrun/full/unknown/tag-counter/timestamp faults.
 //   - Track hard and near saturation for accel/gyro.
-//   - Provide AHRS decisions: update/skip and accel-correction allow/deny.
+//   - Provide separate AHRS accel-correction and motion-output decisions.
 //   - Request FIFO recovery after serious stream faults.
 // Unknown FIFO tags are diagnosed but are not recovery-triggering by
 // default, because valid-but-disabled batched sources such as sensor-hub
@@ -59,6 +59,9 @@ static constexpr uint32_t SAMPLE_DROPPED_BEFORE      = 1u << 21;
 static constexpr uint32_t SAMPLE_NOT_AHRS_USABLE     = 1u << 22;
 static constexpr uint32_t ACCEL_NOT_AHRS_USABLE      = 1u << 23;
 static constexpr uint32_t TEMP_COMP_OUT_OF_RANGE     = 1u << 24;
+static constexpr uint32_t ACCEL_COMPONENT_MISSING      = 1u << 25;
+static constexpr uint32_t GYRO_COMPONENT_MISSING       = 1u << 26;
+static constexpr uint32_t FIFO_PAIR_DEGRADED           = 1u << 27;
 }
 
 struct ImuQualityConfig {
@@ -112,7 +115,10 @@ struct ImuQualityResult {
     bool accelNormValid = false;
 
     bool shouldUpdateAhrs = true;
+    // Dynamic acceleration may be unsuitable as a gravity observation while
+    // still being exactly the motion signal packet 4 must carry.
     bool shouldUseAccelCorrection = true;
+    bool shouldUseAccelOutput = true;
     bool shouldRequestFifoRecovery = false;
 
     bool has(uint32_t f) const;
@@ -146,6 +152,9 @@ struct ImuQualityCounters {
     uint32_t gyroNearSaturatedSamples = 0;
     uint32_t accelNearSaturatedSamples = 0;
     uint32_t accelNormOutliers = 0;
+    uint32_t accelComponentMissingSamples = 0;
+    uint32_t gyroComponentMissingSamples = 0;
+    uint32_t pairCoherencyDegradedSamples = 0;
 
     uint32_t ahrsSkippedSamples = 0;
     uint32_t accelCorrectionDisabledSamples = 0;

@@ -128,6 +128,18 @@ void ImuQualityMonitor::evaluateRawFlags(const Lsm6dsv::RawSample& raw, ImuQuali
     if ((raw.flags & Lsm6dsvFifoReader::FIFO_FLAG_ORPHAN_WORDS) != 0) {
         q.flags |= imu_quality_flags::FIFO_ORPHAN_WORDS;
     }
+    if ((raw.components & Lsm6dsv::SAMPLE_COMPONENT_GYRO) == 0u) {
+        q.flags |= imu_quality_flags::GYRO_COMPONENT_MISSING;
+        q.gyroConfidence = 0.0f;
+    }
+    if ((raw.components & Lsm6dsv::SAMPLE_COMPONENT_ACCEL) == 0u) {
+        q.flags |= imu_quality_flags::ACCEL_COMPONENT_MISSING;
+        q.accelConfidence = 0.0f;
+    }
+    if (raw.coherency == Lsm6dsv::SampleCoherency::PairCounterMismatch) {
+        q.flags |= imu_quality_flags::FIFO_PAIR_DEGRADED;
+        q.accelConfidence = 0.0f;
+    }
 }
 
 void ImuQualityMonitor::evaluateTimestamp(const Lsm6dsv::RawSample& raw,
@@ -227,31 +239,40 @@ void ImuQualityMonitor::evaluateFifoStatsDelta(const Lsm6dsvFifoReader::DrainSta
 }
 
 void ImuQualityMonitor::evaluateSaturation(const Lsm6dsv::RawSample& raw, ImuQualityResult& q) {
-    if ((raw.flags & Lsm6dsv::FLAG_GYRO_SATURATED) != 0) {
+    const bool hasGyro = (raw.components & Lsm6dsv::SAMPLE_COMPONENT_GYRO) != 0u;
+    const bool hasAccel = (raw.components & Lsm6dsv::SAMPLE_COMPONENT_ACCEL) != 0u;
+
+    if (hasGyro && (raw.flags & Lsm6dsv::FLAG_GYRO_SATURATED) != 0) {
         q.flags |= imu_quality_flags::GYRO_SATURATED;
         q.gyroConfidence = 0.0f;
     }
-    if ((raw.flags & Lsm6dsv::FLAG_ACCEL_SATURATED) != 0) {
+    if (hasAccel && (raw.flags & Lsm6dsv::FLAG_ACCEL_SATURATED) != 0) {
         q.flags |= imu_quality_flags::ACCEL_SATURATED;
         q.accelConfidence = 0.0f;
     }
 
-    if (nearAbs(raw.gx, cfg_.gyroNearSaturationAbsRaw) ||
+    if (hasGyro && (nearAbs(raw.gx, cfg_.gyroNearSaturationAbsRaw) ||
         nearAbs(raw.gy, cfg_.gyroNearSaturationAbsRaw) ||
-        nearAbs(raw.gz, cfg_.gyroNearSaturationAbsRaw)) {
+        nearAbs(raw.gz, cfg_.gyroNearSaturationAbsRaw))) {
         q.flags |= imu_quality_flags::GYRO_NEAR_SATURATION;
         q.gyroConfidence *= 0.5f;
     }
 
-    if (nearAbs(raw.ax, cfg_.accelNearSaturationAbsRaw) ||
+    if (hasAccel && (nearAbs(raw.ax, cfg_.accelNearSaturationAbsRaw) ||
         nearAbs(raw.ay, cfg_.accelNearSaturationAbsRaw) ||
-        nearAbs(raw.az, cfg_.accelNearSaturationAbsRaw)) {
+        nearAbs(raw.az, cfg_.accelNearSaturationAbsRaw))) {
         q.flags |= imu_quality_flags::ACCEL_NEAR_SATURATION;
         q.accelConfidence *= 0.5f;
     }
 }
 
 void ImuQualityMonitor::evaluateAccelNorm(const Lsm6dsv::Sample& calibrated, ImuQualityResult& q) {
+    if (q.has(imu_quality_flags::ACCEL_COMPONENT_MISSING) ||
+        q.has(imu_quality_flags::FIFO_PAIR_DEGRADED)) {
+        q.accelNormG = 0.0f;
+        q.accelNormValid = false;
+        return;
+    }
     const float n = calibrated.accel_g.norm();
     q.accelNormG = n;
     q.accelNormValid = std::isfinite(n);
@@ -285,7 +306,7 @@ void ImuQualityMonitor::finalizeDecision(ImuQualityResult& q) {
         requestRecovery(q, imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW);
     }
 
-    q.shouldUpdateAhrs = true;
+    q.shouldUpdateAhrs = !q.has(imu_quality_flags::GYRO_COMPONENT_MISSING);
     if (cfg_.skipAhrsOnBadTimestamp && q.timestampConfidence <= 0.0f) {
         q.shouldUpdateAhrs = false;
     }
@@ -293,7 +314,11 @@ void ImuQualityMonitor::finalizeDecision(ImuQualityResult& q) {
         q.shouldUpdateAhrs = false;
     }
 
-    q.shouldUseAccelCorrection = true;
+    q.shouldUseAccelOutput = !q.has(imu_quality_flags::ACCEL_COMPONENT_MISSING) &&
+                             !q.has(imu_quality_flags::FIFO_PAIR_DEGRADED) &&
+                             !q.has(imu_quality_flags::ACCEL_SATURATED);
+
+    q.shouldUseAccelCorrection = q.shouldUseAccelOutput;
     if (cfg_.disableAccelCorrectionOnAccelSaturation && q.has(imu_quality_flags::ACCEL_SATURATED)) {
         q.shouldUseAccelCorrection = false;
     }
@@ -327,6 +352,9 @@ void ImuQualityMonitor::updateCounters(const ImuQualityResult& q) {
     if (q.has(imu_quality_flags::GYRO_NEAR_SATURATION)) counters_.gyroNearSaturatedSamples++;
     if (q.has(imu_quality_flags::ACCEL_NEAR_SATURATION)) counters_.accelNearSaturatedSamples++;
     if (q.has(imu_quality_flags::ACCEL_NORM_OUTLIER)) counters_.accelNormOutliers++;
+    if (q.has(imu_quality_flags::ACCEL_COMPONENT_MISSING)) counters_.accelComponentMissingSamples++;
+    if (q.has(imu_quality_flags::GYRO_COMPONENT_MISSING)) counters_.gyroComponentMissingSamples++;
+    if (q.has(imu_quality_flags::FIFO_PAIR_DEGRADED)) counters_.pairCoherencyDegradedSamples++;
 
     if (!q.shouldUpdateAhrs) counters_.ahrsSkippedSamples++;
     if (!q.shouldUseAccelCorrection) counters_.accelCorrectionDisabledSamples++;

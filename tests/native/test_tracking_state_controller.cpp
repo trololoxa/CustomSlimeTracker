@@ -372,6 +372,37 @@ static void testRecoveryToleratesIsolatedQualityRejects(TestContext& ctx) {
     CHECK(ctx, probe.calls == 1);
 }
 
+static void testRecoveryToleratesIsolatedMissingAccel(TestContext& ctx) {
+    TrackingStateController c;
+    c.setStableSamplesRequired(3);
+
+    ReacquireProbe probe;
+    TrackingStateEventSink sink;
+    sink.reacquireTilt = reacquireProbeCallback;
+    sink.reacquireTiltUser = &probe;
+    c.enterRecovery(imu_quality_flags::FIFO_RECOVERY_REQUESTED, "gap", 1000, sink);
+
+    const ImuQualityResult stable = stableRecoveryQuality();
+    c.updateRecovery(stable, Vec3::zero(), Vec3::unitZ(), 2000, true, sink);
+    CHECK(ctx, c.recoveryStableSamples() == 1);
+
+    ImuQualityResult gyroOnly = stable;
+    gyroOnly.flags = imu_quality_flags::ACCEL_COMPONENT_MISSING |
+                     imu_quality_flags::ACCEL_NOT_AHRS_USABLE;
+    gyroOnly.shouldUseAccelCorrection = false;
+    gyroOnly.accelNormValid = false;
+    gyroOnly.accelConfidence = 0.0f;
+    c.updateRecovery(gyroOnly, Vec3::zero(), Vec3::zero(), 3000, true, sink);
+    CHECK(ctx, c.recoveryStableSamples() == 1);
+    CHECK(ctx, c.recoveryRejectStreak() == 1);
+    CHECK(ctx, c.recoveryActive());
+
+    c.updateRecovery(stable, Vec3::zero(), Vec3::unitZ(), 4000, true, sink);
+    c.updateRecovery(stable, Vec3::zero(), Vec3::unitZ(), 5000, true, sink);
+    CHECK(ctx, !c.recoveryActive());
+    CHECK(ctx, probe.calls == 1);
+}
+
 static void testRecoveryRejectStreakEventuallyRestartsWindow(TestContext& ctx) {
     TrackingStateController c;
     c.setStableSamplesRequired(3);
@@ -491,6 +522,7 @@ int main() {
     testRecoveryDoesNotExitWithoutReacquireConsumer(ctx);
     testRecoveryRejectsIncoherentGravityWindow(ctx);
     testRecoveryToleratesIsolatedQualityRejects(ctx);
+    testRecoveryToleratesIsolatedMissingAccel(ctx);
     testRecoveryRejectStreakEventuallyRestartsWindow(ctx);
     testStrictRecoveryCanBootstrapUninitializedAhrs(ctx);
     testRecoveryKeepsPostGapGyroAndRestoresTilt(ctx);

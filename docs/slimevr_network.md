@@ -88,12 +88,13 @@ protocol_version=19
 board_type=10       LOLIN_C3_MINI
 imu_type=13         LSM6DSV
 mcu_type=6          ESP32_C3
-firmware_version    c3-6dsv-<git identity>
+firmware_version    c3-6dsv-fifo-coherency
 ```
 
-The handshake firmware string is generated automatically. Clean builds use the
-short Git HEAD; uncommitted test builds use `HEAD+worktree-dirty`, matching the
-identity printed by `version`, `status` and test reports.
+The feature version names the currently completed firmware capability and is
+also used in the SlimeVR handshake. Git identity is reported separately by
+`version`, `status`, test reports and machine-log metadata. Clean builds use
+the short Git HEAD; uncommitted test builds use `HEAD+worktree-dirty`.
 
 Outgoing packets currently used:
 
@@ -144,7 +145,10 @@ it does not yet implement the complete modern tracker/server contract:
 
 - acceleration packet 4 is emitted immediately after a successful packet 17
   from the same snapshot. It carries gravity-removed device-frame acceleration
-  in SI `m/s^2`; invalid acceleration suppresses packet 4 without suppressing rotation;
+  in SI `m/s^2`; invalid acceleration suppresses packet 4 without suppressing
+  rotation. Dynamic accel-norm outliers disable AHRS gravity correction but do
+  not invalidate motion output. Separate counters identify configuration/frame,
+  missing-component, pair-degraded, saturation, non-finite, and fallback skips;
 - the short SensorInfo acknowledgement packet 15 is not tracked as a confirmed
   state, and SensorInfo is refreshed periodically or on local changes;
 - firmware FeatureFlags packet 22 is not sent, so optional packet bundling is

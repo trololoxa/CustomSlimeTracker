@@ -117,6 +117,13 @@ void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
     out.print("rotation_no_snapshot_delta="); out.println(deltaU32(slime.rotationNoSnapshot, g_trackingPerfBaseline.slime.rotationNoSnapshot));
     out.print("rotation_send_failures_delta="); out.println(deltaU32(slime.rotationSendFailures, g_trackingPerfBaseline.slime.rotationSendFailures));
     out.print("acceleration_sent_delta="); out.println(deltaU32(slime.accelerationSent, g_trackingPerfBaseline.slime.accelerationSent));
+    out.print("acceleration_skipped_invalid_delta="); out.println(deltaU32(slime.accelerationSkippedInvalid, g_trackingPerfBaseline.slime.accelerationSkippedInvalid));
+    out.print("acceleration_skipped_configuration_delta="); out.println(deltaU32(slime.accelerationSkippedConfiguration, g_trackingPerfBaseline.slime.accelerationSkippedConfiguration));
+    out.print("acceleration_skipped_component_missing_delta="); out.println(deltaU32(slime.accelerationSkippedComponentMissing, g_trackingPerfBaseline.slime.accelerationSkippedComponentMissing));
+    out.print("acceleration_skipped_pair_degraded_delta="); out.println(deltaU32(slime.accelerationSkippedPairDegraded, g_trackingPerfBaseline.slime.accelerationSkippedPairDegraded));
+    out.print("acceleration_skipped_saturated_delta="); out.println(deltaU32(slime.accelerationSkippedSaturated, g_trackingPerfBaseline.slime.accelerationSkippedSaturated));
+    out.print("acceleration_skipped_nonfinite_delta="); out.println(deltaU32(slime.accelerationSkippedNonFinite, g_trackingPerfBaseline.slime.accelerationSkippedNonFinite));
+    out.print("acceleration_skipped_other_delta="); out.println(deltaU32(slime.accelerationSkippedOther, g_trackingPerfBaseline.slime.accelerationSkippedOther));
     out.print("acceleration_send_failures_delta="); out.println(deltaU32(slime.accelerationSendFailures, g_trackingPerfBaseline.slime.accelerationSendFailures));
     out.print("udp_send_failures_delta="); out.println(deltaU32(slime.sendFailures, g_trackingPerfBaseline.slime.sendFailures));
 }
@@ -141,6 +148,14 @@ void printSlimeQuick(Stream& out, const SlimeVROutputRuntime* slime) {
     out.print("slime_rotation_no_snapshot="); out.println(s.rotationNoSnapshot);
     out.print("slime_rotation_duplicate_snapshot="); out.println(s.rotationDuplicateSnapshot);
     out.print("slime_rotation_send_failures="); out.println(s.rotationSendFailures);
+    out.print("slime_acceleration_sent="); out.println(s.accelerationSent);
+    out.print("slime_acceleration_skipped_invalid="); out.println(s.accelerationSkippedInvalid);
+    out.print("slime_acceleration_skipped_configuration="); out.println(s.accelerationSkippedConfiguration);
+    out.print("slime_acceleration_skipped_component_missing="); out.println(s.accelerationSkippedComponentMissing);
+    out.print("slime_acceleration_skipped_pair_degraded="); out.println(s.accelerationSkippedPairDegraded);
+    out.print("slime_acceleration_skipped_saturated="); out.println(s.accelerationSkippedSaturated);
+    out.print("slime_acceleration_skipped_nonfinite="); out.println(s.accelerationSkippedNonFinite);
+    out.print("slime_acceleration_skipped_other="); out.println(s.accelerationSkippedOther);
     out.print("slime_send_failures="); out.println(s.sendFailures);
     out.print("slime_service_updates="); out.println(s.serviceUpdates);
     out.print("slime_service_skips="); out.println(s.serviceSkips);

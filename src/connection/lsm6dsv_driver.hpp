@@ -242,6 +242,19 @@ public:
         bool timestampEndcount = false;
     };
 
+    enum SampleComponent : uint8_t {
+        SAMPLE_COMPONENT_NONE  = 0u,
+        SAMPLE_COMPONENT_GYRO  = 1u << 0,
+        SAMPLE_COMPONENT_ACCEL = 1u << 1,
+        SAMPLE_COMPONENT_COMPLETE = SAMPLE_COMPONENT_GYRO | SAMPLE_COMPONENT_ACCEL,
+    };
+
+    enum class SampleCoherency : uint8_t {
+        Coherent = 0,
+        GyroOnly = 1,
+        PairCounterMismatch = 2,
+    };
+
     struct RawSample {
         uint64_t t_us = 0;
 
@@ -256,6 +269,8 @@ public:
         int16_t temp = 0;
 
         uint8_t statusRaw = 0;
+        uint8_t components = SAMPLE_COMPONENT_COMPLETE;
+        SampleCoherency coherency = SampleCoherency::Coherent;
         uint16_t flags = FLAG_NONE;
     };
 

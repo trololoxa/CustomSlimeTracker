@@ -72,6 +72,8 @@ void RuntimeMotionDiagnostics::recordSample(const Lsm6dsv::RawSample& raw,
     if (quality.has(imu_quality_flags::ACCEL_SATURATED)) ++stats_.accelSaturatedSamples;
     if (quality.has(imu_quality_flags::ACCEL_NEAR_SATURATION)) ++stats_.accelNearSaturatedSamples;
     if (quality.has(imu_quality_flags::ACCEL_NORM_OUTLIER)) ++stats_.accelNormOutliers;
+    if (quality.has(imu_quality_flags::ACCEL_COMPONENT_MISSING)) ++stats_.accelComponentMissingSamples;
+    if (quality.has(imu_quality_flags::FIFO_PAIR_DEGRADED)) ++stats_.pairCoherencyDegradedSamples;
 
     if (quality.dtUs > 0u) {
         stats_.dtSumUs += static_cast<double>(quality.dtUs);
@@ -83,10 +85,14 @@ void RuntimeMotionDiagnostics::recordSample(const Lsm6dsv::RawSample& raw,
     stats_.gyroNormSumDps += static_cast<double>(gyroNormDps);
     if (gyroNormDps > stats_.gyroNormMaxDps || first) stats_.gyroNormMaxDps = gyroNormDps;
 
-    const float accelNormG = quality.accelNormValid ? quality.accelNormG : calibrated.accel_g.norm();
-    stats_.accelNormLastG = accelNormG;
-    stats_.accelNormSumG += static_cast<double>(accelNormG);
-    updateMinMaxF(accelNormG, stats_.accelNormMinG, stats_.accelNormMaxG, first);
+    if (quality.accelNormValid) {
+        const float accelNormG = quality.accelNormG;
+        const bool firstAccel = stats_.accelObservationSamples == 0u;
+        ++stats_.accelObservationSamples;
+        stats_.accelNormLastG = accelNormG;
+        stats_.accelNormSumG += static_cast<double>(accelNormG);
+        updateMinMaxF(accelNormG, stats_.accelNormMinG, stats_.accelNormMaxG, firstAccel);
+    }
 
     stats_.confidenceLast = quality.overallConfidence;
     stats_.confidenceSum += static_cast<double>(quality.overallConfidence);
@@ -115,7 +121,9 @@ float RuntimeMotionDiagnostics::avgGyroNormDps(const WindowStats& s) {
 }
 
 float RuntimeMotionDiagnostics::avgAccelNormG(const WindowStats& s) {
-    return s.samples == 0u ? 0.0f : static_cast<float>(s.accelNormSumG / static_cast<double>(s.samples));
+    return s.accelObservationSamples == 0u
+        ? 0.0f
+        : static_cast<float>(s.accelNormSumG / static_cast<double>(s.accelObservationSamples));
 }
 
 float RuntimeMotionDiagnostics::avgConfidence(const WindowStats& s) {
@@ -154,6 +162,9 @@ void RuntimeMotionDiagnostics::printStatus(Stream& out, uint32_t nowMs) const {
     out.print("motion_accel_saturated_samples="); out.println(stats_.accelSaturatedSamples);
     out.print("motion_accel_near_saturated_samples="); out.println(stats_.accelNearSaturatedSamples);
     out.print("motion_accel_norm_outliers="); out.println(stats_.accelNormOutliers);
+    out.print("motion_accel_component_missing_samples="); out.println(stats_.accelComponentMissingSamples);
+    out.print("motion_pair_coherency_degraded_samples="); out.println(stats_.pairCoherencyDegradedSamples);
+    out.print("motion_accel_observation_samples="); out.println(stats_.accelObservationSamples);
     out.print("motion_accel_correction_disabled_samples="); out.println(stats_.accelCorrectionDisabledSamples);
 
     out.print("motion_ahrs_usable_samples="); out.println(stats_.ahrsUsableSamples);

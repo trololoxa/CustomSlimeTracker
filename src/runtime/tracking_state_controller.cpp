@@ -303,6 +303,12 @@ void TrackingStateController::updateSoftRecovery(const ImuQualityResult& quality
         softRecoveryGoodSamples_ = 0;
         return;
     }
+    if (!quality.shouldUseAccelCorrection || !quality.accelNormValid) {
+        // Gyro-only continuity keeps heading alive but is not enough evidence
+        // to declare the post-reset stream fully coherent. Preserve the good
+        // streak across a short accel dropout instead of resetting it.
+        return;
+    }
 
     if (softRecoveryGoodSamples_ < SOFT_RECOVERY_GOOD_SAMPLES_REQUIRED) {
         ++softRecoveryGoodSamples_;
@@ -338,14 +344,16 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
     constexpr float kMaxRecoveryGyroRadS = 3.0f * MATH_DEG_TO_RAD;
     constexpr float kMaxRecoveryAccelErrorG = 0.08f;
 
-    const bool vectorsValid = gyroRadS.isFinite() && accelG.isFinite();
-    const float gyroNorm = vectorsValid ? gyroRadS.norm() : 0.0f;
-    const float accelNorm = quality.accelNormValid ? quality.accelNormG : accelG.norm();
-    const bool motionStable = vectorsValid &&
-                              std::isfinite(gyroNorm) &&
-                              gyroNorm <= kMaxRecoveryGyroRadS &&
-                              std::isfinite(accelNorm) &&
-                              std::fabs(accelNorm - 1.0f) <= kMaxRecoveryAccelErrorG;
+    const bool gyroValid = gyroRadS.isFinite();
+    const float gyroNorm = gyroValid ? gyroRadS.norm() : 0.0f;
+    const bool gyroStable = gyroValid && std::isfinite(gyroNorm) &&
+                            gyroNorm <= kMaxRecoveryGyroRadS;
+    const bool accelObservationAvailable = quality.shouldUseAccelCorrection &&
+                                            quality.accelNormValid && accelG.isFinite();
+    const float accelNorm = accelObservationAvailable ? quality.accelNormG : 0.0f;
+    const bool accelStable = accelObservationAvailable && std::isfinite(accelNorm) &&
+                             std::fabs(accelNorm - 1.0f) <= kMaxRecoveryAccelErrorG;
+    const bool motionStable = gyroStable && accelStable;
     const bool hardStreamFault = quality.shouldRequestFifoRecovery ||
                                  quality.has(imu_quality_flags::TIMESTAMP_BACKWARDS) ||
                                  quality.has(imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) ||
@@ -363,7 +371,7 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
         // direction immediately. Only isolated unusable timestamp/quality
         // samples are tolerated, so a busy Wi-Fi loop cannot make recovery
         // impossible without blending two physical orientations together.
-        if (!motionStable || hardStreamFault) {
+        if (!gyroStable || hardStreamFault || (accelObservationAvailable && !accelStable)) {
             recoveryStableSamples_ = 0;
             recoveryRejectStreak_ = 0;
             recoveryAccelSum_ = Vec3::zero();
@@ -420,7 +428,6 @@ bool TrackingStateController::hasTimingFault(uint32_t flags) {
                               imu_quality_flags::FIFO_OVERRUN |
                               imu_quality_flags::FIFO_FULL |
                               imu_quality_flags::FIFO_UNKNOWN_TAG |
-                              imu_quality_flags::FIFO_ORPHAN_WORDS |
                               imu_quality_flags::FIFO_TAG_COUNTER_JUMP |
                               imu_quality_flags::FIFO_GYRO_TAG_COUNTER_JUMP |
                               imu_quality_flags::FIFO_ACCEL_TAG_COUNTER_JUMP |
@@ -434,7 +441,9 @@ bool TrackingStateController::hasAccelFault(uint32_t flags) {
     constexpr uint32_t mask = imu_quality_flags::ACCEL_SATURATED |
                               imu_quality_flags::ACCEL_NEAR_SATURATION |
                               imu_quality_flags::ACCEL_NORM_OUTLIER |
-                              imu_quality_flags::ACCEL_NOT_AHRS_USABLE;
+                              imu_quality_flags::ACCEL_NOT_AHRS_USABLE |
+                              imu_quality_flags::ACCEL_COMPONENT_MISSING |
+                              imu_quality_flags::FIFO_PAIR_DEGRADED;
     return (flags & mask) != 0;
 }
 

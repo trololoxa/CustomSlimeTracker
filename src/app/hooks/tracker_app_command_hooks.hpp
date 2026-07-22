@@ -12,14 +12,6 @@ static void hookResetFifoRuntime(void* user) {
     g_lastSampleTimestampUs = 0;
 }
 
-static void hookRequestTrackingRecovery(uint32_t reasonFlags,
-                                        const char* reason,
-                                        uint64_t timestampUs,
-                                        void* user) {
-    (void)user;
-    enterTrackingRecovery(reasonFlags, reason, timestampUs);
-}
-
 static void hookResetAhrsRuntime(void* user) {
     (void)user;
     g_lastSampleTimestampUs = 0;

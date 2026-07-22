@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,8 +104,23 @@ def _cpp_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def load_firmware_feature_version() -> str:
+    header = Path(__file__).resolve().parents[1] / "src" / "build_config" / "firmware_feature_version.hpp"
+    match = re.search(
+        r'^#define\s+TRACKER_FIRMWARE_FEATURE_VERSION\s+"([^"]+)"\s*$',
+        header.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    if not match:
+        raise RuntimeError(f"TRACKER_FIRMWARE_FEATURE_VERSION is missing in {header}")
+    return match.group(1)
+
+
+FIRMWARE_FEATURE_VERSION = load_firmware_feature_version()
+
+
 def render_generated_header(identity: BuildIdentity, pio_environment: str) -> str:
-    firmware_version = f"c3-6dsv-{identity.identity}"
+    firmware_version = FIRMWARE_FEATURE_VERSION
     return """#pragma once
 
 // Generated automatically by tools/generate_build_identity.py.

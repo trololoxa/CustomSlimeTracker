@@ -174,6 +174,8 @@ bool Lsm6dsv::readRawSample(RawSample& out, uint64_t t_us, bool readStatusFirst)
         out.ay = le16(&b[10]);
         out.az = le16(&b[12]);
         out.statusRaw = statusRaw;
+        out.components = SAMPLE_COMPONENT_COMPLETE;
+        out.coherency = SampleCoherency::Coherent;
 
         if (isRawSaturated(out.ax) || isRawSaturated(out.ay) || isRawSaturated(out.az)) {
             flags |= FLAG_ACCEL_SATURATED;

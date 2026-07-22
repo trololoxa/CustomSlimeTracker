@@ -173,6 +173,13 @@ public:
         uint32_t fifoBurstReadWords = 0;
         uint32_t maxBurstWordsRead = 0;
         uint32_t imuSamplesProduced = 0;
+        uint32_t completePairsProduced = 0;
+        uint32_t gyroOnlySamplesProduced = 0;
+        uint32_t gyroPendingReplaced = 0;
+        uint32_t accelPendingReplaced = 0;
+        uint32_t pairCounterMismatches = 0;
+        uint32_t pairCounterOffsetLocks = 0;
+        uint32_t pairCounterOffsetRelocks = 0;
         uint32_t gyroWords = 0;
         uint32_t accelWords = 0;
         uint32_t tempWords = 0;
@@ -338,7 +345,13 @@ private:
 
     void parseTimestampWord(const FifoWord& w);
 
-    void buildRawSampleFromPending(Lsm6dsv::RawSample& s, uint16_t flags);
+    void buildRawSampleFromPending(Lsm6dsv::RawSample& s,
+                                   uint16_t flags,
+                                   Lsm6dsv::SampleCoherency coherency);
+
+    void buildGyroOnlySampleFromPending(Lsm6dsv::RawSample& s, uint16_t flags);
+
+    Lsm6dsv::SampleCoherency observePairCounterOffset();
 
     void enqueueSampleForTimestamp(Lsm6dsv::RawSample& s, uint64_t fallbackBaseUs);
 
@@ -374,6 +387,16 @@ private:
     bool pendingGyroValid_ = false;
     bool pendingAccelValid_ = false;
     uint16_t pendingFlags_ = 0;
+
+    // Gyro and accel tag counters are independent modulo-4 counters. The
+    // relative offset is learned from normal pairs and used only to gate the
+    // accel correction. A mismatch never blocks gyro integration.
+    bool pairCounterOffsetValid_ = false;
+    uint8_t pairCounterOffset_ = 0;
+    uint8_t pairCounterCandidate_ = 0;
+    uint8_t pairCounterCandidateCount_ = 0;
+    uint8_t pairCounterMismatchCandidate_ = 0;
+    uint8_t pairCounterMismatchCount_ = 0;
     uint8_t lastTagCounter_[32];
 
     uint64_t timestampQueue_[TIMESTAMP_QUEUE_CAP];

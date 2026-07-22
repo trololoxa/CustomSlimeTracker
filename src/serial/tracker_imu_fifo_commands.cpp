@@ -50,6 +50,13 @@ void trackerSerialPrintFifoStats(Stream& out, const Lsm6dsvFifoReader::DrainStat
     out.print("imu_samples="); out.println(fs.imuSamplesProduced);
     out.print("gyro_words="); out.println(fs.gyroWords);
     out.print("accel_words="); out.println(fs.accelWords);
+    out.print("complete_pairs_produced="); out.println(fs.completePairsProduced);
+    out.print("gyro_only_samples_produced="); out.println(fs.gyroOnlySamplesProduced);
+    out.print("gyro_pending_replaced="); out.println(fs.gyroPendingReplaced);
+    out.print("accel_pending_replaced="); out.println(fs.accelPendingReplaced);
+    out.print("pair_counter_mismatches="); out.println(fs.pairCounterMismatches);
+    out.print("pair_counter_offset_locks="); out.println(fs.pairCounterOffsetLocks);
+    out.print("pair_counter_offset_relocks="); out.println(fs.pairCounterOffsetRelocks);
     out.print("timestamp_words="); out.println(fs.timestampWords);
     out.print("temperature_words="); out.println(fs.tempWords);
     out.print("unknown_words="); out.println(fs.unknownWords);
@@ -107,6 +114,9 @@ void trackerSerialPrintQualityStats(Stream& out, const ImuQualityCounters& qc) {
     out.print("accel_near_saturated_samples="); out.println(qc.accelNearSaturatedSamples);
     out.print("accel_norm_outliers="); out.println(qc.accelNormOutliers);
     out.print("ahrs_skipped_samples="); out.println(qc.ahrsSkippedSamples);
+    out.print("accel_component_missing_samples="); out.println(qc.accelComponentMissingSamples);
+    out.print("gyro_component_missing_samples="); out.println(qc.gyroComponentMissingSamples);
+    out.print("pair_coherency_degraded_samples="); out.println(qc.pairCoherencyDegradedSamples);
     out.print("accel_correction_disabled_samples="); out.println(qc.accelCorrectionDisabledSamples);
     out.print("fifo_recovery_requests="); out.println(qc.fifoRecoveryRequests);
     out.print("fifo_recovery_overrun_requests="); out.println(qc.fifoRecoveryOverrunRequests);

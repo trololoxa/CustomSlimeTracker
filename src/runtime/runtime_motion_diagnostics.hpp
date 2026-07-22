@@ -34,6 +34,9 @@ public:
         uint32_t accelSaturatedSamples = 0;
         uint32_t accelNearSaturatedSamples = 0;
         uint32_t accelNormOutliers = 0;
+        uint32_t accelComponentMissingSamples = 0;
+        uint32_t pairCoherencyDegradedSamples = 0;
+        uint32_t accelObservationSamples = 0;
 
         double dtSumUs = 0.0;
         uint32_t dtMinUs = 0;

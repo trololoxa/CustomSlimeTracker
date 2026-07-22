@@ -33,6 +33,7 @@ static void testCoherentLinearAccelerationAndDerivedWorldFrame(TestContext& ctx)
     quality.overallConfidence = 0.91f;
 
     PreparedOutputRuntime prepared;
+    trackerTestSetMicros(123456u);
     prepared.update(config, 77, 1000000, ahrs, quality, accelDeviceG);
 
     TrackerPreparedOutputSnapshot snapshot;
@@ -40,6 +41,8 @@ static void testCoherentLinearAccelerationAndDerivedWorldFrame(TestContext& ctx)
     CHECK(ctx, snapshot.valid);
     CHECK(ctx, snapshot.linearAccelerationValid);
     CHECK(ctx, snapshot.timestampUs == 1000000);
+    CHECK(ctx, snapshot.publishedAtMcuUs == 123456u);
+    CHECK(ctx, snapshot.linearAccelerationInvalidFlags == prepared_output_motion_flags::NONE);
     checkVec(ctx, snapshot.linearAccelerationDeviceG, expectedLinearDeviceG, 1.0e-5f);
     checkVec(ctx,
              snapshot.q.rotate(snapshot.linearAccelerationDeviceG),
@@ -124,6 +127,31 @@ static void testHardAccelFailureKeepsOrientationButInvalidatesMotion(TestContext
     CHECK(ctx, !snapshot.linearAccelerationValid);
 }
 
+static void testDynamicAccelOutlierRemainsValidMotionOutput(TestContext& ctx) {
+    TrackerConfig config;
+    config.resetDefaults();
+    config.data.accelCal.valid = true;
+    config.data.frame.sensorToDeviceValid = true;
+
+    Ahrs6Dof ahrs(config.makeAhrsConfig());
+    ahrs.reset(Quat::identity(), 11000);
+
+    ImuQualityResult quality;
+    quality.flags = imu_quality_flags::ACCEL_NORM_OUTLIER |
+                    imu_quality_flags::ACCEL_NOT_AHRS_USABLE;
+    quality.shouldUseAccelCorrection = false;
+    quality.shouldUseAccelOutput = true;
+
+    PreparedOutputRuntime prepared;
+    prepared.update(config, 1, 11000, ahrs, quality, Vec3(0.4f, 0.0f, 1.0f));
+
+    TrackerPreparedOutputSnapshot snapshot;
+    CHECK(ctx, prepared.copy(snapshot));
+    CHECK(ctx, snapshot.linearAccelerationValid);
+    CHECK(ctx, snapshot.linearAccelerationInvalidFlags == prepared_output_motion_flags::NONE);
+    checkVec(ctx, snapshot.linearAccelerationDeviceG, Vec3(0.4f, 0.0f, 0.0f), 1.0e-6f);
+}
+
 static void testMotionRequiresAccelAndFrameCalibration(TestContext& ctx) {
     TrackerConfig config;
     config.resetDefaults();
@@ -190,6 +218,7 @@ int main() {
     testOrientationTimestampMustMatchSample(ctx);
     testRejectedLargeDtCannotMasqueradeAsFreshOrientation(ctx);
     testHardAccelFailureKeepsOrientationButInvalidatesMotion(ctx);
+    testDynamicAccelOutlierRemainsValidMotionOutput(ctx);
     testMotionRequiresAccelAndFrameCalibration(ctx);
     testPreparedSnapshotRateLimitAndFailClosed(ctx);
     return ctx.finish("test_prepared_output_motion_snapshot");

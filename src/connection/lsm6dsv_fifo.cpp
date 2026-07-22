@@ -199,9 +199,6 @@ bool Lsm6dsvFifoReader::drainRawSamples(Lsm6dsv::RawSample* out,
             wordsRead = static_cast<uint16_t>(wordsRead + chunkWords);
         }
 
-        if (pendingGyroValid_ != pendingAccelValid_) {
-            pendingFlags_ |= FIFO_FLAG_ORPHAN_WORDS;
-        }
 
         if (cfg_.allowTimestampFallback && waitingCount_ > cfg_.maxWaitingSamplesBeforeFallback) {
             fallbackWaitingSamples(waitingCount_ - cfg_.maxWaitingSamplesBeforeFallback);
@@ -297,6 +294,21 @@ void Lsm6dsvFifoReader::processWord(const FifoWord& w, uint16_t statusFlags, uin
         switch (w.tagSensor) {
             case TAG_GYRO_NC:
                 stats_.gyroWords++;
+                if (pendingGyroValid_) {
+                    // A second gyro word means the previous cycle never got a
+                    // matching accel word. Preserve heading continuity by
+                    // publishing the older gyro as a gyro-only sample instead
+                    // of silently overwriting it or pairing it with a later
+                    // accelerometer observation.
+                    Lsm6dsv::RawSample gyroOnly;
+                    buildGyroOnlySampleFromPending(
+                        gyroOnly,
+                        pendingFlags_ | statusFlags | FIFO_FLAG_ORPHAN_WORDS
+                    );
+                    enqueueSampleForTimestamp(gyroOnly, drainTimestampUs);
+                    stats_.gyroPendingReplaced++;
+                    pendingFlags_ = 0;
+                }
                 pendingGyro_ = w;
                 pendingGyroValid_ = true;
                 pendingFlags_ |= statusFlags;
@@ -304,6 +316,13 @@ void Lsm6dsvFifoReader::processWord(const FifoWord& w, uint16_t statusFlags, uin
 
             case TAG_ACCEL_NC:
                 stats_.accelWords++;
+                if (pendingAccelValid_) {
+                    // Accel-only observations cannot advance orientation. Keep
+                    // the newest one for the next gyro and account for the
+                    // discarded stale observation.
+                    stats_.accelPendingReplaced++;
+                    pendingFlags_ = 0;
+                }
                 pendingAccel_ = w;
                 pendingAccelValid_ = true;
                 pendingFlags_ |= statusFlags;
@@ -352,8 +371,10 @@ void Lsm6dsvFifoReader::processWord(const FifoWord& w, uint16_t statusFlags, uin
 
         if (pendingGyroValid_ && pendingAccelValid_) {
             Lsm6dsv::RawSample s;
-            buildRawSampleFromPending(s, pendingFlags_);
+            const Lsm6dsv::SampleCoherency coherency = observePairCounterOffset();
+            buildRawSampleFromPending(s, pendingFlags_, coherency);
             enqueueSampleForTimestamp(s, drainTimestampUs);
+            stats_.completePairsProduced++;
             pendingGyroValid_ = false;
             pendingAccelValid_ = false;
             pendingFlags_ = 0;
@@ -379,6 +400,12 @@ void Lsm6dsvFifoReader::resetParserState() {
         pendingGyroValid_ = false;
         pendingAccelValid_ = false;
         pendingFlags_ = 0;
+        pairCounterOffsetValid_ = false;
+        pairCounterOffset_ = 0;
+        pairCounterCandidate_ = 0;
+        pairCounterCandidateCount_ = 0;
+        pairCounterMismatchCandidate_ = 0;
+        pairCounterMismatchCount_ = 0;
         for (uint8_t i = 0; i < 32; ++i) {
             lastTagCounter_[i] = 0xFF;
         }
@@ -522,7 +549,9 @@ void Lsm6dsvFifoReader::parseTimestampWord(const FifoWord& w) {
         }
     }
 
-void Lsm6dsvFifoReader::buildRawSampleFromPending(Lsm6dsv::RawSample& s, uint16_t flags) {
+void Lsm6dsvFifoReader::buildRawSampleFromPending(Lsm6dsv::RawSample& s,
+                                                    uint16_t flags,
+                                                    Lsm6dsv::SampleCoherency coherency) {
         s.t_us = 0;
         s.gx = pendingGyro_.x;
         s.gy = pendingGyro_.y;
@@ -532,6 +561,8 @@ void Lsm6dsvFifoReader::buildRawSampleFromPending(Lsm6dsv::RawSample& s, uint16_
         s.az = pendingAccel_.z;
         s.temp = stats_.latestTempValid ? static_cast<int16_t>((stats_.latestTempC - 25.0f) * 256.0f) : 0;
         s.statusRaw = 0;
+        s.components = Lsm6dsv::SAMPLE_COMPONENT_COMPLETE;
+        s.coherency = coherency;
         s.flags = static_cast<uint16_t>(flags | Lsm6dsv::FLAG_READ_OUTPUT_OK);
 
         if (isRawSaturated(s.ax) || isRawSaturated(s.ay) || isRawSaturated(s.az)) {
@@ -542,6 +573,72 @@ void Lsm6dsvFifoReader::buildRawSampleFromPending(Lsm6dsv::RawSample& s, uint16_
             s.flags |= Lsm6dsv::FLAG_GYRO_SATURATED;
             stats_.gyroSaturationCount++;
         }
+    }
+
+void Lsm6dsvFifoReader::buildGyroOnlySampleFromPending(Lsm6dsv::RawSample& s, uint16_t flags) {
+        s.t_us = 0;
+        s.gx = pendingGyro_.x;
+        s.gy = pendingGyro_.y;
+        s.gz = pendingGyro_.z;
+        s.ax = 0;
+        s.ay = 0;
+        s.az = 0;
+        s.temp = stats_.latestTempValid ? static_cast<int16_t>((stats_.latestTempC - 25.0f) * 256.0f) : 0;
+        s.statusRaw = 0;
+        s.components = Lsm6dsv::SAMPLE_COMPONENT_GYRO;
+        s.coherency = Lsm6dsv::SampleCoherency::GyroOnly;
+        s.flags = static_cast<uint16_t>(flags | Lsm6dsv::FLAG_READ_OUTPUT_OK);
+
+        if (isRawSaturated(s.gx) || isRawSaturated(s.gy) || isRawSaturated(s.gz)) {
+            s.flags |= Lsm6dsv::FLAG_GYRO_SATURATED;
+            stats_.gyroSaturationCount++;
+        }
+        stats_.gyroOnlySamplesProduced++;
+    }
+
+Lsm6dsv::SampleCoherency Lsm6dsvFifoReader::observePairCounterOffset() {
+        const uint8_t observed = static_cast<uint8_t>((pendingGyro_.tagCounter - pendingAccel_.tagCounter) & 0x03u);
+        constexpr uint8_t kInitialLockPairs = 4;
+        constexpr uint8_t kRelockPairs = 8;
+
+        if (!pairCounterOffsetValid_) {
+            if (pairCounterCandidateCount_ == 0 || pairCounterCandidate_ != observed) {
+                pairCounterCandidate_ = observed;
+                pairCounterCandidateCount_ = 1;
+            } else if (pairCounterCandidateCount_ < 0xffu) {
+                ++pairCounterCandidateCount_;
+            }
+            if (pairCounterCandidateCount_ >= kInitialLockPairs) {
+                pairCounterOffsetValid_ = true;
+                pairCounterOffset_ = pairCounterCandidate_;
+                pairCounterMismatchCount_ = 0;
+                stats_.pairCounterOffsetLocks++;
+            }
+            return Lsm6dsv::SampleCoherency::Coherent;
+        }
+
+        if (observed == pairCounterOffset_) {
+            pairCounterMismatchCount_ = 0;
+            return Lsm6dsv::SampleCoherency::Coherent;
+        }
+
+        stats_.pairCounterMismatches++;
+        if (pairCounterMismatchCount_ == 0 || pairCounterMismatchCandidate_ != observed) {
+            pairCounterMismatchCandidate_ = observed;
+            pairCounterMismatchCount_ = 1;
+        } else if (pairCounterMismatchCount_ < 0xffu) {
+            ++pairCounterMismatchCount_;
+        }
+
+        // A persistent new offset normally means a clean FIFO/configuration
+        // epoch change. Re-lock only after several identical mismatches. Until
+        // then gyro is integrated but accel correction is disabled.
+        if (pairCounterMismatchCount_ >= kRelockPairs) {
+            pairCounterOffset_ = pairCounterMismatchCandidate_;
+            pairCounterMismatchCount_ = 0;
+            stats_.pairCounterOffsetRelocks++;
+        }
+        return Lsm6dsv::SampleCoherency::PairCounterMismatch;
     }
 
 void Lsm6dsvFifoReader::enqueueSampleForTimestamp(Lsm6dsv::RawSample& s, uint64_t fallbackBaseUs) {

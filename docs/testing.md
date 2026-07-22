@@ -672,3 +672,21 @@ Interpretation: no `event=tap_src` means the LSM6DSV hardware engine did not rep
 ## Production-only compile coverage
 
 The native gate also compiles production-only translation units that cannot be linked against the host NVS backend. `runtime/gyro_temp_static_fit.cpp` is covered this way so config/API drift fails before PlatformIO.
+## FIFO coherency acceptance
+
+After flashing `c3-6dsv-fifo-coherency` in ProductionDiag, use `fifo status`,
+`motion status`, and `perf tracking`. `motion status` already contains the full
+FIFO and quality correlation blocks; `fifo stats` and `quality stats` belong to
+the Full Debug CLI and are intentionally not compiled into ProductionDiag.
+Normal operation should keep gyro-only and pair-mismatch counters at zero or
+extremely rare values. Isolated component
+loss may increment them, but must not request FIFO recovery, stop gyro
+integration, or make linear acceleration valid for that degraded sample.
+
+A dynamic `ACCEL_NORM_OUTLIER` is different: it must disable use of accel as an
+AHRS gravity observation without suppressing packet 4. During motion,
+`acceleration_sent_delta` should therefore track `rotation_sent_delta` unless a
+separate `acceleration_skipped_*_delta` counter identifies a hard invalidity.
+`slime_last_rotation_snapshot_age_us` is MCU publish-to-send age and should stay
+near the output period; it no longer compares the LSM6DSV timestamp epoch with
+ESP32 `micros()`.

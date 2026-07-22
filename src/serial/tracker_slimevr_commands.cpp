@@ -90,6 +90,12 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("rotation_sent="); out.println(s.rotationSent);
     out.print("acceleration_sent="); out.println(s.accelerationSent);
     out.print("acceleration_skipped_invalid="); out.println(s.accelerationSkippedInvalid);
+    out.print("acceleration_skipped_configuration="); out.println(s.accelerationSkippedConfiguration);
+    out.print("acceleration_skipped_component_missing="); out.println(s.accelerationSkippedComponentMissing);
+    out.print("acceleration_skipped_pair_degraded="); out.println(s.accelerationSkippedPairDegraded);
+    out.print("acceleration_skipped_saturated="); out.println(s.accelerationSkippedSaturated);
+    out.print("acceleration_skipped_nonfinite="); out.println(s.accelerationSkippedNonFinite);
+    out.print("acceleration_skipped_other="); out.println(s.accelerationSkippedOther);
     out.print("acceleration_send_failures="); out.println(s.accelerationSendFailures);
     out.print("rotation_suppressed_by_error="); out.println(s.rotationSuppressedByError);
     out.print("rotation_send_due="); out.println(s.rotationSendDue);
@@ -171,6 +177,12 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("rotation_sent="); out.println(s.rotationSent);
     out.print("acceleration_sent="); out.println(s.accelerationSent);
     out.print("acceleration_skipped_invalid="); out.println(s.accelerationSkippedInvalid);
+    out.print("acceleration_skipped_configuration="); out.println(s.accelerationSkippedConfiguration);
+    out.print("acceleration_skipped_component_missing="); out.println(s.accelerationSkippedComponentMissing);
+    out.print("acceleration_skipped_pair_degraded="); out.println(s.accelerationSkippedPairDegraded);
+    out.print("acceleration_skipped_saturated="); out.println(s.accelerationSkippedSaturated);
+    out.print("acceleration_skipped_nonfinite="); out.println(s.accelerationSkippedNonFinite);
+    out.print("acceleration_skipped_other="); out.println(s.accelerationSkippedOther);
     out.print("acceleration_send_failures="); out.println(s.accelerationSendFailures);
     out.print("signal_strength_sent="); out.println(s.signalStrengthSent);
     out.print("temperature_sent="); out.println(s.temperatureSent);

@@ -5,10 +5,15 @@
 // Magnetometer and tracking-state hooks used by the app composition layer.
 // This file is included by app/tracker_app_hooks.hpp after shared app dependencies.
 
+static void enterTrackingRecovery(uint32_t reasonFlags, const char* reason, uint64_t timestampUs);
+
 static void hookRequestTrackingRecovery(uint32_t reasonFlags,
                                         const char* reason,
                                         uint64_t timestampUs,
-                                        void* user);
+                                        void* user) {
+    (void)user;
+    enterTrackingRecovery(reasonFlags, reason, timestampUs);
+}
 
 #if TRACKER_HAS_MACHINE_LOG
 static void emitMachineLogMagFrame(const MagProcessedSample& mag,

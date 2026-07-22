@@ -90,6 +90,7 @@ static void testSaturationAndAccelOutlierGates(TestContext& ctx) {
     CHECK(ctx, q.has(imu_quality_flags::ACCEL_NORM_OUTLIER));
     CHECK(ctx, !q.shouldUpdateAhrs);
     CHECK(ctx, !q.shouldUseAccelCorrection);
+    CHECK(ctx, q.shouldUseAccelOutput);
     CHECK(ctx, q.has(imu_quality_flags::SAMPLE_NOT_AHRS_USABLE));
     CHECK(ctx, q.has(imu_quality_flags::ACCEL_NOT_AHRS_USABLE));
 
@@ -101,6 +102,49 @@ static void testSaturationAndAccelOutlierGates(TestContext& ctx) {
     CHECK(ctx, c.accelCorrectionDisabledSamples == 1);
 }
 
+
+static void testAccelOutputGateRejectsOnlyHardInvalidity(TestContext& ctx) {
+    ImuQualityConfig cfg;
+    cfg.expectedDtUs = 1000.0f;
+    ImuQualityMonitor monitor(cfg);
+    Lsm6dsvFifoReader::DrainStats stats = makeStats();
+
+    monitor.evaluate(makeRaw(1000), makeSample(1000), stats, false);
+
+    ImuQualityResult dynamic = monitor.evaluate(
+        makeRaw(2000),
+        makeSample(2000, Vec3(0.0f, 0.0f, 2.0f)),
+        stats,
+        false
+    );
+    CHECK(ctx, dynamic.has(imu_quality_flags::ACCEL_NORM_OUTLIER));
+    CHECK(ctx, !dynamic.shouldUseAccelCorrection);
+    CHECK(ctx, dynamic.shouldUseAccelOutput);
+
+    Lsm6dsv::RawSample saturatedRaw = makeRaw(3000);
+    saturatedRaw.flags |= Lsm6dsv::FLAG_ACCEL_SATURATED;
+    saturatedRaw.ax = 32767;
+    ImuQualityResult saturated = monitor.evaluate(
+        saturatedRaw,
+        makeSample(3000, Vec3(4.0f, 0.0f, 0.0f)),
+        stats,
+        false
+    );
+    CHECK(ctx, saturated.has(imu_quality_flags::ACCEL_SATURATED));
+    CHECK(ctx, !saturated.shouldUseAccelOutput);
+
+    Lsm6dsv::RawSample missingRaw = makeRaw(4000);
+    missingRaw.components = Lsm6dsv::SAMPLE_COMPONENT_GYRO;
+    ImuQualityResult missing = monitor.evaluate(missingRaw, makeSample(4000), stats, false);
+    CHECK(ctx, missing.has(imu_quality_flags::ACCEL_COMPONENT_MISSING));
+    CHECK(ctx, !missing.shouldUseAccelOutput);
+
+    Lsm6dsv::RawSample degradedRaw = makeRaw(5000);
+    degradedRaw.coherency = Lsm6dsv::SampleCoherency::PairCounterMismatch;
+    ImuQualityResult degraded = monitor.evaluate(degradedRaw, makeSample(5000), stats, false);
+    CHECK(ctx, degraded.has(imu_quality_flags::FIFO_PAIR_DEGRADED));
+    CHECK(ctx, !degraded.shouldUseAccelOutput);
+}
 
 static void testUnknownTagAloneDoesNotRequestRecoveryByDefault(TestContext& ctx) {
     ImuQualityMonitor monitor;
@@ -201,6 +245,7 @@ int main() {
     TestContext ctx;
     testTimestampGapAndRecovery(ctx);
     testSaturationAndAccelOutlierGates(ctx);
+    testAccelOutputGateRejectsOnlyHardInvalidity(ctx);
     testUnknownTagAloneDoesNotRequestRecoveryByDefault(ctx);
     testStreamRecoveryResetClearsTimingBaselineButKeepsCounters(ctx);
     testFifoStatsDeltaRequestsRecovery(ctx);

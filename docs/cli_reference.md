@@ -306,7 +306,7 @@ The firmware currently handles the server-to-tracker packets needed for a normal
 
 Use `slime status` to inspect `ping_received`, `pong_sent`, `feature_flags_received`, `set_config_flag_*`, `ack_config_sent`, `protocol_change_received`, and `unknown_packets_received`.
 
-Current protocol limitations: the firmware emits timestamp-coherent linear acceleration packet 4 beside each successful rotation packet when acceleration is valid. It does not yet send its own FeatureFlags, negotiate bundles, maintain a short SensorInfo-ACK confirmation state, or apply ProtocolChange. These remain explicit future protocol work.
+Current protocol limitations: the firmware emits timestamp-coherent linear acceleration packet 4 beside each successful rotation packet when acceleration is valid. Dynamic accel-norm outliers disable AHRS gravity correction but remain valid motion output; only missing/degraded accel components, saturation, invalid calibration/frame state, or non-finite vectors suppress packet 4. `slime status`, `perf tracking`, and `motion status` expose separate skip-reason counters; one skipped snapshot can increment more than one reason counter. The firmware does not yet send its own FeatureFlags, negotiate bundles, maintain a short SensorInfo-ACK confirmation state, or apply ProtocolChange. These remain explicit future protocol work.
 
 ## SlimeVR Server serial compatibility
 
