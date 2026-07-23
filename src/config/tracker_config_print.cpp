@@ -220,6 +220,7 @@ void printTrackerNetworkConfigSummary(Stream& out, const TrackerNetworkConfig& c
     out.print("serverPort="); out.println(cfg.data.serverPort);
     out.print("deviceId="); out.println(cfg.data.deviceId);
     out.print("sensorId="); out.println(cfg.data.sensorId);
+    out.print("tapUserAction="); out.println(slimevrUserActionName(cfg.tapUserAction()));
     out.print("deviceName="); out.println(cfg.data.deviceName);
     out.println("==============================================================================");
 }

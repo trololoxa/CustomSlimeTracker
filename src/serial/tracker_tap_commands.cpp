@@ -56,6 +56,9 @@ void printTapStatus(Stream& out, const TapRuntimeController& tap) {
     out.print("last_physical_count="); out.println(s.lastPhysicalCount);
     out.print("last_value="); out.println(s.lastValue);
     out.print("last_sent_ok="); out.println(s.lastSentOk ? "yes" : "no");
+    out.print("physical_tap_user_action="); out.println(slimevrUserActionName(s.physicalTapUserAction));
+    out.print("user_actions_sent="); out.println(s.userActionsSent);
+    out.print("user_action_failures="); out.println(s.userActionFailures);
 #if TRACKER_ENABLE_TAP_DIAGNOSTICS
     out.print("diagnostic_logging="); out.println(s.diagnosticLogging ? "yes" : "no");
     out.print("diagnostic_events="); out.println(s.diagnosticEvents);

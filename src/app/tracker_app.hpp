@@ -125,6 +125,7 @@ struct TrackerAppCallbacks {
 #endif
     void (*resetOrientationState)(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase) = nullptr;
     bool (*setMagRuntimeEnabled)(bool enabled, bool persist) = nullptr;
+    bool (*startMagRuntimeFromPreconfiguredFifo)() = nullptr;
     FifoRuntimeSampleCallback processRawSample = nullptr;
     FifoRuntimeMagCallback processMagSample = nullptr;
     FifoRuntimeRecordTimeCallback recordFifoProcessTime = nullptr;
@@ -165,7 +166,7 @@ private:
     void beginSensorStartupRecovery(TrackerHealthFaultCode code, const char* message);
     bool updateSensorStartupRecovery(uint32_t nowMs);
     void finishSensorStartupRecoverySuccess();
-    void setupSensorRuntime();
+    bool setupSensorRuntime();
     void enterFatalDegraded(TrackerHealthFaultCode code, const char* message);
     void publishHealthState();
     void call(void (*callback)());

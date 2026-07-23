@@ -41,23 +41,26 @@ void trackerSerialApplyConfigToRuntime(TrackerSerialCommandContext& ctx) {
     if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
 }
 
-void trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx) {
-    if (!ctx.config) return;
-
-    if (ctx.imuCal) ctx.config->captureFromImuCalibration(*ctx.imuCal);
-    if (ctx.gyroTempComp) ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
+void trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx, TrackerConfig& target) {
+    if (ctx.imuCal) target.captureFromImuCalibration(*ctx.imuCal);
+    if (ctx.gyroTempComp) target.captureFromGyroTempComp(*ctx.gyroTempComp);
     if (ctx.accelCalRunner && ctx.accelCalRunner->calibration().result().valid) {
-        ctx.config->captureFromAccelCalibrationQuality(ctx.accelCalRunner->calibration(), millis());
+        target.captureFromAccelCalibrationQuality(ctx.accelCalRunner->calibration(), millis());
     }
 
     if (ctx.streamState) {
-        ctx.config->data.output.outputRateHz = ctx.streamState->rateHz;
-        ctx.config->data.output.quaternionOutputEnabled = (ctx.streamState->mode == TrackerStreamMode::Quat);
-        ctx.config->data.output.serialDebugEnabled = (ctx.streamState->mode == TrackerStreamMode::Debug);
-        ctx.config->data.output.packetFormat = 0;
+        target.data.output.outputRateHz = ctx.streamState->rateHz;
+        target.data.output.quaternionOutputEnabled = (ctx.streamState->mode == TrackerStreamMode::Quat);
+        target.data.output.serialDebugEnabled = (ctx.streamState->mode == TrackerStreamMode::Debug);
+        target.data.output.packetFormat = 0;
     }
 
-    ctx.config->updateCrc();
+    target.updateCrc();
+}
+
+void trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx) {
+    if (!ctx.config) return;
+    trackerSerialCaptureRuntimeToConfig(ctx, *ctx.config);
 }
 
 void trackerSerialPrintConfigNvsInfo(Stream& out, TrackerConfigStore& store) {
@@ -158,9 +161,14 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
     }
 
     if (trackerSerialConfigIs(argv[1], "defaults")) {
-        ctx.config->resetDefaults();
+        TrackerConfig candidate;
+        candidate.resetDefaults();
+        if (!trackerSerialCommitFullHardwareConfig(ctx, out, candidate)) {
+            tracker_serial_detail::printErr(out, "config defaults hardware apply failed; previous config restored");
+            return;
+        }
         trackerSerialApplyConfigToRuntime(ctx);
-        tracker_serial_detail::printOk(out, "config defaults loaded into RAM");
+        tracker_serial_detail::printOk(out, "config defaults loaded into RAM and hardware");
         return;
     }
 
@@ -170,13 +178,18 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
     }
 
     if (trackerSerialConfigIs(argv[1], "load")) {
-        if (ctx.configStore->load(*ctx.config)) {
-            trackerSerialApplyConfigToRuntime(ctx);
-            tracker_serial_detail::printOk(out, "config loaded from NVS");
-        } else {
+        TrackerConfig candidate;
+        if (!ctx.configStore->load(candidate)) {
             out.print("# ERR config load failed: ");
             out.println(ctx.configStore->lastErrorName());
+            return;
         }
+        if (!trackerSerialCommitFullHardwareConfig(ctx, out, candidate)) {
+            tracker_serial_detail::printErr(out, "loaded config hardware apply failed; previous config restored");
+            return;
+        }
+        trackerSerialApplyConfigToRuntime(ctx);
+        tracker_serial_detail::printOk(out, "config loaded from NVS and applied to hardware");
         return;
     }
 

@@ -265,17 +265,31 @@ private:
             return;
         }
 
-        auto saveTempConfigIfRequested = [&](bool saveRequested) -> bool {
+        auto commitTempCandidate = [&](GyroTempCompensator candidateTempComp,
+                                       bool saveRequested,
+                                       bool resetRuntimeTrim) -> bool {
             if (!ctx.config) return false;
 
-            ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
-            ctx.config->sanitize();
-            ctx.config->updateCrc();
+            TrackerConfig candidateConfig = *ctx.config;
+            candidateConfig.captureFromGyroTempComp(candidateTempComp);
+            candidateConfig.sanitize();
+            candidateConfig.updateCrc();
 
-            if (!saveRequested) return true;
+            RuntimeGyroBiasEstimator candidateRuntimeBias;
+            const bool haveRuntimeBias = ctx.runtimeBias != nullptr;
+            if (haveRuntimeBias) {
+                candidateRuntimeBias = *ctx.runtimeBias;
+                if (resetRuntimeTrim) runtimeBiasReset(candidateRuntimeBias);
+            }
 
-            if (!ctx.configStore) return false;
-            return ctx.configStore->save(*ctx.config);
+            if (saveRequested) {
+                if (!ctx.configStore || !ctx.configStore->save(candidateConfig)) return false;
+            }
+
+            *ctx.gyroTempComp = candidateTempComp;
+            *ctx.config = candidateConfig;
+            if (haveRuntimeBias && resetRuntimeTrim) *ctx.runtimeBias = candidateRuntimeBias;
+            return true;
         };
 
         const float currentTempC =
@@ -310,9 +324,10 @@ private:
         if (is(argv[2], "enable")) {
             const bool saveRequested = argc >= 4 && is(argv[3], "save");
 
-            ctx.gyroTempComp->setEnabled(true);
+            GyroTempCompensator candidateTempComp = *ctx.gyroTempComp;
+            candidateTempComp.setEnabled(true);
 
-            if (!saveTempConfigIfRequested(saveRequested)) {
+            if (!commitTempCandidate(candidateTempComp, saveRequested, true)) {
                 tracker_serial_detail::printErr(out, "cal temp enable save failed");
                 return;
             }
@@ -324,9 +339,10 @@ private:
         if (is(argv[2], "disable")) {
             const bool saveRequested = argc >= 4 && is(argv[3], "save");
 
-            ctx.gyroTempComp->setEnabled(false);
+            GyroTempCompensator candidateTempComp = *ctx.gyroTempComp;
+            candidateTempComp.setEnabled(false);
 
-            if (!saveTempConfigIfRequested(saveRequested)) {
+            if (!commitTempCandidate(candidateTempComp, saveRequested, true)) {
                 tracker_serial_detail::printErr(out, "cal temp disable save failed");
                 return;
             }
@@ -350,10 +366,17 @@ private:
             }
 
             const bool saveRequested = argc >= 7 && is(argv[6], "save");
+            const Vec3 requestedSlopeDpsPerC(x, y, z);
+            if (!ctx.gyroTempComp->acceptsSlopeDpsPerC(requestedSlopeDpsPerC)) {
+                out.print("# ERR slope exceeds max_accepted_slope_dps_per_c=");
+                out.println(ctx.gyroTempComp->config().maxAcceptedSlopeDpsPerC, 6);
+                return;
+            }
 
-            ctx.gyroTempComp->setSlopeDpsPerC(Vec3(x, y, z));
+            GyroTempCompensator candidateTempComp = *ctx.gyroTempComp;
+            candidateTempComp.setSlopeDpsPerC(requestedSlopeDpsPerC);
 
-            if (!saveTempConfigIfRequested(saveRequested)) {
+            if (!commitTempCandidate(candidateTempComp, saveRequested, true)) {
                 tracker_serial_detail::printErr(out, "cal temp set_slope save failed");
                 return;
             }
@@ -385,24 +408,11 @@ private:
         if (is(argv[2], "clear")) {
             const bool saveRequested = argc >= 4 && is(argv[3], "save");
 
-            ctx.gyroTempComp->invalidateTemperatureModel();
-            if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
-
-            if (ctx.config) {
-                ctx.config->data.gyroCal.tempCompValid = false;
-                ctx.config->data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
-                ctx.config->data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
-                ctx.config->data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
-                ctx.config->data.gyroCalMeta.tempModelSampleCount = 0;
-                ctx.config->sanitize();
-                ctx.config->updateCrc();
-
-                if (saveRequested) {
-                    if (!ctx.configStore || !ctx.configStore->save(*ctx.config)) {
-                        tracker_serial_detail::printErr(out, "cal temp clear save failed");
-                        return;
-                    }
-                }
+            GyroTempCompensator candidateTempComp = *ctx.gyroTempComp;
+            candidateTempComp.invalidateTemperatureModel();
+            if (!commitTempCandidate(candidateTempComp, saveRequested, true)) {
+                tracker_serial_detail::printErr(out, "cal temp clear save failed");
+                return;
             }
 
             tracker_serial_detail::printOk(out, saveRequested ? "temperature compensation cleared and saved" : "temperature compensation cleared in RAM");

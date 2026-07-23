@@ -5,6 +5,7 @@
 
 #include "core/math.hpp"
 #include "output/slimevr_motion_frame.hpp"
+#include "output/slimevr_protocol_types.hpp"
 
 namespace tracker {
 
@@ -60,6 +61,7 @@ enum class SlimeVRSendPacketType : uint8_t {
     MagnetometerAccuracy = 18,
     SignalStrength = 19,
     Temperature = 20,
+    UserAction = 21,
     FeatureFlags = 22,
     RotationAndAcceleration = 23,
     AcknowledgeConfigChange = 24,
@@ -73,6 +75,7 @@ enum class SlimeVRReceivePacketType : uint8_t {
     HeartBeat = 1,
     Handshake = 3,
     PingPong = 10,
+    SensorInfo = 15,
     FeatureFlags = 22,
     SetConfigFlag = 25,
     ProtocolChange = 200,
@@ -105,6 +108,7 @@ enum class SlimeVRPacketWriteError : uint8_t {
     NullBuffer,
     BufferTooSmall,
     StringTooLong,
+    InvalidArgument,
 };
 
 struct SlimeVRPacketWriteResult {
@@ -192,6 +196,8 @@ public:
     SlimeVRPacketWriteResult writeTap(uint8_t* out, size_t capacity,
                                       uint8_t sensorId,
                                       uint8_t value);
+    SlimeVRPacketWriteResult writeUserAction(uint8_t* out, size_t capacity,
+                                             SlimeVRUserAction action);
     SlimeVRPacketWriteResult writeError(uint8_t* out, size_t capacity,
                                         uint8_t sensorId,
                                         uint8_t errorCode,

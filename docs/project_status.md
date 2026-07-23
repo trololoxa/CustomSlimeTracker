@@ -67,11 +67,11 @@ The tracker now has a working SlimeVR UDP MVP:
 - non-blocking Wi-Fi station manager;
 - ESP32-C3 TX power workaround through `TRACKER_WIFI_TX_POWER`;
 - UDP discovery and server reconnect;
-- SlimeVR protocol v19 metadata;
+- SlimeVR protocol v22 metadata with coherent rotation/linear-acceleration output;
 - `SensorInfo`, `RotationData`, heartbeat, ping/pong, RSSI and temperature telemetry;
 - LSM6DSV embedded physical tap runtime on INT1 with firmware-side 2..10 tap aggregation, `FUNCTIONS_ENABLE.INTERRUPTS_ENABLE` gating, masked register verification, SlimeVR Tap packet output and serial `tap ...` diagnostics;
 - non-blocking GPIO status LED runtime for ESP32-C3 SuperMini (`TRACKER_STATUS_LED_PIN=8`, active-low by default), SlimeVR-style status/error blink patterns and serial `led ...` diagnostics;
-- incoming `SetConfigFlag` handling for runtime mag/yaw toggle;
+- incoming `SetConfigFlag` handling with transactional mag/yaw persistence and acknowledgement;
 - local serial output decoupled from SlimeVR UDP;
 - `slime status` compact view and `slime debug` full counter dump;
 - `test runtime <seconds>` for full Wi-Fi/server/FIFO loop-load measurement.
@@ -108,7 +108,9 @@ recorded before behavior-changing patches begin:
   packet 23 remains an explicitly disabled experimental option. Negotiation and
   control traffic are bound to the selected server endpoint, while malformed
   empty FeatureFlags cannot lock the runtime into a false capability state.
-  SensorInfo ACK state and protocol switching remain incomplete;
+  SensorInfo uses explicit dirty/waiting/acknowledged state, UserAction packet 21
+  is available, and protocol switching is intentionally unsupported rather than
+  partially applied;
 - all ESP32-C3 profiles use one committed 4 MiB no-OTA layout with a 3 MiB
   factory app; the previous Arduino default 1.25 MiB OTA slot could produce a
   boot loop once the motion-bundle image crossed its real bootable boundary;
@@ -117,6 +119,57 @@ recorded before behavior-changing patches begin:
 
 These gaps define the next implementation patches. They are not reasons to
 weaken the existing FIFO timestamp, calibration, AHRS or mag-yaw quality path.
+
+## Patch 0020 session completeness
+
+Patch 0020 completes the firmware-side SlimeVR session contract without changing
+the motion-frame or packet-23 policy:
+
+- special six-byte SensorInfo acknowledgement parsing and resend-until-ACK state;
+- explicit firmware/server FeatureFlags negotiation and bundle gating;
+- strict endpoint validation and liveness updates only from validated packets;
+- transactional SetConfigFlag apply/persist/ACK with idempotent retries;
+- UserAction packet 21 plus optional persistent physical-tap mapping, default off;
+- malformed/unknown/control diagnostics;
+- boot-time QMC start from the FIFO configuration already established by bootstrap,
+  avoiding the redundant successful-path FIFO reconfigure/recovery.
+
+Packet 23 remains disabled and TX-stage instrumentation remains outside this patch.
+
+
+
+## Patch 0020a boot FIFO epoch hardening
+
+Patch 0020a is a focused hotfix for a hardware-only startup regression found
+after 0020 acceptance. Bootstrap configured and started the 960 Hz FIFO before
+blocking QMC6309 sensor-hub initialization. Although the duplicate mag/FIFO
+reconfiguration was already removed in 0020, the hardware FIFO could still fill
+before the first runtime loop.
+
+The runtime startup sequence now keeps INT1 detached, pauses FIFO collection
+without destroying watermark/BDR configuration, completes QMC setup, performs
+one final FIFO reset/timestamp/queue/quality reset, and attaches INT1 last. A
+failure in this finalization enters the existing non-blocking sensor startup
+recovery instead of declaring the runtime ready. Expected cold-boot diagnostics:
+
+```text
+fifo_overrun_delta=0
+fifo_full_delta=0
+tracking_recovery_bootstrap_bypass_delta=0
+tracking_recovery_reconfigure_delta=0
+```
+
+## Pre-0020 audit hardening
+
+The pre-0020 audit keeps the single-slot storage format (dual-slot storage remains patch 0021), but closes current correctness gaps before session work begins:
+
+- config and network NVS saves now return the exact sanitized bytes to the live mirror only after a successful write; failed writes leave active state unchanged;
+- CLI commands with an explicit `save` use candidate/save/commit ordering, while commands without `save` remain intentional RAM-only changes;
+- `config load` and `config defaults` apply LSM6DSV/FIFO hardware transactionally and roll back on reconfiguration failure;
+- temperature-model replacement/reset also resets the volatile residual gyro trim, and the final persisted slope is bounded at every entry point, including boot-time config application;
+- FIFO startup fallback timestamps anchor to the real drain time, and completed-sample queue loss has its own counter and recovery reason instead of being misreported as waiting-for-timestamp overflow;
+- magnetic sample ages and yaw integration are wrap-safe across the 32-bit `millis()` rollover;
+- native-test extra compiler flags are also passed to the linker, enabling ASan/UBSan audit runs.
 
 ## Current setup baseline
 
@@ -143,4 +196,4 @@ The guided calibration command services FIFO, magnetometer runtime, Wi-Fi and Sl
 
 Battery ADC runtime reads the RC1 divider `BAT+ -> R_TOP -> GPIO -> R_BOTTOM -> GND` with defaults `GPIO4`, `R_TOP=180 kΩ`, and `R_BOTTOM=180 kΩ`. GPIO4 is ESP32-C3 ADC1_CH4, the supported ADC path for battery telemetry. The divider is high impedance and has no hardware capacitor, so the runtime samples sparsely (`TRACKER_BATTERY_ADC_SAMPLE_INTERVAL_MS`, default 10000 ms in Debug and 30000 ms in Production), takes a larger ADC burst (`TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT`, default 64), discards the first settle reads (`TRACKER_BATTERY_ADC_DISCARD_COUNT`, default 4), sorts the remaining burst, averages the trimmed center, maps 3.30-4.20 V to 0-100%, applies a slow EMA (`TRACKER_BATTERY_ADC_EMA_ALPHA`, default 0.12), and rejects impossible voltage steps. It reports safe 0.000 V / 0.0% when the divider is absent, below the present threshold, invalid, or unreadable. It also rejects BAT+ values above `TRACKER_BATTERY_PRESENT_MAX_VOLTAGE` (default 4.35 V) and preserves the previous filtered estimate on one-off low/high ADC glitches. CLI/status percentages are 0-100%, while SlimeVR BatteryLevel telemetry is converted to the protocol's 0.0-1.0 fraction at send time. The value is exposed through `battery status`, `GET INFO`, `slime status`, and periodic SlimeVR BatteryLevel telemetry.
 
-The firmware now exposes SlimeVR Server serial-compatibility commands for initial provisioning: `SET WIFI`, `SET BWIFI`, `GET INFO`, `GET CONFIG`, `GET TEST`, `GET WIFISCAN`, `REBOOT`, `FRST`, `DELCAL`, and temperature-only `TCAL`. `SET WIFI`/`SET BWIFI` save credentials into the separate network NVS config, enable Wi-Fi/discovery, and restart SlimeVR discovery. Blocking Wi-Fi scans suppress expected FIFO-recovery console noise for a short grace window without disabling recovery, counters, or machine-log events. They are still tracking interruptions: gyro motion during the scan is not reconstructable, but FIFO/AHRS recovery must resume integration afterwards. `ahrs status` exposes `large_dt_rebase_count`, `fifo_rebase_count`, `last_rebase_t_us`, and `post_fifo_recovery_samples` for post-scan diagnostics. FIFO timestamp resets also clear the magnetometer sensor-hub timestamp baseline so mag samples restart from the new IMU stream. `TCAL SAVE` is intentionally scoped to gyro temperature compensation so host-side temperature-calibration commands cannot accidentally capture unrelated runtime output/accel state. `TCAL RESET` changes only the in-RAM temperature compensation slope/quality metadata and does not mutate the persistent config object unless a later explicit temperature save is requested.
+The firmware now exposes SlimeVR Server serial-compatibility commands for initial provisioning: `SET WIFI`, `SET BWIFI`, `GET INFO`, `GET CONFIG`, `GET TEST`, `GET WIFISCAN`, `REBOOT`, `FRST`, `DELCAL`, and temperature-only `TCAL`. `SET WIFI`/`SET BWIFI` save credentials into the separate network NVS config, enable Wi-Fi/discovery, and restart SlimeVR discovery. Blocking Wi-Fi scans suppress expected FIFO-recovery console noise for a short grace window without disabling recovery, counters, or machine-log events. They are still tracking interruptions: gyro motion during the scan is not reconstructable, but FIFO/AHRS recovery must resume integration afterwards. `ahrs status` exposes `large_dt_rebase_count`, `fifo_rebase_count`, `last_rebase_t_us`, and `post_fifo_recovery_samples` for post-scan diagnostics. FIFO timestamp resets also clear the magnetometer sensor-hub timestamp baseline so mag samples restart from the new IMU stream. `TCAL SAVE` is intentionally scoped to gyro temperature compensation so host-side temperature-calibration commands cannot accidentally capture unrelated runtime output/accel state. `TCAL RESET` changes only the in-RAM temperature model, resets the RAM-only residual gyro trim learned against the previous model, and does not mutate the persistent config object unless a later explicit `TCAL SAVE` is requested.

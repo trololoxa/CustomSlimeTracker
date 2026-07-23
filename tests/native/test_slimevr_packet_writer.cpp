@@ -178,6 +178,28 @@ int main() {
     CHECK(ctx, packet[48] == 0x55);
 
 
+    CHECK(ctx, std::strcmp(slimevrUserActionName(SlimeVRUserAction::None), "off") == 0);
+    CHECK(ctx, std::strcmp(slimevrUserActionName(SlimeVRUserAction::YawReset), "yaw") == 0);
+    SlimeVRUserAction parsedAction = SlimeVRUserAction::None;
+    CHECK(ctx, parseSlimeVRUserActionName("full", parsedAction));
+    CHECK(ctx, parsedAction == SlimeVRUserAction::FullReset);
+    CHECK(ctx, parseSlimeVRUserActionName("mount", parsedAction));
+    CHECK(ctx, parsedAction == SlimeVRUserAction::MountingReset);
+    CHECK(ctx, !parseSlimeVRUserActionName("invalid", parsedAction));
+
+    const SlimeVRPacketWriteResult userAction = writer.writeUserAction(
+        packet, sizeof(packet), SlimeVRUserAction::YawReset
+    );
+    CHECK(ctx, userAction.ok);
+    CHECK(ctx, userAction.size == SLIMEVR_PACKET_HEADER_SIZE + 1u);
+    CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::UserAction));
+    CHECK(ctx, packet[12] == static_cast<uint8_t>(SlimeVRUserAction::YawReset));
+    const SlimeVRPacketWriteResult disabledAction = writer.writeUserAction(
+        packet, sizeof(packet), SlimeVRUserAction::None
+    );
+    CHECK(ctx, !disabledAction.ok);
+    CHECK(ctx, disabledAction.error == SlimeVRPacketWriteError::InvalidArgument);
+
     const SlimeVRPacketWriteResult tap = writer.writeTap(packet, sizeof(packet), 2, 2);
     CHECK(ctx, tap.ok);
     CHECK(ctx, tap.size == SLIMEVR_PACKET_HEADER_SIZE + 2u);

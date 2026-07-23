@@ -62,6 +62,7 @@ static constexpr uint32_t TEMP_COMP_OUT_OF_RANGE     = 1u << 24;
 static constexpr uint32_t ACCEL_COMPONENT_MISSING      = 1u << 25;
 static constexpr uint32_t GYRO_COMPONENT_MISSING       = 1u << 26;
 static constexpr uint32_t FIFO_PAIR_DEGRADED           = 1u << 27;
+static constexpr uint32_t FIFO_COMPLETED_QUEUE_OVERFLOW = 1u << 28;
 }
 
 struct ImuQualityConfig {
@@ -90,6 +91,7 @@ struct ImuQualityConfig {
     bool requestRecoveryOnUnknownTag = false;
     bool requestRecoveryOnTimestampBackwards = true;
     bool requestRecoveryOnTimestampQueueOverflow = true;
+    bool requestRecoveryOnCompletedQueueOverflow = true;
 
     // AHRS policy.
     bool skipAhrsOnBadTimestamp = true;
@@ -144,6 +146,7 @@ struct ImuQualityCounters {
     uint32_t fifoAccelTagCounterJumps = 0;
     uint32_t timestampQueueOverflows = 0;
     uint32_t waitingSampleQueueOverflows = 0;
+    uint32_t completedSampleQueueOverflows = 0;
     uint32_t timestampBackwards = 0;
     uint32_t timestampMetaMismatches = 0;
 
@@ -164,6 +167,7 @@ struct ImuQualityCounters {
     uint32_t fifoRecoveryUnknownTagRequests = 0;
     uint32_t fifoRecoveryTimestampBackwardsRequests = 0;
     uint32_t fifoRecoveryTimestampQueueOverflowRequests = 0;
+    uint32_t fifoRecoveryCompletedQueueOverflowRequests = 0;
 
     float minDtUs = 0.0f;
     float maxDtUs = 0.0f;

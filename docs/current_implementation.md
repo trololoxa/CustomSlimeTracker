@@ -220,13 +220,21 @@ sample boundary, which is the firmware-side requirement for acceleration-based
 step mounting. Position packet 27 is not implemented and must not be synthesized
 by double-integrating IMU acceleration.
 
-### Remaining protocol work
+### Session-completeness boundary
 
-- SensorInfo acknowledgement packet 15 is not tracked as an acknowledged-state
-  machine; SensorInfo is refreshed periodically or when requested locally.
+- SensorInfo acknowledgement packet 15 is parsed in its special six-byte form
+  and drives explicit dirty/waiting/acknowledged state. Local changes make the
+  state dirty again and reconnect clears acknowledgement state.
+- Firmware/server FeatureFlags are negotiated explicitly; empty or malformed
+  responses do not establish capability state. Packet 100 is selected only
+  after server support is confirmed.
+- SetConfigFlag type 1 applies and persists the magnetometer/yaw state before
+  packet 24 acknowledgement. Idempotent retries do not repeat the NVS write.
+- UserAction packet 21 is available through `slime action ...`; optional
+  physical-tap mapping defaults to off and lives in network config.
 - Packet 23 has no compatible legacy negotiation path and remains disabled by
   default; only an explicitly verified server build should enable it.
-- ProtocolChange is recorded but not applied.
+- ProtocolChange is validated and recorded but intentionally not applied.
 
 ## Test policy
 

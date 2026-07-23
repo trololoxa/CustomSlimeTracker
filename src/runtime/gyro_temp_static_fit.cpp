@@ -290,9 +290,7 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
     out.print("bad_sample_ratio="); out.println(badSampleRatio, 6);
 
     const GyroTempCompConfig& cfg = gyroTempComp.config();
-    if (std::fabs(fit.residualSlopeDpsPerC.x) > cfg.maxAcceptedSlopeDpsPerC ||
-        std::fabs(fit.residualSlopeDpsPerC.y) > cfg.maxAcceptedSlopeDpsPerC ||
-        std::fabs(fit.residualSlopeDpsPerC.z) > cfg.maxAcceptedSlopeDpsPerC) {
+    if (!gyroTempComp.acceptsSlopeDpsPerC(fit.residualSlopeDpsPerC)) {
         out.println("# ERR fitted residual slope exceeds maxAcceptedSlopeDpsPerC");
         out.print("max_accepted_slope_dps_per_c="); out.println(cfg.maxAcceptedSlopeDpsPerC, 6);
         gyro_temp_static_fit_detail::printVec3Line(out, "residual_slope_dps_per_c", fit.residualSlopeDpsPerC, 8);
@@ -318,6 +316,14 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
     const Vec3 oldSlopeRadSPerC = gyroTempComp.slopeRadSPerC();
     const Vec3 oldSlopeDpsPerC = oldSlopeRadSPerC * MATH_RAD_TO_DEG;
     const Vec3 newSlopeDpsPerC = oldSlopeDpsPerC + fit.residualSlopeDpsPerC;
+    if (!gyroTempComp.acceptsSlopeDpsPerC(newSlopeDpsPerC)) {
+        out.println("# ERR accumulated temperature slope exceeds maxAcceptedSlopeDpsPerC");
+        out.print("max_accepted_slope_dps_per_c="); out.println(cfg.maxAcceptedSlopeDpsPerC, 6);
+        gyro_temp_static_fit_detail::printVec3Line(out, "old_slope_dps_per_c", oldSlopeDpsPerC, 8);
+        gyro_temp_static_fit_detail::printVec3Line(out, "residual_slope_dps_per_c", fit.residualSlopeDpsPerC, 8);
+        gyro_temp_static_fit_detail::printVec3Line(out, "new_slope_dps_per_c", newSlopeDpsPerC, 8);
+        return false;
+    }
     const Vec3 newSlopeRadSPerC = newSlopeDpsPerC * MATH_DEG_TO_RAD;
     const Vec3 oldBiasAtFitRefRadS = gyroTempComp.biasAt(refTempC);
     const Vec3 newReferenceBiasRadS = oldBiasAtFitRefRadS + fit.residualAtRefDps * MATH_DEG_TO_RAD;
@@ -352,32 +358,45 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
         return true;
     }
 
-    gyroTempComp.setModel(newReferenceBiasRadS, refTempC, newSlopeRadSPerC);
-    gyroTempComp.setEnabled(true);
-    gyroTempComp.setQualityMetadata(fit.tempMinC, fit.tempMaxC, fitQuality, residualBeforeDps, residualAfterDps);
-    imuCal.gyroBiasValid = true;
-    imuCal.gyroBiasRadS = gyroTempComp.referenceBiasRadS();
+    // Build the complete replacement state off to the side.  ApplyAndSave must
+    // never leave RAM using a model that failed to persist, and a failed save
+    // must not clear the runtime trim learned against the active model.
+    GyroTempCompensator candidateTempComp = gyroTempComp;
+    ImuCalibration candidateImuCal = imuCal;
+    RuntimeGyroBiasEstimator candidateRuntimeBias = runtimeBias;
+    TrackerConfig candidateConfig = config;
+
+    candidateTempComp.setModel(newReferenceBiasRadS, refTempC, newSlopeRadSPerC);
+    candidateTempComp.setEnabled(true);
+    candidateTempComp.setQualityMetadata(fit.tempMinC, fit.tempMaxC, fitQuality, residualBeforeDps, residualAfterDps);
+    candidateImuCal.gyroBiasValid = true;
+    candidateImuCal.gyroBiasRadS = candidateTempComp.referenceBiasRadS();
 
     // A new base temperature model invalidates any runtime trim learned against the
     // previous model.  Runtime bias is intentionally RAM-only and must restart clean.
-    const bool runtimeBiasWasEnabled = runtimeBias.enabled;
-    runtimeBias.runtimeTrimRadS = Vec3::zero();
-    runtimeBias.resetCounters();
-    runtimeBias.enabled = runtimeBiasWasEnabled;
+    const bool runtimeBiasWasEnabled = candidateRuntimeBias.enabled;
+    candidateRuntimeBias.runtimeTrimRadS = Vec3::zero();
+    candidateRuntimeBias.resetCounters();
+    candidateRuntimeBias.enabled = runtimeBiasWasEnabled;
 
-    config.captureFromGyroTempComp(gyroTempComp);
-    config.sanitize();
-    config.updateCrc();
+    candidateConfig.captureFromGyroTempComp(candidateTempComp);
+    candidateConfig.sanitize();
+    candidateConfig.updateCrc();
+
+    if (mode == GyroTempStaticFitMode::ApplyAndSave && !configStore.save(candidateConfig)) {
+        out.print("# ERR gyro temp fit save failed: ");
+        out.println(configStore.lastErrorName());
+        return false;
+    }
+
+    gyroTempComp = candidateTempComp;
+    imuCal = candidateImuCal;
+    runtimeBias = candidateRuntimeBias;
+    config = candidateConfig;
 
     if (mode == GyroTempStaticFitMode::ApplyRam) {
         out.println("# OK gyro temperature compensation fitted and applied to RAM");
         return true;
-    }
-
-    if (!configStore.save(config)) {
-        out.print("# ERR gyro temp fit save failed: ");
-        out.println(configStore.lastErrorName());
-        return false;
     }
 
     out.println("# OK gyro temperature compensation fitted and saved");

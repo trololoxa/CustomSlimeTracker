@@ -25,7 +25,7 @@ Persisted:
 - mag axis/calibration/yaw-correction policy;
 - output policy;
 - the active `sensorToDevice` proper rotation plus neutral compatibility-reserved bytes;
-- network/SlimeVR configuration in its own NVS namespace.
+- network/SlimeVR configuration in its own NVS namespace, including optional physical-tap UserAction mapping.
 
 Runtime only:
 
@@ -77,3 +77,14 @@ bias while clearing slope/range metadata. Runtime capture persists
 `tempCompValid` only when the in-memory model is explicitly valid.
 
 The guided setup defines device axes as `+X` right, `+Y` forward and `+Z` top/outward. `sensorToDeviceValid` becomes true only after the two-position frame solver produces a finite right-handed proper rotation. No schema bump is required because the frame fields already existed; older configs remain loadable and simply report the frame stage as missing until setup is resumed.
+
+
+## Network-config tap action semantics
+
+Patch 0020 assigns one previously reserved byte in the existing network-config v1
+blob to `tapUserAction`. Zero remains the backward-compatible default (`off`), so
+the layout size and schema version do not change. Allowed persisted values are the
+SlimeVR UserAction wire values `2` full reset, `3` yaw reset, `4` mounting reset
+and `5` pause; every other value sanitizes to `off`. Network-config saves remain
+transactional, and runtime tap mapping changes only after a successful persisted
+write when the command includes `save`.

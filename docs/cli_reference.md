@@ -162,7 +162,7 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 | `net set pass <password> [save]` | Set Wi-Fi password | Optional | Do not wrap the password in quotes unless quotes are part of the password. |
 | `net clear pass [save]` | Clear Wi-Fi password | Optional | For open networks/testing. |
 | `net set name <name> [save]` | Set tracker/device name | Optional | Hostname is sanitized for Wi-Fi/DHCP. |
-| `net set server <host> [port] [save]` | Configure manual SlimeVR server endpoint | Optional | Discovery remains available when manual server is disabled. |
+| `net set server <host> [port] [save]` | Configure manual SlimeVR server endpoint | Optional | Accepts dotted IPv4 or DNS hostname. With discovery off, only the resolved endpoint may establish the session; with discovery on, unicast and broadcast handshakes coexist. |
 | `net discovery on|off [save]` | Enable/disable UDP discovery | Optional | Default is on. |
 | `net enable|disable [save]` | Enable/disable Wi-Fi manager | Optional | Runtime change; `save` persists. |
 | `net reconnect` | Restart Wi-Fi connection attempt | No | Non-blocking reconnect. |
@@ -175,6 +175,8 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 | `slime reconnect` | Restart SlimeVR discovery/session | Runtime | Useful after server restart or network changes. |
 | `slime rate <hz>` | Set SlimeVR `RotationData` rate | Runtime/config | Stored in the existing outputRateHz field for compatibility, but not tied to local serial output. |
 | `slime counters reset` | Reset SlimeVR counters | Runtime | Does not restart Wi-Fi. |
+| `slime action yaw|full|mounting|pause` | Send SlimeVR UserAction packet 21 | Runtime | Server-side reset/pause action; does not alter local AHRS calibration. |
+| `slime tap-action off|yaw|full|mounting|pause [save]` | Map physical tap aggregation to UserAction | Runtime/network config | Defaults to `off`; `save` persists through the transactional network-config store. |
 | `battery status` / `bat status` | Print ADC battery monitor state | No | Shows GPIO, raw ADC mV, computed battery voltage/percentage, present/not-present state and read-failure counters. |
 | `battery reset` / `bat reset` | Reset battery runtime counters/filter | Runtime | Does not change saved config. Next update resamples GPIO. |
 
@@ -294,17 +296,18 @@ SlimeVR `SensorInfo.hasCompletedRestCalibration` is driven by the local rest/gyr
 
 ### SlimeVR incoming UDP packet handling
 
-The firmware handles normal server-to-tracker UDP packets with the SlimeVR 12-byte header (`type:u32be + packetNumber:u64be + payload`). It also keeps a legacy raw one-byte fallback for diagnostics. The raw discovery response remains a special case: `0x03 + "Hey OVR =D 5"`.
+The firmware handles normal server-to-tracker UDP packets with the SlimeVR 12-byte header (`type:u32be + packetNumber:u64be + payload`). The raw discovery response remains a special case: `0x03 + "Hey OVR =D 5"`. SensorInfo acknowledgement is a second special case: exactly six bytes (`type:u32be + sensorId:u8 + sensorStatus:u8`) with no packet number.
 
 The firmware currently handles the server-to-tracker packets needed for a normal UDP SlimeVR session:
 
+- special packet `15` SensorInfo acknowledgement: advances `dirty`/`waiting_for_ack`/`acknowledged` state only when sensor ID and status match the latest sent state; matching acknowledgement stops resend.
 - packet `0`/`1` HeartBeat: counted and answered with tracker heartbeat packet `0`.
 - packet `10` PingPong: reads `pingId:u32be` and echoes it with tracker packet `10`, so the server can compute ping instead of showing a timeout placeholder.
-- packet `22` FeatureFlags: stored and used for capability negotiation. Server bit 0 enables packet-100 bundles; packet 23 is not inferred from that bit and remains disabled by default.
-- packet `25` SetConfigFlag: reads `sensorId:u8`, `configType:u16be`, `state:u8`. For config type `0x0001` the firmware treats it as the runtime magnetometer/yaw enable toggle, applies it without writing NVS, refreshes `SensorInfo`, and sends packet `24` AckConfigChange.
-- packet `200` ProtocolChange: stored for diagnostics only. The firmware stays on UDP protocol v22.
+- packet `22` FeatureFlags: non-empty bitsets advance explicit negotiation state. Server bit 0 enables packet-100 bundles; packet 23 is not inferred from that bit and remains disabled by default.
+- packet `25` SetConfigFlag: reads `sensorId:u8`, `configType:u16be`, `state:u8`. For config type `0x0001` the firmware transactionally applies and persists the magnetometer/yaw state, verifies success, marks SensorInfo dirty and only then sends packet `24`. Repeated identical commands are acknowledged without another NVS write.
+- packet `200` ProtocolChange: length-validated and stored for diagnostics, then intentionally ignored. The firmware stays on UDP protocol v22.
 
-Use `slime status` to inspect `ping_received`, `pong_sent`, `feature_flags_received`, `set_config_flag_*`, `ack_config_sent`, `protocol_change_received`, and `unknown_packets_received`.
+Use `slime status` or `slime debug` to inspect `sensor_info_sync_state`, `feature_negotiation_state`, `manual_server_*`, `ping_received`, `pong_sent`, `feature_flags_received`, `set_config_flag_*`, `ack_config_*`, `malformed_datagram_length`, the remaining `malformed_*` counters, `user_action_*`, `protocol_change_ignored`, and `unknown_packets_received`. Only complete validated packets from the selected server endpoint refresh session liveness.
 
 The firmware sends its FeatureFlags after server discovery. When the server
 returns bit 0, valid timestamp-coherent rotation and linear acceleration are
@@ -319,7 +322,7 @@ states that acceleration uses the corrected device frame shared with quaternion
 (`+X right, +Y forward, +Z top/outward`), so the server does not apply its legacy
 acceleration-only -90 degree local-Z correction. `slime status`, `slime debug`,
 `perf tracking`, and `motion status` expose mode, negotiation and skip counters.
-SensorInfo ACK state and ProtocolChange application remain future protocol work.
+SensorInfo acknowledgement, endpoint/liveness validation, FeatureFlags negotiation, persistent SetConfigFlag acknowledgement and UserAction sending are active. ProtocolChange application is intentionally unsupported rather than an unfinished state transition.
 
 ## SlimeVR Server serial compatibility
 

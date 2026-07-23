@@ -41,7 +41,11 @@ public:
         return true;
     }
 
-    bool write(uint8_t, const uint8_t*, size_t) override { return true; }
+    bool write(uint8_t reg, const uint8_t* src, size_t len) override {
+        if (src == nullptr || len == 0) return false;
+        writes_.push_back({reg, src[0]});
+        return true;
+    }
     void delayMs(uint32_t) override {}
 
     void gyro(uint8_t counter, int16_t value) {
@@ -53,6 +57,9 @@ public:
         words_.push_back(makeWord(Lsm6dsvFifoReader::TAG_ACCEL_NC, counter,
                                   value, static_cast<int16_t>(value + 1), static_cast<int16_t>(value + 2)));
     }
+
+    void clearWrites() { writes_.clear(); }
+    const std::vector<std::array<uint8_t, 2>>& writes() const { return writes_; }
 
 private:
     static Word makeWord(uint8_t sensorTag, uint8_t counter, int16_t x, int16_t y, int16_t z) {
@@ -72,6 +79,7 @@ private:
 
     std::vector<Word> words_;
     size_t readIndex_ = 0;
+    std::vector<std::array<uint8_t, 2>> writes_;
 };
 
 struct Fixture {
@@ -205,6 +213,85 @@ void testCounterMismatchDegradesOnlyAccel(TestContext& ctx) {
     CHECK(ctx, q.has(imu_quality_flags::FIFO_PAIR_DEGRADED));
 }
 
+
+
+void testCompletedQueueOverflowIsAccountedSeparately(TestContext& ctx) {
+    Fixture f;
+    CHECK(ctx, f.begin());
+    for (uint16_t i = 0; i < 130; ++i) {
+        const uint8_t counter = static_cast<uint8_t>(i & 0x03u);
+        f.bus.gyro(counter, static_cast<int16_t>(10 + i));
+        f.bus.accel(counter, static_cast<int16_t>(100 + i));
+    }
+
+    Lsm6dsv::RawSample out[1]{};
+    size_t count = 0;
+    CHECK(ctx, f.fifo.drainRawSamples(out, 1, count, 1000000, 512));
+    CHECK(ctx, count == 1);
+    CHECK(ctx, f.fifo.stats().completedSampleQueueOverflow == 2);
+    CHECK(ctx, f.fifo.stats().waitingSampleQueueOverflow == 0);
+}
+
+
+void testPausePreservesConfiguredFifoRegisters(TestContext& ctx) {
+    PairingTransport bus;
+    Lsm6dsv lsm(bus);
+    Lsm6dsvFifoReader fifo(bus, lsm);
+
+    Lsm6dsvFifoReader::Config cfg;
+    cfg.enableTimestampCounter = false;
+    cfg.timestampBatch = Lsm6dsvFifoReader::TimestampBatch::Decimation1;
+    cfg.temperatureBatch = Lsm6dsvFifoReader::TemperatureBatch::Hz1_875;
+    cfg.mode = Lsm6dsvFifoReader::FifoMode::Continuous;
+    CHECK(ctx, fifo.configure(cfg));
+
+    bus.clearWrites();
+    CHECK(ctx, fifo.pauseFifo());
+    CHECK(ctx, bus.writes().size() == 1);
+    CHECK(ctx, bus.writes()[0][0] == 0x0A);
+    CHECK(ctx, bus.writes()[0][1] == 0x00);
+
+    CHECK(ctx, fifo.resetFifo());
+    CHECK(ctx, bus.writes().size() == 3);
+    CHECK(ctx, bus.writes()[1][0] == 0x0A);
+    CHECK(ctx, bus.writes()[1][1] == 0x00);
+    CHECK(ctx, bus.writes()[2][0] == 0x0A);
+    CHECK(ctx, bus.writes()[2][1] != 0x00);
+
+    // No pause/resume write may destroy watermark or accel/gyro BDR registers.
+    for (const auto& write : bus.writes()) {
+        CHECK(ctx, write[0] != 0x07);
+        CHECK(ctx, write[0] != 0x08);
+        CHECK(ctx, write[0] != 0x09);
+    }
+}
+
+void testFirstFallbackTimestampUsesDrainClock(TestContext& ctx) {
+    PairingTransport bus;
+    Lsm6dsv lsm(bus);
+    Lsm6dsvFifoReader fifo(bus, lsm);
+
+    Lsm6dsvFifoReader::Config cfg;
+    cfg.enableTimestampCounter = false;
+    cfg.timestampBatch = Lsm6dsvFifoReader::TimestampBatch::Off;
+    cfg.temperatureBatch = Lsm6dsvFifoReader::TemperatureBatch::Off;
+    cfg.useHardwareTimestamps = true;
+    cfg.allowTimestampFallback = true;
+    cfg.maxWaitingSamplesBeforeFallback = 0;
+    CHECK(ctx, fifo.configure(cfg));
+
+    bus.gyro(0, 10);
+    bus.accel(0, 100);
+
+    constexpr uint64_t drainTimestampUs = 1000000ULL;
+    Lsm6dsv::RawSample out[2]{};
+    size_t count = 0;
+    CHECK(ctx, fifo.drainRawSamples(out, 2, count, drainTimestampUs, 16));
+    CHECK(ctx, count == 1);
+    CHECK(ctx, out[0].t_us == drainTimestampUs);
+    CHECK(ctx, (out[0].flags & Lsm6dsvFifoReader::FIFO_FLAG_TS_FALLBACK) != 0u);
+}
+
 } // namespace
 
 int main() {
@@ -214,5 +301,8 @@ int main() {
     testMissingAccelPreservesGyroContinuity(ctx);
     testRepeatedAccelKeepsNewestObservation(ctx);
     testCounterMismatchDegradesOnlyAccel(ctx);
+    testCompletedQueueOverflowIsAccountedSeparately(ctx);
+    testPausePreservesConfiguredFifoRegisters(ctx);
+    testFirstFallbackTimestampUsesDrainClock(ctx);
     return ctx.finish("test_fifo_pair_coherency");
 }

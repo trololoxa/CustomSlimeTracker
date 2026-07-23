@@ -141,11 +141,12 @@ bool TrackerConfigStore::loadOrDefaults(TrackerConfig& out, bool* loadedFromNvs)
     return true;
 }
 
-bool TrackerConfigStore::save(TrackerConfig config) {
-    config.sanitize();
-    config.updateCrc();
+bool TrackerConfigStore::save(TrackerConfig& config) {
+    TrackerConfig candidate = config;
+    candidate.sanitize();
+    candidate.updateCrc();
 
-    if (!config.validate()) {
+    if (!candidate.validate()) {
         lastError_ = TrackerConfigError::CrcOrValidationFailed;
         return false;
     }
@@ -156,14 +157,17 @@ bool TrackerConfigStore::save(TrackerConfig config) {
         return false;
     }
 
-    const size_t written = prefs.putBytes(key_, &config.data, sizeof(config.data));
+    const size_t written = prefs.putBytes(key_, &candidate.data, sizeof(candidate.data));
     prefs.end();
 
-    if (written != sizeof(config.data)) {
+    if (written != sizeof(candidate.data)) {
         lastError_ = TrackerConfigError::WriteFailed;
         return false;
     }
 
+    // Keep the live/config mirror byte-for-byte consistent with what was
+    // persisted. Failed writes never alter the caller's state.
+    config = candidate;
     lastError_ = TrackerConfigError::None;
     return true;
 }

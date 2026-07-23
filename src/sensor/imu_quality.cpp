@@ -210,6 +210,7 @@ void ImuQualityMonitor::evaluateFifoStatsDelta(const Lsm6dsvFifoReader::DrainSta
     const uint32_t dAccelTag = delta(stats.accelTagCounterJumps, lastStats_.accelTagCounterJumps);
     const uint32_t dTsQueue = delta(stats.timestampQueueOverflow, lastStats_.timestampQueueOverflow);
     const uint32_t dWaitQueue = delta(stats.waitingSampleQueueOverflow, lastStats_.waitingSampleQueueOverflow);
+    const uint32_t dCompletedQueue = delta(stats.completedSampleQueueOverflow, lastStats_.completedSampleQueueOverflow);
     const uint32_t dBackwards = delta(stats.timestampBackwards, lastStats_.timestampBackwards);
     const uint32_t dMetaXl = delta(stats.timestampMetaBdrXlMismatch, lastStats_.timestampMetaBdrXlMismatch);
     const uint32_t dMetaGy = delta(stats.timestampMetaBdrGyMismatch, lastStats_.timestampMetaBdrGyMismatch);
@@ -221,6 +222,7 @@ void ImuQualityMonitor::evaluateFifoStatsDelta(const Lsm6dsvFifoReader::DrainSta
     if (dGyroTag > 0) q.flags |= imu_quality_flags::FIFO_GYRO_TAG_COUNTER_JUMP;
     if (dAccelTag > 0) q.flags |= imu_quality_flags::FIFO_ACCEL_TAG_COUNTER_JUMP;
     if (dTsQueue > 0 || dWaitQueue > 0) q.flags |= imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW;
+    if (dCompletedQueue > 0) q.flags |= imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW;
     if (dBackwards > 0) q.flags |= imu_quality_flags::TIMESTAMP_BACKWARDS;
     if (dMetaXl > 0 || dMetaGy > 0) q.flags |= imu_quality_flags::TIMESTAMP_META_MISMATCH;
 
@@ -232,6 +234,7 @@ void ImuQualityMonitor::evaluateFifoStatsDelta(const Lsm6dsvFifoReader::DrainSta
     counters_.fifoAccelTagCounterJumps += dAccelTag;
     counters_.timestampQueueOverflows += dTsQueue;
     counters_.waitingSampleQueueOverflows += dWaitQueue;
+    counters_.completedSampleQueueOverflows += dCompletedQueue;
     counters_.timestampBackwards += dBackwards;
     counters_.timestampMetaMismatches += dMetaXl + dMetaGy;
 
@@ -305,6 +308,10 @@ void ImuQualityMonitor::finalizeDecision(ImuQualityResult& q) {
     if (q.has(imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) && cfg_.requestRecoveryOnTimestampQueueOverflow) {
         requestRecovery(q, imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW);
     }
+    if (q.has(imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW) &&
+        cfg_.requestRecoveryOnCompletedQueueOverflow) {
+        requestRecovery(q, imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW);
+    }
 
     q.shouldUpdateAhrs = !q.has(imu_quality_flags::GYRO_COMPONENT_MISSING);
     if (cfg_.skipAhrsOnBadTimestamp && q.timestampConfidence <= 0.0f) {
@@ -367,6 +374,7 @@ void ImuQualityMonitor::requestRecovery(ImuQualityResult& q, uint32_t reasonFlag
     else if (reasonFlag == imu_quality_flags::FIFO_UNKNOWN_TAG) counters_.fifoRecoveryUnknownTagRequests++;
     else if (reasonFlag == imu_quality_flags::TIMESTAMP_BACKWARDS) counters_.fifoRecoveryTimestampBackwardsRequests++;
     else if (reasonFlag == imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) counters_.fifoRecoveryTimestampQueueOverflowRequests++;
+    else if (reasonFlag == imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW) counters_.fifoRecoveryCompletedQueueOverflowRequests++;
 
     q.flags |= imu_quality_flags::FIFO_RECOVERY_REQUESTED;
     q.shouldRequestFifoRecovery = true;

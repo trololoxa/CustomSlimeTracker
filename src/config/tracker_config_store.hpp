@@ -45,7 +45,9 @@ public:
     bool inspect(TrackerConfigNvsInfo& info);
     bool load(TrackerConfig& out);
     bool loadOrDefaults(TrackerConfig& out, bool* loadedFromNvs = nullptr);
-    bool save(TrackerConfig config);
+    // On success, config is replaced with the exact sanitized/CRC-updated
+    // payload written to NVS. On failure, config is left unchanged.
+    bool save(TrackerConfig& config);
     bool erase();
     bool exists();
 

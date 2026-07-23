@@ -358,7 +358,7 @@ void machineLogEmitMagFrame(Stream& out,
 
     const uint32_t seq = state.sequence++;
     const uint32_t nowMs = millis();
-    const uint32_t ageMs = mag.receivedMs == 0 ? 0UL : nowMs - mag.receivedMs;
+    const uint32_t ageMs = mag.valid ? nowMs - mag.receivedMs : 0UL;
 
     out.print("MAG,"); machineLogPrintU64Dec(out, mag.t_us);
     out.print(','); out.print(seq);

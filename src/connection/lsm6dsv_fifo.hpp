@@ -223,6 +223,7 @@ public:
         uint32_t fallbackTimestampAssigned = 0;
         uint32_t timestampQueueOverflow = 0;
         uint32_t waitingSampleQueueOverflow = 0;
+        uint32_t completedSampleQueueOverflow = 0;
         uint32_t timestampBackwards = 0;
         uint32_t timestampWraps = 0;
         uint32_t timestampDuplicate = 0;
@@ -245,6 +246,10 @@ public:
     };    Lsm6dsvFifoReader(Lsm6dsvTransport& bus, const Lsm6dsv& lsm);
 
     bool configure(const Config& config);
+
+    // Temporarily stop FIFO collection without discarding the configured
+    // watermark/batching registers. resetFifo() resumes the configured mode.
+    bool pauseFifo();
 
     bool resetFifo();
 
@@ -359,7 +364,7 @@ private:
 
     void assignFallbackTimestamp(Lsm6dsv::RawSample& s, uint64_t drainTimestampUs);
 
-    void fallbackWaitingSamples(size_t howMany);
+    void fallbackWaitingSamples(size_t howMany, uint64_t fallbackBaseUs);
 
     bool pushTimestamp(uint64_t tsUs);
 

@@ -11,6 +11,7 @@
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
+#include "serial/tracker_config_transaction.hpp"
 
 namespace tracker {
 
@@ -210,16 +211,21 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
 
         if (tracker_serial_mag_detail::is(argv[1], "enable") || tracker_serial_mag_detail::is(argv[1], "on")) {
             const bool saveRequested = argc >= 3 && tracker_serial_mag_detail::is(argv[2], "save");
-            if (ctx.config) {
-                ctx.config->data.magCal.driverEnabled = true;
-                ctx.config->updateCrc();
-            }
             bool ok = true;
             if (ctx.setMagRuntimeEnabled) {
                 ok = ctx.setMagRuntimeEnabled(true, saveRequested, ctx.setMagRuntimeEnabledUser);
-            }
-            if (ok && !ctx.setMagRuntimeEnabled) {
-                ok = magSaveConfigIfRequested(ctx, saveRequested);
+            } else if (ctx.config) {
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magCal.driverEnabled = true;
+                candidate.sanitize();
+                candidate.updateCrc();
+                if (saveRequested && (!ctx.configStore || !ctx.configStore->save(candidate))) {
+                    ok = false;
+                } else {
+                    *ctx.config = candidate;
+                }
+            } else {
+                ok = false;
             }
             if (ok) tracker_serial_detail::printOk(out, saveRequested ? "mag enabled and saved" : "mag enabled in RAM");
             else tracker_serial_detail::printErr(out, "mag enable failed");
@@ -228,16 +234,21 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
 
         if (tracker_serial_mag_detail::is(argv[1], "disable") || tracker_serial_mag_detail::is(argv[1], "off")) {
             const bool saveRequested = argc >= 3 && tracker_serial_mag_detail::is(argv[2], "save");
-            if (ctx.config) {
-                ctx.config->data.magCal.driverEnabled = false;
-                ctx.config->updateCrc();
-            }
             bool ok = true;
             if (ctx.setMagRuntimeEnabled) {
                 ok = ctx.setMagRuntimeEnabled(false, saveRequested, ctx.setMagRuntimeEnabledUser);
-            }
-            if (ok && !ctx.setMagRuntimeEnabled) {
-                ok = magSaveConfigIfRequested(ctx, saveRequested);
+            } else if (ctx.config) {
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magCal.driverEnabled = false;
+                candidate.sanitize();
+                candidate.updateCrc();
+                if (saveRequested && (!ctx.configStore || !ctx.configStore->save(candidate))) {
+                    ok = false;
+                } else {
+                    *ctx.config = candidate;
+                }
+            } else {
+                ok = false;
             }
             if (ok) tracker_serial_detail::printOk(out, saveRequested ? "mag disabled and saved" : "mag disabled in RAM");
             else tracker_serial_detail::printErr(out, "mag disable failed");
@@ -450,14 +461,8 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 return;
             }
 
-            auto saveYawConfigIfRequested = [&](bool saveRequested) -> bool {
-                ctx.config->sanitize();
-                ctx.config->updateCrc();
-
-                if (!saveRequested) return true;
-
-                if (!ctx.configStore) return false;
-                return ctx.configStore->save(*ctx.config);
+            auto commitYawConfig = [&](TrackerConfig candidate, bool saveRequested) -> bool {
+                return trackerCommitConfigCandidate(ctx, candidate, saveRequested);
             };
 
             auto resetYawStats = [&]() {
@@ -469,11 +474,12 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             if (tracker_serial_mag_detail::is(argv[2], "defaults")) {
                 const bool saveRequested = argc >= 4 && tracker_serial_mag_detail::is(argv[3], "save");
 
-                const bool keepApply = ctx.config->data.magYaw.applyEnabled;
-                ctx.config->data.magYaw = TrackerMagYawCorrectionConfigPersisted{};
-                ctx.config->data.magYaw.applyEnabled = keepApply;
+                TrackerConfig candidate = *ctx.config;
+                const bool keepApply = candidate.data.magYaw.applyEnabled;
+                candidate.data.magYaw = TrackerMagYawCorrectionConfigPersisted{};
+                candidate.data.magYaw.applyEnabled = keepApply;
 
-                if (!saveYawConfigIfRequested(saveRequested)) {
+                if (!commitYawConfig(candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag yaw defaults save failed");
                     return;
                 }
@@ -496,9 +502,10 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 }
 
                 const bool saveRequested = argc >= 5 && tracker_serial_mag_detail::is(argv[4], "save");
-                ctx.config->data.magYaw.timeConstantS = v;
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magYaw.timeConstantS = v;
 
-                if (!saveYawConfigIfRequested(saveRequested)) {
+                if (!commitYawConfig(candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag yaw tc save failed");
                     return;
                 }
@@ -521,9 +528,10 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 }
 
                 const bool saveRequested = argc >= 5 && tracker_serial_mag_detail::is(argv[4], "save");
-                ctx.config->data.magYaw.maxInnovationDeg = v;
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magYaw.maxInnovationDeg = v;
 
-                if (!saveYawConfigIfRequested(saveRequested)) {
+                if (!commitYawConfig(candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag yaw innovation save failed");
                     return;
                 }
@@ -548,10 +556,11 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 }
 
                 const bool saveRequested = argc >= 6 && tracker_serial_mag_detail::is(argv[5], "save");
-                ctx.config->data.magYaw.gyroNormGoodDps = good;
-                ctx.config->data.magYaw.gyroNormBadDps = bad;
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magYaw.gyroNormGoodDps = good;
+                candidate.data.magYaw.gyroNormBadDps = bad;
 
-                if (!saveYawConfigIfRequested(saveRequested)) {
+                if (!commitYawConfig(candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag yaw gyro gate save failed");
                     return;
                 }
@@ -576,10 +585,11 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 }
 
                 const bool saveRequested = argc >= 6 && tracker_serial_mag_detail::is(argv[5], "save");
-                ctx.config->data.magYaw.horizontalNormBad = bad;
-                ctx.config->data.magYaw.horizontalNormGood = good;
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magYaw.horizontalNormBad = bad;
+                candidate.data.magYaw.horizontalNormGood = good;
 
-                if (!saveYawConfigIfRequested(saveRequested)) {
+                if (!commitYawConfig(candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag yaw horizontal gate save failed");
                     return;
                 }
@@ -604,10 +614,11 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 }
 
                 const bool saveRequested = argc >= 6 && tracker_serial_mag_detail::is(argv[5], "save");
-                ctx.config->data.magYaw.accelTrustBad = bad;
-                ctx.config->data.magYaw.accelTrustGood = good;
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magYaw.accelTrustBad = bad;
+                candidate.data.magYaw.accelTrustGood = good;
 
-                if (!saveYawConfigIfRequested(saveRequested)) {
+                if (!commitYawConfig(candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag yaw accel gate save failed");
                     return;
                 }
@@ -630,9 +641,10 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 }
 
                 const bool saveRequested = argc >= 5 && tracker_serial_mag_detail::is(argv[4], "save");
-                ctx.config->data.magYaw.maxMagAgeMs = v;
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magYaw.maxMagAgeMs = v;
 
-                if (!saveYawConfigIfRequested(saveRequested)) {
+                if (!commitYawConfig(candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag yaw age save failed");
                     return;
                 }
@@ -655,9 +667,10 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 }
 
                 const bool saveRequested = argc >= 5 && tracker_serial_mag_detail::is(argv[4], "save");
-                ctx.config->data.magYaw.maxCorrectionRateDegS = v;
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magYaw.maxCorrectionRateDegS = v;
 
-                if (!saveYawConfigIfRequested(saveRequested)) {
+                if (!commitYawConfig(candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag yaw rate save failed");
                     return;
                 }
@@ -680,9 +693,10 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 }
 
                 const bool saveRequested = argc >= 5 && tracker_serial_mag_detail::is(argv[4], "save");
-                ctx.config->data.magYaw.maxCorrectionStepDeg = v;
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magYaw.maxCorrectionStepDeg = v;
 
-                if (!saveYawConfigIfRequested(saveRequested)) {
+                if (!commitYawConfig(candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag yaw step save failed");
                     return;
                 }
@@ -729,11 +743,11 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
 
                 const bool saveRequested = argc >= 7 && tracker_serial_mag_detail::is(argv[6], "save");
 
-                ctx.config->data.magCal.magToImu = m;
-                ctx.config->data.magCal.axisAlignmentValid = true;
-                ctx.config->updateCrc();
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magCal.magToImu = m;
+                candidate.data.magCal.axisAlignmentValid = true;
 
-                if (!saveConfigIfRequested(ctx, saveRequested)) {
+                if (!trackerCommitConfigCandidate(ctx, candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag axis save failed");
                     return;
                 }
@@ -747,11 +761,11 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             if (tracker_serial_mag_detail::is(argv[2], "identity")) {
                 const bool saveRequested = argc >= 4 && tracker_serial_mag_detail::is(argv[3], "save");
 
-                ctx.config->data.magCal.magToImu = Mat3::identity();
-                ctx.config->data.magCal.axisAlignmentValid = true;
-                ctx.config->updateCrc();
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magCal.magToImu = Mat3::identity();
+                candidate.data.magCal.axisAlignmentValid = true;
 
-                if (!saveConfigIfRequested(ctx, saveRequested)) {
+                if (!trackerCommitConfigCandidate(ctx, candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag axis identity save failed");
                     return;
                 }
@@ -765,11 +779,11 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             if (tracker_serial_mag_detail::is(argv[2], "clear")) {
                 const bool saveRequested = argc >= 4 && tracker_serial_mag_detail::is(argv[3], "save");
 
-                ctx.config->data.magCal.magToImu = Mat3::identity();
-                ctx.config->data.magCal.axisAlignmentValid = false;
-                ctx.config->updateCrc();
+                TrackerConfig candidate = *ctx.config;
+                candidate.data.magCal.magToImu = Mat3::identity();
+                candidate.data.magCal.axisAlignmentValid = false;
 
-                if (!saveConfigIfRequested(ctx, saveRequested)) {
+                if (!trackerCommitConfigCandidate(ctx, candidate, saveRequested)) {
                     tracker_serial_detail::printErr(out, "mag axis clear save failed");
                     return;
                 }

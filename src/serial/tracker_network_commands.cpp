@@ -6,6 +6,7 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "network/wifi_manager.hpp"
 #include "runtime/tracker_console_suppress.hpp"
+#include "runtime/tap_runtime_controller.hpp"
 #include "sensor/imu_quality.hpp"
 #include "defines.h"
 
@@ -119,21 +120,42 @@ void applyWifiConfig(TrackerSerialCommandContext& ctx) {
     }
 }
 
-bool saveIfRequested(TrackerSerialCommandContext& ctx, bool save) {
+bool commitNetworkCandidate(TrackerSerialCommandContext& ctx,
+                            TrackerNetworkConfig candidate,
+                            bool persist,
+                            bool markLoadedFromNvs) {
     Stream& out = netStream(ctx);
-    if (!save) return true;
-    if (!ctx.networkConfig || !ctx.networkConfigStore) {
-        tracker_serial_detail::printErr(out, "network config store not available");
+    if (!ctx.networkConfig) {
+        tracker_serial_detail::printErr(out, "network config not available");
         return false;
     }
-    ctx.networkConfig->sanitize();
-    if (!ctx.networkConfigStore->save(*ctx.networkConfig)) {
-        out.print("# ERR net save failed: ");
-        out.println(ctx.networkConfigStore->lastErrorName());
+
+    candidate.sanitize();
+    if (!candidate.validate()) {
+        tracker_serial_detail::printErr(out, "network config candidate is invalid");
         return false;
     }
-    if (ctx.networkConfigLoadedFromNvs) *ctx.networkConfigLoadedFromNvs = true;
-    tracker_serial_detail::printOk(out, "network config saved");
+
+    if (persist) {
+        if (!ctx.networkConfigStore) {
+            tracker_serial_detail::printErr(out, "network config store not available");
+            return false;
+        }
+        if (!ctx.networkConfigStore->save(candidate)) {
+            out.print("# ERR net save failed: ");
+            out.println(ctx.networkConfigStore->lastErrorName());
+            return false;
+        }
+    }
+
+    *ctx.networkConfig = candidate;
+    applyWifiConfig(ctx);
+    if (ctx.tapRuntime) {
+        ctx.tapRuntime->setPhysicalTapUserAction(ctx.networkConfig->tapUserAction());
+    }
+    if (ctx.networkConfigLoadedFromNvs) {
+        *ctx.networkConfigLoadedFromNvs = markLoadedFromNvs;
+    }
     return true;
 }
 
@@ -272,6 +294,7 @@ void trackerSerialPrintNetworkStatus(TrackerSerialCommandContext& ctx) {
         out.print("server_host="); out.println(n.serverHost);
         out.print("server_port="); out.println(n.serverPort);
         out.print("sensor_id="); out.println(n.sensorId);
+        out.print("tap_user_action="); out.println(slimevrUserActionName(ctx.networkConfig->tapUserAction()));
     } else {
         out.println("config_available=no");
     }
@@ -358,18 +381,22 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
             tracker_serial_detail::printErr(out, "set ssid first: net set ssid <ssid> [save]");
             return true;
         }
-        net.data.wifiEnabled = true;
-        applyWifiConfig(ctx);
-        tracker_serial_detail::printOk(out, "wifi enabled; connection runs in background");
-        saveIfRequested(ctx, hasSaveArg(argc, argv, 2));
+        TrackerNetworkConfig candidate = net;
+        candidate.data.wifiEnabled = true;
+        const bool save = hasSaveArg(argc, argv, 2);
+        if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+        tracker_serial_detail::printOk(out, save
+            ? "wifi enabled and network config saved"
+            : "wifi enabled; connection runs in background");
         return true;
     }
 
     if (is(argv[1], "disable")) {
-        net.data.wifiEnabled = false;
-        applyWifiConfig(ctx);
-        tracker_serial_detail::printOk(out, "wifi disabled");
-        saveIfRequested(ctx, hasSaveArg(argc, argv, 2));
+        TrackerNetworkConfig candidate = net;
+        candidate.data.wifiEnabled = false;
+        const bool save = hasSaveArg(argc, argv, 2);
+        if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+        tracker_serial_detail::printOk(out, save ? "wifi disabled and saved" : "wifi disabled");
         return true;
     }
 
@@ -379,46 +406,45 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
             return true;
         }
 
+        TrackerNetworkConfig candidate = net;
+        const bool save = hasSaveArg(argc, argv, 4);
+
         if (is(argv[2], "ssid")) {
-            copyBounded(net.data.ssid, sizeof(net.data.ssid), argv[3]);
-            net.data.credentialsValid = net.data.ssid[0] != '\0';
-            applyWifiConfig(ctx);
-            tracker_serial_detail::printOk(out, "ssid updated");
-            saveIfRequested(ctx, hasSaveArg(argc, argv, 4));
+            copyBounded(candidate.data.ssid, sizeof(candidate.data.ssid), argv[3]);
+            candidate.data.credentialsValid = candidate.data.ssid[0] != '\0';
+            if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+            tracker_serial_detail::printOk(out, save ? "ssid updated and saved" : "ssid updated");
             return true;
         }
 
         if (is(argv[2], "pass") || is(argv[2], "password")) {
-            copyBounded(net.data.password, sizeof(net.data.password), argv[3]);
-            net.data.credentialsValid = net.data.ssid[0] != '\0';
-            applyWifiConfig(ctx);
-            tracker_serial_detail::printOk(out, "password updated");
-            saveIfRequested(ctx, hasSaveArg(argc, argv, 4));
+            copyBounded(candidate.data.password, sizeof(candidate.data.password), argv[3]);
+            candidate.data.credentialsValid = candidate.data.ssid[0] != '\0';
+            if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+            tracker_serial_detail::printOk(out, save ? "password updated and saved" : "password updated");
             return true;
         }
 
         if (is(argv[2], "name") || is(argv[2], "hostname") || is(argv[2], "device")) {
-            copyBounded(net.data.deviceName, sizeof(net.data.deviceName), argv[3]);
-            applyWifiConfig(ctx);
-            tracker_serial_detail::printOk(out, "device name updated");
-            saveIfRequested(ctx, hasSaveArg(argc, argv, 4));
+            copyBounded(candidate.data.deviceName, sizeof(candidate.data.deviceName), argv[3]);
+            if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+            tracker_serial_detail::printOk(out, save ? "device name updated and saved" : "device name updated");
             return true;
         }
 
         if (is(argv[2], "server")) {
-            copyBounded(net.data.serverHost, sizeof(net.data.serverHost), argv[3]);
-            net.data.manualServerEnabled = net.data.serverHost[0] != '\0';
+            copyBounded(candidate.data.serverHost, sizeof(candidate.data.serverHost), argv[3]);
+            candidate.data.manualServerEnabled = candidate.data.serverHost[0] != '\0';
             if (argc >= 5 && !is(argv[4], "save")) {
                 uint32_t port = 0;
                 if (!tracker_serial_detail::parseU32(argv[4], port) || port == 0 || port > 65535u) {
                     tracker_serial_detail::printErr(out, "invalid port");
                     return true;
                 }
-                net.data.serverPort = static_cast<uint16_t>(port);
+                candidate.data.serverPort = static_cast<uint16_t>(port);
             }
-            applyWifiConfig(ctx);
-            tracker_serial_detail::printOk(out, "server updated");
-            saveIfRequested(ctx, hasSaveArg(argc, argv, 4));
+            if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+            tracker_serial_detail::printOk(out, save ? "server updated and saved" : "server updated");
             return true;
         }
 
@@ -431,19 +457,21 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
             tracker_serial_detail::printErr(out, "usage: net clear pass|server [save]");
             return true;
         }
+        TrackerNetworkConfig candidate = net;
+        const bool save = hasSaveArg(argc, argv, 3);
         if (is(argv[2], "pass") || is(argv[2], "password")) {
-            net.data.password[0] = '\0';
-            applyWifiConfig(ctx);
-            tracker_serial_detail::printOk(out, "password cleared; open network mode");
-            saveIfRequested(ctx, hasSaveArg(argc, argv, 3));
+            candidate.data.password[0] = '\0';
+            if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+            tracker_serial_detail::printOk(out, save
+                ? "password cleared and open-network mode saved"
+                : "password cleared; open network mode");
             return true;
         }
         if (is(argv[2], "server")) {
-            net.data.serverHost[0] = '\0';
-            net.data.manualServerEnabled = false;
-            applyWifiConfig(ctx);
-            tracker_serial_detail::printOk(out, "manual server cleared");
-            saveIfRequested(ctx, hasSaveArg(argc, argv, 3));
+            candidate.data.serverHost[0] = '\0';
+            candidate.data.manualServerEnabled = false;
+            if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+            tracker_serial_detail::printOk(out, save ? "manual server cleared and saved" : "manual server cleared");
             return true;
         }
         tracker_serial_detail::printErr(out, "usage: net clear pass|server [save]");
@@ -455,20 +483,23 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
             out.print("discovery_enabled="); out.println(net.data.discoveryEnabled ? "yes" : "no");
             return true;
         }
-        if (is(argv[2], "on")) net.data.discoveryEnabled = true;
-        else if (is(argv[2], "off")) net.data.discoveryEnabled = false;
+        TrackerNetworkConfig candidate = net;
+        if (is(argv[2], "on")) candidate.data.discoveryEnabled = true;
+        else if (is(argv[2], "off")) candidate.data.discoveryEnabled = false;
         else {
             tracker_serial_detail::printErr(out, "usage: net discovery on|off [save]");
             return true;
         }
-        applyWifiConfig(ctx);
-        tracker_serial_detail::printOk(out, "discovery updated");
-        saveIfRequested(ctx, hasSaveArg(argc, argv, 3));
+        const bool save = hasSaveArg(argc, argv, 3);
+        if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+        tracker_serial_detail::printOk(out, save ? "discovery updated and saved" : "discovery updated");
         return true;
     }
 
     if (is(argv[1], "save")) {
-        saveIfRequested(ctx, true);
+        TrackerNetworkConfig candidate = net;
+        if (!commitNetworkCandidate(ctx, candidate, true, true)) return true;
+        tracker_serial_detail::printOk(out, "network config saved");
         return true;
     }
 
@@ -477,26 +508,25 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
             tracker_serial_detail::printErr(out, "network config store not available");
             return true;
         }
-        TrackerNetworkConfig loaded;
-        if (!ctx.networkConfigStore->load(loaded)) {
+        TrackerNetworkConfig candidate;
+        if (!ctx.networkConfigStore->load(candidate)) {
             out.print("# ERR net load failed: ");
             out.println(ctx.networkConfigStore->lastErrorName());
             return true;
         }
-        net = loaded;
-        net.sanitize();
-        if (ctx.networkConfigLoadedFromNvs) *ctx.networkConfigLoadedFromNvs = true;
-        applyWifiConfig(ctx);
+        if (!commitNetworkCandidate(ctx, candidate, false, true)) return true;
         tracker_serial_detail::printOk(out, "network config loaded");
         return true;
     }
 
     if (is(argv[1], "defaults")) {
-        net.resetDefaults();
-        if (ctx.networkConfigLoadedFromNvs) *ctx.networkConfigLoadedFromNvs = false;
-        applyWifiConfig(ctx);
-        tracker_serial_detail::printOk(out, "network config reset to defaults in RAM");
-        saveIfRequested(ctx, hasSaveArg(argc, argv, 2));
+        TrackerNetworkConfig candidate;
+        candidate.resetDefaults();
+        const bool save = hasSaveArg(argc, argv, 2);
+        if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
+        tracker_serial_detail::printOk(out, save
+            ? "network defaults applied and saved"
+            : "network config reset to defaults in RAM");
         return true;
     }
 
@@ -505,15 +535,18 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
             tracker_serial_detail::printErr(out, "network config store not available");
             return true;
         }
-        const bool ok = ctx.networkConfigStore->erase();
-        net.resetDefaults();
-        if (ctx.networkConfigLoadedFromNvs) *ctx.networkConfigLoadedFromNvs = false;
-        applyWifiConfig(ctx);
-        if (ok) tracker_serial_detail::printOk(out, "network config erased from NVS");
-        else {
+        if (!ctx.networkConfigStore->erase()) {
             out.print("# ERR net erase failed: ");
             out.println(ctx.networkConfigStore->lastErrorName());
+            return true;
         }
+        TrackerNetworkConfig candidate;
+        candidate.resetDefaults();
+        if (!commitNetworkCandidate(ctx, candidate, false, false)) {
+            tracker_serial_detail::printErr(out, "network config erased, but defaults could not be applied to runtime");
+            return true;
+        }
+        tracker_serial_detail::printOk(out, "network config erased from NVS");
         return true;
     }
 

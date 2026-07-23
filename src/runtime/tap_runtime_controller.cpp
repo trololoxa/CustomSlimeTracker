@@ -41,6 +41,11 @@ bool TapRuntimeController::setEnabled(bool enabled) {
     return configureHardware();
 }
 
+void TapRuntimeController::setPhysicalTapUserAction(SlimeVRUserAction action) {
+    config_.physicalTapUserAction = action;
+    status_.physicalTapUserAction = action;
+}
+
 void TapRuntimeController::resetCounters() {
     const bool enabled = status_.enabled;
     const bool hardwareConfigured = status_.hardwareConfigured;
@@ -59,6 +64,7 @@ void TapRuntimeController::resetCounters() {
 
 TapRuntimeStatus TapRuntimeController::status() const {
     TapRuntimeStatus out = status_;
+    out.physicalTapUserAction = config_.physicalTapUserAction;
     out.enabled = config_.enabled;
     out.diagnosticLogging = diagnosticLogging_;
     out.diagnosticEvents = diagnosticEvents_;
@@ -343,13 +349,18 @@ bool TapRuntimeController::sendTap(uint8_t value, uint32_t nowMs, bool manual) {
         return false;
     }
 
-    const bool ok = slimevr_->sendTap(value);
+    const bool useUserAction = !manual && config_.physicalTapUserAction != SlimeVRUserAction::None;
+    const bool ok = useUserAction
+        ? slimevr_->sendUserAction(config_.physicalTapUserAction)
+        : slimevr_->sendTap(value);
     status_.lastSentOk = ok;
     if (ok) {
+        if (useUserAction) ++status_.userActionsSent;
         ++status_.sent;
         status_.lastSentMs = nowMs;
         emitDiagnostic(TapDiagnosticKind::SlimeVrSent, nowMs, nullptr, 0, value, 0, manual);
     } else {
+        if (useUserAction) ++status_.userActionFailures;
         ++status_.sendFailures;
         emitDiagnostic(TapDiagnosticKind::SlimeVrSendFailed, nowMs, nullptr, 0, value, 0, manual);
     }

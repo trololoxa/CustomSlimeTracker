@@ -8,6 +8,13 @@
 
 namespace tracker {
 
+// Apply a complete TrackerConfig candidate to the live IMU/FIFO hardware.
+// The active config and hardware are rolled back together on failure. Software
+// calibration/AHRS state should be applied by the caller only after success.
+bool trackerSerialCommitFullHardwareConfig(TrackerSerialCommandContext& ctx,
+                                           Stream& out,
+                                           TrackerConfig candidate);
+
 void trackerSerialPrintFifoTuning(Stream& out, const TrackerSerialCommandContext& ctx);
 
 bool trackerSerialCommitSpiFrequency(TrackerSerialCommandContext& ctx,

@@ -126,6 +126,7 @@ void printFifoMotion(Stream& out, const Lsm6dsvFifoReader* fifo) {
     out.print("fifo_timestamp_large_gap="); out.println(s.timestampLargeGap);
     out.print("fifo_timestamp_queue_overflow="); out.println(s.timestampQueueOverflow);
     out.print("fifo_waiting_sample_queue_overflow="); out.println(s.waitingSampleQueueOverflow);
+    out.print("fifo_completed_sample_queue_overflow="); out.println(s.completedSampleQueueOverflow);
     out.print("fifo_timestamp_backwards="); out.println(s.timestampBackwards);
     out.print("fifo_tag_counter_jumps="); out.println(s.tagCounterJumps);
     out.print("fifo_gyro_tag_counter_jumps="); out.println(s.gyroTagCounterJumps);

@@ -102,6 +102,10 @@ public:
     void resetOrientationState(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase);
 
     bool setEnabled(bool enabled, bool persist);
+    // Boot-only path: FIFO parser was already configured from persisted config.
+    // Starts QMC/sensor-hub streaming without a redundant FIFO reconfigure or
+    // tracking recovery.
+    bool startFromPreconfiguredFifo();
     bool setHeadingReference(const char* reason, bool verbose);
     void clearHeadingReference();
     bool setAutoReferenceEnabled(bool enabled);
@@ -124,7 +128,8 @@ private:
 
     bool initSensorHub();
     void resetRuntimeCounters();
-    bool reconfigureFifoForCurrentMagConfig(uint64_t keepTimestampUs);
+    bool applyHardwareEnabledState(bool enabled, uint64_t keepTimestampUs);
+    bool reconfigureFifoForMagEnabled(bool enabled, uint64_t keepTimestampUs);
 
     static float magRawNorm(const Lsm6dsvFifoReader::MagRawSample& m);
     static float rampUp(float x, float bad, float good);

@@ -124,6 +124,7 @@ void trackerSerialPrintQualityStats(Stream& out, const ImuQualityCounters& qc) {
     out.print("fifo_recovery_unknown_tag_requests="); out.println(qc.fifoRecoveryUnknownTagRequests);
     out.print("fifo_recovery_timestamp_backwards_requests="); out.println(qc.fifoRecoveryTimestampBackwardsRequests);
     out.print("fifo_recovery_timestamp_queue_overflow_requests="); out.println(qc.fifoRecoveryTimestampQueueOverflowRequests);
+    out.print("fifo_recovery_completed_queue_overflow_requests="); out.println(qc.fifoRecoveryCompletedQueueOverflowRequests);
     out.print("mean_dt_us="); out.println(qc.meanDtUs(), 6);
     out.print("min_dt_us="); out.println(qc.minDtUs, 6);
     out.print("max_dt_us="); out.println(qc.maxDtUs, 6);

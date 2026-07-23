@@ -8,6 +8,7 @@
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
+#include "serial/tracker_config_transaction.hpp"
 
 namespace tracker {
 
@@ -64,25 +65,30 @@ public:
             return;
         }
 
-        auto applyAndMaybeSave = [&](bool saveRequested, const char* okMsg, const char* saveErr) -> void {
-            ctx.config->sanitize();
-            ctx.ahrs->setConfig(ctx.config->makeAhrsConfig());
-            ctx.config->updateCrc();
-            if (saveRequested) {
-                if (!ctx.configStore || !ctx.configStore->save(*ctx.config)) {
-                    tracker_serial_detail::printErr(out, saveErr);
-                    return;
-                }
+        auto applyAndMaybeSave = [&](TrackerConfig candidate,
+                                     bool saveRequested,
+                                     const char* okMsg,
+                                     const char* saveErr) -> void {
+            const bool ok = trackerCommitConfigCandidate(
+                ctx,
+                candidate,
+                saveRequested,
+                [&]() { ctx.ahrs->setConfig(ctx.config->makeAhrsConfig()); }
+            );
+            if (!ok) {
+                tracker_serial_detail::printErr(out, saveErr);
+                return;
             }
             tracker_serial_detail::printOk(out, okMsg);
         };
 
         if (is(argv[1], "defaults")) {
             const bool saveRequested = argc >= 3 && is(argv[2], "save");
-            ctx.config->data.ahrsRuntime = TrackerAhrsRuntimeConfigPersisted{};
-            ctx.config->data.ahrs.accelCorrectionGain = 3.0f;
-            ctx.config->data.ahrs.useAccelCorrection = true;
-            applyAndMaybeSave(saveRequested,
+            TrackerConfig candidate = *ctx.config;
+            candidate.data.ahrsRuntime = TrackerAhrsRuntimeConfigPersisted{};
+            candidate.data.ahrs.accelCorrectionGain = 3.0f;
+            candidate.data.ahrs.useAccelCorrection = true;
+            applyAndMaybeSave(candidate, saveRequested,
                               saveRequested ? "ahrs defaults applied and saved" : "ahrs defaults applied",
                               "ahrs defaults save failed");
             return;
@@ -99,13 +105,14 @@ public:
                 return;
             }
             const bool saveRequested = argc >= 4 && is(argv[3], "save");
+            TrackerConfig candidate = *ctx.config;
             if (is(argv[1], "accel")) {
-                ctx.config->data.ahrsRuntime.accelCorrectionEnabled = enabled;
-                ctx.config->data.ahrs.useAccelCorrection = enabled;
+                candidate.data.ahrsRuntime.accelCorrectionEnabled = enabled;
+                candidate.data.ahrs.useAccelCorrection = enabled;
             } else {
-                ctx.config->data.ahrsRuntime.adaptiveAccelCorrection = enabled;
+                candidate.data.ahrsRuntime.adaptiveAccelCorrection = enabled;
             }
-            applyAndMaybeSave(saveRequested,
+            applyAndMaybeSave(candidate, saveRequested,
                               saveRequested ? "ahrs gate saved" : "ahrs gate set",
                               "ahrs gate save failed");
             return;
@@ -122,13 +129,14 @@ public:
                 return;
             }
             const bool saveRequested = argc >= 4 && is(argv[3], "save");
+            TrackerConfig candidate = *ctx.config;
             if (is(argv[1], "accel_kp")) {
-                ctx.config->data.ahrsRuntime.accelKp = v;
-                ctx.config->data.ahrs.accelCorrectionGain = v;
+                candidate.data.ahrsRuntime.accelKp = v;
+                candidate.data.ahrs.accelCorrectionGain = v;
             } else {
-                ctx.config->data.ahrsRuntime.maxAccelCorrectionDegPerUpdate = v;
+                candidate.data.ahrsRuntime.maxAccelCorrectionDegPerUpdate = v;
             }
-            applyAndMaybeSave(saveRequested,
+            applyAndMaybeSave(candidate, saveRequested,
                               saveRequested ? "ahrs parameter saved" : "ahrs parameter set",
                               "ahrs parameter save failed");
             return;
@@ -148,23 +156,24 @@ public:
                 return;
             }
             const bool saveRequested = argc >= 5 && is(argv[4], "save");
+            TrackerConfig candidate = *ctx.config;
             if (is(argv[1], "accel_norm")) {
-                ctx.config->data.ahrsRuntime.accelNormGoodErrorG = a;
-                ctx.config->data.ahrsRuntime.accelNormBadErrorG = b;
+                candidate.data.ahrsRuntime.accelNormGoodErrorG = a;
+                candidate.data.ahrsRuntime.accelNormBadErrorG = b;
             } else if (is(argv[1], "accel_innovation")) {
-                ctx.config->data.ahrsRuntime.accelInnovationGoodDeg = a;
-                ctx.config->data.ahrsRuntime.accelInnovationBadDeg = b;
+                candidate.data.ahrsRuntime.accelInnovationGoodDeg = a;
+                candidate.data.ahrsRuntime.accelInnovationBadDeg = b;
             } else if (is(argv[1], "accel_var")) {
-                ctx.config->data.ahrsRuntime.accelNormStdGoodG = a;
-                ctx.config->data.ahrsRuntime.accelNormStdBadG = b;
+                candidate.data.ahrsRuntime.accelNormStdGoodG = a;
+                candidate.data.ahrsRuntime.accelNormStdBadG = b;
             } else if (is(argv[1], "gyro_gate")) {
-                ctx.config->data.ahrsRuntime.gyroMotionGoodDps = a;
-                ctx.config->data.ahrsRuntime.gyroMotionBadDps = b;
+                candidate.data.ahrsRuntime.gyroMotionGoodDps = a;
+                candidate.data.ahrsRuntime.gyroMotionBadDps = b;
             } else {
-                ctx.config->data.ahrsRuntime.minDtS = a * 0.001f;
-                ctx.config->data.ahrsRuntime.maxDtS = b * 0.001f;
+                candidate.data.ahrsRuntime.minDtS = a * 0.001f;
+                candidate.data.ahrsRuntime.maxDtS = b * 0.001f;
             }
-            applyAndMaybeSave(saveRequested,
+            applyAndMaybeSave(candidate, saveRequested,
                               saveRequested ? "ahrs gate saved" : "ahrs gate set",
                               "ahrs gate save failed");
             return;

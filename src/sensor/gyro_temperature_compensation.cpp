@@ -50,7 +50,7 @@ void GyroTempCompensator::setModel(const Vec3& referenceBiasRadS,
     referenceTempC_ = referenceTempC;
     slopeRadSPerC_ = slopeRadSPerC;
     valid_ = referenceBiasRadS.isFinite() && std::isfinite(referenceTempC);
-    temperatureModelValid_ = valid_ && slopeRadSPerC.isFinite();
+    temperatureModelValid_ = valid_ && acceptsSlopeRadSPerC(slopeRadSPerC);
     if (!temperatureModelValid_) {
         slopeRadSPerC_ = Vec3::zero();
         clearQualityMetadata();
@@ -92,7 +92,7 @@ void GyroTempCompensator::setSlopeDpsPerC(const Vec3& slopeDpsPerC) {
 }
 
 void GyroTempCompensator::setSlopeRadSPerC(const Vec3& slopeRadSPerC) {
-    if (!valid_ || !slopeRadSPerC.isFinite()) {
+    if (!valid_ || !acceptsSlopeRadSPerC(slopeRadSPerC)) {
         invalidateTemperatureModel();
         return;
     }
@@ -126,6 +126,21 @@ Vec3 GyroTempCompensator::slopeRadSPerC() const {
 
 Vec3 GyroTempCompensator::slopeDpsPerC() const {
     return slopeRadSPerC_ * MATH_RAD_TO_DEG;
+}
+
+bool GyroTempCompensator::acceptsSlopeDpsPerC(const Vec3& slopeDpsPerC) const {
+    const float limit = cfg_.maxAcceptedSlopeDpsPerC;
+    if (!slopeDpsPerC.isFinite() || !std::isfinite(limit) || limit <= 0.0f) {
+        return false;
+    }
+    return std::fabs(slopeDpsPerC.x) <= limit &&
+        std::fabs(slopeDpsPerC.y) <= limit &&
+        std::fabs(slopeDpsPerC.z) <= limit;
+}
+
+bool GyroTempCompensator::acceptsSlopeRadSPerC(const Vec3& slopeRadSPerC) const {
+    return slopeRadSPerC.isFinite() &&
+        acceptsSlopeDpsPerC(slopeRadSPerC * MATH_RAD_TO_DEG);
 }
 
 Vec3 GyroTempCompensator::biasAt(float tempC) const {

@@ -38,6 +38,10 @@ public:
     UdpEndpoint incomingRemote;
     bool incomingPending = false;
     int failPacketType = -1;
+    bool resolveResult = true;
+    uint32_t resolvedIpv4 = 0xC0A8002AUL;
+    uint32_t resolveCalls = 0;
+    char lastResolvedHost[64] = {};
 
     bool begin(uint16_t localPort) override {
         ++beginCalls;
@@ -49,6 +53,14 @@ public:
     void stop() override { ++stopCalls; isActive = false; port = 0; }
     bool active() const override { return isActive; }
     uint16_t localPort() const override { return port; }
+
+    bool resolveHost(const char* host, uint32_t& outIpv4) override {
+        ++resolveCalls;
+        std::strncpy(lastResolvedHost, host ? host : "", sizeof(lastResolvedHost) - 1u);
+        lastResolvedHost[sizeof(lastResolvedHost) - 1u] = '\0';
+        outIpv4 = resolveResult ? resolvedIpv4 : 0u;
+        return resolveResult;
+    }
 
     bool send(const UdpEndpoint& endpoint, const uint8_t* data, size_t len) override {
         if (!isActive || !data || len == 0) return false;
@@ -104,6 +116,13 @@ static std::vector<uint8_t> makeServerPacket(uint8_t type, std::initializer_list
     return packet;
 }
 
+static std::vector<uint8_t> makeSensorInfoAck(uint8_t sensorId, uint8_t status) {
+    return {
+        0x00, 0x00, 0x00, static_cast<uint8_t>(SlimeVRReceivePacketType::SensorInfo),
+        sensorId, status
+    };
+}
+
 struct FakeConfigFlagSink {
     uint32_t calls = 0;
     uint8_t sensorId = 0;
@@ -138,6 +157,12 @@ int main() {
 
     char ip[24];
     CHECK(ctx, std::strcmp(udpIpv4ToCString(0xC0A80073UL, ip, sizeof(ip)), "192.168.0.115") == 0);
+    uint32_t parsedIpv4 = 0;
+    CHECK(ctx, udpParseIpv4("192.168.0.42", parsedIpv4));
+    CHECK(ctx, parsedIpv4 == 0xC0A8002AUL);
+    CHECK(ctx, !udpParseIpv4("192.168.0.999", parsedIpv4));
+    CHECK(ctx, !udpParseIpv4("192.168.0", parsedIpv4));
+    CHECK(ctx, !udpParseIpv4("0.0.0.0", parsedIpv4));
     CHECK(ctx, std::strcmp(slimevrOutputStateName(SlimeVROutputState::Discovering), "discovering") == 0);
 
     FakeWifiAdapter wifiAdapter;
@@ -249,7 +274,11 @@ int main() {
     rt.update(1201);
     SlimeVROutputRuntimeStatus st = rt.status();
     CHECK(ctx, st.sensorInfoSent == 1u);
+    CHECK(ctx, st.sensorInfoSyncState == SlimeVRSensorInfoSyncState::WaitingForAck);
+    CHECK(ctx, st.sensorInfoDirty);
+    CHECK(ctx, st.sensorInfoLocalConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED);
     CHECK(ctx, st.featureFlagsSent == 1u);
+    CHECK(ctx, st.featureNegotiationState == SlimeVRFeatureNegotiationState::Waiting);
     CHECK(ctx, st.featureFlagsSendFailures == 0u);
     CHECK(ctx, !st.serverFeatureFlagsAvailable);
     CHECK(ctx, !st.serverBundleSupported);
@@ -291,6 +320,32 @@ int main() {
     CHECK(ctx, sawRotation);
     CHECK(ctx, sawAcceleration);
 
+    // A well-formed ACK for another sensor must not acknowledge our latest
+    // SensorInfo state or stop resend.
+    udp.incoming = makeSensorInfoAck(
+        static_cast<uint8_t>(cfg.sensorId + 1u),
+        static_cast<uint8_t>(SlimeVRSensorState::Online)
+    );
+    udp.incomingRemote = UdpEndpoint{0xC0A80001UL, 6969};
+    udp.incomingPending = true;
+    rt.update(1206);
+    CHECK(ctx, rt.status().sensorInfoAckReceived == 1u);
+    CHECK(ctx, rt.status().sensorInfoAckMismatch == 1u);
+    CHECK(ctx, rt.status().sensorInfoSyncState == SlimeVRSensorInfoSyncState::WaitingForAck);
+    CHECK(ctx, rt.status().sensorInfoDirty);
+
+    udp.incoming = makeSensorInfoAck(
+        cfg.sensorId, static_cast<uint8_t>(SlimeVRSensorState::Online)
+    );
+    udp.incomingRemote = UdpEndpoint{0xC0A80001UL, 6969};
+    udp.incomingPending = true;
+    rt.update(1211);
+    CHECK(ctx, rt.status().sensorInfoAckReceived == 2u);
+    CHECK(ctx, rt.status().sensorInfoAckMismatch == 1u);
+    CHECK(ctx, rt.status().sensorInfoSyncState == SlimeVRSensorInfoSyncState::Acknowledged);
+    CHECK(ctx, !rt.status().sensorInfoDirty);
+    CHECK(ctx, rt.status().sensorInfoAckConfig == SLIMEVR_SENSOR_CONFIG_MAG_SUPPORTED_AND_ENABLED);
+
     const size_t sentBeforeTap = udp.sent.size();
     CHECK(ctx, rt.sendTap(2));
     CHECK(ctx, rt.status().tapSent == 1u);
@@ -299,7 +354,16 @@ int main() {
     CHECK(ctx, udp.sent.size() == sentBeforeTap + 1u);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::Tap));
 
-    rt.update(1205);
+    const size_t sentBeforeAction = udp.sent.size();
+    CHECK(ctx, rt.sendUserAction(SlimeVRUserAction::YawReset));
+    CHECK(ctx, rt.status().userActionSent == 1u);
+    CHECK(ctx, rt.status().userActionSendFailures == 0u);
+    CHECK(ctx, rt.status().lastUserAction == SlimeVRUserAction::YawReset);
+    CHECK(ctx, udp.sent.size() == sentBeforeAction + 1u);
+    CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::UserAction));
+    CHECK(ctx, udp.sent.back().data[12] == static_cast<uint8_t>(SlimeVRUserAction::YawReset));
+
+    rt.update(1212);
     CHECK(ctx, rt.status().rotationSent == 1u);
 
     // A second server cannot hijack a live endpoint with either a discovery
@@ -312,7 +376,7 @@ int main() {
     );
     udp.incomingRemote = UdpEndpoint{0xC0A80009UL, 6969};
     udp.incomingPending = true;
-    rt.update(1211);
+    rt.update(1216);
     CHECK(ctx, rt.status().foreignEndpointPacketsDropped == 1u);
     CHECK(ctx, rt.status().serverIpv4 == selectedServerIp);
     CHECK(ctx, rt.status().lastIncomingPacketMs == acceptedRxBeforeForeign);
@@ -339,6 +403,8 @@ int main() {
     rt.update(1231);
     CHECK(ctx, rt.status().featureFlagsReceived == 1u);
     CHECK(ctx, rt.status().malformedFeatureFlags == 1u);
+    CHECK(ctx, rt.status().malformedPackets == 1u);
+    CHECK(ctx, rt.status().featureNegotiationState == SlimeVRFeatureNegotiationState::Waiting);
     CHECK(ctx, !rt.status().serverFeatureFlagsAvailable);
 
     // Server FeatureFlags bit 0 explicitly negotiates packet-100 bundles.
@@ -355,6 +421,7 @@ int main() {
     st = rt.status();
     CHECK(ctx, st.featureFlagsReceived == 2u);
     CHECK(ctx, st.serverFeatureFlagsAvailable);
+    CHECK(ctx, st.featureNegotiationState == SlimeVRFeatureNegotiationState::Negotiated);
     CHECK(ctx, st.serverBundleSupported);
     CHECK(ctx, !st.serverCompactBundleSupported);
     CHECK(ctx, st.motionPacketMode == SlimeVRMotionPacketMode::Bundle100Rotation17Accel4);
@@ -414,6 +481,21 @@ int main() {
     CHECK(ctx, udp.sent.size() == sentBeforeRestRefresh + 1u);
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::SensorInfo));
     CHECK(ctx, udp.sent.back().data[17] == 1u);
+    CHECK(ctx, rt.status().sensorInfoSyncState == SlimeVRSensorInfoSyncState::WaitingForAck);
+
+    udp.incoming = makeSensorInfoAck(
+        cfg.sensorId, static_cast<uint8_t>(SlimeVRSensorState::Online)
+    );
+    udp.incomingRemote = UdpEndpoint{selectedServerIp, 6969};
+    udp.incomingPending = true;
+    rt.update(1275);
+    CHECK(ctx, rt.status().sensorInfoAckReceived == 3u);
+    CHECK(ctx, rt.status().sensorInfoSyncState == SlimeVRSensorInfoSyncState::Acknowledged);
+    CHECK(ctx, rt.status().sensorInfoAckRestCalibration);
+
+    const uint32_t sensorInfoSentAfterAck = rt.status().sensorInfoSent;
+    rt.update(2300);
+    CHECK(ctx, rt.status().sensorInfoSent == sensorInfoSentAfterAck);
 
     rt.update(6101);
     CHECK(ctx, rt.status().heartbeatSent >= 1);
@@ -493,25 +575,106 @@ int main() {
     CHECK(ctx, afterConfig.lastSetConfigType == SLIMEVR_CONFIG_TYPE_MAGNETOMETER);
     CHECK(ctx, !afterConfig.lastSetConfigState);
     CHECK(ctx, afterConfig.lastSetConfigApplied);
-    CHECK(ctx, udp.sent.size() >= sentBeforeConfig + 2u); // SensorInfo + AckConfigChange.
+    CHECK(ctx, udp.sent.size() == sentBeforeConfig + 1u); // Ack now; SensorInfo refresh is bounded.
     CHECK(ctx, udp.sent.back().data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::AcknowledgeConfigChange));
     CHECK(ctx, udp.sent.back().data[12] == 2);
     CHECK(ctx, udp.sent.back().data[13] == 0x00);
     CHECK(ctx, udp.sent.back().data[14] == 0x01);
+    CHECK(ctx, afterConfig.sensorInfoSyncState == SlimeVRSensorInfoSyncState::Dirty);
+
+    // A command for another sensor is tolerated but never applied or ACKed.
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::SetConfigFlag),
+        {9, 0x00, 0x01, 0x01}
+    );
+    udp.incomingPending = true;
+    const size_t sentBeforeIgnoredConfig = udp.sent.size();
+    rt.update(6145);
+    CHECK(ctx, rt.status().setConfigFlagIgnored == 1u);
+    CHECK(ctx, configFlagSink.calls == 1u);
+    CHECK(ctx, udp.sent.size() == sentBeforeIgnoredConfig);
+
+    // Apply/persist failure is visible and must not emit packet 24.
+    configFlagSink.result = false;
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::SetConfigFlag),
+        {2, 0x00, 0x01, 0x01}
+    );
+    udp.incomingPending = true;
+    const size_t sentBeforeFailedConfig = udp.sent.size();
+    rt.update(6150);
+    CHECK(ctx, rt.status().setConfigFlagApplyFailures == 1u);
+    CHECK(ctx, rt.status().ackConfigSent == 1u);
+    CHECK(ctx, udp.sent.size() == sentBeforeFailedConfig);
+    configFlagSink.result = true;
+
+    // Unknown config types are tolerated without invoking the persistence hook.
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::SetConfigFlag),
+        {2, 0x12, 0x34, 0x01}
+    );
+    udp.incomingPending = true;
+    rt.update(6155);
+    CHECK(ctx, rt.status().setConfigFlagIgnored == 2u);
+    CHECK(ctx, configFlagSink.calls == 2u);
+
+    // A repeated already-applied state is ACKed without another persistent apply.
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::SetConfigFlag),
+        {2, 0x00, 0x01, 0x00}
+    );
+    udp.incomingPending = true;
+    const size_t sentBeforeIdempotentConfig = udp.sent.size();
+    rt.update(6160);
+    CHECK(ctx, configFlagSink.calls == 2u);
+    CHECK(ctx, rt.status().ackConfigSent == 2u);
+    CHECK(ctx, udp.sent.size() == sentBeforeIdempotentConfig + 1u);
+
+    // Malformed control packets do not refresh liveness.
+    const uint32_t incomingBeforeMalformed = rt.status().lastIncomingPacketMs;
+    udp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::PingPong), {0x11, 0x22}
+    );
+    udp.incomingPending = true;
+    rt.update(6165);
+    CHECK(ctx, rt.status().malformedPing == 1u);
+    CHECK(ctx, rt.status().lastIncomingPacketMs == incomingBeforeMalformed);
+
+    // Headerless legacy control packets are malformed in the modern session
+    // contract and cannot refresh liveness or invoke handlers.
+    udp.incoming = {
+        static_cast<uint8_t>(SlimeVRReceivePacketType::HeartBeat)
+    };
+    udp.incomingPending = true;
+    rt.update(6170);
+    CHECK(ctx, rt.status().malformedUnknownRaw == 1u);
+    CHECK(ctx, rt.status().heartbeatReceived == 1u);
+    CHECK(ctx, rt.status().lastIncomingPacketMs == incomingBeforeMalformed);
+
+    // A datagram larger than the fixed RX buffer must not be interpreted from
+    // its truncated prefix.
+    udp.incoming.assign(600u, 0u);
+    udp.incoming[3] = static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags);
+    udp.incomingPending = true;
+    rt.update(6175);
+    CHECK(ctx, rt.status().malformedDatagramLength == 1u);
+    CHECK(ctx, rt.status().featureFlagsReceived == 3u);
+    CHECK(ctx, rt.status().lastIncomingPacketMs == incomingBeforeMalformed);
 
     udp.incoming = makeServerPacket(
         static_cast<uint8_t>(SlimeVRReceivePacketType::ProtocolChange),
         {0x01, 0x13}
     );
     udp.incomingPending = true;
-    rt.update(6150);
+    rt.update(6180);
     CHECK(ctx, rt.status().protocolChangeReceived == 1);
+    CHECK(ctx, rt.status().protocolChangeIgnored == 1);
     CHECK(ctx, rt.status().lastProtocolTarget == 1);
     CHECK(ctx, rt.status().lastProtocolVersion == 0x13);
 
     udp.incoming = makeServerPacket(0xFE, {});
     udp.incomingPending = true;
-    rt.update(6160);
+    rt.update(6185);
     CHECK(ctx, rt.status().unknownPacketsReceived == 1);
     CHECK(ctx, rt.status().lastUnknownPacketType == 0xFE);
 
@@ -640,6 +803,30 @@ int main() {
     CHECK(ctx, fallbackRt.status().rotationSent == 3u);
     CHECK(ctx, fallbackRt.status().accelerationSent == 2u);
 
+    for (uint8_t i = fallbackRt.status().featureFlagsRequestAttempts;
+         i < TRACKER_SLIMEVR_FEATURE_FLAGS_REQUEST_ATTEMPTS; ++i) {
+        const uint32_t now = 701u + static_cast<uint32_t>(i) * 500u;
+        fallbackUdp.incoming = makeServerPacket(
+            static_cast<uint8_t>(SlimeVRReceivePacketType::HeartBeat0), {}
+        );
+        fallbackUdp.incomingRemote = UdpEndpoint{0xC0A80004UL, 6969};
+        fallbackUdp.incomingPending = true;
+        fallbackSnapshots.snapshot.sequence += 1u;
+        fallbackRt.update(now);
+    }
+    fallbackUdp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::HeartBeat0), {}
+    );
+    fallbackUdp.incomingRemote = UdpEndpoint{0xC0A80004UL, 6969};
+    fallbackUdp.incomingPending = true;
+    fallbackRt.update(9000u);
+    CHECK(ctx, fallbackRt.status().featureFlagsRequestAttempts ==
+               TRACKER_SLIMEVR_FEATURE_FLAGS_REQUEST_ATTEMPTS);
+    CHECK(ctx, fallbackRt.status().featureNegotiationState ==
+               SlimeVRFeatureNegotiationState::Unavailable);
+    CHECK(ctx, fallbackRt.status().motionPacketMode ==
+               SlimeVRMotionPacketMode::SeparateRotation17Accel4);
+
     // A recent inbound heartbeat/ping proves the server session is alive.
     // Sustained transient TX pressure must not reopen the UDP socket and add
     // a discovery/grace gap; stale pose datagrams are simply dropped.
@@ -706,6 +893,68 @@ int main() {
     CHECK(ctx, pressureRt.status().motionPacketMode ==
                SlimeVRMotionPacketMode::SeparateRotation17Accel4);
     CHECK(ctx, pressureUdp.stopCalls == 1u);
+
+
+    // Manual server mode resolves the configured hostname at a bounded rate,
+    // sends a unicast handshake, and rejects discovery responses from every
+    // other endpoint when broadcast discovery is disabled.
+    FakeUdp manualUdp;
+    FakeSnapshotSource manualSnapshots;
+    manualSnapshots.snapshot.valid = true;
+    manualSnapshots.snapshot.sequence = 1u;
+    manualSnapshots.snapshot.q = Quat::identity();
+    manualSnapshots.snapshot.linearAccelerationValid = true;
+    manualSnapshots.snapshot.linearAccelerationDeviceG = Vec3::zero();
+    manualSnapshots.snapshot.confidence = 1.0f;
+
+    SlimeVROutputRuntime manualRt;
+    manualRt.begin(manualUdp, wifi, FakeSnapshotSource::copy, &manualSnapshots);
+    SlimeVROutputRuntimeConfig manualCfg = phaseCfg;
+    manualCfg.discoveryEnabled = false;
+    manualCfg.manualServerEnabled = true;
+    manualCfg.manualServerHost = "slimevr.local";
+    manualCfg.serverPort = 6969u;
+    manualCfg.discoveryIntervalMs = 1000u;
+    manualRt.configure(manualCfg);
+    manualRt.update(1000u);
+    CHECK(ctx, manualUdp.resolveCalls == 1u);
+    CHECK(ctx, std::strcmp(manualUdp.lastResolvedHost, "slimevr.local") == 0);
+    CHECK(ctx, manualUdp.sent.size() == 1u);
+    const UdpEndpoint expectedManualEndpoint{manualUdp.resolvedIpv4, 6969u};
+    CHECK(ctx, manualUdp.sent.back().endpoint == expectedManualEndpoint);
+    CHECK(ctx, manualRt.status().manualServerResolved);
+    CHECK(ctx, manualRt.status().manualServerResolveAttempts == 1u);
+    CHECK(ctx, manualRt.status().manualServerResolveFailures == 0u);
+    CHECK(ctx, manualRt.status().manualServerHandshakesSent == 1u);
+
+    manualUdp.incoming = {
+        static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
+        'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
+    };
+    manualUdp.incomingRemote = UdpEndpoint{0xC0A80063UL, 6969u};
+    manualUdp.incomingPending = true;
+    manualRt.update(1010u);
+    CHECK(ctx, !manualRt.status().serverFound);
+    CHECK(ctx, manualRt.status().foreignEndpointPacketsDropped == 1u);
+
+    manualUdp.incomingRemote = UdpEndpoint{manualUdp.resolvedIpv4, 6969u};
+    manualUdp.incomingPending = true;
+    manualRt.update(1020u);
+    CHECK(ctx, manualRt.status().serverFound);
+    CHECK(ctx, manualRt.status().serverIpv4 == manualUdp.resolvedIpv4);
+
+    FakeUdp failedResolveUdp;
+    failedResolveUdp.resolveResult = false;
+    SlimeVROutputRuntime failedResolveRt;
+    failedResolveRt.begin(failedResolveUdp, wifi, FakeSnapshotSource::copy, &manualSnapshots);
+    failedResolveRt.configure(manualCfg);
+    failedResolveRt.update(1000u);
+    failedResolveRt.update(1100u);
+    CHECK(ctx, failedResolveUdp.resolveCalls == 1u); // bounded by discovery interval
+    CHECK(ctx, failedResolveRt.status().manualServerResolveFailures == 1u);
+    failedResolveRt.update(2000u);
+    CHECK(ctx, failedResolveUdp.resolveCalls == 2u);
+    CHECK(ctx, failedResolveRt.status().manualServerResolveFailures == 2u);
 
     return ctx.finish("slimevr_output_runtime");
 }

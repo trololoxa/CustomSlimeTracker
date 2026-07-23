@@ -54,6 +54,7 @@ bool trackingFifoLossCanUseSoftRecovery(const ImuQualityResult& quality) {
                                       imu_quality_flags::FIFO_FULL;
     constexpr uint32_t strictFaultMask = imu_quality_flags::TIMESTAMP_BACKWARDS |
                                          imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW |
+                                         imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW |
                                          imu_quality_flags::FIFO_UNKNOWN_TAG;
     constexpr uint32_t maxSoftGapUs = 250000u;
     constexpr uint32_t maxSoftDroppedSamples = 256u;
@@ -164,6 +165,7 @@ bool TrackingStateController::useSoftFifoRecovery(const char* reason,
                                       imu_quality_flags::FIFO_FULL;
     constexpr uint32_t strictFaultMask = imu_quality_flags::TIMESTAMP_BACKWARDS |
                                          imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW |
+                                         imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW |
                                          imu_quality_flags::FIFO_UNKNOWN_TAG;
     return (flags & fifoLossMask) != 0u && (flags & strictFaultMask) == 0u;
 }
@@ -298,6 +300,7 @@ void TrackingStateController::updateSoftRecovery(const ImuQualityResult& quality
     const bool hardStreamFault = quality.shouldRequestFifoRecovery ||
                                  quality.has(imu_quality_flags::TIMESTAMP_BACKWARDS) ||
                                  quality.has(imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) ||
+                                 quality.has(imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW) ||
                                  quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG);
     if (hardStreamFault || !ahrsIntegrated) {
         softRecoveryGoodSamples_ = 0;
@@ -357,6 +360,7 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
     const bool hardStreamFault = quality.shouldRequestFifoRecovery ||
                                  quality.has(imu_quality_flags::TIMESTAMP_BACKWARDS) ||
                                  quality.has(imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) ||
+                                 quality.has(imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW) ||
                                  quality.has(imu_quality_flags::FIFO_OVERRUN) ||
                                  quality.has(imu_quality_flags::FIFO_FULL) ||
                                  quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG);
@@ -423,6 +427,7 @@ bool TrackingStateController::hasTimingFault(uint32_t flags) {
                               imu_quality_flags::TIMESTAMP_NON_MONOTONIC |
                               imu_quality_flags::TIMESTAMP_LARGE_GAP |
                               imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW |
+                              imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW |
                               imu_quality_flags::TIMESTAMP_META_MISMATCH |
                               imu_quality_flags::TIMESTAMP_BACKWARDS |
                               imu_quality_flags::FIFO_OVERRUN |

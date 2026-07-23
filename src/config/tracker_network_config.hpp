@@ -4,6 +4,7 @@
 
 #include "config/tracker_config_detail.hpp"
 #include "config/tracker_config_store.hpp"
+#include "output/slimevr_protocol_types.hpp"
 
 namespace tracker {
 
@@ -40,7 +41,9 @@ struct TrackerNetworkConfigBlob {
 
     uint32_t deviceId = 0;
     uint8_t sensorId = 0;
-    uint8_t reserved0 = 0;
+    // Physical tap -> server UserAction mapping. Zero keeps legacy Tap packet
+    // behavior and is the product default. This reuses the v1 reserved byte.
+    uint8_t tapUserAction = static_cast<uint8_t>(SlimeVRUserAction::None);
     uint16_t reserved1 = 0;
     char deviceName[32] = "c3-6dsv-tracker";
 };
@@ -54,6 +57,8 @@ public:
     void updateCrc();
     void sanitize();
     bool validate() const;
+    SlimeVRUserAction tapUserAction() const;
+    void setTapUserAction(SlimeVRUserAction action);
 };
 
 class TrackerNetworkConfigStore {
@@ -65,7 +70,9 @@ public:
     const char* lastErrorName() const;
 
     bool load(TrackerNetworkConfig& out);
-    bool save(TrackerNetworkConfig config);
+    // On success, config becomes the exact sanitized payload written to NVS.
+    // On failure, config is left unchanged.
+    bool save(TrackerNetworkConfig& config);
     bool erase();
 
 private:

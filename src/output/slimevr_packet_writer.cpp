@@ -4,6 +4,38 @@
 
 namespace tracker {
 
+const char* slimevrUserActionName(SlimeVRUserAction action) {
+    switch (action) {
+        case SlimeVRUserAction::None: return "off";
+        case SlimeVRUserAction::FullReset: return "full";
+        case SlimeVRUserAction::YawReset: return "yaw";
+        case SlimeVRUserAction::MountingReset: return "mounting";
+        case SlimeVRUserAction::PauseTracking: return "pause";
+    }
+    return "unknown";
+}
+
+bool parseSlimeVRUserActionName(const char* text, SlimeVRUserAction& out) {
+    if (!text) return false;
+    auto eq = [](const char* a, const char* b) {
+        while (*a && *b) {
+            char ca = *a++;
+            char cb = *b++;
+            if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca - 'A' + 'a');
+            if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb - 'A' + 'a');
+            if (ca != cb) return false;
+        }
+        return *a == '\0' && *b == '\0';
+    };
+    if (eq(text, "off") || eq(text, "none")) out = SlimeVRUserAction::None;
+    else if (eq(text, "full")) out = SlimeVRUserAction::FullReset;
+    else if (eq(text, "yaw")) out = SlimeVRUserAction::YawReset;
+    else if (eq(text, "mounting") || eq(text, "mount")) out = SlimeVRUserAction::MountingReset;
+    else if (eq(text, "pause")) out = SlimeVRUserAction::PauseTracking;
+    else return false;
+    return true;
+}
+
 namespace {
 
 uint32_t readU32BeLocal(const uint8_t* p) {
@@ -316,6 +348,19 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writeTap(uint8_t* out, size_t capa
     if (writePacketHeader(cursor, SlimeVRSendPacketType::Tap)) {
         cursor.writeU8(sensorId);
         cursor.writeU8(value);
+    }
+    return finish(cursor);
+}
+
+SlimeVRPacketWriteResult SlimeVRPacketWriter::writeUserAction(uint8_t* out, size_t capacity,
+                                                              SlimeVRUserAction action) {
+    BufferCursor cursor{out, out, capacity};
+    if (action == SlimeVRUserAction::None) {
+        cursor.error = SlimeVRPacketWriteError::InvalidArgument;
+        return finish(cursor);
+    }
+    if (writePacketHeader(cursor, SlimeVRSendPacketType::UserAction)) {
+        cursor.writeU8(static_cast<uint8_t>(action));
     }
     return finish(cursor);
 }

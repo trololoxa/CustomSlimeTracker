@@ -643,7 +643,7 @@ This patch does not require a tracker runtime test because it changes only the
 deterministic capture state machine; the existing physical setup procedure is
 unchanged.
 
-The firmware now exposes SlimeVR Server serial-compatibility commands for initial provisioning: `SET WIFI`, `SET BWIFI`, `GET INFO`, `GET CONFIG`, `GET TEST`, `GET WIFISCAN`, `REBOOT`, `FRST`, `DELCAL`, and temperature-only `TCAL`. `SET WIFI`/`SET BWIFI` save credentials into the separate network NVS config, enable Wi-Fi/discovery, and restart SlimeVR discovery. Blocking Wi-Fi scans suppress expected FIFO-recovery console noise for a short grace window without disabling recovery, counters, or machine-log events. `TCAL SAVE` is intentionally scoped to gyro temperature compensation so host-side temperature-calibration commands cannot accidentally capture unrelated runtime output/accel state. `TCAL RESET` changes only the in-RAM temperature compensation slope/quality metadata and does not mutate the persistent config object unless a later explicit temperature save is requested.
+The firmware now exposes SlimeVR Server serial-compatibility commands for initial provisioning: `SET WIFI`, `SET BWIFI`, `GET INFO`, `GET CONFIG`, `GET TEST`, `GET WIFISCAN`, `REBOOT`, `FRST`, `DELCAL`, and temperature-only `TCAL`. `SET WIFI`/`SET BWIFI` save credentials into the separate network NVS config, enable Wi-Fi/discovery, and restart SlimeVR discovery. Blocking Wi-Fi scans suppress expected FIFO-recovery console noise for a short grace window without disabling recovery, counters, or machine-log events. `TCAL SAVE` is intentionally scoped to gyro temperature compensation so host-side temperature-calibration commands cannot accidentally capture unrelated runtime output/accel state. `TCAL RESET` changes only the in-RAM temperature model, resets the volatile runtime residual gyro trim learned against the previous model, and does not mutate the persistent config object unless a later explicit `TCAL SAVE` is requested.
 
 ## Motion light sleep
 
@@ -699,7 +699,7 @@ converting acceleration from `g` to `m/s^2`, keeps Hamilton
 coherent world-space motion vector; the legacy pre-22 extra -90 degree local-Z
 acceleration correction must demonstrably disagree.
 
-After flashing `c3-6dsv-motion-bundle-hardened` in ProductionDiag:
+After flashing `c3-6dsv-session-complete-boot-clean` in ProductionDiag:
 
 ```text
 slime status
@@ -722,6 +722,8 @@ step_mounting_ready=yes
 motion_packet_mode=bundle_100_rotation_17_accel_4
 packet23_available=yes
 packet23_enabled=no
+sensor_info_sync_state=acknowledged
+feature_negotiation_state=negotiated
 server_feature_flags_available=yes
 server_bundle_supported=yes
 ```
@@ -736,8 +738,9 @@ while `acceleration_rate_limited_delta` confirms the 50 Hz packet-4 fallback.
 Under an intentionally weak link,
 `udp_reopen_suppressed_recent_rx_delta` may rise, but `udp_reopen_requests` must
 not rise while ping/heartbeat reception continues. `foreign_endpoint_packets_dropped`,
-`pre_session_packets_dropped` and `malformed_feature_flags` should remain zero on
-a normal single-server LAN. The definitive directional acceptance is a successful
+`pre_session_packets_dropped` and all `malformed_*` counters should remain zero on
+a normal single-server LAN. `tap_user_action=off` is the default unless a mapping
+was explicitly saved. The definitive directional acceptance is a successful
 server step-mounting run; ordinary quaternion FBT can look correct even when
 acceleration alone has the wrong local axes.
 
@@ -745,3 +748,33 @@ The build-profile validator also verifies that every ESP32-C3 environment inheri
 `partitions/tracker_4mb_no_ota.csv`, that the factory app is exactly 3 MiB at
 `0x10000`, that no OTA slot exists and that the complete layout ends at the 4 MiB
 flash boundary.
+
+## Patch 0020 session acceptance
+
+After the server is found, run:
+
+```text
+slime debug
+```
+
+A normal bundle-capable session should converge to:
+
+```text
+sensor_info_sync_state=acknowledged
+feature_negotiation_state=negotiated
+server_bundle_supported=yes
+foreign_endpoint_packets_dropped=0
+pre_session_packets_dropped=0
+malformed_packets=0
+set_config_flag_apply_failures=0
+ack_config_send_failures=0
+protocol_change_ignored=0
+```
+
+`slime action yaw|full|mounting|pause` must emit packet 21 and advance the
+corresponding UserAction counters. `slime tap-action ... save` must survive reboot;
+the default is `off`. A repeated server magnetometer command after a deliberately
+lost ACK must be acknowledged without another config write or magnetic-runtime
+restart. Boot with magnetometer enabled must not report a redundant
+`tracking_recovery_reconfigure_delta` solely from starting QMC6309 after FIFO
+bootstrap.

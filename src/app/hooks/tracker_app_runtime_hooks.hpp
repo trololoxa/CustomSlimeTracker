@@ -259,6 +259,10 @@ static bool appSetMagRuntimeEnabledCallback(bool enabled, bool persist) {
     return setMagRuntimeEnabledHook(enabled, persist, nullptr);
 }
 
+static bool appStartMagRuntimeFromPreconfiguredFifoCallback() {
+    return g_magRuntime.startFromPreconfiguredFifo();
+}
+
 
 static TrackerWifiManagerConfig makeAppWifiManagerConfig() {
     TrackerWifiManagerConfig cfg;
@@ -439,10 +443,10 @@ static bool slimevrSetConfigFlagHook(uint8_t sensorId, uint16_t configType, bool
         return false;
     }
 
-    // Server-side mag toggles are runtime-only. They should not silently write
-    // NVS, but they should go through the mag runtime controller so yaw state is
-    // reset consistently.
-    return setMagYawCorrectionApplyEnabledHook(enabled, false, nullptr);
+    // Packet 25 is a persistent configuration transaction. The mag runtime
+    // controller saves the candidate first and rolls back runtime/config on any
+    // failure; packet 24 is emitted only after this hook returns success.
+    return setMagYawCorrectionApplyEnabledHook(enabled, true, nullptr);
 }
 
 static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
@@ -450,6 +454,7 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     cfg.enabled = enabled;
     cfg.discoveryEnabled = g_networkConfig.data.discoveryEnabled;
     cfg.manualServerEnabled = g_networkConfig.data.manualServerEnabled;
+    cfg.manualServerHost = g_networkConfig.data.serverHost;
     cfg.deviceName = g_networkConfig.data.deviceName;
     cfg.sensorId = g_networkConfig.data.sensorId;
     cfg.serverPort = g_networkConfig.data.serverPort;
@@ -504,6 +509,7 @@ struct AppSlimeVRRuntimeStaticConfigCache {
     bool enabled = false;
     bool discoveryEnabled = true;
     bool manualServerEnabled = false;
+    char manualServerHost[64] = {};
     char deviceName[32] = {};
     uint8_t sensorId = 0;
     uint16_t serverPort = 0;
@@ -539,6 +545,9 @@ static bool appSlimeVRRuntimeStaticConfigMatches(const SlimeVROutputRuntimeConfi
     return g_slimeRuntimeStaticConfigCache.enabled == cfg.enabled &&
            g_slimeRuntimeStaticConfigCache.discoveryEnabled == cfg.discoveryEnabled &&
            g_slimeRuntimeStaticConfigCache.manualServerEnabled == cfg.manualServerEnabled &&
+           std::strncmp(g_slimeRuntimeStaticConfigCache.manualServerHost,
+                        cfg.manualServerHost ? cfg.manualServerHost : "",
+                        sizeof(g_slimeRuntimeStaticConfigCache.manualServerHost)) == 0 &&
            std::strncmp(g_slimeRuntimeStaticConfigCache.deviceName, deviceName, sizeof(g_slimeRuntimeStaticConfigCache.deviceName)) == 0 &&
            g_slimeRuntimeStaticConfigCache.sensorId == cfg.sensorId &&
            g_slimeRuntimeStaticConfigCache.serverPort == cfg.serverPort &&
@@ -562,6 +571,11 @@ static void appSlimeVRRuntimeStaticConfigCapture(const SlimeVROutputRuntimeConfi
     g_slimeRuntimeStaticConfigCache.enabled = cfg.enabled;
     g_slimeRuntimeStaticConfigCache.discoveryEnabled = cfg.discoveryEnabled;
     g_slimeRuntimeStaticConfigCache.manualServerEnabled = cfg.manualServerEnabled;
+    std::strncpy(g_slimeRuntimeStaticConfigCache.manualServerHost,
+                 cfg.manualServerHost ? cfg.manualServerHost : "",
+                 sizeof(g_slimeRuntimeStaticConfigCache.manualServerHost) - 1u);
+    g_slimeRuntimeStaticConfigCache.manualServerHost[
+        sizeof(g_slimeRuntimeStaticConfigCache.manualServerHost) - 1u] = '\0';
     copyAppSlimeVRDeviceName(g_slimeRuntimeStaticConfigCache.deviceName,
                              sizeof(g_slimeRuntimeStaticConfigCache.deviceName),
                              cfg.deviceName);
@@ -860,6 +874,7 @@ static void setupTapRuntime() {
     cfg.hardwareDoubleTap = TRACKER_TAP_HARDWARE_DOUBLE_TAP != 0;
     cfg.slidingWindow = TRACKER_TAP_SLIDING_WINDOW != 0;
     cfg.sensorId = g_networkConfig.data.sensorId;
+    cfg.physicalTapUserAction = g_networkConfig.tapUserAction();
     cfg.minCount = TRACKER_TAP_MIN_COUNT;
     cfg.maxCount = TRACKER_TAP_MAX_COUNT;
     cfg.pollIntervalMs = TRACKER_TAP_POLL_INTERVAL_MS;
@@ -1069,6 +1084,7 @@ static TrackerAppDeps makeTrackerAppDeps() {
 #endif
     deps.callbacks.resetOrientationState = resetOrientationDependentState;
     deps.callbacks.setMagRuntimeEnabled = appSetMagRuntimeEnabledCallback;
+    deps.callbacks.startMagRuntimeFromPreconfiguredFifo = appStartMagRuntimeFromPreconfiguredFifoCallback;
     deps.callbacks.processRawSample = processRuntimeRawSampleCallback;
     deps.callbacks.processMagSample = processRuntimeMagSampleCallback;
     deps.callbacks.recordFifoProcessTime = recordRuntimeFifoProcessTime;

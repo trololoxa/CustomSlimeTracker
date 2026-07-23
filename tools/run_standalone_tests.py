@@ -49,6 +49,8 @@ PROJECT_SOURCES = [
     pathlib.Path("src/runtime/fifo_runtime_processor.cpp"),
     pathlib.Path("src/config/tracker_config_runtime.cpp"),
     pathlib.Path("src/config/tracker_config_calibration_capture.cpp"),
+    pathlib.Path("src/config/tracker_config_store.cpp"),
+    pathlib.Path("src/config/tracker_network_config.cpp"),
     pathlib.Path("src/output/slimevr_packet_writer.cpp"),
     pathlib.Path("src/network/wifi_manager.cpp"),
     pathlib.Path("src/network/udp_transport.cpp"),
@@ -182,6 +184,7 @@ def compile_one(cxx: str, source: pathlib.Path, out: pathlib.Path, project_objec
         *(str(p) for p in project_objects),
         "-o",
         str(out),
+        *extra,
     ]
     print("[link]", source.name, flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True)

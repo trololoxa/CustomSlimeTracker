@@ -33,7 +33,7 @@ bool validateSaveArg(int argc, char** argv, int index, bool& save, Stream& out) 
 
 bool persistCandidate(TrackerSerialCommandContext& ctx,
                       Stream& out,
-                      const TrackerConfig& candidate) {
+                      TrackerConfig candidate) {
     if (!ctx.configStore) {
         tracker_serial_detail::printErr(out, "config store not available");
         return false;
@@ -48,7 +48,7 @@ bool persistCandidate(TrackerSerialCommandContext& ctx,
 
 bool restorePersistedPrevious(TrackerSerialCommandContext& ctx,
                               Stream& out,
-                              const TrackerConfig& previous) {
+                              TrackerConfig previous) {
     if (!ctx.configStore) return false;
     if (ctx.configStore->save(previous)) {
         out.println("# WARN previous config restored in NVS");
@@ -83,6 +83,11 @@ bool applyImuFifoHardware(TrackerSerialCommandContext& ctx,
     if (ctx.logState) ctx.logState->mode = TrackerLogMode::Off;
 
     const uint64_t lastTimestampUs = ctx.fifo->stats().lastAssignedTimestampUs;
+    if (rebeginImu && ctx.setSpiFrequency &&
+        !ctx.setSpiFrequency(ctx.config->data.hardware.spiHz, ctx.setSpiFrequencyUser)) {
+        tracker_serial_detail::printErr(out, "failed to apply SPI clock before IMU reconfigure");
+        return false;
+    }
     if (rebeginImu && !ctx.lsm->begin(ctx.config->makeLsmConfig())) {
         out.print("# ERR imu reconfigure failed last_error=");
         out.println(static_cast<int>(ctx.lsm->lastError()));
@@ -152,6 +157,12 @@ bool commitImuFifoCandidate(TrackerSerialCommandContext& ctx,
 }
 
 } // namespace
+
+bool trackerSerialCommitFullHardwareConfig(TrackerSerialCommandContext& ctx,
+                                           Stream& out,
+                                           TrackerConfig candidate) {
+    return commitImuFifoCandidate(ctx, out, candidate, false, true);
+}
 
 void trackerSerialPrintFifoTuning(Stream& out, const TrackerSerialCommandContext& ctx) {
     if (!ctx.config) {

@@ -41,10 +41,28 @@ enum class SlimeVRMotionPacketMode : uint8_t {
 
 const char* slimevrMotionPacketModeName(SlimeVRMotionPacketMode mode);
 
+enum class SlimeVRSensorInfoSyncState : uint8_t {
+    Dirty,
+    WaitingForAck,
+    Acknowledged,
+};
+
+const char* slimevrSensorInfoSyncStateName(SlimeVRSensorInfoSyncState state);
+
+enum class SlimeVRFeatureNegotiationState : uint8_t {
+    NotStarted,
+    Waiting,
+    Negotiated,
+    Unavailable,
+};
+
+const char* slimevrFeatureNegotiationStateName(SlimeVRFeatureNegotiationState state);
+
 struct SlimeVROutputRuntimeConfig {
     bool enabled = false;
     bool discoveryEnabled = true;
     bool manualServerEnabled = false;
+    const char* manualServerHost = nullptr;
     const char* deviceName = nullptr;
     uint8_t sensorId = 0;
     uint16_t serverPort = SLIMEVR_DEFAULT_SERVER_PORT;
@@ -82,6 +100,12 @@ struct SlimeVROutputRuntimeStatus {
     bool serverFound = false;
     bool discoveryEnabled = true;
     bool manualServerEnabled = false;
+    char manualServerHost[64] = {};
+    bool manualServerResolved = false;
+    uint32_t manualServerIpv4 = 0;
+    uint32_t manualServerResolveAttempts = 0;
+    uint32_t manualServerResolveFailures = 0;
+    uint32_t manualServerHandshakesSent = 0;
 
     uint16_t localPort = 0;
     uint32_t serverIpv4 = 0;
@@ -95,6 +119,17 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t handshakesSent = 0;
     uint32_t heartbeatSent = 0;
     uint32_t sensorInfoSent = 0;
+    uint32_t sensorInfoAckReceived = 0;
+    uint32_t sensorInfoAckMalformed = 0;
+    uint32_t sensorInfoAckMismatch = 0;
+    SlimeVRSensorInfoSyncState sensorInfoSyncState = SlimeVRSensorInfoSyncState::Dirty;
+    bool sensorInfoDirty = true;
+    uint8_t sensorInfoLocalStatus = 0;
+    uint16_t sensorInfoLocalConfig = 0;
+    bool sensorInfoLocalRestCalibration = false;
+    uint8_t sensorInfoAckStatus = 0;
+    uint16_t sensorInfoAckConfig = 0;
+    bool sensorInfoAckRestCalibration = false;
     uint32_t rotationSent = 0;
     uint32_t accelerationSent = 0;
     uint32_t compactMotionSent = 0;
@@ -108,6 +143,8 @@ struct SlimeVROutputRuntimeStatus {
     bool compactMotionEnabled = TRACKER_SLIMEVR_USE_COMPACT_MOTION_PACKET != 0;
     bool bundleNegotiationEnabled = TRACKER_SLIMEVR_ENABLE_BUNDLE_NEGOTIATION != 0;
     bool serverFeatureFlagsAvailable = false;
+    SlimeVRFeatureNegotiationState featureNegotiationState = SlimeVRFeatureNegotiationState::NotStarted;
+    uint8_t featureFlagsRequestAttempts = 0;
     bool serverBundleSupported = false;
     bool serverCompactBundleSupported = false;
     bool bundledMotionEnabled = false;
@@ -143,7 +180,14 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t packetsReceived = 0;
     uint32_t foreignEndpointPacketsDropped = 0;
     uint32_t preSessionPacketsDropped = 0;
+    uint32_t malformedPackets = 0;
+    uint32_t malformedDatagramLength = 0;
+    uint32_t malformedHeartbeat = 0;
+    uint32_t malformedPing = 0;
     uint32_t malformedFeatureFlags = 0;
+    uint32_t malformedSetConfigFlag = 0;
+    uint32_t malformedProtocolChange = 0;
+    uint32_t malformedUnknownRaw = 0;
     uint32_t discoveryResponses = 0;
     uint32_t heartbeatReceived = 0;
     uint32_t pingReceived = 0;
@@ -151,9 +195,15 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t featureFlagsReceived = 0;
     uint32_t setConfigFlagReceived = 0;
     uint32_t setConfigFlagApplied = 0;
+    uint32_t setConfigFlagApplyFailures = 0;
     uint32_t setConfigFlagIgnored = 0;
     uint32_t ackConfigSent = 0;
+    uint32_t ackConfigSendFailures = 0;
+    uint32_t userActionSent = 0;
+    uint32_t userActionSendFailures = 0;
+    SlimeVRUserAction lastUserAction = SlimeVRUserAction::None;
     uint32_t protocolChangeReceived = 0;
+    uint32_t protocolChangeIgnored = 0;
     uint32_t unknownPacketsReceived = 0;
     uint32_t sendFailures = 0;
     uint32_t rotationSendFailures = 0;
@@ -237,6 +287,7 @@ public:
     bool update(uint32_t nowMs);
     void requestSensorInfoRefresh();
     bool sendTap(uint8_t value);
+    bool sendUserAction(SlimeVRUserAction action);
 
     bool enabled() const { return enabled_; }
     bool serverFound() const { return serverFound_; }
@@ -250,14 +301,19 @@ private:
     void ensureUdp(uint32_t nowMs);
     void pollIncoming(uint32_t nowMs);
     bool handleIncomingPacket(const uint8_t* data, size_t len, const UdpEndpoint& remote, uint32_t nowMs);
-    void handlePingPong(const uint8_t* data, size_t len);
+    bool handleSensorInfoAck(const uint8_t* data, size_t len);
+    bool handleHeartbeat(const uint8_t* data, size_t len, uint32_t nowMs);
+    bool handlePingPong(const uint8_t* data, size_t len);
     bool handleFeatureFlags(const uint8_t* data, size_t len);
-    void handleSetConfigFlag(const uint8_t* data, size_t len, uint32_t nowMs);
-    void handleProtocolChange(const uint8_t* data, size_t len);
-    void sendAckConfigChange(uint16_t configType);
+    bool handleSetConfigFlag(const uint8_t* data, size_t len, uint32_t nowMs);
+    bool handleProtocolChange(const uint8_t* data, size_t len);
+    bool sendAckConfigChange(uint8_t targetSensorId, uint16_t configType);
     void maybeSendDiscovery(uint32_t nowMs);
     void sendHandshakeTo(const UdpEndpoint& endpoint, uint32_t nowMs);
     void sendSensorInfo(uint32_t nowMs);
+    SlimeVRSensorInfo desiredSensorInfo() const;
+    void markSensorInfoDirty();
+    static bool sensorInfoEqual(const SlimeVRSensorInfo& a, const SlimeVRSensorInfo& b);
     void sendHeartbeat(uint32_t nowMs);
     void maybeSendFeatureFlags(uint32_t nowMs);
     void maybeSendTelemetry(uint32_t nowMs);
@@ -288,6 +344,7 @@ private:
         Acceleration,
         MotionCombined,
         Tap,
+        UserAction,
         ErrorReport,
     };
 
@@ -312,6 +369,8 @@ private:
     bool discoveryEnabled_ = true;
     bool manualServerEnabled_ = false;
     bool serverFound_ = false;
+    char manualServerHost_[64] = {};
+    UdpEndpoint manualServerEndpoint_;
 
     char deviceName_[32] = "c3-6dsv-tracker";
     uint8_t sensorId_ = 0;
@@ -338,6 +397,11 @@ private:
     float latestBatteryVoltage_ = 0.0f;
     float latestBatteryPercentage_ = 0.0f;
     bool hasCompletedRestCalibration_ = false;
+    SlimeVRSensorInfo desiredSensorInfo_;
+    SlimeVRSensorInfo lastSentSensorInfo_;
+    SlimeVRSensorInfo acknowledgedSensorInfo_;
+    SlimeVRSensorInfoSyncState sensorInfoSyncState_ = SlimeVRSensorInfoSyncState::Dirty;
+    bool sensorInfoDirty_ = true;
     TrackerHealthSnapshot trackerHealth_;
     uint32_t lastTrackerErrorMs_ = 0;
 
@@ -346,6 +410,7 @@ private:
     uint8_t serverFeatureFlags_[4] = {};
     uint8_t serverFeatureFlagsLength_ = 0;
     bool serverFeatureFlagsAvailable_ = false;
+    SlimeVRFeatureNegotiationState featureNegotiationState_ = SlimeVRFeatureNegotiationState::NotStarted;
     uint8_t featureFlagsRequestAttempts_ = 0;
     uint32_t lastFeatureFlagsRequestMs_ = 0;
     uint8_t lastSetConfigSensorId_ = 0;
@@ -359,8 +424,14 @@ private:
     UdpEndpoint serverEndpoint_;
 
     uint32_t handshakesSent_ = 0;
+    uint32_t manualServerResolveAttempts_ = 0;
+    uint32_t manualServerResolveFailures_ = 0;
+    uint32_t manualServerHandshakesSent_ = 0;
     uint32_t heartbeatSent_ = 0;
     uint32_t sensorInfoSent_ = 0;
+    uint32_t sensorInfoAckReceived_ = 0;
+    uint32_t sensorInfoAckMalformed_ = 0;
+    uint32_t sensorInfoAckMismatch_ = 0;
     uint32_t rotationSent_ = 0;
     uint32_t accelerationSent_ = 0;
     uint32_t compactMotionSent_ = 0;
@@ -402,7 +473,14 @@ private:
     uint32_t packetsReceived_ = 0;
     uint32_t foreignEndpointPacketsDropped_ = 0;
     uint32_t preSessionPacketsDropped_ = 0;
+    uint32_t malformedPackets_ = 0;
+    uint32_t malformedDatagramLength_ = 0;
+    uint32_t malformedHeartbeat_ = 0;
+    uint32_t malformedPing_ = 0;
     uint32_t malformedFeatureFlags_ = 0;
+    uint32_t malformedSetConfigFlag_ = 0;
+    uint32_t malformedProtocolChange_ = 0;
+    uint32_t malformedUnknownRaw_ = 0;
     uint32_t discoveryResponses_ = 0;
     uint32_t heartbeatReceived_ = 0;
     uint32_t pingReceived_ = 0;
@@ -410,9 +488,15 @@ private:
     uint32_t featureFlagsReceived_ = 0;
     uint32_t setConfigFlagReceived_ = 0;
     uint32_t setConfigFlagApplied_ = 0;
+    uint32_t setConfigFlagApplyFailures_ = 0;
     uint32_t setConfigFlagIgnored_ = 0;
     uint32_t ackConfigSent_ = 0;
+    uint32_t ackConfigSendFailures_ = 0;
+    uint32_t userActionSent_ = 0;
+    uint32_t userActionSendFailures_ = 0;
+    SlimeVRUserAction lastUserAction_ = SlimeVRUserAction::None;
     uint32_t protocolChangeReceived_ = 0;
+    uint32_t protocolChangeIgnored_ = 0;
     uint32_t unknownPacketsReceived_ = 0;
     uint32_t sendFailures_ = 0;
     uint32_t rotationSendFailures_ = 0;
@@ -429,6 +513,7 @@ private:
     bool udpReopenRequested_ = false;
 
     uint32_t lastHandshakeMs_ = 0;
+    uint32_t lastDiscoveryAttemptMs_ = 0;
     uint32_t lastIncomingPacketMs_ = 0;
     uint32_t lastStateChangeMs_ = 0;
     uint32_t lastHeartbeatMs_ = 0;

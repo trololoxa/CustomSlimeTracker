@@ -115,6 +115,8 @@ public:
     float referenceTempC() const;
     Vec3 slopeRadSPerC() const;
     Vec3 slopeDpsPerC() const;
+    bool acceptsSlopeDpsPerC(const Vec3& slopeDpsPerC) const;
+    bool acceptsSlopeRadSPerC(const Vec3& slopeRadSPerC) const;
 
     Vec3 biasAt(float tempC) const;
     Vec3 correctedGyro(const Vec3& rawGyroRadS, float tempC) const;

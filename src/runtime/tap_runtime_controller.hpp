@@ -5,6 +5,7 @@
 #include "defines.h"
 #include "connection/lsm6dsv_driver.hpp"
 #include "runtime/tap_accumulator.hpp"
+#include "output/slimevr_packet_writer.hpp"
 
 namespace tracker {
 
@@ -19,6 +20,7 @@ struct TapRuntimeConfig {
     bool slidingWindow = TRACKER_TAP_SLIDING_WINDOW != 0;
 
     uint8_t sensorId = 0;
+    SlimeVRUserAction physicalTapUserAction = SlimeVRUserAction::None;
     uint8_t minCount = TRACKER_TAP_MIN_COUNT;
     uint8_t maxCount = TRACKER_TAP_MAX_COUNT;
     uint16_t pollIntervalMs = TRACKER_TAP_POLL_INTERVAL_MS;
@@ -81,6 +83,9 @@ struct TapRuntimeStatus {
     uint8_t lastPhysicalCount = 0;
     uint8_t lastValue = 0;
     bool lastSentOk = false;
+    SlimeVRUserAction physicalTapUserAction = SlimeVRUserAction::None;
+    uint32_t userActionsSent = 0;
+    uint32_t userActionFailures = 0;
 
     uint32_t singleDetected = 0;
     uint32_t doubleDetected = 0;
@@ -124,6 +129,7 @@ public:
     void begin(Lsm6dsv& lsm, SlimeVROutputRuntime& slimevr);
     bool configure(const TapRuntimeConfig& config);
     bool setEnabled(bool enabled);
+    void setPhysicalTapUserAction(SlimeVRUserAction action);
     bool enabled() const { return config_.enabled; }
     TapRuntimeConfig config() const { return config_; }
     void resetCounters();

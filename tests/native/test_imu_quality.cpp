@@ -213,12 +213,14 @@ static void testFifoStatsDeltaRequestsRecovery(TestContext& ctx) {
     stats.fullEvents = 1;
     stats.unknownWords = 2;
     stats.timestampBackwards = 1;
+    stats.completedSampleQueueOverflow = 1;
 
     ImuQualityResult q = monitor.evaluate(makeRaw(1000), makeSample(1000), stats, true);
     CHECK(ctx, q.has(imu_quality_flags::FIFO_OVERRUN));
     CHECK(ctx, q.has(imu_quality_flags::FIFO_FULL));
     CHECK(ctx, q.has(imu_quality_flags::FIFO_UNKNOWN_TAG));
     CHECK(ctx, q.has(imu_quality_flags::TIMESTAMP_BACKWARDS));
+    CHECK(ctx, q.has(imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW));
     CHECK(ctx, q.has(imu_quality_flags::FIFO_RECOVERY_REQUESTED));
     CHECK(ctx, q.shouldRequestFifoRecovery);
     CHECK(ctx, monitor.recoveryRequested());
@@ -233,12 +235,14 @@ static void testFifoStatsDeltaRequestsRecovery(TestContext& ctx) {
     CHECK(ctx, c.fifoFullEvents == 1);
     CHECK(ctx, c.fifoUnknownTagEvents == 2);
     CHECK(ctx, c.timestampBackwards == 1);
+    CHECK(ctx, c.completedSampleQueueOverflows == 1);
     CHECK(ctx, c.fifoRecoveryRequests == 1);
     CHECK(ctx, c.fifoRecoveryOverrunRequests == 1);
     CHECK(ctx, c.fifoRecoveryFullRequests == 1);
     CHECK(ctx, c.fifoRecoveryUnknownTagRequests == 0);
     CHECK(ctx, c.fifoRecoveryTimestampBackwardsRequests == 1);
     CHECK(ctx, c.fifoRecoveryTimestampQueueOverflowRequests == 0);
+    CHECK(ctx, c.fifoRecoveryCompletedQueueOverflowRequests == 1);
 }
 
 int main() {

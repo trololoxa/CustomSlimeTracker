@@ -52,6 +52,18 @@ uint16_t Esp32UdpTransport::localPort() const {
     return localPort_;
 }
 
+bool Esp32UdpTransport::resolveHost(const char* host, uint32_t& outIpv4) {
+    if (udpParseIpv4(host, outIpv4)) return true;
+    outIpv4 = 0;
+    if (!host || host[0] == '\0' || WiFi.status() != WL_CONNECTED) return false;
+    IPAddress resolved;
+    if (WiFi.hostByName(host, resolved) != 1) return false;
+    const uint32_t value = ipToU32(resolved);
+    if (value == 0u || value == 0xffffffffu) return false;
+    outIpv4 = value;
+    return true;
+}
+
 bool Esp32UdpTransport::send(const UdpEndpoint& endpoint, const uint8_t* data, size_t len) {
     if (!active_ || !endpoint.valid() || !data || len == 0) return false;
     if (!udp_.beginPacket(ipFromU32(endpoint.ipv4), endpoint.port)) return false;

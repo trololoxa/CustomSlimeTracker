@@ -135,9 +135,11 @@ bool MagRuntimeProcessor::process(const Lsm6dsvFifoReader::MagRawSample& raw,
 }
 
 uint32_t MagRuntimeProcessor::ageMsForUse(const MagProcessedSample& sample, uint32_t nowMs) {
-    if (!sample.valid || sample.receivedMs == 0) {
+    if (!sample.valid) {
         return 0xFFFFFFFFUL;
     }
+    // receivedMs is a wrapping uint32_t clock, not an invalid-value sentinel.
+    // A valid sample can legitimately be stamped at boot or exactly at wrap.
     return nowMs - sample.receivedMs;
 }
 
@@ -205,7 +207,7 @@ void MagRuntimeProcessor::pushRawNorm(float n) {
 
 void MagRuntimeProcessor::pushBodyNorm(float n) {
     if (!tracker::isFinite(n)) return;
-    if (stats_.processedSamples == 0) {
+    if (stats_.processedSamples == 1) {
         stats_.bodyNormMin = n;
         stats_.bodyNormMax = n;
     } else {

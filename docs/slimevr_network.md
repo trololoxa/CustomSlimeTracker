@@ -88,7 +88,7 @@ protocol_version=22
 board_type=10       LOLIN_C3_MINI
 imu_type=13         LSM6DSV
 mcu_type=6          ESP32_C3
-firmware_version    c3-6dsv-motion-bundle
+firmware_version    c3-6dsv-session-complete-boot-clean
 ```
 
 The feature version names the currently completed firmware capability and is
@@ -108,6 +108,7 @@ Acceleration packet 4 fallback
 HeartBeat
 PingPong response
 AcknowledgeConfigChange
+UserAction packet 21 on explicit command or configured physical tap
 BatteryLevel when enabled
 Tap when enabled
 Error when tracker health reports one
@@ -122,11 +123,12 @@ Incoming packets currently handled:
 
 ```text
 Discovery response: raw 0x03 + "Hey OVR =D 5"
+SensorInfo acknowledgement: special six-byte packet 15 without packetNumber
 Heartbeat packet 0/1
 PingPong packet 10
 FeatureFlags packet 22, used for capability negotiation
-SetConfigFlag packet 25, used for runtime magnetometer/yaw toggle
-ProtocolChange packet 200, counted but not acted on
+SetConfigFlag packet 25, transactionally persisted before acknowledgement
+ProtocolChange packet 200, validated, counted and intentionally ignored
 ```
 
 Magnetometer capability is advertised via `SensorInfo.sensor_config`:
@@ -200,23 +202,33 @@ ping was received within `TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_RX_GRACE_MS`. In
 that case stale pose is dropped and `udp_reopen_suppressed_recent_rx` increments.
 A truly silent session still reopens after the configured failure threshold.
 
-After discovery, only the selected server IP/port may send FeatureFlags, ping,
-heartbeat, config or protocol-control packets. Foreign endpoints cannot replace
-the live server, negotiate bundle mode or refresh the silence timer. Empty
-FeatureFlags are counted as malformed and leave negotiation pending so a later
-valid response can recover. Inspect `foreign_endpoint_packets_dropped`,
-`pre_session_packets_dropped` and `malformed_feature_flags` in `slime debug`.
+Manual server mode is functional rather than storage-only. The runtime resolves
+`serverHost` once per bounded discovery interval (dotted IPv4 locally, DNS on
+ESP32), sends an ordinary unicast handshake, and repeats only at the configured
+interval. When broadcast discovery is disabled, only the resolved manual
+IP/port may establish the session. When discovery remains enabled, manual
+unicast and broadcast handshakes coexist and the first valid response wins.
+Server silence, Wi-Fi loss, socket recreation or config changes clear the
+resolved endpoint and re-enter handshake/rebind flow.
+
+After session establishment, only the selected server IP/port may send
+FeatureFlags, ping, heartbeat, config or protocol-control packets. Foreign
+endpoints cannot replace the live server, negotiate bundle mode or refresh the
+silence timer. Empty FeatureFlags, truncated/oversized UDP datagrams and
+headerless normal control packets are counted as malformed and never refresh
+liveness. Inspect `foreign_endpoint_packets_dropped`,
+`pre_session_packets_dropped`, `malformed_datagram_length`, the other
+`malformed_*` counters, and `manual_server_*` fields in `slime debug`.
 
 `SignalStrength` packet 19 carries one signed RSSI value in dBm. For example,
 `-68 dBm` is encoded as the two's-complement byte `0xBC`; it is not normalized
 to a user-facing 0..100 percentage. `slime status` exposes the value as
 `last_signal_strength_dbm`.
 
-## Known protocol gaps in the current baseline
+## Session-completeness contract
 
-The UDP runtime now provides coherent orientation plus linear acceleration and
-negotiates packet-100 bundles, but it does not yet implement the complete modern
-tracker/server contract:
+The UDP runtime now implements the complete session contract used by this
+firmware baseline:
 
 - protocol version 22 advertises corrected tracker acceleration. Rotation and
   acceleration use the right-handed device basis `+X right, +Y forward, +Z
@@ -227,12 +239,20 @@ tracker/server contract:
   50 Hz. Hard-invalid acceleration never suppresses valid rotation;
 - packet 23 remains an explicitly disabled experimental mode because no legacy
   server FeatureFlag proves parser compatibility;
-- the short SensorInfo acknowledgement packet 15 is not tracked as a confirmed
-  state, and SensorInfo is refreshed periodically or on local changes;
-- ProtocolChange is counted but does not switch protocol.
-
-These are the remaining protocol upgrades. Documentation must not describe them
-as already active.
+- SensorInfo has explicit `dirty`, `waiting_for_ack` and `acknowledged` states.
+  The special six-byte acknowledgement is parsed separately from normal
+  headered packets, and resend stops only after the acknowledged state matches
+  the latest local state;
+- firmware/server FeatureFlags use explicit `not_started`, `waiting`,
+  `negotiated` and `unavailable` states. Empty or malformed bitsets do not
+  establish capabilities;
+- SetConfigFlag type 1 applies the magnetometer/yaw state transactionally,
+  persists it, verifies the result and only then sends packet 24. An idempotent
+  retry is acknowledged without repeating the NVS write;
+- `slime action yaw|full|mounting|pause` sends UserAction packet 21. Physical
+  tap mapping is stored in network config and defaults to `off`;
+- ProtocolChange is length-validated and recorded, but protocol switching is
+  intentionally unsupported; the runtime remains on protocol 22.
 
 ## CLI diagnostics
 
@@ -250,7 +270,7 @@ Full developer dump:
 slime debug
 ```
 
-Use it when packet counters/timestamps matter. It includes handshake counts, SensorInfo counts, duplicate snapshot counters, last packet ids, reconnect-hardening counters, and last rotation metadata.
+Use it when packet counters/timestamps matter. It includes handshake counts, SensorInfo acknowledgement state, FeatureFlags attempts, malformed/foreign packet counters, SetConfigFlag apply/ACK results, UserAction counters, duplicate snapshot counters, reconnect-hardening counters and last rotation metadata.
 
 Counter reset:
 
@@ -268,6 +288,22 @@ Manual rotation rate change:
 
 ```text
 slime rate 100
+```
+
+Manual server actions:
+
+```text
+slime action yaw
+slime action full
+slime action mounting
+slime action pause
+```
+
+Optional physical-tap mapping is persistent only with `save` and defaults to
+`off`:
+
+```text
+slime tap-action off|yaw|full|mounting|pause [save]
 ```
 
 The scheduler keeps an absolute phase. If a loop reaches a deadline late, it

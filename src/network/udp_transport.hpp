@@ -19,6 +19,8 @@ struct UdpEndpoint {
     bool operator!=(const UdpEndpoint& other) const { return !(*this == other); }
 };
 
+bool udpParseIpv4(const char* text, uint32_t& outIpv4);
+
 class IUdpTransport {
 public:
     virtual ~IUdpTransport() = default;
@@ -29,6 +31,12 @@ public:
     virtual uint16_t localPort() const = 0;
 
     virtual bool send(const UdpEndpoint& endpoint, const uint8_t* data, size_t len) = 0;
+
+    // Resolve a manual server hostname to IPv4. Host-safe transports inherit
+    // the dotted-decimal parser; ESP32 overrides this with DNS support.
+    virtual bool resolveHost(const char* host, uint32_t& outIpv4) {
+        return udpParseIpv4(host, outIpv4);
+    }
 
     // Returns next packet size, or <= 0 when no packet is available.
     virtual int parsePacket() = 0;

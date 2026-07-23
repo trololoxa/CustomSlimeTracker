@@ -6,6 +6,19 @@
 
 namespace tracker {
 
+namespace {
+
+bool validUserActionValue(uint8_t value) {
+    return value == static_cast<uint8_t>(SlimeVRUserAction::None) ||
+           value == static_cast<uint8_t>(SlimeVRUserAction::FullReset) ||
+           value == static_cast<uint8_t>(SlimeVRUserAction::YawReset) ||
+           value == static_cast<uint8_t>(SlimeVRUserAction::MountingReset) ||
+           value == static_cast<uint8_t>(SlimeVRUserAction::PauseTracking);
+}
+
+} // namespace
+
+
 void TrackerNetworkConfig::resetDefaults() {
     data = TrackerNetworkConfigBlob{};
     updateCrc();
@@ -50,6 +63,9 @@ void TrackerNetworkConfig::sanitize() {
     const size_t nameLen = std::strlen(data.deviceName);
     if (nameLen > 0 && data.deviceName[nameLen - 1] == '-') data.deviceName[nameLen - 1] = 'r';
     if (data.serverPort == 0) data.serverPort = tracker_network_detail::DEFAULT_SLIMEVR_PORT;
+    if (!validUserActionValue(data.tapUserAction)) {
+        data.tapUserAction = static_cast<uint8_t>(SlimeVRUserAction::None);
+    }
     if (!data.credentialsValid) {
         data.wifiEnabled = false;
     }
@@ -63,7 +79,19 @@ bool TrackerNetworkConfig::validate() const {
     if (computeCrc() != data.crc32) return false;
     if (data.serverPort == 0) return false;
     if (data.credentialsValid && data.ssid[0] == '\0') return false;
+    if (!validUserActionValue(data.tapUserAction)) return false;
     return true;
+}
+
+SlimeVRUserAction TrackerNetworkConfig::tapUserAction() const {
+    return validUserActionValue(data.tapUserAction)
+        ? static_cast<SlimeVRUserAction>(data.tapUserAction)
+        : SlimeVRUserAction::None;
+}
+
+void TrackerNetworkConfig::setTapUserAction(SlimeVRUserAction action) {
+    data.tapUserAction = static_cast<uint8_t>(action);
+    sanitize();
 }
 
 TrackerNetworkConfigStore::TrackerNetworkConfigStore(const char* nvsNamespace,
@@ -107,9 +135,10 @@ bool TrackerNetworkConfigStore::load(TrackerNetworkConfig& out) {
     return true;
 }
 
-bool TrackerNetworkConfigStore::save(TrackerNetworkConfig config) {
-    config.sanitize();
-    if (!config.validate()) {
+bool TrackerNetworkConfigStore::save(TrackerNetworkConfig& config) {
+    TrackerNetworkConfig candidate = config;
+    candidate.sanitize();
+    if (!candidate.validate()) {
         lastError_ = TrackerConfigError::CrcOrValidationFailed;
         return false;
     }
@@ -118,12 +147,13 @@ bool TrackerNetworkConfigStore::save(TrackerNetworkConfig config) {
         lastError_ = TrackerConfigError::NvsBeginFailed;
         return false;
     }
-    const size_t written = prefs.putBytes(key_, &config.data, sizeof(config.data));
+    const size_t written = prefs.putBytes(key_, &candidate.data, sizeof(candidate.data));
     prefs.end();
-    if (written != sizeof(config.data)) {
+    if (written != sizeof(candidate.data)) {
         lastError_ = TrackerConfigError::WriteFailed;
         return false;
     }
+    config = candidate;
     lastError_ = TrackerConfigError::None;
     return true;
 }

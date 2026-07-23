@@ -101,10 +101,72 @@ static void testMagYawRejectsAndCooldown(TestContext& ctx) {
     CHECK(ctx, out.gateOpen);
 }
 
+static void testMagRuntimeBodyNormExtremaInitializeFromFirstSample(TestContext& ctx) {
+    MagRuntimeConfig cfg;
+    cfg.enabled = true;
+    cfg.calibrationValid = true;
+    cfg.axisAlignmentValid = true;
+    cfg.minTrustNorm = 0.0f;
+    cfg.maxTrustNorm = 100.0f;
+
+    MagRuntimeProcessor processor;
+    Lsm6dsvFifoReader::MagRawSample raw;
+    raw.t_us = 1000;
+    raw.seq = 1;
+    raw.x = 3;
+    raw.y = 4;
+    raw.z = 0;
+
+    MagProcessedSample out;
+    CHECK(ctx, processor.process(raw, cfg, 10, out));
+    CHECK_NEAR(ctx, processor.stats().bodyNormMin, 5.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, processor.stats().bodyNormMax, 5.0f, 1.0e-6f);
+
+    raw.t_us = 2000;
+    raw.seq = 2;
+    raw.x = 6;
+    raw.y = 8;
+    CHECK(ctx, processor.process(raw, cfg, 20, out));
+    CHECK_NEAR(ctx, processor.stats().bodyNormMin, 5.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, processor.stats().bodyNormMax, 10.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, processor.stats().bodyNormMean(), 7.5f, 1.0e-6f);
+}
+
+static void testMagSampleAgeAcceptsZeroAndWrap(TestContext& ctx) {
+    MagProcessedSample sample;
+    sample.valid = true;
+    sample.receivedMs = 0u;
+    CHECK(ctx, MagRuntimeProcessor::ageMsForUse(sample, 7u) == 7u);
+
+    sample.receivedMs = 0xFFFFFFFAu;
+    CHECK(ctx, MagRuntimeProcessor::ageMsForUse(sample, 4u) == 10u);
+
+    sample.valid = false;
+    CHECK(ctx, MagRuntimeProcessor::ageMsForUse(sample, 4u) == 0xFFFFFFFFu);
+}
+
+static void testMagYawDtIsWrapSafe(TestContext& ctx) {
+    MagYawCorrectionConfig cfg;
+    cfg.applyEnabled = true;
+    cfg.fallbackDtS = 0.25f;
+
+    MagYawCorrectionController controller;
+    MagYawCorrectionOutput out;
+
+    controller.update(makeGoodMagYawInput(0xFFFFFFFAu), cfg, out);
+    CHECK(ctx, out.dtMs == 0);
+
+    controller.update(makeGoodMagYawInput(4u), cfg, out);
+    CHECK(ctx, out.dtMs == 10u);
+}
+
 int main() {
     TestContext ctx;
     testRuntimeBiasStateResets(ctx);
     testMagYawGateOpenAndCorrectionDirection(ctx);
     testMagYawRejectsAndCooldown(ctx);
+    testMagRuntimeBodyNormExtremaInitializeFromFirstSample(ctx);
+    testMagSampleAgeAcceptsZeroAndWrap(ctx);
+    testMagYawDtIsWrapSafe(ctx);
     return ctx.finish("test_mag_yaw_runtime_bias");
 }

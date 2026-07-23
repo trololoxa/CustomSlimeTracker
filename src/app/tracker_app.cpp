@@ -105,8 +105,10 @@ void TrackerApp::setup() {
     } else if (!initFifoWithRetries()) {
         beginSensorStartupRecovery(TrackerHealthFaultCode::FifoInitFailed,
                                    "FIFO init failed after retries");
+    } else if (!setupSensorRuntime()) {
+        beginSensorStartupRecovery(TrackerHealthFaultCode::FifoInitFailed,
+                                   "FIFO runtime finalization failed after sensor startup");
     } else {
-        setupSensorRuntime();
         sensorRuntimeReady_ = true;
     }
 
@@ -473,6 +475,15 @@ bool TrackerApp::updateSensorStartupRecovery(uint32_t nowMs) {
     }
 
     if (ok) {
+        if (!setupSensorRuntime()) {
+            pendingSensorFaultCode_ = TrackerHealthFaultCode::FifoInitFailed;
+            std::strncpy(pendingSensorFaultMessage_,
+                         "FIFO runtime finalization failed during startup recovery",
+                         sizeof(pendingSensorFaultMessage_) - 1u);
+            pendingSensorFaultMessage_[sizeof(pendingSensorFaultMessage_) - 1u] = '\0';
+            nextSensorStartupRecoveryMs_ = nowMs + SENSOR_STARTUP_RECOVERY_INTERVAL_MS;
+            return true;
+        }
         finishSensorStartupRecoverySuccess();
         return true;
     }
@@ -491,7 +502,6 @@ bool TrackerApp::updateSensorStartupRecovery(uint32_t nowMs) {
 }
 
 void TrackerApp::finishSensorStartupRecoverySuccess() {
-    setupSensorRuntime();
     sensorRuntimeReady_ = true;
     sensorStartupRecoveryActive_ = false;
     sensorStartupHardFailed_ = false;
@@ -510,7 +520,7 @@ void TrackerApp::finishSensorStartupRecoverySuccess() {
 #endif
 }
 
-void TrackerApp::setupSensorRuntime() {
+bool TrackerApp::setupSensorRuntime() {
     deps_.runtime.fifoEvents->begin(
         deps_.runtime.fifoIntCount,
         deps_.runtime.fifo,
@@ -538,11 +548,33 @@ void TrackerApp::setupSensorRuntime() {
 
     trackerBootstrapSetupCalibrationIo(deps_.bootstrap);
     call(deps_.callbacks.setupMagRuntimeController);
-    call(deps_.callbacks.resetFifoRuntimeCounters);
-    call(deps_.callbacks.attachFifoInterrupt);
 
-    deps_.runtime.fifo->resetFifo();
+    // Bootstrap already configured the 960 Hz FIFO. QMC6309 setup performs
+    // blocking sensor-hub transactions and settle delays, so live collection
+    // here can fill the 256-word FIFO before the first runtime loop. Keep INT1
+    // detached and pause only FIFO_CTRL4 while QMC is initialized.
+    call(deps_.callbacks.detachFifoInterrupt);
+    if (!deps_.runtime.fifo->pauseFifo()) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+        deps_.runtime.out->println("# ERR FIFO pause before mag startup failed");
+#endif
+        return false;
+    }
+
+    startMagFromConfig(*deps_.runtime.out);
+
+    // This is the sole transition into the live FIFO epoch. It flushes any
+    // bootstrap/sensor-hub residue, clears parser queues and resumes the exact
+    // configured batching mode before INT1 can publish an event.
+    if (!deps_.runtime.fifo->resetFifo()) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+        deps_.runtime.out->println("# ERR FIFO final reset after mag startup failed");
+#endif
+        return false;
+    }
     deps_.runtime.fifo->resetTimestampReconstruction(0);
+    deps_.runtime.fifoRuntime->resetWork();
+    call(deps_.callbacks.resetFifoRuntimeCounters);
     deps_.runtime.quality->reset();
     deps_.runtime.quality->syncFifoStats(deps_.runtime.fifo->stats());
     deps_.runtime.ahrs->reset();
@@ -550,9 +582,11 @@ void TrackerApp::setupSensorRuntime() {
         deps_.callbacks.resetOrientationState("startup", 0, false);
     }
 
-    startMagFromConfig(*deps_.runtime.out);
+    // Attach only after all queues, timestamp baselines and quality state belong
+    // to the new live epoch.
+    call(deps_.callbacks.attachFifoInterrupt);
+    return true;
 }
-
 void TrackerApp::enterFatalDegraded(TrackerHealthFaultCode code, const char* message) {
     deps_.runtime.health->enterDegradedNoImu(code, message);
     if (deps_.runtime.out != nullptr) {
@@ -733,12 +767,11 @@ void TrackerApp::resumeFromMotionLightSleep() {
     pendingSensorFaultCode_ = TrackerHealthFaultCode::None;
     pendingSensorFaultMessage_[0] = '\0';
 
-    if (initLsmWithRetries() && initFifoWithRetries()) {
-        setupSensorRuntime();
+    if (initLsmWithRetries() && initFifoWithRetries() && setupSensorRuntime()) {
         sensorRuntimeReady_ = true;
     } else {
-        beginSensorStartupRecovery(TrackerHealthFaultCode::LsmInitFailed,
-                                   "LSM6DSV resume init failed after motion wake");
+        beginSensorStartupRecovery(TrackerHealthFaultCode::FifoInitFailed,
+                                   "sensor/FIFO resume finalization failed after motion wake");
     }
 
     call(deps_.callbacks.setupBatteryRuntime);
@@ -856,8 +889,8 @@ void TrackerApp::startMagFromConfig(Stream& out) {
 #if TRACKER_HAS_SERIAL_CONSOLE
     out.println("# mag enabled in config; starting QMC6309 FIFO stream");
 #endif
-    const bool ok = deps_.callbacks.setMagRuntimeEnabled != nullptr &&
-                    deps_.callbacks.setMagRuntimeEnabled(true, false);
+    const bool ok = deps_.callbacks.startMagRuntimeFromPreconfiguredFifo != nullptr &&
+                    deps_.callbacks.startMagRuntimeFromPreconfiguredFifo();
     if (!ok) {
 #if TRACKER_HAS_SERIAL_CONSOLE
         out.println("# WARN mag startup failed; continuing 6DoF without mag");

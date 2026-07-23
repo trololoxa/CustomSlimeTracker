@@ -50,6 +50,12 @@ bool TrackerConfig::validateContent() const {
     if (data.gyroCal.tempCompValid) {
         if (!finiteFloat(data.gyroCal.referenceTempC)) return false;
         if (!finiteVec3(data.gyroCal.tempSlopeRadSPerC)) return false;
+        const float maxSlopeRadSPerC = GyroTempCompConfig{}.maxAcceptedSlopeDpsPerC * MATH_DEG_TO_RAD;
+        if (std::fabs(data.gyroCal.tempSlopeRadSPerC.x) > maxSlopeRadSPerC ||
+            std::fabs(data.gyroCal.tempSlopeRadSPerC.y) > maxSlopeRadSPerC ||
+            std::fabs(data.gyroCal.tempSlopeRadSPerC.z) > maxSlopeRadSPerC) {
+            return false;
+        }
     }
     if (!finiteFloat(data.gyroTempQuality.tempRangeMinC)) return false;
     if (!finiteFloat(data.gyroTempQuality.tempRangeMaxC)) return false;
@@ -173,9 +179,16 @@ void TrackerConfig::sanitize() {
         data.gyroCal.biasValid = false;
     }
     if (!finiteFloat(data.gyroCal.referenceTempC)) data.gyroCal.referenceTempC = 25.0f;
-    if (!finiteVec3(data.gyroCal.tempSlopeRadSPerC)) {
+    const float maxSlopeRadSPerC = GyroTempCompConfig{}.maxAcceptedSlopeDpsPerC * MATH_DEG_TO_RAD;
+    if (!finiteVec3(data.gyroCal.tempSlopeRadSPerC) ||
+        std::fabs(data.gyroCal.tempSlopeRadSPerC.x) > maxSlopeRadSPerC ||
+        std::fabs(data.gyroCal.tempSlopeRadSPerC.y) > maxSlopeRadSPerC ||
+        std::fabs(data.gyroCal.tempSlopeRadSPerC.z) > maxSlopeRadSPerC) {
         data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
         data.gyroCal.tempCompValid = false;
+        data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
+        data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
+        data.gyroCalMeta.tempModelSampleCount = 0;
     }
     if (!finiteFloat(data.gyroTempQuality.tempRangeMinC)) data.gyroTempQuality.tempRangeMinC = 0.0f;
     if (!finiteFloat(data.gyroTempQuality.tempRangeMaxC)) data.gyroTempQuality.tempRangeMaxC = 0.0f;
@@ -514,6 +527,7 @@ void TrackerConfig::applyToGyroTempComp(GyroTempCompensator& tempComp) const {
         cfg.fitResidualAfterDps = data.gyroTempQuality.residualAfterDps;
     }
 
+    tempComp.setConfig(cfg);
     if (!data.gyroCal.biasValid) {
         tempComp.clearAll();
         tempComp.setConfig(cfg);
@@ -527,7 +541,6 @@ void TrackerConfig::applyToGyroTempComp(GyroTempCompensator& tempComp) const {
     } else {
         tempComp.setStaticBias(data.gyroCal.biasRadS, data.gyroCal.referenceTempC);
     }
-    tempComp.setConfig(cfg);
 }
 
 void TrackerConfig::captureFromGyroTempComp(const GyroTempCompensator& tempComp) {

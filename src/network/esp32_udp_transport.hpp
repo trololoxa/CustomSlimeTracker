@@ -14,6 +14,7 @@ public:
     uint16_t localPort() const override;
 
     bool send(const UdpEndpoint& endpoint, const uint8_t* data, size_t len) override;
+    bool resolveHost(const char* host, uint32_t& outIpv4) override;
     int parsePacket() override;
     int read(uint8_t* data, size_t maxLen) override;
     UdpEndpoint remoteEndpoint() const override;

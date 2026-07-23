@@ -7,6 +7,7 @@
 #include "network/udp_transport.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
 #include "runtime/battery_runtime.hpp"
+#include "runtime/tap_runtime_controller.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
@@ -49,11 +50,22 @@ void serviceNonCliRuntime(TrackerSerialCommandContext& ctx) {
     }
 }
 
+bool serialSlimeSetConfigFlag(uint8_t sensorId, uint16_t configType, bool enabled, void* user) {
+    (void)sensorId;
+    auto* ctx = static_cast<TrackerSerialCommandContext*>(user);
+    if (!ctx || configType != SLIMEVR_CONFIG_TYPE_MAGNETOMETER ||
+        !ctx->setMagYawCorrectionApplyEnabled) return false;
+    return ctx->setMagYawCorrectionApplyEnabled(
+        enabled, true, ctx->setMagYawCorrectionApplyEnabledUser
+    );
+}
+
 SlimeVROutputRuntimeConfig makeConfigFromNetwork(TrackerSerialCommandContext& ctx, const TrackerNetworkConfig& net, uint16_t rotationRateHz) {
     SlimeVROutputRuntimeConfig cfg;
     cfg.enabled = true;
     cfg.discoveryEnabled = net.data.discoveryEnabled;
     cfg.manualServerEnabled = net.data.manualServerEnabled;
+    cfg.manualServerHost = net.data.serverHost;
     cfg.deviceName = net.data.deviceName;
     cfg.sensorId = net.data.sensorId;
     cfg.serverPort = net.data.serverPort;
@@ -64,6 +76,8 @@ SlimeVROutputRuntimeConfig makeConfigFromNetwork(TrackerSerialCommandContext& ct
         cfg.rotationRateHz = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
     }
     cfg.incomingPacketsPerUpdate = TRACKER_SLIMEVR_INCOMING_PACKETS_PER_UPDATE;
+    cfg.setConfigFlag = serialSlimeSetConfigFlag;
+    cfg.setConfigFlagUser = &ctx;
     cfg.telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
     cfg.signalTelemetryIntervalMs = TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS;
     cfg.temperatureTelemetryIntervalMs = TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS;
@@ -109,6 +123,8 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("wifi_connected="); out.println(yn(s.wifiConnected));
     out.print("udp_ready="); out.println(yn(s.udpReady));
     out.print("server_found="); out.println(yn(s.serverFound));
+    out.print("manual_server_host="); out.println(s.manualServerHost);
+    out.print("manual_server_resolved="); out.println(yn(s.manualServerResolved));
     out.print("server_ip="); out.println(s.serverIpv4 ? udpIpv4ToCString(s.serverIpv4, ipBuf, sizeof(ipBuf)) : "0.0.0.0");
     out.print("server_port="); out.println(s.serverPort);
     out.print("protocol_version="); out.println(s.protocolVersion);
@@ -117,6 +133,8 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("packet23_available="); out.println(s.compactMotionAvailable ? "yes" : "no");
     out.print("packet23_enabled="); out.println(s.compactMotionEnabled ? "yes" : "no");
     out.print("bundle_negotiation_enabled="); out.println(s.bundleNegotiationEnabled ? "yes" : "no");
+    out.print("feature_negotiation_state="); out.println(slimevrFeatureNegotiationStateName(s.featureNegotiationState));
+    out.print("feature_flags_request_attempts="); out.println(s.featureFlagsRequestAttempts);
     out.print("server_feature_flags_available="); out.println(s.serverFeatureFlagsAvailable ? "yes" : "no");
     out.print("server_bundle_supported="); out.println(s.serverBundleSupported ? "yes" : "no");
     out.print("server_compact_bundle_supported="); out.println(s.serverCompactBundleSupported ? "yes" : "no");
@@ -152,6 +170,9 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("tap_sent="); out.println(s.tapSent);
     out.print("tap_send_failures="); out.println(s.tapSendFailures);
     out.print("last_tap_value="); out.println(s.lastTapValue);
+    out.print("user_action_sent="); out.println(s.userActionSent);
+    out.print("user_action_send_failures="); out.println(s.userActionSendFailures);
+    out.print("last_user_action="); out.println(slimevrUserActionName(s.lastUserAction));
     out.print("tracker_error_active="); out.println(yn(s.trackerErrorActive));
     out.print("tracker_degraded_no_imu="); out.println(yn(s.trackerDegradedNoImu));
     out.print("tracker_error_code="); out.println(s.trackerErrorCode);
@@ -198,6 +219,12 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("local_port="); out.println(s.localPort);
     out.print("discovery_enabled="); out.println(yn(s.discoveryEnabled));
     out.print("manual_server_enabled="); out.println(yn(s.manualServerEnabled));
+    out.print("manual_server_host="); out.println(s.manualServerHost);
+    out.print("manual_server_resolved="); out.println(yn(s.manualServerResolved));
+    out.print("manual_server_ip="); out.println(s.manualServerIpv4 ? udpIpv4ToCString(s.manualServerIpv4, ipBuf, sizeof(ipBuf)) : "0.0.0.0");
+    out.print("manual_server_resolve_attempts="); out.println(s.manualServerResolveAttempts);
+    out.print("manual_server_resolve_failures="); out.println(s.manualServerResolveFailures);
+    out.print("manual_server_handshakes_sent="); out.println(s.manualServerHandshakesSent);
     out.print("server_found="); out.println(yn(s.serverFound));
     out.print("server_ip="); out.println(s.serverIpv4 ? udpIpv4ToCString(s.serverIpv4, ipBuf, sizeof(ipBuf)) : "0.0.0.0");
     out.print("server_port="); out.println(s.serverPort);
@@ -216,6 +243,17 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     serviceNonCliRuntime(ctx);
     out.print("handshakes_sent="); out.println(s.handshakesSent);
     out.print("sensor_info_sent="); out.println(s.sensorInfoSent);
+    out.print("sensor_info_sync_state="); out.println(slimevrSensorInfoSyncStateName(s.sensorInfoSyncState));
+    out.print("sensor_info_dirty="); out.println(yn(s.sensorInfoDirty));
+    out.print("sensor_info_ack_received="); out.println(s.sensorInfoAckReceived);
+    out.print("sensor_info_ack_malformed="); out.println(s.sensorInfoAckMalformed);
+    out.print("sensor_info_ack_mismatch="); out.println(s.sensorInfoAckMismatch);
+    out.print("sensor_info_local_status="); out.println(s.sensorInfoLocalStatus);
+    out.print("sensor_info_local_config=0x"); out.println(s.sensorInfoLocalConfig, HEX);
+    out.print("sensor_info_local_rest_calibration="); out.println(yn(s.sensorInfoLocalRestCalibration));
+    out.print("sensor_info_ack_status="); out.println(s.sensorInfoAckStatus);
+    out.print("sensor_info_ack_config=0x"); out.println(s.sensorInfoAckConfig, HEX);
+    out.print("sensor_info_ack_rest_calibration="); out.println(yn(s.sensorInfoAckRestCalibration));
     out.print("heartbeat_sent="); out.println(s.heartbeatSent);
     out.print("motion_packet_mode="); out.println(slimevrMotionPacketModeName(s.motionPacketMode));
     out.print("packet23_available="); out.println(s.compactMotionAvailable ? "yes" : "no");
@@ -288,7 +326,14 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("packets_received="); out.println(s.packetsReceived);
     out.print("foreign_endpoint_packets_dropped="); out.println(s.foreignEndpointPacketsDropped);
     out.print("pre_session_packets_dropped="); out.println(s.preSessionPacketsDropped);
+    out.print("malformed_packets="); out.println(s.malformedPackets);
+    out.print("malformed_datagram_length="); out.println(s.malformedDatagramLength);
+    out.print("malformed_heartbeat="); out.println(s.malformedHeartbeat);
+    out.print("malformed_ping="); out.println(s.malformedPing);
     out.print("malformed_feature_flags="); out.println(s.malformedFeatureFlags);
+    out.print("malformed_set_config_flag="); out.println(s.malformedSetConfigFlag);
+    out.print("malformed_protocol_change="); out.println(s.malformedProtocolChange);
+    out.print("malformed_unknown_raw="); out.println(s.malformedUnknownRaw);
     out.print("discovery_responses="); out.println(s.discoveryResponses);
     out.print("heartbeat_received="); out.println(s.heartbeatReceived);
     out.print("ping_received="); out.println(s.pingReceived);
@@ -296,9 +341,15 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("feature_flags_received="); out.println(s.featureFlagsReceived);
     out.print("set_config_flag_received="); out.println(s.setConfigFlagReceived);
     out.print("set_config_flag_applied="); out.println(s.setConfigFlagApplied);
+    out.print("set_config_flag_apply_failures="); out.println(s.setConfigFlagApplyFailures);
     out.print("set_config_flag_ignored="); out.println(s.setConfigFlagIgnored);
     out.print("ack_config_sent="); out.println(s.ackConfigSent);
+    out.print("ack_config_send_failures="); out.println(s.ackConfigSendFailures);
+    out.print("user_action_sent="); out.println(s.userActionSent);
+    out.print("user_action_send_failures="); out.println(s.userActionSendFailures);
+    out.print("last_user_action="); out.println(slimevrUserActionName(s.lastUserAction));
     out.print("protocol_change_received="); out.println(s.protocolChangeReceived);
+    out.print("protocol_change_ignored="); out.println(s.protocolChangeIgnored);
     out.print("unknown_packets_received="); out.println(s.unknownPacketsReceived);
     serviceNonCliRuntime(ctx);
     out.print("last_ping_id="); out.println(s.lastPingId);
@@ -338,6 +389,8 @@ void printHelp(Stream& out) {
     out.println("slime stop");
     out.println("slime reconnect");
     out.println("slime rate <hz>");
+    out.println("slime action yaw|full|mounting|pause");
+    out.println("slime tap-action off|yaw|full|mounting|pause [save]");
     out.println("slime counters reset");
 }
 
@@ -426,6 +479,60 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, static_cast<uint16_t>(hz)));
         }
         tracker_serial_detail::printOk(out, "SlimeVR rotation rate set");
+        return true;
+    }
+
+    if (tracker_serial_detail::eqIgnoreCase(argv[1], "action")) {
+        if (argc != 3) {
+            tracker_serial_detail::printErr(out, "usage: slime action yaw|full|mounting|pause");
+            return true;
+        }
+        SlimeVRUserAction action = SlimeVRUserAction::None;
+        if (!parseSlimeVRUserActionName(argv[2], action) || action == SlimeVRUserAction::None) {
+            tracker_serial_detail::printErr(out, "invalid action; expected yaw|full|mounting|pause");
+            return true;
+        }
+        if (!ctx.slimevrRuntime->sendUserAction(action)) {
+            tracker_serial_detail::printErr(out, "SlimeVR UserAction send failed");
+            return true;
+        }
+        out.print("# OK SlimeVR UserAction sent action=");
+        out.println(slimevrUserActionName(action));
+        return true;
+    }
+
+    if (tracker_serial_detail::eqIgnoreCase(argv[1], "tap-action") ||
+        tracker_serial_detail::eqIgnoreCase(argv[1], "tap_action")) {
+        if ((argc != 3 && argc != 4) || !ctx.networkConfig ||
+            (argc == 4 && !tracker_serial_detail::eqIgnoreCase(argv[3], "save"))) {
+            tracker_serial_detail::printErr(out, "usage: slime tap-action off|yaw|full|mounting|pause [save]");
+            return true;
+        }
+        SlimeVRUserAction action = SlimeVRUserAction::None;
+        if (!parseSlimeVRUserActionName(argv[2], action)) {
+            tracker_serial_detail::printErr(out, "invalid tap action");
+            return true;
+        }
+        const bool persist = argc == 4;
+        TrackerNetworkConfig candidate = *ctx.networkConfig;
+        candidate.setTapUserAction(action);
+        if (persist) {
+            if (!ctx.networkConfigStore) {
+                tracker_serial_detail::printErr(out, "network config store not available");
+                return true;
+            }
+            if (!ctx.networkConfigStore->save(candidate)) {
+                out.print("# ERR tap action save failed: ");
+                out.println(ctx.networkConfigStore->lastErrorName());
+                return true;
+            }
+        }
+        *ctx.networkConfig = candidate;
+        if (ctx.tapRuntime) ctx.tapRuntime->setPhysicalTapUserAction(action);
+        out.print("# OK tap UserAction mapping=");
+        out.print(slimevrUserActionName(action));
+        out.print(" persisted=");
+        out.println(persist ? "yes" : "no");
         return true;
     }
 

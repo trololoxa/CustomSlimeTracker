@@ -11,6 +11,7 @@
 #include "network/wifi_manager.hpp"
 #include "output/slimevr_packet_writer.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
+#include "runtime/runtime_gyro_bias_controller.hpp"
 #include "runtime/battery_runtime.hpp"
 #include "runtime/tracker_console_suppress.hpp"
 #include "sensor/ahrs_6dof.hpp"
@@ -442,6 +443,7 @@ void dispatchTemperatureCalibration(TrackerSerialCommandContext& ctx, int argc, 
         // a later unrelated config save could accidentally persist the reset.
         ctx.gyroTempComp->setSlopeRadSPerC(Vec3::zero());
         ctx.gyroTempComp->setQualityMetadata(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+        if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
         info(out, "TCAL RESET OK");
         return;
     }
@@ -465,13 +467,18 @@ void dispatchTemperatureCalibration(TrackerSerialCommandContext& ctx, int argc, 
         // wrapper called trackerSerialCaptureRuntimeToConfig(), which also
         // captured gyro/accel/output runtime state and made a host TCAL SAVE
         // more invasive than the SlimeVR command it emulates.
+        TrackerConfig candidate = *ctx.config;
         if (ctx.gyroTempComp) {
-            ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
+            candidate.captureFromGyroTempComp(*ctx.gyroTempComp);
         }
-        ctx.config->sanitize();
-        ctx.config->updateCrc();
-        if (ctx.configStore->save(*ctx.config)) info(out, "TCAL SAVE OK");
-        else error(out, "TCAL SAVE failed");
+        candidate.sanitize();
+        candidate.updateCrc();
+        if (ctx.configStore->save(candidate)) {
+            *ctx.config = candidate;
+            info(out, "TCAL SAVE OK");
+        } else {
+            error(out, "TCAL SAVE failed");
+        }
         return;
     }
     info(out, "Usage:");
@@ -483,22 +490,53 @@ void dispatchTemperatureCalibration(TrackerSerialCommandContext& ctx, int argc, 
 
 void eraseCalibration(TrackerSerialCommandContext& ctx) {
     Stream& out = outFor(ctx);
-    if (ctx.config) {
-        ctx.config->data.gyroCal.biasValid = false;
-        ctx.config->data.accelCal.valid = false;
-        ctx.config->data.gyroCal.tempCompValid = false;
-        ctx.config->data.magCal.calibrationValid = false;
-        ctx.config->data.magCal.axisAlignmentValid = false;
-        ctx.config->updateCrc();
+    if (!ctx.config || !ctx.configStore) {
+        error(out, "ERASE CALIBRATION failed: config store not available");
+        return;
     }
-    if (ctx.imuCal) {
-        *ctx.imuCal = ImuCalibration{};
+
+    TrackerConfig candidate = *ctx.config;
+    candidate.data.gyroCal = TrackerGyroCalibrationConfig{};
+    candidate.data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
+    candidate.data.gyroCalMeta = TrackerGyroCalibrationMetaPersisted{};
+    candidate.data.accelCal = TrackerAccelCalibrationConfig{};
+    candidate.data.accelCalQuality = TrackerAccelCalibrationQualityPersisted{};
+    candidate.data.magCal = TrackerMagCalibrationConfig{};
+    candidate.data.magCalQuality = TrackerMagCalibrationQualityPersisted{};
+    candidate.sanitize();
+    candidate.updateCrc();
+
+    // Persistence is the commit point. A failed write must leave the live
+    // calibration pipeline untouched.
+    if (!ctx.configStore->save(candidate)) {
+        out.print("# ERR ERASE CALIBRATION failed while saving config: ");
+        out.println(ctx.configStore->lastErrorName());
+        return;
     }
-    if (ctx.configStore && ctx.config) {
-        if (!ctx.configStore->save(*ctx.config)) {
-            error(out, "ERASE CALIBRATION failed while saving config");
-            return;
-        }
+
+    *ctx.config = candidate;
+    trackerSerialApplyConfigToRuntime(ctx);
+    if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
+
+    // Stop using the old magnetic state immediately. The config is already
+    // committed, so a rare hardware-disable failure is reported but cannot
+    // resurrect the erased calibration after reboot.
+    bool magRuntimeOk = true;
+    if (ctx.setMagRuntimeEnabled) {
+        magRuntimeOk = ctx.setMagRuntimeEnabled(false, false, ctx.setMagRuntimeEnabledUser);
+    }
+    if (ctx.setMagYawCorrectionApplyEnabled) {
+        magRuntimeOk = ctx.setMagYawCorrectionApplyEnabled(
+                           false,
+                           false,
+                           ctx.setMagYawCorrectionApplyEnabledUser) && magRuntimeOk;
+    }
+    if (ctx.resetMagCalibration) ctx.resetMagCalibration(ctx.resetMagCalibrationUser);
+    if (ctx.resetMagYawCorrection) ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
+    if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
+
+    if (!magRuntimeOk) {
+        out.println("# WARN ERASE CALIBRATION committed, but magnetometer hardware/runtime disable reported an error; reboot recommended");
     }
     info(out, "ERASE CALIBRATION");
 }

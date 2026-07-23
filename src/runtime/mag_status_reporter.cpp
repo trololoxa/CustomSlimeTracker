@@ -20,7 +20,7 @@ void magStatusPrintRuntime(Stream& out, const MagStatusReporterDeps& deps) {
     out.print("mag_last_init_ok="); out.println(state.lastInitOk ? "yes" : "no");
     out.print("mag_enable_failures="); out.println(state.enableFailures);
     out.print("mag_runtime_samples="); out.println(state.samples);
-    out.print("mag_last_age_ms="); out.println(state.lastSampleMs == 0 ? 0UL : millis() - state.lastSampleMs);
+    out.print("mag_last_age_ms="); out.println(state.samples > 0 ? millis() - state.lastSampleMs : 0UL);
     out.print("mag_last_t_us="); outputPrintU64Dec(out, state.lastRaw.t_us); out.println();
     out.print("mag_last_xyz=");
     out.print(state.lastRaw.x); out.print(',');
@@ -169,7 +169,7 @@ void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {
     out.print("mag_auto_ref_done="); out.println(autoRef.done ? "yes" : "no");
     out.print("mag_auto_ref_stable_ms="); out.println(autoRef.stableSinceMs == 0 ? 0UL : millis() - autoRef.stableSinceMs);
     out.print("mag_auto_ref_set_count="); out.println(autoRef.setCount);
-    out.print("mag_auto_ref_last_set_age_ms="); out.println(autoRef.lastSetMs == 0 ? 0UL : millis() - autoRef.lastSetMs);
+    out.print("mag_auto_ref_last_set_age_ms="); out.println(autoRef.setCount > 0 ? millis() - autoRef.lastSetMs : 0UL);
     out.print("mag_auto_ref_last_reject_flags=0x"); out.println(autoRef.lastRejectFlags, HEX);
     out.print("mag_auto_ref_last_gyro_norm_dps="); out.println(autoRef.lastGyroNormDps, 6);
     out.print("mag_auto_ref_last_accel_trust="); out.println(autoRef.lastAccelTrust, 6);
@@ -184,7 +184,7 @@ void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {
     out.print("reject_quat_invalid="); out.println(s.rejectQuatInvalid);
     out.print("reject_world_nonfinite="); out.println(s.rejectWorldNonfinite);
     out.print("reject_horizontal_small="); out.println(s.rejectHorizontalSmall);
-    out.print("last_valid_age_ms="); out.println(s.lastValidMs == 0 ? 0UL : millis() - s.lastValidMs);
+    out.print("last_valid_age_ms="); out.println(s.valid > 0 ? millis() - s.lastValidMs : 0UL);
 }
 
 void magStatusPrintYawCorrection(Stream& out, const MagStatusReporterDeps& deps) {
@@ -274,7 +274,7 @@ void magStatusPrintCalibration(Stream& out, const MagStatusReporterDeps& deps) {
     out.print("mag_cal_elapsed_s=");
     out.println(collector.startMs() == 0 ? 0UL : (millis() - collector.startMs()) / 1000UL);
     out.print("mag_cal_last_age_ms=");
-    out.println(collector.lastSampleMs() == 0 ? 0UL : millis() - collector.lastSampleMs());
+    out.println(collector.samples() > 0 ? millis() - collector.lastSampleMs() : 0UL);
 
     out.print("min_xyz=");
     out.print(collector.minX(), 3); out.print(',');

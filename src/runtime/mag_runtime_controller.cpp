@@ -151,62 +151,96 @@ bool MagRuntimeController::setEnabled(bool enabled, bool persist) {
     if (!deps_.config || !deps_.hub || !deps_.qmc || !deps_.fifo || !deps_.state) {
         return false;
     }
+    if (persist && !deps_.configStore) {
+        stream().println("# ERR mag persistence requested but config store is unavailable");
+        return false;
+    }
 
     const uint64_t fifoTs = deps_.fifo->stats().lastAssignedTimestampUs;
     const uint64_t keepTs = fifoTs != 0
         ? fifoTs
         : (deps_.fallbackTimestampUs ? *deps_.fallbackTimestampUs : 0);
 
-    if (!enabled) {
-        deps_.config->data.magCal.driverEnabled = false;
-        deps_.config->updateCrc();
+    const TrackerConfig oldConfig = *deps_.config;
+    const bool oldHardwareEnabled = deps_.state->runtimeEnabled && deps_.state->fifoArmed;
+
+    TrackerConfig candidateConfig = oldConfig;
+    candidateConfig.data.magCal.driverEnabled = enabled;
+    candidateConfig.sanitize();
+    candidateConfig.updateCrc();
+
+    // Reconfigure hardware while the active config still describes the old
+    // state.  The helper takes the target explicitly, so a failed transition
+    // cannot leave RAM claiming that the magnetometer was enabled.
+    if (!applyHardwareEnabledState(enabled, keepTs)) {
+        return false;
+    }
+
+    if (persist && !deps_.configStore->save(candidateConfig)) {
+        stream().print("# ERR mag ");
+        stream().print(enabled ? "enable" : "disable");
+        stream().print(" save failed: ");
+        stream().println(deps_.configStore->lastErrorName());
+
+        const bool rollbackOk = applyHardwareEnabledState(oldHardwareEnabled, keepTs);
+        if (!rollbackOk) {
+            stream().println("# ERR mag hardware rollback failed after persistence error");
+            deps_.state->lastInitOk = false;
+        }
+        *deps_.config = oldConfig;
+        return false;
+    }
+
+    *deps_.config = candidateConfig;
+    stream().print("# OK QMC6309 runtime ");
+    stream().println(enabled ? "enabled" : "disabled");
+    return true;
+}
+
+
+bool MagRuntimeController::startFromPreconfiguredFifo() {
+    if (!deps_.config || !deps_.hub || !deps_.qmc || !deps_.fifo || !deps_.state) return false;
+    if (!deps_.config->data.magCal.driverEnabled) return true;
+    if (deps_.state->runtimeEnabled && deps_.state->fifoArmed) return true;
+
+    const uint64_t fifoTs = deps_.fifo->stats().lastAssignedTimestampUs;
+    const uint64_t keepTs = fifoTs != 0
+        ? fifoTs
+        : (deps_.fallbackTimestampUs ? *deps_.fallbackTimestampUs : 0);
+
+    auto failSafeDisable = [&]() {
         deps_.hub->stopMaster();
         deps_.state->runtimeEnabled = false;
         deps_.state->fifoArmed = false;
-        deps_.state->lastInitOk = true;
-        reconfigureFifoForCurrentMagConfig(keepTs);
+        // The preconfigured FIFO expects mag words. If QMC startup fails, move
+        // back to a coherent 6DoF configuration even though this may require a
+        // one-time startup recovery on the failure path.
+        (void)reconfigureFifoForMagEnabled(false, keepTs);
+        deps_.state->lastInitOk = false;
         resetRuntimeCounters();
-
-        if (persist && deps_.configStore && !deps_.configStore->save(*deps_.config)) {
-            stream().print("# ERR mag disable save failed: ");
-            stream().println(deps_.configStore->lastErrorName());
-            return false;
-        }
-        return true;
-    }
-
-    deps_.config->data.magCal.driverEnabled = true;
-    deps_.config->updateCrc();
+    };
 
     if (!initSensorHub()) {
-        deps_.state->lastInitOk = false;
-        deps_.state->enableFailures++;
+        ++deps_.state->enableFailures;
+        failSafeDisable();
         return false;
     }
-
     if (!deps_.qmc->configureNormal100Hz()) {
-        stream().print("# ERR QMC6309 init100 failed qmcErr=");
+        stream().print("# ERR QMC6309 boot init100 failed qmcErr=");
         stream().print(deps_.qmc->lastErrorName());
         stream().print(" hubErr=");
         stream().println(deps_.hub->lastErrorName());
-        deps_.state->lastInitOk = false;
-        deps_.state->enableFailures++;
+        ++deps_.state->enableFailures;
+        failSafeDisable();
         return false;
     }
-
-    if (!reconfigureFifoForCurrentMagConfig(keepTs)) {
-        deps_.state->lastInitOk = false;
-        deps_.state->enableFailures++;
-        return false;
-    }
-
     if (!deps_.qmc->armHubFifoRead(Lsm6dsvSensorHub::ShubOdr::Hz60)) {
-        stream().print("# ERR QMC6309 arm FIFO failed qmcErr=");
+        stream().print("# ERR QMC6309 boot arm FIFO failed qmcErr=");
         stream().print(deps_.qmc->lastErrorName());
         stream().print(" hubErr=");
         stream().println(deps_.hub->lastErrorName());
-        deps_.state->lastInitOk = false;
-        deps_.state->enableFailures++;
+        ++deps_.state->enableFailures;
+        failSafeDisable();
         return false;
     }
 
@@ -215,14 +249,7 @@ bool MagRuntimeController::setEnabled(bool enabled, bool persist) {
     deps_.state->lastInitOk = true;
     deps_.state->lastEnableMs = millis();
     resetRuntimeCounters();
-
-    if (persist && deps_.configStore && !deps_.configStore->save(*deps_.config)) {
-        stream().print("# ERR mag enable save failed: ");
-        stream().println(deps_.configStore->lastErrorName());
-        return false;
-    }
-
-    stream().println("# OK QMC6309 -> LSM6DSV FIFO enabled: SLV0 0x01..0x06 @60Hz");
+    stream().println("# OK QMC6309 boot stream started without FIFO reconfigure");
     return true;
 }
 
@@ -295,18 +322,24 @@ bool MagRuntimeController::setAutoReferenceEnabled(bool enabled) {
 
 bool MagRuntimeController::setYawCorrectionApplyEnabled(bool enabled, bool persist) {
     if (!deps_.config) return false;
+    if (persist && !deps_.configStore) {
+        stream().println("# ERR mag yaw persistence requested but config store is unavailable");
+        return false;
+    }
 
-    deps_.config->data.magYaw.applyEnabled = enabled;
-    deps_.config->sanitize();
-    deps_.config->updateCrc();
+    TrackerConfig candidateConfig = *deps_.config;
+    candidateConfig.data.magYaw.applyEnabled = enabled;
+    candidateConfig.sanitize();
+    candidateConfig.updateCrc();
 
-    resetYawCorrectionRuntime();
-
-    if (persist && deps_.configStore && !deps_.configStore->save(*deps_.config)) {
+    if (persist && !deps_.configStore->save(candidateConfig)) {
         stream().print("# ERR mag yaw correction save failed: ");
         stream().println(deps_.configStore->lastErrorName());
         return false;
     }
+
+    *deps_.config = candidateConfig;
+    resetYawCorrectionRuntime();
 
     stream().print("# OK mag yaw correction apply=");
     stream().println(enabled ? "enabled" : "disabled");
@@ -351,7 +384,13 @@ bool MagRuntimeController::applyCalibration(bool persist) {
         return false;
     }
 
-    deps_.config->captureFromMagCalibrationResult(
+    if (persist && !deps_.configStore) {
+        stream().println("# ERR mag calibration persistence requested but config store is unavailable");
+        return false;
+    }
+
+    TrackerConfig candidateConfig = *deps_.config;
+    candidateConfig.captureFromMagCalibrationResult(
         result,
         deps_.calibrationCollector->samples(),
         deps_.calibrationCollector->rejected(),
@@ -362,12 +401,13 @@ bool MagRuntimeController::applyCalibration(bool persist) {
         millis()
     );
 
-    if (persist && deps_.configStore && !deps_.configStore->save(*deps_.config)) {
+    if (persist && !deps_.configStore->save(candidateConfig)) {
         stream().print("# ERR mag calibration save failed: ");
         stream().println(deps_.configStore->lastErrorName());
         return false;
     }
 
+    *deps_.config = candidateConfig;
     const uint64_t ts = deps_.fifo ? deps_.fifo->stats().lastAssignedTimestampUs : 0;
     resetOrientationState("mag_calibration_changed", ts, false);
 
@@ -557,14 +597,74 @@ void MagRuntimeController::resetRuntimeCounters() {
     if (deps_.headingAutoRef) deps_.headingAutoRef->resetAll();
 }
 
-bool MagRuntimeController::reconfigureFifoForCurrentMagConfig(uint64_t keepTimestampUs) {
+bool MagRuntimeController::applyHardwareEnabledState(bool enabled, uint64_t keepTimestampUs) {
+    if (!deps_.state || !deps_.hub || !deps_.qmc || !deps_.fifo) return false;
+
+    if (!enabled) {
+        deps_.hub->stopMaster();
+        deps_.state->runtimeEnabled = false;
+        deps_.state->fifoArmed = false;
+        const bool fifoOk = reconfigureFifoForMagEnabled(false, keepTimestampUs);
+        deps_.state->lastInitOk = fifoOk;
+        resetRuntimeCounters();
+        return fifoOk;
+    }
+
+    auto failSafeDisable = [&]() {
+        deps_.hub->stopMaster();
+        deps_.state->runtimeEnabled = false;
+        deps_.state->fifoArmed = false;
+        (void)reconfigureFifoForMagEnabled(false, keepTimestampUs);
+        deps_.state->lastInitOk = false;
+        resetRuntimeCounters();
+    };
+
+    if (!initSensorHub()) {
+        deps_.state->enableFailures++;
+        failSafeDisable();
+        return false;
+    }
+
+    if (!deps_.qmc->configureNormal100Hz()) {
+        stream().print("# ERR QMC6309 init100 failed qmcErr=");
+        stream().print(deps_.qmc->lastErrorName());
+        stream().print(" hubErr=");
+        stream().println(deps_.hub->lastErrorName());
+        deps_.state->enableFailures++;
+        failSafeDisable();
+        return false;
+    }
+
+    if (!reconfigureFifoForMagEnabled(true, keepTimestampUs)) {
+        deps_.state->enableFailures++;
+        failSafeDisable();
+        return false;
+    }
+
+    if (!deps_.qmc->armHubFifoRead(Lsm6dsvSensorHub::ShubOdr::Hz60)) {
+        stream().print("# ERR QMC6309 arm FIFO failed qmcErr=");
+        stream().print(deps_.qmc->lastErrorName());
+        stream().print(" hubErr=");
+        stream().println(deps_.hub->lastErrorName());
+        deps_.state->enableFailures++;
+        failSafeDisable();
+        return false;
+    }
+
+    deps_.state->runtimeEnabled = true;
+    deps_.state->fifoArmed = true;
+    deps_.state->lastInitOk = true;
+    deps_.state->lastEnableMs = millis();
+    resetRuntimeCounters();
+    return true;
+}
+
+bool MagRuntimeController::reconfigureFifoForMagEnabled(bool enabled, uint64_t keepTimestampUs) {
     if (!deps_.fifo || !deps_.config) return false;
 
     Lsm6dsvFifoReader::Config fifoCfg = deps_.config->makeFifoConfig();
-    fifoCfg.enableSensorHubSlave0 = deps_.config->data.magCal.driverEnabled;
-    fifoCfg.sensorHubSlave0PeriodUs = deps_.config->data.magCal.driverEnabled
-        ? deps_.magHubPeriodUs
-        : 0.0f;
+    fifoCfg.enableSensorHubSlave0 = enabled;
+    fifoCfg.sensorHubSlave0PeriodUs = enabled ? deps_.magHubPeriodUs : 0.0f;
 
     if (!deps_.fifo->configure(fifoCfg)) {
         stream().println("# ERR FIFO reconfigure for mag failed");

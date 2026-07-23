@@ -49,6 +49,14 @@ bool Lsm6dsvFifoReader::configure(const Config& config) {
         return true;
     }
 
+bool Lsm6dsvFifoReader::pauseFifo() {
+        if (!configured_) return false;
+        // Bypass mode stops collection immediately while preserving FIFO_CTRL1,
+        // FIFO_CTRL2 and FIFO_CTRL3. The final resetFifo() call restores only
+        // FIFO_CTRL4, so watermark and accel/gyro BDR remain intact.
+        return writeReg(REG_FIFO_CTRL4, 0x00);
+    }
+
 bool Lsm6dsvFifoReader::resetFifo() {
         if (!writeReg(REG_FIFO_CTRL4, 0x00)) return false;
         bus_.delayMs(2);
@@ -201,7 +209,7 @@ bool Lsm6dsvFifoReader::drainRawSamples(Lsm6dsv::RawSample* out,
 
 
         if (cfg_.allowTimestampFallback && waitingCount_ > cfg_.maxWaitingSamplesBeforeFallback) {
-            fallbackWaitingSamples(waitingCount_ - cfg_.maxWaitingSamplesBeforeFallback);
+            fallbackWaitingSamples(waitingCount_ - cfg_.maxWaitingSamplesBeforeFallback, drainTimestampUs);
         }
 
         popCompletedToOutput(out, capacity, outCount);
@@ -685,11 +693,11 @@ void Lsm6dsvFifoReader::assignFallbackTimestamp(Lsm6dsv::RawSample& s, uint64_t 
         stats_.fallbackTimestampAssigned++;
     }
 
-void Lsm6dsvFifoReader::fallbackWaitingSamples(size_t howMany) {
+void Lsm6dsvFifoReader::fallbackWaitingSamples(size_t howMany, uint64_t fallbackBaseUs) {
         while (howMany > 0 && waitingCount_ > 0) {
             Lsm6dsv::RawSample s;
             popWaiting(s);
-            assignFallbackTimestamp(s, stats_.lastAssignedTimestampUs);
+            assignFallbackTimestamp(s, fallbackBaseUs);
             pushCompleted(s);
             howMany--;
         }
@@ -750,7 +758,7 @@ bool Lsm6dsvFifoReader::pushCompleted(const Lsm6dsv::RawSample& s) {
             // Drop oldest completed sample to preserve newest data and report via fallback/overflow.
             completedHead_ = (completedHead_ + 1) % COMPLETED_SAMPLE_CAP;
             completedCount_--;
-            stats_.waitingSampleQueueOverflow++;
+            stats_.completedSampleQueueOverflow++;
         }
         completedSamples_[completedTail_] = s;
         completedTail_ = (completedTail_ + 1) % COMPLETED_SAMPLE_CAP;

@@ -89,6 +89,9 @@ int main() {
     config.minCount = 2;
     CHECK(ctx, tap.configure(config));
     CHECK(ctx, captured.saw(TapDiagnosticKind::HardwareConfigured));
+    tap.setPhysicalTapUserAction(SlimeVRUserAction::YawReset);
+    CHECK(ctx, tap.status().physicalTapUserAction == SlimeVRUserAction::YawReset);
+    tap.setPhysicalTapUserAction(SlimeVRUserAction::None);
 
     captured.count = 0;
     bus.reg[REG_TAP_SRC] = static_cast<uint8_t>(TAP_IA | SINGLE_TAP | X_TAP);

@@ -24,21 +24,23 @@ bool trackerSerialBiasSaveAutostart(TrackerSerialCommandContext& ctx, bool enabl
         return false;
     }
 
-    trackerSerialCaptureRuntimeToConfig(ctx);
+    TrackerConfig candidate = *ctx.config;
+    trackerSerialCaptureRuntimeToConfig(ctx, candidate);
     if (enabled) {
-        ctx.config->data.ahrsRuntime.reserved |=
+        candidate.data.ahrsRuntime.reserved |=
             tracker_config_detail::AHRS_RUNTIME_FLAG_RUNTIME_BIAS_ENABLED;
     } else {
-        ctx.config->data.ahrsRuntime.reserved &=
+        candidate.data.ahrsRuntime.reserved &=
             static_cast<uint8_t>(~tracker_config_detail::AHRS_RUNTIME_FLAG_RUNTIME_BIAS_ENABLED);
     }
-    ctx.config->sanitize();
-    ctx.config->updateCrc();
-    if (!ctx.configStore->save(*ctx.config)) {
+    candidate.sanitize();
+    candidate.updateCrc();
+    if (!ctx.configStore->save(candidate)) {
         out.print("# ERR runtime gyro bias save failed: ");
         out.println(ctx.configStore->lastErrorName());
         return false;
     }
+    *ctx.config = candidate;
     tracker_serial_detail::printOk(out, enabled
         ? "runtime gyro bias autostart enabled and saved to NVS"
         : "runtime gyro bias autostart disabled and saved to NVS");
@@ -56,27 +58,35 @@ void trackerSerialDispatchBiasCommand(TrackerSerialCommandContext& ctx, int argc
 
     if (trackerSerialBiasIs(argv[1], "on") || trackerSerialBiasIs(argv[1], "enable")) {
         const bool saveRequested = argc >= 3 && trackerSerialBiasIs(argv[2], "save");
+        const bool oldEnabled = ctx.runtimeBias ? ctx.runtimeBias->enabled : false;
         if (!ctx.setRuntimeGyroBiasEnabled || !ctx.setRuntimeGyroBiasEnabled(true, ctx.setRuntimeGyroBiasEnabledUser)) {
             tracker_serial_detail::printErr(out, "runtime gyro bias enable failed");
             return;
         }
+        if (saveRequested && !trackerSerialBiasSaveAutostart(ctx, true)) {
+            (void)ctx.setRuntimeGyroBiasEnabled(oldEnabled, ctx.setRuntimeGyroBiasEnabledUser);
+            return;
+        }
         tracker_serial_detail::printOk(out, saveRequested
-            ? "runtime gyro bias estimator enabled in RAM"
+            ? "runtime gyro bias estimator enabled and autostart saved"
             : "runtime gyro bias estimator enabled in RAM; use 'bias on save' to persist autostart");
-        if (saveRequested) (void)trackerSerialBiasSaveAutostart(ctx, true);
         return;
     }
 
     if (trackerSerialBiasIs(argv[1], "off") || trackerSerialBiasIs(argv[1], "disable")) {
         const bool saveRequested = argc >= 3 && trackerSerialBiasIs(argv[2], "save");
+        const bool oldEnabled = ctx.runtimeBias ? ctx.runtimeBias->enabled : true;
         if (!ctx.setRuntimeGyroBiasEnabled || !ctx.setRuntimeGyroBiasEnabled(false, ctx.setRuntimeGyroBiasEnabledUser)) {
             tracker_serial_detail::printErr(out, "runtime gyro bias disable failed");
             return;
         }
+        if (saveRequested && !trackerSerialBiasSaveAutostart(ctx, false)) {
+            (void)ctx.setRuntimeGyroBiasEnabled(oldEnabled, ctx.setRuntimeGyroBiasEnabledUser);
+            return;
+        }
         tracker_serial_detail::printOk(out, saveRequested
-            ? "runtime gyro bias estimator disabled in RAM"
+            ? "runtime gyro bias estimator disabled and autostart saved"
             : "runtime gyro bias estimator disabled in RAM; use 'bias off save' to persist autostart");
-        if (saveRequested) (void)trackerSerialBiasSaveAutostart(ctx, false);
         return;
     }
 

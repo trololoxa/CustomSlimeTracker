@@ -7,6 +7,7 @@
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_detail.hpp"
 #include "sensor/calibration.hpp"
+#include "sensor/gyro_temperature_compensation.hpp"
 
 using namespace tracker;
 
@@ -204,6 +205,29 @@ static void testPerformanceDefaultMigrationPreservesCurrentSettings(TestContext&
     CHECK(ctx, current.validate());
 }
 
+static void testOversizedTemperatureSlopeIsInvalidated(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+    cfg.data.gyroCal.biasValid = true;
+    cfg.data.gyroCal.biasRadS = Vec3(0.001f, -0.002f, 0.003f);
+    cfg.data.gyroCal.tempCompValid = true;
+    cfg.data.gyroCal.referenceTempC = 25.0f;
+    cfg.data.gyroCal.tempSlopeRadSPerC = Vec3(0.11f, 0.0f, 0.0f) * MATH_DEG_TO_RAD;
+    cfg.updateCrc();
+
+    CHECK(ctx, !cfg.validateContent());
+    cfg.sanitize();
+    CHECK(ctx, cfg.validate());
+    CHECK(ctx, cfg.data.gyroCal.biasValid);
+    CHECK(ctx, !cfg.data.gyroCal.tempCompValid);
+    CHECK_NEAR(ctx, cfg.data.gyroCal.tempSlopeRadSPerC.norm(), 0.0f, 1.0e-9f);
+
+    GyroTempCompensator comp;
+    cfg.applyToGyroTempComp(comp);
+    CHECK(ctx, comp.valid());
+    CHECK(ctx, !comp.temperatureModelValid());
+}
+
 int main() {
     TestContext ctx;
     testDefaultRuntimeConfigValidates(ctx);
@@ -213,5 +237,6 @@ int main() {
     testApplyCaptureDoesNotTouchUnrelatedBlocks(ctx);
     testSanitizeNeutralizesCompatibilityReservedFields(ctx);
     testPerformanceDefaultMigrationPreservesCurrentSettings(ctx);
+    testOversizedTemperatureSlopeIsInvalidated(ctx);
     return ctx.finish("test_config_hardening");
 }

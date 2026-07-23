@@ -40,7 +40,8 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,
 
     expireCooldownIfNeeded(in.nowMs);
 
-    if (lastUpdateMs_ != 0 && in.nowMs >= lastUpdateMs_) {
+    if (stats_.updates > 0) {
+        // Unsigned subtraction is intentionally wrap-safe across millis().
         out.dtMs = in.nowMs - lastUpdateMs_;
     } else {
         out.dtMs = 0;
