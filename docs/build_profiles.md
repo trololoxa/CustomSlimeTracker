@@ -115,6 +115,7 @@ work:
 - no `perf`/`motion` live diagnostics;
 - no LED or tap runtime;
 - no setup/calibration/test/config command code;
+- active calibration still uses the 0021 dual-slot/selector store and legacy migration, but the 876-byte RAM candidate cache and interactive candidate staging/promotion are compiled out;
 - battery runtime remains compiled only to feed SlimeVR BatteryLevel telemetry;
 - SlimeVR SignalStrength/RSSI and Temperature telemetry remain enabled;
 - Slim forces a 125 Hz RotationData target at runtime (`TRACKER_SLIMEVR_FORCE_ROTATION_RATE_HZ=125`) so an older NVS `slime rate` value cannot silently cap TPS;

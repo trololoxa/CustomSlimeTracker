@@ -23,7 +23,8 @@ bool trackerCommitConfigCandidate(TrackerSerialCommandContext& ctx,
     candidate.updateCrc();
 
     if (persist) {
-        if (!ctx.configStore || !ctx.configStore->save(candidate)) {
+        if (!ctx.configStore ||
+            !ctx.configStore->save(candidate, TrackerCalibrationProvenance::Manual)) {
             return false;
         }
     }

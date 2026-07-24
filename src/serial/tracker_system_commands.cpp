@@ -69,7 +69,7 @@ void trackerSerialPrintHelp(Stream& out) {
 #if TRACKER_ENABLE_CONFIG_COMMANDS
     out.println();
     out.println("[config]");
-    out.println("  config print | load | save | defaults | erase | crc | nvs");
+    out.println("  config print | load | save | defaults | erase | crc | nvs | slots | verify | migrate");
     out.println("  config spi <hz> [save]          (transactional live SPI clock)");
     out.println("  config fifo [status] | watermark <words> [save] | drain <words> <rounds> [save]");
 #if !TRACKER_ENABLE_FULL_CLI
@@ -104,6 +104,8 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  cal temp print | enable [save] | disable [save]");
     out.println("  cal temp set_slope X Y Z [save] | fit_static [save] | clear [save]");
     out.println("  cal save | clear_all");
+    out.println("  cal candidate status | stage [manual|setup|background] [flush|force]");
+    out.println("  cal candidate flush [force] | compare | discard | promote [force]");
 #endif
 
 #if TRACKER_ENABLE_FULL_CLI
@@ -305,6 +307,10 @@ void trackerSerialPrintStatus(TrackerSerialCommandContext& ctx) {
     if (ctx.imuCal) {
         out.print("gyro_bias_valid="); out.println(ctx.imuCal->gyroBiasValid ? "yes" : "no");
         out.print("accel_cal_valid="); out.println(ctx.imuCal->accelCalValid ? "yes" : "no");
+        const bool frameValid = ctx.config && ctx.config->data.frame.sensorToDeviceValid;
+        out.print("sensor_to_device_valid="); out.println(frameValid ? "yes" : "no");
+        out.print("motion_frame_config_ready=");
+        out.println(ctx.imuCal->accelCalValid && frameValid ? "yes" : "no");
     }
 
     if (ctx.fifo) {

@@ -90,6 +90,13 @@ void TrackerApp::setup() {
 #if TRACKER_HAS_SERIAL_CONSOLE
     out.print("# config_loaded_from_nvs=");
     out.println(*deps_.runtime.configLoadedFromNvs ? "yes" : "no");
+    out.print("# config_load_status=");
+    out.println(deps_.bootstrap.configStore->lastLoadStatusName());
+    out.print("# config_load_error=");
+    out.println(TrackerConfigStore::errorName(deps_.bootstrap.configStore->lastLoadError()));
+    if (deps_.bootstrap.configStore->lastLoadStatus() == TrackerConfigLoadStatus::DefaultsStorageError) {
+        out.println("# WARN config_storage_degraded=yes; defaults are temporary and saved calibration was not proven absent");
+    }
     out.print("# config_valid=");
     out.println(deps_.runtime.config->validate() ? "yes" : "no");
 #endif
@@ -110,6 +117,9 @@ void TrackerApp::setup() {
                                    "FIFO runtime finalization failed after sensor startup");
     } else {
         sensorRuntimeReady_ = true;
+        if (deps_.bootstrap.configLoadedFromNvs && *deps_.bootstrap.configLoadedFromNvs) {
+            deps_.bootstrap.configStore->confirmAuthoritativeConfigApplied();
+        }
     }
 
     call(deps_.callbacks.setupNetworkRuntime);
@@ -503,6 +513,9 @@ bool TrackerApp::updateSensorStartupRecovery(uint32_t nowMs) {
 
 void TrackerApp::finishSensorStartupRecoverySuccess() {
     sensorRuntimeReady_ = true;
+    if (deps_.bootstrap.configLoadedFromNvs && *deps_.bootstrap.configLoadedFromNvs) {
+        deps_.bootstrap.configStore->confirmAuthoritativeConfigApplied();
+    }
     sensorStartupRecoveryActive_ = false;
     sensorStartupHardFailed_ = false;
     pendingSensorFaultCode_ = TrackerHealthFaultCode::None;

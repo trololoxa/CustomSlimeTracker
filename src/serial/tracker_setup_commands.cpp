@@ -354,6 +354,7 @@ struct SetupCalibrationTransaction {
     bool originalMagDriverEnabled = false;
     bool originalMagYawApplyEnabled = false;
     bool committed = false;
+    bool persistentResultUncertain = false;
 
     SetupCalibrationTransaction() = default;
 
@@ -367,6 +368,7 @@ struct SetupCalibrationTransaction {
         originalMagDriverEnabled = false;
         originalMagYawApplyEnabled = false;
         committed = false;
+        persistentResultUncertain = false;
 
         if (ctx.config) {
             configSnapshot = *ctx.config;
@@ -389,7 +391,7 @@ struct SetupCalibrationTransaction {
         if (committed) return;
 
         if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
-        if (ctx.gyroTempCapture && ctx.gyroTempCapture->active()) ctx.gyroTempCapture->stop(millis());
+        trackerSerialResetCalibrationWorkspaces(ctx);
 
         if (haveConfig && ctx.config) {
             *ctx.config = configSnapshot;
@@ -405,13 +407,17 @@ struct SetupCalibrationTransaction {
             ctx.config->applyToGyroTempComp(*ctx.gyroTempComp);
         }
 
-        if (ctx.accelCalRunner) ctx.accelCalRunner->reset();
         if (haveRuntimeBias && ctx.runtimeBias) {
             *ctx.runtimeBias = runtimeBiasSnapshot;
         } else if (ctx.resetRuntimeGyroBiasEstimator) {
             ctx.resetRuntimeGyroBiasEstimator(ctx.resetRuntimeGyroBiasEstimatorUser);
         }
-        if (ctx.resetMagCalibration) ctx.resetMagCalibration(ctx.resetMagCalibrationUser);
+        if (ctx.ahrs && ctx.config) ctx.ahrs->setConfig(ctx.config->makeAhrsConfig());
+        if (ctx.quality && ctx.config) {
+            ctx.quality->setConfig(ctx.config->makeQualityConfig());
+            ctx.quality->reset();
+            if (ctx.fifo) ctx.quality->syncFifoStats(ctx.fifo->stats());
+        }
         if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
         if (ctx.resetMagYawCorrection) ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
 
@@ -429,10 +435,15 @@ struct SetupCalibrationTransaction {
             s.print(reason);
         }
         s.println();
-        s.println("# Previous RAM calibration/config restored; NVS was not changed by the failed setup calibration.");
+        if (persistentResultUncertain) {
+            s.println("# Previous RAM calibration/config restored, but the persistent selector result is uncertain.");
+            s.println("# Reboot or run config load before any further config writes.");
+        } else {
+            s.println("# Previous RAM calibration/config restored; no setup commit was confirmed.");
+        }
     }
 
-    bool commit(TrackerSerialCommandContext& ctx) {
+    bool commit(TrackerSerialCommandContext& ctx, uint8_t workspaceMask = TRACKER_CAL_WORKSPACE_ALL) {
         Stream& s = out(ctx);
         if (!ctx.config || !ctx.configStore) {
             tracker_serial_detail::printErr(s, "setup calibration commit failed: config store not available");
@@ -441,12 +452,15 @@ struct SetupCalibrationTransaction {
         trackerSerialCaptureRuntimeToConfig(ctx);
         ctx.config->sanitize();
         ctx.config->updateCrc();
-        if (!ctx.configStore->save(*ctx.config)) {
+        if (!ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Setup)) {
+            persistentResultUncertain =
+                ctx.configStore->lastError() == TrackerConfigError::CommitUncertain;
             s.print("# ERR setup calibration commit save failed: ");
             s.println(ctx.configStore->lastErrorName());
             return false;
         }
         committed = true;
+        trackerSerialResetCalibrationWorkspaces(ctx, workspaceMask);
         tracker_serial_detail::printOk(s, "setup calibration transaction committed to NVS");
         if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
         return true;
@@ -1388,6 +1402,13 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
         magCollectionActive = true;
     }
 
+    if (ctx.config) {
+        // Guided accel and frame calibration are one model epoch. Keep packet 4
+        // unavailable until the new accel matrix and frame are both accepted.
+        ctx.config->data.frame.sensorToDevice = Mat3::identity();
+        ctx.config->data.frame.sensorToDeviceValid = false;
+        ctx.config->updateCrc();
+    }
     char* clearAccel[] = { const_cast<char*>("cal"), const_cast<char*>("accel"), const_cast<char*>("clear") };
     dispatchCal(ctx, 3, clearAccel);
     frameObservations.reset();
@@ -1965,11 +1986,15 @@ bool setupDisableMagFor6Dof(TrackerSerialCommandContext& ctx) {
     }
 
     if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
-    if (ctx.setMagRuntimeEnabled) {
-        (void)ctx.setMagRuntimeEnabled(false, false, ctx.setMagRuntimeEnabledUser);
+    if (ctx.setMagRuntimeEnabled &&
+        !ctx.setMagRuntimeEnabled(false, false, ctx.setMagRuntimeEnabledUser)) {
+        tracker_serial_detail::printErr(s, "setup calibration failed: magnetometer hardware disable failed");
+        return false;
     }
-    if (ctx.setMagYawCorrectionApplyEnabled) {
-        (void)ctx.setMagYawCorrectionApplyEnabled(false, false, ctx.setMagYawCorrectionApplyEnabledUser);
+    if (ctx.setMagYawCorrectionApplyEnabled &&
+        !ctx.setMagYawCorrectionApplyEnabled(false, false, ctx.setMagYawCorrectionApplyEnabledUser)) {
+        tracker_serial_detail::printErr(s, "setup calibration failed: mag yaw disable failed");
+        return false;
     }
     if (ctx.resetMagYawCorrection) ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
 
@@ -2015,6 +2040,12 @@ bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx, bool noMag)
     }
 
     trackerSerialCaptureRuntimeToConfig(ctx);
+    if (ctx.ahrs) ctx.ahrs->setConfig(ctx.config->makeAhrsConfig());
+    if (ctx.quality) {
+        ctx.quality->setConfig(ctx.config->makeQualityConfig());
+        ctx.quality->reset();
+        if (ctx.fifo) ctx.quality->syncFifoStats(ctx.fifo->stats());
+    }
     if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
 
     const SetupReadiness r = readSetupReadiness(ctx);
@@ -2081,7 +2112,19 @@ bool parseSetupCalibrationOptions(TrackerSerialCommandContext& ctx,
 
 bool setupCheckpointCommit(TrackerSerialCommandContext& ctx, const char* stageName) {
     Stream& s = out(ctx);
-    if (!g_setupCalibrationTx.commit(ctx)) return false;
+    uint8_t workspaceMask = TRACKER_CAL_WORKSPACE_NONE;
+    if (stageName && std::strcmp(stageName, "gyro_temperature") == 0) {
+        workspaceMask = TRACKER_CAL_WORKSPACE_GYRO_TEMP;
+    } else if (stageName &&
+               (std::strcmp(stageName, "accel_6pos_and_frame") == 0 ||
+                std::strcmp(stageName, "sensor_to_device") == 0)) {
+        workspaceMask = TRACKER_CAL_WORKSPACE_ACCEL;
+    } else if (stageName && std::strcmp(stageName, "mag_hard_soft") == 0) {
+        workspaceMask = TRACKER_CAL_WORKSPACE_MAG;
+    } else if (stageName && std::strcmp(stageName, "enable_tracking") == 0) {
+        workspaceMask = TRACKER_CAL_WORKSPACE_ALL;
+    }
+    if (!g_setupCalibrationTx.commit(ctx, workspaceMask)) return false;
     s.print("# setup calibration checkpoint saved stage=");
     s.println(stageName ? stageName : "unknown");
     return true;

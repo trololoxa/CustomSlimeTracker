@@ -2,18 +2,50 @@
 
 #include <Arduino.h>
 #include <cstdint>
+#include <cstring>
+#include <memory>
+#include <new>
 
 #include "core/math.hpp"
 #include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/fifo_calibrations.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
+#include "runtime/gyro_temp_calibration_capture.hpp"
+#include "runtime/slimevr_output_runtime.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
 #include "serial/tracker_config_commands.hpp"
+#include "serial/tracker_fifo_config_control.hpp"
 
 namespace tracker {
+
+void trackerSerialResetCalibrationWorkspaces(TrackerSerialCommandContext& ctx, uint8_t mask) {
+    if ((mask & TRACKER_CAL_WORKSPACE_ACCEL) != 0u && ctx.accelCalRunner) {
+        ctx.accelCalRunner->reset();
+    }
+    if ((mask & TRACKER_CAL_WORKSPACE_GYRO_TEMP) != 0u && ctx.gyroTempCapture) {
+        ctx.gyroTempCapture->reset();
+    }
+    if ((mask & TRACKER_CAL_WORKSPACE_MAG) != 0u && ctx.resetMagCalibration) {
+        ctx.resetMagCalibration(ctx.resetMagCalibrationUser);
+    }
+}
+
+static bool gyroTempRuntimeModelEqual(const GyroTempCompensator& a,
+                                      const GyroTempCompensator& b) {
+    return a.valid() == b.valid() &&
+        a.temperatureModelValid() == b.temperatureModelValid() &&
+        a.config().enabled == b.config().enabled &&
+        a.referenceTempC() == b.referenceTempC() &&
+        a.referenceBiasRadS().x == b.referenceBiasRadS().x &&
+        a.referenceBiasRadS().y == b.referenceBiasRadS().y &&
+        a.referenceBiasRadS().z == b.referenceBiasRadS().z &&
+        a.slopeRadSPerC().x == b.slopeRadSPerC().x &&
+        a.slopeRadSPerC().y == b.slopeRadSPerC().y &&
+        a.slopeRadSPerC().z == b.slopeRadSPerC().z;
+}
 
 class TrackerCalibrationCommandDispatcher {
 public:
@@ -36,13 +68,17 @@ public:
             cmdCalTemp(ctx, argc, argv);
             return;
         }
+        if (is(argv[1], "candidate")) {
+            cmdCalCandidate(ctx, argc, argv);
+            return;
+        }
         if (is(argv[1], "save")) {
             if (!ctx.config || !ctx.configStore) {
                 tracker_serial_detail::printErr(out, "config/configStore not available");
                 return;
             }
             trackerSerialCaptureRuntimeToConfig(ctx);
-            if (ctx.configStore->save(*ctx.config)) tracker_serial_detail::printOk(out, "calibration saved");
+            if (ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Manual)) tracker_serial_detail::printOk(out, "calibration saved");
             else {
                 out.print("# ERR calibration save failed: ");
                 out.println(ctx.configStore->lastErrorName());
@@ -59,17 +95,16 @@ public:
             }
             if (ctx.gyroTempComp) ctx.gyroTempComp->clearAll();
             if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
-            if (ctx.config) {
-                ctx.config->data.gyroCal = TrackerGyroCalibrationConfig{};
-                ctx.config->data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
-                ctx.config->data.gyroCalMeta = TrackerGyroCalibrationMetaPersisted{};
-                ctx.config->data.accelCal = TrackerAccelCalibrationConfig{};
-                ctx.config->data.accelCalQuality = TrackerAccelCalibrationQualityPersisted{};
-                ctx.config->data.magCal = TrackerMagCalibrationConfig{};
-                ctx.config->data.magCalQuality = TrackerMagCalibrationQualityPersisted{};
-                ctx.config->updateCrc();
+            trackerSerialResetCalibrationWorkspaces(ctx);
+            if (ctx.config) ctx.config->clearAllCalibrationPreservingPolicy();
+            if (ctx.clearMagHeadingReference) {
+                ctx.clearMagHeadingReference(ctx.clearMagHeadingReferenceUser);
+            }
+            if (ctx.resetMagYawCorrection) {
+                ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
             }
             if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+            if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
             tracker_serial_detail::printOk(out, "all calibration cleared in RAM");
             return;
         }
@@ -78,6 +113,291 @@ public:
     }
 
 private:
+    static TrackerCalibrationProvenance parseCandidateProvenance(const char* value) {
+        if (is(value, "manual")) return TrackerCalibrationProvenance::Manual;
+        if (is(value, "setup")) return TrackerCalibrationProvenance::Setup;
+        if (is(value, "background")) return TrackerCalibrationProvenance::Background;
+        return TrackerCalibrationProvenance::Unknown;
+    }
+
+    static void printCandidateQuality(Stream& out,
+                                      const TrackerCalibrationQualitySummary& quality) {
+        out.print("quality_overall="); out.println(quality.overallScore, 6);
+        out.print("quality_gyro="); out.println(quality.gyroScore, 6);
+        out.print("quality_accel="); out.println(quality.accelScore, 6);
+        out.print("quality_mag="); out.println(quality.magScore, 6);
+        out.print("quality_alignment="); out.println(quality.alignmentScore, 6);
+        out.print("quality_coverage="); out.println(quality.coverageScore, 6);
+        out.print("gyro_residual_dps="); out.println(quality.gyroResidualDps, 6);
+        out.print("accel_residual_g="); out.println(quality.accelResidualG, 6);
+        out.print("mag_residual="); out.println(quality.magResidual, 6);
+        out.print("quality_flags=0x"); out.println(quality.qualityFlags, HEX);
+    }
+
+    static void printCandidate(Stream& out,
+                               const TrackerCalibrationCandidateRecord& candidate,
+                               bool dirty) {
+        out.println("# CALIBRATION CANDIDATE");
+        out.print("candidate_format_version="); out.println(candidate.version);
+        out.print("candidate_generation="); out.println(candidate.candidateGeneration);
+        out.print("candidate_dirty="); out.println(dirty ? "yes" : "no");
+        out.print("candidate_persisted_writes="); out.println(candidate.persistedWriteCount);
+        out.print("candidate_provenance=");
+        out.println(trackerCalibrationProvenanceName(candidate.metadata.provenance));
+        out.print("candidate_created_uptime_ms="); out.println(candidate.metadata.createdUptimeMs);
+        if (candidate.version == tracker_config_storage_detail::LEGACY_CANDIDATE_VERSION) {
+            out.print("candidate_active_generation_at_creation=");
+        } else {
+            out.print("candidate_active_calibration_revision=0x");
+        }
+        if (candidate.version == tracker_config_storage_detail::LEGACY_CANDIDATE_VERSION) {
+            out.println(candidate.metadata.activeCalibrationRevisionAtCreation);
+        } else {
+            out.println(candidate.metadata.activeCalibrationRevisionAtCreation, HEX);
+        }
+        out.print("candidate_sample_count="); out.println(candidate.metadata.sampleCount);
+        out.print("candidate_independent_windows=");
+        out.println(candidate.metadata.independentWindowCount);
+        out.print("candidate_comparison=");
+        out.println(trackerCalibrationComparisonName(candidate.metadata.lastComparison));
+        out.print("candidate_comparison_flags=0x");
+        out.println(candidate.metadata.comparisonFlags, HEX);
+        out.print("candidate_signature_crc=0x"); out.println(candidate.signature.crc32, HEX);
+        printCandidateQuality(out, candidate.metadata.quality);
+    }
+
+    static bool accelRunnerMatchesConfig(
+        const Accel6PosCalibration::Result& result,
+        const TrackerConfig& config
+    ) {
+        if (!result.valid || !config.data.accelCal.valid) return false;
+        if (result.biasG.x != config.data.accelCal.biasG.x ||
+            result.biasG.y != config.data.accelCal.biasG.y ||
+            result.biasG.z != config.data.accelCal.biasG.z) {
+            return false;
+        }
+        for (uint8_t row = 0; row < 3; ++row) {
+            for (uint8_t col = 0; col < 3; ++col) {
+                if (result.scaleMatrix.m[row][col] !=
+                    config.data.accelCal.scale.m[row][col]) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    template <typename T>
+    static std::unique_ptr<T> candidateScratch(Stream& out) {
+        std::unique_ptr<T> value(new (std::nothrow) T{});
+        if (!value) tracker_serial_detail::printErr(out, "out of memory for candidate command");
+        return value;
+    }
+
+    static void applyCalibrationConfig(TrackerSerialCommandContext& ctx,
+                                       const TrackerConfig& config) {
+        if (!ctx.config) return;
+
+        // Promotion owns learned calibration state only. Preserve current RAM
+        // product policy (output, AHRS tuning, FIFO/SPI and temp-comp enable)
+        // even when it has not been persisted yet.
+        trackerApplyCalibrationCandidateToConfig(*ctx.config, config);
+        if (ctx.imuCal) ctx.config->applyToImuCalibration(*ctx.imuCal);
+        if (ctx.gyroTempComp) ctx.config->applyToGyroTempComp(*ctx.gyroTempComp);
+        if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
+        trackerSerialResetCalibrationWorkspaces(ctx);
+
+        // A changed bias/scale/alignment invalidates state learned against the
+        // previous model, but does not require an IMU/FIFO reconfiguration.
+        if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+        if (ctx.clearMagHeadingReference) {
+            ctx.clearMagHeadingReference(ctx.clearMagHeadingReferenceUser);
+        }
+        if (ctx.resetMagYawCorrection) {
+            ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
+        }
+    }
+
+    static void cmdCalCandidate(TrackerSerialCommandContext& ctx, int argc, char** argv) {
+        Stream& out = stream(ctx);
+        if (!ctx.config || !ctx.configStore) {
+            tracker_serial_detail::printErr(out, "config/configStore not available");
+            return;
+        }
+        if (argc < 3 || is(argv[2], "status")) {
+            auto candidate = candidateScratch<TrackerCalibrationCandidateRecord>(out);
+            if (!candidate) return;
+            if (!ctx.configStore->loadCandidate(*candidate)) {
+                if (ctx.configStore->lastError() == TrackerConfigError::NotFound) {
+                    out.println("# CALIBRATION CANDIDATE");
+                    out.println("candidate_exists=no");
+                    return;
+                }
+                out.print("# ERR candidate load failed: ");
+                out.println(ctx.configStore->lastErrorName());
+                return;
+            }
+            out.println("candidate_exists=yes");
+            printCandidate(out, *candidate, ctx.configStore->candidateDirty());
+            return;
+        }
+
+        if (is(argv[2], "stage")) {
+            TrackerCalibrationProvenance provenance = TrackerCalibrationProvenance::Manual;
+            bool flush = false;
+            bool forceFlush = false;
+            for (int i = 3; i < argc; ++i) {
+                const TrackerCalibrationProvenance parsed = parseCandidateProvenance(argv[i]);
+                if (parsed != TrackerCalibrationProvenance::Unknown) {
+                    provenance = parsed;
+                } else if (is(argv[i], "flush")) {
+                    flush = true;
+                } else if (is(argv[i], "force")) {
+                    flush = true;
+                    forceFlush = true;
+                } else {
+                    tracker_serial_detail::printErr(out, "usage: cal candidate stage [manual|setup|background] [flush|force]");
+                    return;
+                }
+            }
+
+            auto staged = candidateScratch<TrackerConfig>(out);
+            if (!staged) return;
+            *staged = *ctx.config;
+            trackerSerialCaptureRuntimeToConfig(ctx, *staged);
+            TrackerCalibrationCandidateMetadata metadata;
+            metadata.provenance = provenance;
+            metadata.quality = trackerCalibrationQualityFromConfig(*staged);
+            if (ctx.accelCalRunner && accelRunnerMatchesConfig(
+                    ctx.accelCalRunner->calibration().result(), *staged)) {
+                metadata.sampleCount = 0;
+                for (uint8_t i = 0;
+                     i < static_cast<uint8_t>(Accel6PosCalibration::Face::Count);
+                     ++i) {
+                    metadata.sampleCount += ctx.accelCalRunner->calibration().faceData(
+                        static_cast<Accel6PosCalibration::Face>(i)
+                    ).samples;
+                }
+                metadata.independentWindowCount = 6;
+            }
+            if (!ctx.configStore->stageCandidate(*staged, metadata, millis())) {
+                out.print("# ERR candidate stage failed: ");
+                out.println(ctx.configStore->lastErrorName());
+                return;
+            }
+            if (flush && !ctx.configStore->flushCandidate(millis(), forceFlush)) {
+                out.print("# ERR candidate flush failed: ");
+                out.println(ctx.configStore->lastErrorName());
+                return;
+            }
+            tracker_serial_detail::printOk(out, flush ? "calibration candidate staged and flushed" : "calibration candidate staged in RAM");
+            return;
+        }
+
+        if (is(argv[2], "flush")) {
+            const bool force = argc >= 4 && is(argv[3], "force");
+            if (argc >= 4 && !force) {
+                tracker_serial_detail::printErr(out, "usage: cal candidate flush [force]");
+                return;
+            }
+            if (!ctx.configStore->flushCandidate(millis(), force)) {
+                out.print("# ERR candidate flush failed: ");
+                out.println(ctx.configStore->lastErrorName());
+                return;
+            }
+            tracker_serial_detail::printOk(out, "calibration candidate flushed to NVS");
+            return;
+        }
+
+        if (is(argv[2], "compare")) {
+            auto candidate = candidateScratch<TrackerCalibrationCandidateRecord>(out);
+            if (!candidate) return;
+            TrackerCalibrationComparisonResult result;
+            uint32_t flags = 0;
+            if (!ctx.configStore->compareCandidate(*candidate, result, flags)) {
+                out.print("# ERR candidate compare failed: ");
+                out.println(ctx.configStore->lastErrorName());
+                return;
+            }
+            printCandidate(out, *candidate, ctx.configStore->candidateDirty());
+            return;
+        }
+
+        if (is(argv[2], "discard")) {
+            if (!ctx.configStore->discardCandidate()) {
+                out.print("# ERR candidate discard failed: ");
+                out.println(ctx.configStore->lastErrorName());
+                return;
+            }
+            tracker_serial_detail::printOk(out, "calibration candidate discarded");
+            return;
+        }
+
+        if (is(argv[2], "promote")) {
+            const bool force = argc >= 4 && is(argv[3], "force");
+            if (argc >= 4 && !force) {
+                tracker_serial_detail::printErr(out, "usage: cal candidate promote [force]");
+                return;
+            }
+
+            auto prepared = candidateScratch<TrackerPreparedConfigPromotion>(out);
+            auto candidate = candidateScratch<TrackerConfig>(out);
+            auto previous = candidateScratch<TrackerConfig>(out);
+            auto promoted = candidateScratch<TrackerConfig>(out);
+            if (!prepared || !candidate || !previous || !promoted) return;
+
+            *previous = *ctx.config;
+            trackerSerialCaptureRuntimeToConfig(ctx, *previous);
+            if (!ctx.configStore->prepareCandidatePromotion(
+                    *prepared, *candidate, force, previous.get())) {
+                out.print("# ERR candidate promotion prepare failed: ");
+                out.println(ctx.configStore->lastErrorName());
+                return;
+            }
+
+            // Signature equality guarantees identical IMU/FIFO modes. Apply
+            // only calibration-owned runtime state; no sensor/FIFO restart.
+            applyCalibrationConfig(ctx, *candidate);
+
+            if (!ctx.configStore->commitPreparedPromotion(*prepared, *promoted)) {
+                const TrackerConfigError commitError = ctx.configStore->lastError();
+                if (commitError == TrackerConfigError::CommitUncertain) {
+                    auto resolved = candidateScratch<TrackerConfig>(out);
+                    if (resolved && ctx.configStore->load(*resolved)) {
+                        const bool candidateCommitted =
+                            std::memcmp(&resolved->data, &candidate->data, sizeof(resolved->data)) == 0;
+                        applyCalibrationConfig(ctx, *resolved);
+                        ctx.configStore->confirmAuthoritativeConfigApplied();
+                        if (candidateCommitted) {
+                            prepared->valid = false;
+                            if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
+                            out.println("# WARN selector verification was uncertain, but active generation reconciled to candidate");
+                            tracker_serial_detail::printOk(out, "calibration candidate promoted after reconciliation");
+                            return;
+                        }
+                        ctx.configStore->abortPreparedPromotion(*prepared);
+                        out.println("# WARN selector verification was uncertain; reconciled to previous active config");
+                        return;
+                    }
+                    out.println("# ERR selector commit state is uncertain; runtime kept on candidate, reboot required before further config writes");
+                    return;
+                }
+                applyCalibrationConfig(ctx, *previous);
+                ctx.configStore->abortPreparedPromotion(*prepared);
+                out.print("# ERR candidate selector commit failed; runtime rolled back: ");
+                out.println(TrackerConfigStore::errorName(commitError));
+                return;
+            }
+
+            applyCalibrationConfig(ctx, *promoted);
+            if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
+            tracker_serial_detail::printOk(out, "calibration candidate promoted atomically");
+            return;
+        }
+
+        tracker_serial_detail::printErr(out, "usage: cal candidate status|stage|flush|compare|discard|promote");
+    }
+
     static void cmdCalGyro(TrackerSerialCommandContext& ctx, int argc, char** argv) {
         Stream& out = stream(ctx);
         if (argc >= 3 && is(argv[2], "save")) {
@@ -85,10 +405,9 @@ private:
                 tracker_serial_detail::printErr(out, "config or calibration not available");
                 return;
             }
-            ctx.config->captureFromImuCalibration(*ctx.imuCal);
-            ctx.config->noteGyroBiasCalibrationCaptured(millis());
+            ctx.config->captureGyroFromImuCalibration(*ctx.imuCal);
             if (ctx.gyroTempComp) ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
-            if (ctx.configStore->save(*ctx.config)) tracker_serial_detail::printOk(out, "gyro calibration saved");
+            if (ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Manual)) tracker_serial_detail::printOk(out, "gyro calibration saved");
             else {
                 out.print("# ERR gyro save failed: ");
                 out.println(ctx.configStore->lastErrorName());
@@ -103,13 +422,10 @@ private:
             }
             if (ctx.gyroTempComp) ctx.gyroTempComp->clearAll();
             if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
-            if (ctx.config) {
-                ctx.config->data.gyroCal = TrackerGyroCalibrationConfig{};
-                ctx.config->data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
-                ctx.config->data.gyroCalMeta = TrackerGyroCalibrationMetaPersisted{};
-                ctx.config->updateCrc();
-            }
+            trackerSerialResetCalibrationWorkspaces(ctx, TRACKER_CAL_WORKSPACE_GYRO_TEMP);
+            if (ctx.config) ctx.config->clearGyroCalibrationPreservingPolicy();
             if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+            if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
             tracker_serial_detail::printOk(out, "gyro calibration cleared in RAM");
             return;
         }
@@ -145,12 +461,14 @@ private:
         );
 
         if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
+        trackerSerialResetCalibrationWorkspaces(ctx, TRACKER_CAL_WORKSPACE_GYRO_TEMP);
         if (ctx.config) {
-            ctx.config->captureFromImuCalibration(*ctx.imuCal);
+            ctx.config->captureGyroFromImuCalibration(*ctx.imuCal);
             ctx.config->noteGyroBiasCalibrationCaptured(millis());
             if (ctx.gyroTempComp) ctx.config->captureFromGyroTempComp(*ctx.gyroTempComp);
         }
         if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+        if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
 
         tracker_serial_detail::printOk(out, "gyro calibration applied to RAM; use cal gyro save or config save");
     }
@@ -207,7 +525,7 @@ private:
             printAccelCal(out, ctx.accelCalRunner->calibration());
             if (ctx.imuCal) ctx.accelCalRunner->applyToImuCalibration(*ctx.imuCal);
             if (ctx.config && ctx.imuCal) {
-                ctx.config->captureFromImuCalibration(*ctx.imuCal);
+                ctx.config->captureAccelFromImuCalibration(*ctx.imuCal);
                 ctx.config->captureFromAccelCalibrationQuality(ctx.accelCalRunner->calibration(), millis());
             }
             if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
@@ -225,11 +543,8 @@ private:
                 tracker_serial_detail::printErr(out, "config/configStore/imuCal not available");
                 return;
             }
-            ctx.config->captureFromImuCalibration(*ctx.imuCal);
-            if (ctx.accelCalRunner->calibration().result().valid) {
-                ctx.config->captureFromAccelCalibrationQuality(ctx.accelCalRunner->calibration(), millis());
-            }
-            if (ctx.configStore->save(*ctx.config)) tracker_serial_detail::printOk(out, "accel calibration saved");
+            ctx.config->captureAccelFromImuCalibration(*ctx.imuCal);
+            if (ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Manual)) tracker_serial_detail::printOk(out, "accel calibration saved");
             else {
                 out.print("# ERR accel save failed: ");
                 out.println(ctx.configStore->lastErrorName());
@@ -244,12 +559,14 @@ private:
                 ctx.imuCal->accelBiasG = Vec3::zero();
                 ctx.imuCal->accelScale = Mat3::identity();
             }
-            if (ctx.config) {
-                ctx.config->data.accelCal = TrackerAccelCalibrationConfig{};
-                ctx.config->data.accelCalQuality = TrackerAccelCalibrationQualityPersisted{};
-                ctx.config->updateCrc();
-            }
+            if (ctx.config) ctx.config->clearAccelCalibration();
             if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+            if (ctx.clearMagHeadingReference) {
+                ctx.clearMagHeadingReference(ctx.clearMagHeadingReferenceUser);
+            }
+            if (ctx.resetMagYawCorrection) {
+                ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
+            }
             tracker_serial_detail::printOk(out, "accel calibration cleared in RAM");
             return;
         }
@@ -265,30 +582,40 @@ private:
             return;
         }
 
-        auto commitTempCandidate = [&](GyroTempCompensator candidateTempComp,
+        enum class TempCaptureKind : uint8_t { Snapshot, ModelUpdate };
+        auto commitTempCandidate = [&](const GyroTempCompensator& candidateTempComp,
                                        bool saveRequested,
-                                       bool resetRuntimeTrim) -> bool {
+                                       bool resetRuntimeTrim,
+                                       TempCaptureKind captureKind) -> bool {
             if (!ctx.config) return false;
 
+            const bool modelChanged = !gyroTempRuntimeModelEqual(*ctx.gyroTempComp, candidateTempComp);
+            const bool oldBiasValid = ctx.gyroTempComp->valid();
+            const bool newBiasValid = candidateTempComp.valid();
+
             TrackerConfig candidateConfig = *ctx.config;
-            candidateConfig.captureFromGyroTempComp(candidateTempComp);
+            if (captureKind == TempCaptureKind::ModelUpdate) {
+                candidateConfig.captureFromGyroTempCompUpdate(candidateTempComp, millis());
+            } else {
+                candidateConfig.captureFromGyroTempComp(candidateTempComp);
+            }
             candidateConfig.sanitize();
             candidateConfig.updateCrc();
 
-            RuntimeGyroBiasEstimator candidateRuntimeBias;
-            const bool haveRuntimeBias = ctx.runtimeBias != nullptr;
-            if (haveRuntimeBias) {
-                candidateRuntimeBias = *ctx.runtimeBias;
-                if (resetRuntimeTrim) runtimeBiasReset(candidateRuntimeBias);
-            }
-
             if (saveRequested) {
-                if (!ctx.configStore || !ctx.configStore->save(candidateConfig)) return false;
+                if (!ctx.configStore || !ctx.configStore->save(candidateConfig, TrackerCalibrationProvenance::Manual)) return false;
             }
 
             *ctx.gyroTempComp = candidateTempComp;
             *ctx.config = candidateConfig;
-            if (haveRuntimeBias && resetRuntimeTrim) *ctx.runtimeBias = candidateRuntimeBias;
+            if (ctx.runtimeBias && modelChanged && resetRuntimeTrim) runtimeBiasReset(*ctx.runtimeBias);
+            if (modelChanged) {
+                trackerSerialResetCalibrationWorkspaces(ctx, TRACKER_CAL_WORKSPACE_GYRO_TEMP);
+                if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+                if (oldBiasValid != newBiasValid && ctx.slimevrRuntime) {
+                    ctx.slimevrRuntime->requestSensorInfoRefresh();
+                }
+            }
             return true;
         };
 
@@ -327,7 +654,7 @@ private:
             GyroTempCompensator candidateTempComp = *ctx.gyroTempComp;
             candidateTempComp.setEnabled(true);
 
-            if (!commitTempCandidate(candidateTempComp, saveRequested, true)) {
+            if (!commitTempCandidate(candidateTempComp, saveRequested, true, TempCaptureKind::Snapshot)) {
                 tracker_serial_detail::printErr(out, "cal temp enable save failed");
                 return;
             }
@@ -342,7 +669,7 @@ private:
             GyroTempCompensator candidateTempComp = *ctx.gyroTempComp;
             candidateTempComp.setEnabled(false);
 
-            if (!commitTempCandidate(candidateTempComp, saveRequested, true)) {
+            if (!commitTempCandidate(candidateTempComp, saveRequested, true, TempCaptureKind::Snapshot)) {
                 tracker_serial_detail::printErr(out, "cal temp disable save failed");
                 return;
             }
@@ -373,10 +700,19 @@ private:
                 return;
             }
 
+            if (!ctx.gyroTempComp->valid()) {
+                tracker_serial_detail::printErr(out, "temperature slope requires a valid gyro bias/reference model");
+                return;
+            }
+
             GyroTempCompensator candidateTempComp = *ctx.gyroTempComp;
             candidateTempComp.setSlopeDpsPerC(requestedSlopeDpsPerC);
+            if (!candidateTempComp.temperatureModelValid()) {
+                tracker_serial_detail::printErr(out, "temperature slope was rejected by the runtime model");
+                return;
+            }
 
-            if (!commitTempCandidate(candidateTempComp, saveRequested, true)) {
+            if (!commitTempCandidate(candidateTempComp, saveRequested, true, TempCaptureKind::ModelUpdate)) {
                 tracker_serial_detail::printErr(out, "cal temp set_slope save failed");
                 return;
             }
@@ -410,7 +746,7 @@ private:
 
             GyroTempCompensator candidateTempComp = *ctx.gyroTempComp;
             candidateTempComp.invalidateTemperatureModel();
-            if (!commitTempCandidate(candidateTempComp, saveRequested, true)) {
+            if (!commitTempCandidate(candidateTempComp, saveRequested, true, TempCaptureKind::ModelUpdate)) {
                 tracker_serial_detail::printErr(out, "cal temp clear save failed");
                 return;
             }

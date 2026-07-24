@@ -95,6 +95,9 @@ def run_tool_smokes() -> None:
     run([sys.executable, "tools/test_check_all_policy.py"])
     run([sys.executable, "tools/test_run_standalone_tests_policy.py"])
     run([sys.executable, "tools/test_slimevr_session_contract_policy.py"])
+    run([sys.executable, "tools/test_calibration_storage_contract_policy.py"])
+    run([sys.executable, "tools/test_calibration_storage_stack_policy.py"])
+    run([sys.executable, "tools/test_calibration_integration_policy.py"])
 
     fixture = ROOT / "tests" / "fixtures" / "e0_static_smoke.log"
     if fixture.exists():

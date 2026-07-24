@@ -379,20 +379,24 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
     candidateRuntimeBias.resetCounters();
     candidateRuntimeBias.enabled = runtimeBiasWasEnabled;
 
-    candidateConfig.captureFromGyroTempComp(candidateTempComp);
+    candidateConfig.captureFromGyroTempCompUpdate(candidateTempComp, millis(), inlierSamples);
     candidateConfig.sanitize();
     candidateConfig.updateCrc();
 
-    if (mode == GyroTempStaticFitMode::ApplyAndSave && !configStore.save(candidateConfig)) {
+    if (mode == GyroTempStaticFitMode::ApplyAndSave && !configStore.save(candidateConfig, TrackerCalibrationProvenance::Manual)) {
         out.print("# ERR gyro temp fit save failed: ");
         out.println(configStore.lastErrorName());
         return false;
     }
 
+    const bool biasValidityChanged = gyroTempComp.valid() != candidateTempComp.valid();
     gyroTempComp = candidateTempComp;
     imuCal = candidateImuCal;
     runtimeBias = candidateRuntimeBias;
     config = candidateConfig;
+    if (deps.onModelApplied) {
+        deps.onModelApplied(biasValidityChanged, deps.onModelAppliedUser);
+    }
 
     if (mode == GyroTempStaticFitMode::ApplyRam) {
         out.println("# OK gyro temperature compensation fitted and applied to RAM");

@@ -23,6 +23,7 @@ Native tests are for pure or mostly-pure logic:
 - `sensor/mag_yaw_correction.hpp` gate/reject/cooldown behavior.
 - `config/tracker_config_detail.hpp` CRC helpers and schema constants.
 - `config/tracker_config_schema.hpp` default schema layout expectations.
+- `config/tracker_config_storage.hpp` dual-slot, selector, migration, candidate, signature, wear and promotion state rules using the native Preferences substitute.
 - `network/wifi_manager.hpp` non-blocking connection/reconnect decisions through fake adapters.
 - `network/udp_transport.hpp` host-safe endpoint helpers.
 - `output/slimevr_packet_writer.hpp` packet encoding/parsing helpers.
@@ -699,7 +700,7 @@ converting acceleration from `g` to `m/s^2`, keeps Hamilton
 coherent world-space motion vector; the legacy pre-22 extra -90 degree local-Z
 acceleration correction must demonstrably disagree.
 
-After flashing `c3-6dsv-session-complete-boot-clean` in ProductionDiag:
+After flashing `c3-6dsv-calibration-epoch-field-safe` in ProductionDiag:
 
 ```text
 slime status
@@ -778,3 +779,104 @@ lost ACK must be acknowledged without another config write or magnetic-runtime
 restart. Boot with magnetometer enabled must not report a redundant
 `tracking_recovery_reconfigure_delta` solely from starting QMC6309 after FIFO
 bootstrap.
+
+## 0021 calibration-storage hardware acceptance
+
+Only one real-device cycle is required after all PlatformIO profiles build:
+
+```text
+config slots
+config save
+config slots
+reboot
+config verify
+config slots
+```
+
+Acceptance requires two valid generations after the second save, a valid
+selector, the expected active generation after reboot, and unchanged tracking
+calibration. The destructive fallback portion is optional unless a development
+build exposes safe NVS corruption tooling; native tests already cover torn
+writes, corrupt selected slots, selector loss and interrupted promotion.
+
+Candidate smoke test:
+
+```text
+cal candidate stage manual
+cal candidate status
+cal candidate compare
+cal candidate discard
+```
+
+Staging/status/compare/discard must not reset AHRS, reconfigure FIFO or change the
+selected active generation. Do not use `promote force` as a routine hardware
+smoke test.
+
+### 0021a first-boot migration regression
+
+When upgrading directly from 0020a, the first boot must reach the console and
+report `c3-6dsv-calibration-epoch-field-safe`. Run `config slots` and
+`config verify`; the legacy `cfg` key should migrate once without a reboot loop.
+The host gate `tools/test_calibration_storage_stack_policy.py` must also pass.
+
+
+### 0021b/0021c storage lifecycle regression
+
+After flashing `c3-6dsv-calibration-epoch-field-safe`, run:
+
+```text
+version
+config slots
+config verify
+cal candidate status
+```
+
+A normal boot must report `load_status=loaded` or `migrated`,
+`storage_degraded=no`, `authoritative_apply_pending=no`,
+`commit_uncertain_count=0`, and no unexpected legacy cleanup pending state.
+`defaults_storage_error` is a degraded boot and must not be treated as an empty
+first-run device. In that state `config save`, candidate flush/discard/promotion
+and calibration persistence must remain blocked. `config verify` is read-only and
+must not clear the block; only a successful `config load` plus hardware/runtime
+apply may confirm recovery. `config erase` is the deliberate destructive escape.
+
+A device upgraded from clean 0021/0021a/0021b may initially show a legacy-committed
+v1 slot. Its first real `config save` must create a committed v2 slot/marker. A
+second identical save must increment `noop_save_count` while leaving generation
+unchanged.
+
+Candidate promotion is calibration-only: it must not increment FIFO
+reconfiguration/recovery counters, change output rate/FIFO/IMU settings, or stop
+network output. A v3 candidate remains fresh after unrelated policy/evidence/timestamp saves but
+must become stale after any active gyro/accel/mag/alignment calibration change.
+After promotion, `last_comparison=promoted` must survive reboot and a repeat
+promotion, including `force`, must return `already_promoted` without changing the
+active generation.
+
+### 0021d hardware no-op and model-freshness acceptance
+
+After `config load`, run two immediate `config save` commands. With no runtime
+policy change, both must leave `active_generation`, selected slot, config CRC and
+`successful_active_writes` unchanged while incrementing `noop_save_count` twice.
+Active quality/provenance must remain unchanged.
+
+Stage a v3 candidate, toggle only `cal temp enable|disable save` or save another
+non-calibration policy, and compare again. It must not report stale. Changing an
+actual gyro/accel/mag/alignment model must report stale. A promoted candidate must
+preserve current `temp_comp_enabled`, output/AHRS/FIFO/SPI policy, transfer mag
+trust bounds, clear magnetic heading/yaw state and leave FIFO reconfigure/recovery
+counters unchanged.
+
+Integration acceptance must also verify:
+
+- `cal gyro save` cannot persist an unsaved accel change and `cal accel save` cannot
+  persist an unsaved gyro/temperature change;
+- `config load/defaults`, gyro-validity changes, candidate promotion and local
+  magnetometer enable/disable cause SensorInfo to become dirty and re-ACK;
+- enabling magnetic yaw without accel, magnetic-field and axis-alignment calibration fails
+  explicitly instead of reporting success after sanitize disables it;
+- promotion returns `runtime_calibration_diverged` when RAM contains a third
+  unsaved calibration model;
+- a persisted temperature slope without a valid gyro bias sanitizes to no
+  temperature model and clears its evidence; `cal temp set_slope` must reject
+  the same missing-bias state without writing NVS.

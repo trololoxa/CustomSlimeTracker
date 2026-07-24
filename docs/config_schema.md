@@ -9,9 +9,31 @@ Persistent config lives in `src/config/`. Runtime/session state must not be pers
 | `tracker_config_schema.hpp` | Persistent structs and version constants. |
 | `tracker_config_detail.hpp` | CRC/constants/detail helpers. |
 | `tracker_config_runtime.hpp/.cpp` | Defaults, sanitize/validate, apply/capture runtime values. |
-| `tracker_config_store.hpp/.cpp` | NVS/Preferences persistence and store inspection. |
+| `tracker_config_storage.hpp/.cpp` | Dual-slot records, selector, sensor signature, quality and candidate schemas. |
+| `tracker_config_store.hpp/.cpp` | Dual-slot NVS persistence, legacy migration, candidate wear control and atomic promotion. |
 | `tracker_network_config.hpp/.cpp` | Wi-Fi/SlimeVR network config storage, separate from core IMU config. |
 | `tracker_config_print.hpp/.cpp` | Human-readable config printing. |
+
+
+## Active storage transaction model
+
+Core config no longer depends on one replace-in-place `cfg` blob. Active state is
+stored in `cfg_a`/`cfg_b`, with `cfg_s` selecting one verified generation and
+`cfg_ac`/`cfg_bc` proving storage-v2 per-slot commit completion. The target marker
+is removed before the inactive record is written; selector and matching marker
+are committed only after read-back validation. This distinguishes a complete but
+never-committed first slot from an authoritative generation. Compatible v1 slots
+remain readable and upgrade on the next real save. A valid legacy `cfg` blob
+migrates only after the new slot, selector and marker verify. See
+[calibration_storage.md](calibration_storage.md).
+
+Calibration candidates use a separate `cfg_c` record and never become active by
+being written. New candidates bind freshness to a hash/revision of calibration-owned
+fields rather than the whole config generation; unrelated product-policy saves do
+not discard useful collection. Promotion requires signature/quality comparison,
+live hardware apply and final selector/commit-marker completion. Candidate writes
+are throttled independently from explicit user config saves, and a promoted
+candidate is terminal until a new stage starts.
 
 ## Ownership rules
 
@@ -88,3 +110,47 @@ SlimeVR UserAction wire values `2` full reset, `3` yaw reset, `4` mounting reset
 and `5` pause; every other value sanitizes to `off`. Network-config saves remain
 transactional, and runtime tap mapping changes only after a successful persisted
 write when the command includes `save`.
+
+
+The selector remains authoritative while valid. A non-selected storage-v2 slot
+without a matching marker is prepared/uncommitted and cannot become fallback.
+With a lost selector, only commit-authoritative slots participate in recovery.
+Selector verification failures are reconciled by reading NVS again;
+`CommitUncertain` is surfaced when authority cannot be proven. A storage/read
+failure at boot latches all persistent active/candidate mutations until a later
+`config load` is both read successfully and applied to hardware/runtime. Read-only
+`config verify` deliberately cannot clear that latch. Full `config erase` remains
+the explicit destructive recovery operation.
+
+- 0021d separates configuration persistence, calibration snapshots and calibration events; keeps no-op saves/provenance stable; scopes component saves; uses v3 model-only candidate freshness with v1/v2 compatibility; guards unsaved runtime calibration; resets dependent adaptive state on load/promotion/clear; and refreshes SensorInfo when advertised calibration or sensor capability changes.
+
+
+## 0021e calibration epoch and field-ownership hardening
+
+0021e finishes the patch-21 integration audit without changing the persisted blob
+layout. Calibration models, their evidence, runtime policy and unfinished capture
+workspaces now have explicit owners and epoch boundaries:
+
+- invalid gyro, temperature, accel, magnetic and frame models sanitize to canonical
+  fail-honest values and clear only their own evidence; independent enable policy is
+  preserved;
+- a disabled `sensorToDevice` frame is logically identity and dormant matrix bytes no
+  longer create false sensor-signature mismatches;
+- candidate promotion is rejected when the live unsaved ODR/full-scale/FIFO/frame
+  contract differs from the active signature, because calibration-only promotion does
+  not reconfigure hardware;
+- full config apply, promotion, setup commit/rollback and full calibration erase clear
+  incompatible accel, gyro-temperature and magnetic collection workspaces;
+- real gyro/temperature correction changes start a new AHRS/runtime-bias epoch, while
+  no-op toggles do not disturb tracking;
+- guided accel+frame calibration keeps acceleration unavailable until both new models
+  are valid, and guided production policy is applied to live AHRS/quality state before
+  readiness and persistence;
+- manual hard/soft-iron replacement invalidates the previous mag-to-IMU alignment and
+  magnetic-yaw apply state; candidate promotion remains atomic because it transfers the
+  field and axis models together;
+- `cal clear_all` and `ERASE CALIBRATION` also clear the device frame, and persistent
+  erase discards any staged candidate that could otherwise resurrect the old model.
+
+Compact and detailed status now report `sensor_to_device_valid` and
+`motion_frame_config_ready` separately from `accel_cal_valid`.

@@ -178,7 +178,22 @@ void TrackerConfig::sanitize() {
         data.gyroCal.biasRadS = Vec3::zero();
         data.gyroCal.biasValid = false;
     }
+    if (!data.gyroCal.biasValid) {
+        data.gyroCal.biasRadS = Vec3::zero();
+        data.gyroCalMeta.biasCalibrationUptimeMs = 0;
+    }
     if (!finiteFloat(data.gyroCal.referenceTempC)) data.gyroCal.referenceTempC = 25.0f;
+    // A temperature slope has no standalone meaning without the reference
+    // gyro bias it modifies. Older/corrupted blobs could represent this
+    // impossible state; normalize it instead of letting storage revision,
+    // diagnostics and runtime disagree about which model is active.
+    if (!data.gyroCal.biasValid && data.gyroCal.tempCompValid) {
+        data.gyroCal.tempCompValid = false;
+        data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
+        data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
+        data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
+        data.gyroCalMeta.tempModelSampleCount = 0;
+    }
     const float maxSlopeRadSPerC = GyroTempCompConfig{}.maxAcceptedSlopeDpsPerC * MATH_DEG_TO_RAD;
     if (!finiteVec3(data.gyroCal.tempSlopeRadSPerC) ||
         std::fabs(data.gyroCal.tempSlopeRadSPerC.x) > maxSlopeRadSPerC ||
@@ -186,6 +201,12 @@ void TrackerConfig::sanitize() {
         std::fabs(data.gyroCal.tempSlopeRadSPerC.z) > maxSlopeRadSPerC) {
         data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
         data.gyroCal.tempCompValid = false;
+        data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
+        data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
+        data.gyroCalMeta.tempModelSampleCount = 0;
+    }
+    if (!data.gyroCal.tempCompValid) {
+        data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
         data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
         data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
         data.gyroCalMeta.tempModelSampleCount = 0;
@@ -220,11 +241,38 @@ void TrackerConfig::sanitize() {
         data.accelCal.scale = Mat3::identity();
         data.accelCal.valid = false;
     }
+    if (!data.accelCal.valid) {
+        data.accelCal.biasG = Vec3::zero();
+        data.accelCal.scale = Mat3::identity();
+        data.accelCalQuality = TrackerAccelCalibrationQualityPersisted{};
+    }
 
-    if (!finiteMat3(data.magCal.softIron)) data.magCal.softIron = Mat3::identity();
-    if (!finiteMat3(data.magCal.magToImu)) data.magCal.magToImu = Mat3::identity();
-    if (!finiteVec3(data.magCal.hardIron)) data.magCal.hardIron = Vec3::zero();
-    if (!finiteFloat(data.magCal.expectedFieldNorm)) data.magCal.expectedFieldNorm = 1.0f;
+    const bool invalidMagFieldModel =
+        !finiteMat3(data.magCal.softIron) ||
+        !finiteVec3(data.magCal.hardIron) ||
+        !finiteFloat(data.magCal.expectedFieldNorm);
+    if (invalidMagFieldModel) {
+        data.magCal.calibrationValid = false;
+    }
+    if (!data.magCal.calibrationValid) {
+        data.magCal.hardIron = Vec3::zero();
+        data.magCal.softIron = Mat3::identity();
+        data.magCal.expectedFieldNorm = 1.0f;
+        data.magCal.minTrustNorm = 0.25f;
+        data.magCal.maxTrustNorm = 2.50f;
+        data.magCalQuality = TrackerMagCalibrationQualityPersisted{};
+    }
+    if (!finiteMat3(data.magCal.magToImu)) {
+        data.magCal.axisAlignmentValid = false;
+    }
+    if (!data.magCal.axisAlignmentValid) {
+        data.magCal.magToImu = Mat3::identity();
+    }
+    if (!data.accelCal.valid || !data.magCal.calibrationValid ||
+        !data.magCal.axisAlignmentValid) {
+        data.magYaw.applyEnabled = false;
+    }
+
     if (!finiteFloat(data.magCal.minTrustNorm)) data.magCal.minTrustNorm = 0.25f;
     if (!finiteFloat(data.magCal.maxTrustNorm)) data.magCal.maxTrustNorm = 2.50f;
     if (data.magCal.minTrustNorm <= 0.0f) data.magCal.minTrustNorm = 0.25f;
@@ -241,8 +289,10 @@ void TrackerConfig::sanitize() {
     data.magCalQuality.coverageScore = clampFloat(data.magCalQuality.coverageScore, 0.0f, 1.0f);
 
     if (!isProperRotationMatrix(data.frame.sensorToDevice)) {
-        data.frame.sensorToDevice = Mat3::identity();
         data.frame.sensorToDeviceValid = false;
+    }
+    if (!data.frame.sensorToDeviceValid) {
+        data.frame.sensorToDevice = Mat3::identity();
     }
     // Compatibility bytes from abandoned firmware-side mounting/output/identity
     // concepts are always neutral. Keeping their layout preserves existing NVS
@@ -467,12 +517,60 @@ void TrackerConfig::applyToImuCalibration(ImuCalibration& imuCal) const {
     imuCal.accelScale = data.accelCal.scale;
 }
 
-void TrackerConfig::captureFromImuCalibration(const ImuCalibration& imuCal) {
+void TrackerConfig::captureGyroFromImuCalibration(const ImuCalibration& imuCal) {
     data.gyroCal.biasValid = imuCal.gyroBiasValid;
     data.gyroCal.biasRadS = imuCal.gyroBiasRadS;
+    updateCrc();
+}
+
+void TrackerConfig::captureAccelFromImuCalibration(const ImuCalibration& imuCal) {
     data.accelCal.valid = imuCal.accelCalValid;
     data.accelCal.biasG = imuCal.accelBiasG;
     data.accelCal.scale = imuCal.accelScale;
+    updateCrc();
+}
+
+void TrackerConfig::captureFromImuCalibration(const ImuCalibration& imuCal) {
+    captureGyroFromImuCalibration(imuCal);
+    captureAccelFromImuCalibration(imuCal);
+    updateCrc();
+}
+
+void TrackerConfig::clearGyroCalibrationPreservingPolicy() {
+    const bool tempCompEnabled = data.gyroCal.tempCompEnabled;
+    const bool tempLearningEnabled = data.gyroCal.reservedTempLearningEnabled;
+    data.gyroCal = TrackerGyroCalibrationConfig{};
+    data.gyroCal.tempCompEnabled = tempCompEnabled;
+    data.gyroCal.reservedTempLearningEnabled = tempLearningEnabled;
+    data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
+    data.gyroCalMeta = TrackerGyroCalibrationMetaPersisted{};
+    updateCrc();
+}
+
+void TrackerConfig::clearAccelCalibration() {
+    data.accelCal = TrackerAccelCalibrationConfig{};
+    data.accelCalQuality = TrackerAccelCalibrationQualityPersisted{};
+    // Magnetic heading projection is not valid without calibrated gravity.
+    data.magYaw.applyEnabled = false;
+    updateCrc();
+}
+
+void TrackerConfig::clearMagCalibrationPreservingDriver() {
+    const bool driverEnabled = data.magCal.driverEnabled;
+    data.magCal = TrackerMagCalibrationConfig{};
+    data.magCal.driverEnabled = driverEnabled;
+    data.magCalQuality = TrackerMagCalibrationQualityPersisted{};
+    // Yaw correction cannot remain active without a trusted field model.
+    data.magYaw.applyEnabled = false;
+    updateCrc();
+}
+
+void TrackerConfig::clearAllCalibrationPreservingPolicy() {
+    clearGyroCalibrationPreservingPolicy();
+    clearAccelCalibration();
+    clearMagCalibrationPreservingDriver();
+    data.frame.sensorToDevice = Mat3::identity();
+    data.frame.sensorToDeviceValid = false;
     updateCrc();
 }
 
@@ -543,45 +641,89 @@ void TrackerConfig::applyToGyroTempComp(GyroTempCompensator& tempComp) const {
     }
 }
 
-void TrackerConfig::captureFromGyroTempComp(const GyroTempCompensator& tempComp) {
+namespace {
+
+void captureGyroTempCompSnapshot(TrackerConfig& config,
+                                 const GyroTempCompensator& tempComp) {
     if (!tempComp.valid()) {
-        // This helper owns temperature-model persistence, not the independent
-        // ImuCalibration static-bias record. A general runtime capture calls
-        // captureFromImuCalibration() first, so an unavailable temperature
-        // runtime must not erase an otherwise valid static gyro calibration.
-        data.gyroCal.tempCompValid = false;
-        data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
-        data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
-        data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
-        data.gyroCalMeta.tempModelSampleCount = 0;
-        updateCrc();
+        // Temperature runtime owns policy even before a bias/model exists.
+        // Preserve the independent static bias captured from ImuCalibration,
+        // while making a deliberately invalidated runtime model visible to
+        // calibration-aware staging/saves.
+        config.data.gyroCal.tempCompEnabled = tempComp.config().enabled;
+        config.data.gyroCal.reservedTempLearningEnabled = false;
+        config.data.gyroCal.tempCompValid = false;
+        config.data.gyroCal.tempSlopeRadSPerC = Vec3::zero();
+        config.data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
+        config.data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
+        config.data.gyroCalMeta.tempModelSampleCount = 0;
         return;
     }
 
-    data.gyroCal.biasValid = true;
-    data.gyroCal.biasRadS = tempComp.referenceBiasRadS();
-    data.gyroCal.tempCompValid = tempComp.temperatureModelValid();
-    data.gyroCal.tempCompEnabled = tempComp.config().enabled;
-    data.gyroCal.reservedTempLearningEnabled = false;
-    data.gyroCal.referenceTempC = tempComp.referenceTempC();
-    data.gyroCal.tempSlopeRadSPerC = data.gyroCal.tempCompValid
+    const TrackerGyroCalibrationConfig previousModel = config.data.gyroCal;
+    const uint32_t previousUpdatedUptimeMs =
+        config.data.gyroCalMeta.tempModelUpdatedUptimeMs;
+    const uint32_t previousSampleCount =
+        config.data.gyroCalMeta.tempModelSampleCount;
+
+    config.data.gyroCal.biasValid = true;
+    config.data.gyroCal.biasRadS = tempComp.referenceBiasRadS();
+    config.data.gyroCal.tempCompValid = tempComp.temperatureModelValid();
+    config.data.gyroCal.tempCompEnabled = tempComp.config().enabled;
+    config.data.gyroCal.reservedTempLearningEnabled = false;
+    config.data.gyroCal.referenceTempC = tempComp.referenceTempC();
+    config.data.gyroCal.tempSlopeRadSPerC = config.data.gyroCal.tempCompValid
         ? tempComp.slopeRadSPerC()
         : Vec3::zero();
 
-    if (data.gyroCal.tempCompValid) {
+    if (config.data.gyroCal.tempCompValid) {
         const GyroTempCompConfig& tc = tempComp.config();
-        data.gyroTempQuality.tempRangeMinC = tc.calibratedTempMinC;
-        data.gyroTempQuality.tempRangeMaxC = tc.calibratedTempMaxC;
-        data.gyroTempQuality.fitQuality = tc.fitQuality;
-        data.gyroTempQuality.residualBeforeDps = tc.fitResidualBeforeDps;
-        data.gyroTempQuality.residualAfterDps = tc.fitResidualAfterDps;
-        data.gyroCalMeta.tempModelUpdatedUptimeMs = millis();
+        config.data.gyroTempQuality.tempRangeMinC = tc.calibratedTempMinC;
+        config.data.gyroTempQuality.tempRangeMaxC = tc.calibratedTempMaxC;
+        config.data.gyroTempQuality.fitQuality = tc.fitQuality;
+        config.data.gyroTempQuality.residualBeforeDps = tc.fitResidualBeforeDps;
+        config.data.gyroTempQuality.residualAfterDps = tc.fitResidualAfterDps;
+        const bool sameBias = previousModel.biasValid == config.data.gyroCal.biasValid &&
+            previousModel.biasRadS.x == config.data.gyroCal.biasRadS.x &&
+            previousModel.biasRadS.y == config.data.gyroCal.biasRadS.y &&
+            previousModel.biasRadS.z == config.data.gyroCal.biasRadS.z;
+        const bool sameTempModel = previousModel.tempCompValid == config.data.gyroCal.tempCompValid &&
+            (!config.data.gyroCal.tempCompValid ||
+             (previousModel.referenceTempC == config.data.gyroCal.referenceTempC &&
+              previousModel.tempSlopeRadSPerC.x == config.data.gyroCal.tempSlopeRadSPerC.x &&
+              previousModel.tempSlopeRadSPerC.y == config.data.gyroCal.tempSlopeRadSPerC.y &&
+              previousModel.tempSlopeRadSPerC.z == config.data.gyroCal.tempSlopeRadSPerC.z));
+        // A snapshot must not claim that an existing model was fitted again,
+        // and must not attach old evidence to an externally changed model.
+        const bool sameModel = sameBias && sameTempModel;
+        config.data.gyroCalMeta.tempModelUpdatedUptimeMs =
+            sameModel ? previousUpdatedUptimeMs : 0u;
+        config.data.gyroCalMeta.tempModelSampleCount =
+            sameModel ? previousSampleCount : 0u;
     } else {
-        data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
-        data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
-        data.gyroCalMeta.tempModelSampleCount = 0;
+        config.data.gyroTempQuality = TrackerGyroTempQualityConfigPersisted{};
+        config.data.gyroCalMeta.tempModelUpdatedUptimeMs = 0;
+        config.data.gyroCalMeta.tempModelSampleCount = 0;
     }
-    data.gyroCalMeta.tempModelVersion = tracker_config_detail::SCHEMA_GYRO_CAL_VERSION;
+    config.data.gyroCalMeta.tempModelVersion =
+        tracker_config_detail::SCHEMA_GYRO_CAL_VERSION;
+}
+
+} // namespace
+
+void TrackerConfig::captureFromGyroTempComp(const GyroTempCompensator& tempComp) {
+    captureGyroTempCompSnapshot(*this, tempComp);
+    updateCrc();
+}
+
+void TrackerConfig::captureFromGyroTempCompUpdate(const GyroTempCompensator& tempComp,
+                                                   uint32_t uptimeMs,
+                                                   uint32_t sampleCount) {
+    captureGyroTempCompSnapshot(*this, tempComp);
+    data.gyroCalMeta.tempModelUpdatedUptimeMs =
+        data.gyroCal.tempCompValid ? uptimeMs : 0u;
+    data.gyroCalMeta.tempModelSampleCount =
+        data.gyroCal.tempCompValid ? sampleCount : 0u;
     updateCrc();
 }
 

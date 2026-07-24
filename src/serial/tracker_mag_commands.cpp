@@ -31,7 +31,7 @@ bool magSaveConfigIfRequested(TrackerSerialCommandContext& ctx, bool saveRequest
         if (!saveRequested) return true;
         if (!ctx.config || !ctx.configStore) return false;
         ctx.config->updateCrc();
-        return ctx.configStore->save(*ctx.config);
+        return ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Manual);
     }
 
 bool rearmMagIfNeeded(TrackerSerialCommandContext& ctx) {
@@ -142,7 +142,7 @@ bool saveConfigIfRequested(TrackerSerialCommandContext& ctx, bool saveRequested)
         if (!saveRequested) return true;
         if (!ctx.config || !ctx.configStore) return false;
         ctx.config->updateCrc();
-        return ctx.configStore->save(*ctx.config);
+        return ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Manual);
     }
 
 void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
@@ -219,7 +219,7 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 candidate.data.magCal.driverEnabled = true;
                 candidate.sanitize();
                 candidate.updateCrc();
-                if (saveRequested && (!ctx.configStore || !ctx.configStore->save(candidate))) {
+                if (saveRequested && (!ctx.configStore || !ctx.configStore->save(candidate, TrackerCalibrationProvenance::Manual))) {
                     ok = false;
                 } else {
                     *ctx.config = candidate;
@@ -242,7 +242,7 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 candidate.data.magCal.driverEnabled = false;
                 candidate.sanitize();
                 candidate.updateCrc();
-                if (saveRequested && (!ctx.configStore || !ctx.configStore->save(candidate))) {
+                if (saveRequested && (!ctx.configStore || !ctx.configStore->save(candidate, TrackerCalibrationProvenance::Manual))) {
                     ok = false;
                 } else {
                     *ctx.config = candidate;

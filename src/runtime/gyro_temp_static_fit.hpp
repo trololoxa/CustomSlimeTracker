@@ -19,6 +19,8 @@ struct GyroTempStaticFitDeps {
     RuntimeGyroBiasEstimator* runtimeBias = nullptr;
     TrackerConfig* config = nullptr;
     TrackerConfigStore* configStore = nullptr;
+    void (*onModelApplied)(bool biasValidityChanged, void* user) = nullptr;
+    void* onModelAppliedUser = nullptr;
 };
 
 enum class GyroTempStaticFitMode : uint8_t {

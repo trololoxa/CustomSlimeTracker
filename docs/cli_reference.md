@@ -33,7 +33,7 @@ Legend:
 | `config nvs` | Inspect config store | No | Reads store metadata/status. |
 | `config defaults` | Reset active config to defaults | No | Does not erase NVS until save/erase. |
 | `config load` | Load config from NVS | Runtime | Applies loaded values to runtime where supported. |
-| `config save` | Capture supported runtime values and save | Yes | Saves calibration/output/runtime settings captured by config layer. |
+| `config save` | Save the current config plus supported non-calibration runtime policy | Yes | Does not re-snapshot or re-date calibration evidence. Calibration commands update `TrackerConfig` when a real calibration event occurs; use `cal save` to explicitly capture all current calibration runtimes. |
 | `config erase` | Erase config store | Yes | Reboot recommended. |
 | `config spi [<hz> [save]]` | Inspect or live-reconfigure SPI clock | Optional | Transactional: runtime apply and NVS save roll back to the previous clock on failure. |
 
@@ -243,6 +243,24 @@ perf status
 motion status
 slime debug
 ```
+
+
+## Calibration storage commands
+
+| Command | Effect | Persisted | Notes |
+|---|---|---:|---|
+| `config slots` / `config nvs` | Print both active slots, selector, generations, signatures, quality, boot load/degraded state, legacy/candidate state and transaction counters | No | Does not change the selected config. |
+| `config verify` | Read-only verification of the authoritative slot/selector/commit marker | No | Does not migrate, repair, apply runtime state or clear a degraded-storage write latch. Use `config load` for authoritative recovery. |
+| `config migrate` | Explicitly migrate a valid legacy `cfg` blob when no committed dual-slot generation exists | Yes | Never overwrites an existing authoritative dual-slot config; otherwise only performs stale legacy cleanup. |
+| `cal candidate status` | Print candidate metadata, signature, quality and comparison reasons | No | Reads RAM candidate first, then NVS. |
+| `cal candidate stage [manual|setup|background] [flush|force]` | Capture current runtime config/calibration as an inactive candidate | RAM; optional NVS | Does not change active tracking. |
+| `cal candidate flush [force]` | Persist the staged candidate | Yes | Normal flush obeys quality and minimum-write-interval gates. |
+| `cal candidate compare` | Compare candidate with the selected active calibration revision | RAM metadata | New v3 candidates use calibration-model-only freshness, so policy/evidence/timestamp saves do not stale them. Stored v2 candidates retain the old metadata-inclusive revision contract; legacy v1 candidates retain generation-based freshness. |
+| `cal candidate discard` | Remove candidate from RAM and NVS | Yes | Active slots are untouched; persistent discard is blocked while storage is degraded or an authoritative apply is pending. |
+| `cal candidate promote [force]` | Compose calibration fields onto current active config, apply them without IMU/FIFO restart, then select and mark the prepared slot committed | Yes | `force` bypasses quality only; signature, stale-calibration, structural and `already_promoted` checks remain mandatory. |
+
+See [calibration_storage.md](calibration_storage.md) for the power-loss and
+promotion contracts.
 
 ## Bias and tests
 

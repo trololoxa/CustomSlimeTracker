@@ -169,6 +169,21 @@ bool MagRuntimeController::setEnabled(bool enabled, bool persist) {
     candidateConfig.sanitize();
     candidateConfig.updateCrc();
 
+    const bool hardwareAlreadyMatches = enabled
+        ? (deps_.state->runtimeEnabled && deps_.state->fifoArmed)
+        : (!deps_.state->runtimeEnabled && !deps_.state->fifoArmed);
+    if (oldConfig.data.magCal.driverEnabled == enabled && hardwareAlreadyMatches) {
+        if (persist && !deps_.configStore->save(candidateConfig)) {
+            stream().print("# ERR mag no-op save failed: ");
+            stream().println(deps_.configStore->lastErrorName());
+            return false;
+        }
+        *deps_.config = candidateConfig;
+        stream().print("# OK QMC6309 runtime already ");
+        stream().println(enabled ? "enabled" : "disabled");
+        return true;
+    }
+
     // Reconfigure hardware while the active config still describes the old
     // state.  The helper takes the target explicitly, so a failed transition
     // cannot leave RAM claiming that the magnetometer was enabled.
@@ -327,11 +342,23 @@ bool MagRuntimeController::setYawCorrectionApplyEnabled(bool enabled, bool persi
         return false;
     }
 
+    if (enabled && (!deps_.config->data.accelCal.valid ||
+                    !deps_.config->data.magCal.calibrationValid ||
+                    !deps_.config->data.magCal.axisAlignmentValid)) {
+        stream().println("# ERR mag yaw correction requires valid accel, field and axis calibration");
+        return false;
+    }
+
     TrackerConfig candidateConfig = *deps_.config;
     candidateConfig.data.magYaw.applyEnabled = enabled;
     candidateConfig.sanitize();
     candidateConfig.updateCrc();
+    if (candidateConfig.data.magYaw.applyEnabled != enabled) {
+        stream().println("# ERR mag yaw correction request was rejected by config invariants");
+        return false;
+    }
 
+    const bool changed = deps_.config->data.magYaw.applyEnabled != enabled;
     if (persist && !deps_.configStore->save(candidateConfig)) {
         stream().print("# ERR mag yaw correction save failed: ");
         stream().println(deps_.configStore->lastErrorName());
@@ -339,10 +366,10 @@ bool MagRuntimeController::setYawCorrectionApplyEnabled(bool enabled, bool persi
     }
 
     *deps_.config = candidateConfig;
-    resetYawCorrectionRuntime();
+    if (changed) resetYawCorrectionRuntime();
 
     stream().print("# OK mag yaw correction apply=");
-    stream().println(enabled ? "enabled" : "disabled");
+    stream().println(candidateConfig.data.magYaw.applyEnabled ? "enabled" : "disabled");
     return true;
 }
 
@@ -389,6 +416,7 @@ bool MagRuntimeController::applyCalibration(bool persist) {
         return false;
     }
 
+    const TrackerMagCalibrationConfig oldMagCal = deps_.config->data.magCal;
     TrackerConfig candidateConfig = *deps_.config;
     candidateConfig.captureFromMagCalibrationResult(
         result,
@@ -401,7 +429,34 @@ bool MagRuntimeController::applyCalibration(bool persist) {
         millis()
     );
 
-    if (persist && !deps_.configStore->save(candidateConfig)) {
+    bool fieldModelChanged =
+        oldMagCal.calibrationValid != candidateConfig.data.magCal.calibrationValid ||
+        oldMagCal.expectedFieldNorm != candidateConfig.data.magCal.expectedFieldNorm ||
+        oldMagCal.minTrustNorm != candidateConfig.data.magCal.minTrustNorm ||
+        oldMagCal.maxTrustNorm != candidateConfig.data.magCal.maxTrustNorm;
+    fieldModelChanged = fieldModelChanged ||
+        oldMagCal.hardIron.x != candidateConfig.data.magCal.hardIron.x ||
+        oldMagCal.hardIron.y != candidateConfig.data.magCal.hardIron.y ||
+        oldMagCal.hardIron.z != candidateConfig.data.magCal.hardIron.z;
+    for (uint8_t row = 0; row < 3 && !fieldModelChanged; ++row) {
+        for (uint8_t col = 0; col < 3; ++col) {
+            if (oldMagCal.softIron.m[row][col] != candidateConfig.data.magCal.softIron.m[row][col]) {
+                fieldModelChanged = true;
+                break;
+            }
+        }
+    }
+    if (fieldModelChanged) {
+        // Hard/soft-iron changes alter calibrated vector directions. A previous
+        // mag-to-IMU solution is no longer proven compatible.
+        candidateConfig.data.magCal.magToImu = Mat3::identity();
+        candidateConfig.data.magCal.axisAlignmentValid = false;
+        candidateConfig.data.magYaw.applyEnabled = false;
+        candidateConfig.sanitize();
+        candidateConfig.updateCrc();
+    }
+
+    if (persist && !deps_.configStore->save(candidateConfig, TrackerCalibrationProvenance::Manual)) {
         stream().print("# ERR mag calibration save failed: ");
         stream().println(deps_.configStore->lastErrorName());
         return false;

@@ -228,6 +228,80 @@ static void testOversizedTemperatureSlopeIsInvalidated(TestContext& ctx) {
     CHECK(ctx, !comp.temperatureModelValid());
 }
 
+static void testSanitizeClearsEvidenceForMissingModels(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+
+    cfg.data.gyroCal.biasValid = false;
+    cfg.data.gyroCal.biasRadS = Vec3(1.0f, 2.0f, 3.0f);
+    cfg.data.gyroCalMeta.biasCalibrationUptimeMs = 123u;
+    cfg.data.gyroCal.tempCompValid = false;
+    cfg.data.gyroCal.tempCompEnabled = false;
+    cfg.data.gyroCal.tempSlopeRadSPerC = Vec3(0.1f, 0.2f, 0.3f);
+    cfg.data.gyroTempQuality.fitQuality = 0.9f;
+    cfg.data.gyroCalMeta.tempModelUpdatedUptimeMs = 456u;
+    cfg.data.gyroCalMeta.tempModelSampleCount = 789u;
+
+    cfg.data.accelCal.valid = false;
+    cfg.data.accelCal.biasG = Vec3(1.0f, 2.0f, 3.0f);
+    cfg.data.accelCalQuality.calibrationUptimeMs = 10u;
+    cfg.data.accelCalQuality.qualityScore = 0.8f;
+
+    cfg.data.magCal.driverEnabled = true;
+    cfg.data.magCal.calibrationValid = false;
+    cfg.data.magCal.hardIron = Vec3(4.0f, 5.0f, 6.0f);
+    cfg.data.magCal.minTrustNorm = 0.9f;
+    cfg.data.magCalQuality.coverageScore = 0.7f;
+    cfg.data.magCal.axisAlignmentValid = false;
+    cfg.data.magCal.magToImu = Mat3::diagonal(-1.0f, 1.0f, -1.0f);
+
+    cfg.data.frame.sensorToDeviceValid = false;
+    cfg.data.frame.sensorToDevice = Mat3::diagonal(-1.0f, -1.0f, 1.0f);
+
+    cfg.sanitize();
+
+    CHECK(ctx, !cfg.data.gyroCal.biasValid);
+    CHECK_NEAR(ctx, cfg.data.gyroCal.biasRadS.norm(), 0.0f, 1.0e-9f);
+    CHECK(ctx, cfg.data.gyroCalMeta.biasCalibrationUptimeMs == 0u);
+    CHECK(ctx, !cfg.data.gyroCal.tempCompValid);
+    CHECK(ctx, !cfg.data.gyroCal.tempCompEnabled);
+    CHECK_NEAR(ctx, cfg.data.gyroCal.tempSlopeRadSPerC.norm(), 0.0f, 1.0e-9f);
+    CHECK_NEAR(ctx, cfg.data.gyroTempQuality.fitQuality, 0.0f, 1.0e-9f);
+    CHECK(ctx, cfg.data.gyroCalMeta.tempModelUpdatedUptimeMs == 0u);
+    CHECK(ctx, cfg.data.gyroCalMeta.tempModelSampleCount == 0u);
+
+    CHECK(ctx, !cfg.data.accelCal.valid);
+    CHECK_NEAR(ctx, cfg.data.accelCal.biasG.norm(), 0.0f, 1.0e-9f);
+    CHECK(ctx, cfg.data.accelCalQuality.calibrationUptimeMs == 0u);
+    CHECK_NEAR(ctx, cfg.data.accelCalQuality.qualityScore, 0.0f, 1.0e-9f);
+
+    CHECK(ctx, cfg.data.magCal.driverEnabled);
+    CHECK(ctx, !cfg.data.magCal.calibrationValid);
+    CHECK_NEAR(ctx, cfg.data.magCal.hardIron.norm(), 0.0f, 1.0e-9f);
+    CHECK_NEAR(ctx, cfg.data.magCal.minTrustNorm, 0.25f, 1.0e-6f);
+    CHECK_NEAR(ctx, cfg.data.magCalQuality.coverageScore, 0.0f, 1.0e-9f);
+    CHECK(ctx, !cfg.data.magCal.axisAlignmentValid);
+    CHECK_NEAR(ctx, cfg.data.magCal.magToImu.determinant(), 1.0f, 1.0e-6f);
+    CHECK(ctx, !cfg.data.frame.sensorToDeviceValid);
+    CHECK_NEAR(ctx, cfg.data.frame.sensorToDevice.determinant(), 1.0f, 1.0e-6f);
+}
+
+static void testFullCalibrationClearAlsoClearsFrame(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+    cfg.data.frame.sensorToDeviceValid = true;
+    cfg.data.frame.sensorToDevice = Mat3::diagonal(-1.0f, -1.0f, 1.0f);
+    cfg.data.gyroCal.tempCompEnabled = false;
+    cfg.data.magCal.driverEnabled = true;
+
+    cfg.clearAllCalibrationPreservingPolicy();
+
+    CHECK(ctx, !cfg.data.frame.sensorToDeviceValid);
+    CHECK_NEAR(ctx, cfg.data.frame.sensorToDevice.determinant(), 1.0f, 1.0e-6f);
+    CHECK(ctx, !cfg.data.gyroCal.tempCompEnabled);
+    CHECK(ctx, cfg.data.magCal.driverEnabled);
+}
+
 int main() {
     TestContext ctx;
     testDefaultRuntimeConfigValidates(ctx);
@@ -238,5 +312,7 @@ int main() {
     testSanitizeNeutralizesCompatibilityReservedFields(ctx);
     testPerformanceDefaultMigrationPreservesCurrentSettings(ctx);
     testOversizedTemperatureSlopeIsInvalidated(ctx);
+    testSanitizeClearsEvidenceForMissingModels(ctx);
+    testFullCalibrationClearAlsoClearsFrame(ctx);
     return ctx.finish("test_config_hardening");
 }

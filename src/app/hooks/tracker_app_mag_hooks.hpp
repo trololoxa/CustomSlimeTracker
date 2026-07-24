@@ -207,7 +207,12 @@ static const char* trackingStateName() {
 
 static bool setMagRuntimeEnabledHook(bool enabled, bool persist, void* user) {
     (void)user;
-    return g_magRuntime.setEnabled(enabled, persist);
+    const bool advertisedBefore = g_config.data.magCal.driverEnabled;
+    const bool ok = g_magRuntime.setEnabled(enabled, persist);
+    if (ok && advertisedBefore != g_config.data.magCal.driverEnabled) {
+        g_slimevrRuntime.requestSensorInfoRefresh();
+    }
+    return ok;
 }
 
 static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {

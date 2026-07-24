@@ -159,12 +159,22 @@ tracking_recovery_bootstrap_bypass_delta=0
 tracking_recovery_reconfigure_delta=0
 ```
 
-## Pre-0020 audit hardening
+## Pre-0020 and calibration-storage hardening
 
-The pre-0020 audit keeps the single-slot storage format (dual-slot storage remains patch 0021), but closes current correctness gaps before session work begins:
+The pre-0020 audit closed transactional runtime/config defects while retaining the
+legacy single blob. Patch 0021 and its corrective hotfixes then replaced that blob
+with the dual-slot/candidate framework:
 
 - config and network NVS saves now return the exact sanitized bytes to the live mirror only after a successful write; failed writes leave active state unchanged;
 - CLI commands with an explicit `save` use candidate/save/commit ordering, while commands without `save` remain intentional RAM-only changes;
+- core calibration/config persistence uses dual active slots with generation, read-back verification, a CRC-protected selector and storage-v2 per-slot commit markers;
+- valid legacy `tracker/cfg` data migrates automatically without deleting the old blob before the new selected slot verifies;
+- calibration candidates have separate storage, quality/coverage/provenance metadata, sensor signatures, calibration-revision freshness gates, wear gates and two-phase runtime/selector/commit-marker promotion;
+- candidate promotion composes calibration-owned fields onto the current active config, preserves measured quality, and does not restart IMU/FIFO hardware;
+- aborted prepared slots are restored from the previous active record, and newer uncommitted slots cannot become fallback;
+- boot distinguishes an empty store from degraded NVS/read/allocation errors instead of silently presenting both as a clean defaults boot;
+- genuinely empty NVS is distinguished from present-but-corrupt active storage; transient boot read errors latch active/candidate writes until the authoritative config has also been applied successfully to hardware/runtime;
+- no-op config saves do not write flash, increment generation or invalidate an unrelated calibration candidate; legacy v1 slots/candidates remain readable and upgrade without NVS erase;
 - `config load` and `config defaults` apply LSM6DSV/FIFO hardware transactionally and roll back on reconfiguration failure;
 - temperature-model replacement/reset also resets the volatile residual gyro trim, and the final persisted slope is bounded at every entry point, including boot-time config application;
 - FIFO startup fallback timestamps anchor to the real drain time, and completed-sample queue loss has its own counter and recovery reason instead of being misreported as waiting-for-timestamp overflow;
@@ -197,3 +207,36 @@ The guided calibration command services FIFO, magnetometer runtime, Wi-Fi and Sl
 Battery ADC runtime reads the RC1 divider `BAT+ -> R_TOP -> GPIO -> R_BOTTOM -> GND` with defaults `GPIO4`, `R_TOP=180 kΩ`, and `R_BOTTOM=180 kΩ`. GPIO4 is ESP32-C3 ADC1_CH4, the supported ADC path for battery telemetry. The divider is high impedance and has no hardware capacitor, so the runtime samples sparsely (`TRACKER_BATTERY_ADC_SAMPLE_INTERVAL_MS`, default 10000 ms in Debug and 30000 ms in Production), takes a larger ADC burst (`TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT`, default 64), discards the first settle reads (`TRACKER_BATTERY_ADC_DISCARD_COUNT`, default 4), sorts the remaining burst, averages the trimmed center, maps 3.30-4.20 V to 0-100%, applies a slow EMA (`TRACKER_BATTERY_ADC_EMA_ALPHA`, default 0.12), and rejects impossible voltage steps. It reports safe 0.000 V / 0.0% when the divider is absent, below the present threshold, invalid, or unreadable. It also rejects BAT+ values above `TRACKER_BATTERY_PRESENT_MAX_VOLTAGE` (default 4.35 V) and preserves the previous filtered estimate on one-off low/high ADC glitches. CLI/status percentages are 0-100%, while SlimeVR BatteryLevel telemetry is converted to the protocol's 0.0-1.0 fraction at send time. The value is exposed through `battery status`, `GET INFO`, `slime status`, and periodic SlimeVR BatteryLevel telemetry.
 
 The firmware now exposes SlimeVR Server serial-compatibility commands for initial provisioning: `SET WIFI`, `SET BWIFI`, `GET INFO`, `GET CONFIG`, `GET TEST`, `GET WIFISCAN`, `REBOOT`, `FRST`, `DELCAL`, and temperature-only `TCAL`. `SET WIFI`/`SET BWIFI` save credentials into the separate network NVS config, enable Wi-Fi/discovery, and restart SlimeVR discovery. Blocking Wi-Fi scans suppress expected FIFO-recovery console noise for a short grace window without disabling recovery, counters, or machine-log events. They are still tracking interruptions: gyro motion during the scan is not reconstructable, but FIFO/AHRS recovery must resume integration afterwards. `ahrs status` exposes `large_dt_rebase_count`, `fifo_rebase_count`, `last_rebase_t_us`, and `post_fifo_recovery_samples` for post-scan diagnostics. FIFO timestamp resets also clear the magnetometer sensor-hub timestamp baseline so mag samples restart from the new IMU stream. `TCAL SAVE` is intentionally scoped to gyro temperature compensation so host-side temperature-calibration commands cannot accidentally capture unrelated runtime output/accel state. `TCAL RESET` changes only the in-RAM temperature model, resets the RAM-only residual gyro trim learned against the previous model, and does not mutate the persistent config object unless a later explicit `TCAL SAVE` is requested.
+
+- 0021d separates configuration persistence, calibration snapshots and calibration events; keeps no-op saves/provenance stable; scopes component saves; uses v3 model-only candidate freshness with v1/v2 compatibility; guards unsaved runtime calibration; resets dependent adaptive state on load/promotion/clear; and refreshes SensorInfo when advertised calibration or sensor capability changes.
+
+
+## 0021e calibration epoch and field-ownership hardening
+
+0021e finishes the patch-21 integration audit without changing the persisted blob
+layout. Calibration models, their evidence, runtime policy and unfinished capture
+workspaces now have explicit owners and epoch boundaries:
+
+- invalid gyro, temperature, accel, magnetic and frame models sanitize to canonical
+  fail-honest values and clear only their own evidence; independent enable policy is
+  preserved;
+- a disabled `sensorToDevice` frame is logically identity and dormant matrix bytes no
+  longer create false sensor-signature mismatches;
+- candidate promotion is rejected when the live unsaved ODR/full-scale/FIFO/frame
+  contract differs from the active signature, because calibration-only promotion does
+  not reconfigure hardware;
+- full config apply, promotion, setup commit/rollback and full calibration erase clear
+  incompatible accel, gyro-temperature and magnetic collection workspaces;
+- real gyro/temperature correction changes start a new AHRS/runtime-bias epoch, while
+  no-op toggles do not disturb tracking;
+- guided accel+frame calibration keeps acceleration unavailable until both new models
+  are valid, and guided production policy is applied to live AHRS/quality state before
+  readiness and persistence;
+- manual hard/soft-iron replacement invalidates the previous mag-to-IMU alignment and
+  magnetic-yaw apply state; candidate promotion remains atomic because it transfers the
+  field and axis models together;
+- `cal clear_all` and `ERASE CALIBRATION` also clear the device frame, and persistent
+  erase discards any staged candidate that could otherwise resurrect the old model.
+
+Compact and detailed status now report `sensor_to_device_valid` and
+`motion_frame_config_ready` separately from `accel_cal_valid`.

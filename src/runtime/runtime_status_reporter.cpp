@@ -84,7 +84,11 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
         : 0.0f;
     out.print("runtime_bias_trim_norm_dps="); out.println(runtimeTrimNormDps, 8);
 
-    out.print("accel_cal_valid="); out.println(deps.imuCal && deps.imuCal->accelCalValid ? "yes" : "no");
+    const bool accelCalValid = deps.imuCal && deps.imuCal->accelCalValid;
+    const bool frameValid = deps.config && deps.config->data.frame.sensorToDeviceValid;
+    out.print("accel_cal_valid="); out.println(accelCalValid ? "yes" : "no");
+    out.print("sensor_to_device_valid="); out.println(frameValid ? "yes" : "no");
+    out.print("motion_frame_config_ready="); out.println(accelCalValid && frameValid ? "yes" : "no");
     out.print("tracking_state="); out.println(deps.trackingStateName ? deps.trackingStateName : "UNKNOWN");
     if (deps.trackingState != nullptr) {
         deps.trackingState->printRecoveryStatus(out);

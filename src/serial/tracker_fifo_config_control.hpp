@@ -13,7 +13,7 @@ namespace tracker {
 // calibration/AHRS state should be applied by the caller only after success.
 bool trackerSerialCommitFullHardwareConfig(TrackerSerialCommandContext& ctx,
                                            Stream& out,
-                                           TrackerConfig candidate);
+                                           const TrackerConfig& candidate);
 
 void trackerSerialPrintFifoTuning(Stream& out, const TrackerSerialCommandContext& ctx);
 

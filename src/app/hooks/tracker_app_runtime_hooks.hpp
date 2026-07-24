@@ -44,6 +44,21 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
 }
 
 #if TRACKER_HAS_GYRO_TEMP_FIT
+static void gyroTempFitModelAppliedHook(bool biasValidityChanged, void* user) {
+    (void)user;
+#if TRACKER_HAS_CALIBRATION_UI
+    g_gyroTempCapture.reset();
+#endif
+    runtimeBiasReset(g_runtimeBias);
+#if TRACKER_HAS_SERIAL_CLI
+    hookResetAhrsRuntime(nullptr);
+#else
+    g_ahrs6dof.reset();
+    g_preparedOutput.reset();
+#endif
+    if (biasValidityChanged) g_slimevrRuntime.requestSensorInfoRefresh();
+}
+
 static GyroTempStaticFitDeps makeGyroTempStaticFitDeps() {
     GyroTempStaticFitDeps deps;
 #if TRACKER_HAS_STATIC_TEST_STATE
@@ -55,6 +70,8 @@ static GyroTempStaticFitDeps makeGyroTempStaticFitDeps() {
     deps.runtimeBias = &g_runtimeBias;
     deps.config = &g_config;
     deps.configStore = &g_configStore;
+    deps.onModelApplied = gyroTempFitModelAppliedHook;
+    deps.onModelAppliedUser = nullptr;
     return deps;
 }
 

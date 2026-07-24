@@ -35,7 +35,7 @@ def main() -> int:
     require(runtime, "resolveHost(manualServerHost_", "manual server resolver")
     require(runtime, "remote != manualServerEndpoint_", "manual endpoint exclusivity")
     require(hooks, "cfg.manualServerHost = g_networkConfig.data.serverHost;", "manual host wiring")
-    require(version, '"c3-6dsv-session-complete-boot-clean"', "boot-clean build identity")
+    require(version, '"c3-6dsv-calibration-epoch-field-safe"', "session-complete successor build identity")
 
     startup = app[app.index("bool TrackerApp::setupSensorRuntime"):
                   app.index("void TrackerApp::enterFatalDegraded")]

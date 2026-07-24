@@ -8,6 +8,9 @@
 #include "serial/tracker_serial_print.hpp"
 #include "defines.h"
 
+#include <memory>
+#include <new>
+
 #if TRACKER_ENABLE_MAG_COMMANDS
 #include "serial/tracker_mag_commands.hpp"
 #endif
@@ -33,7 +36,7 @@ bool validateSaveArg(int argc, char** argv, int index, bool& save, Stream& out) 
 
 bool persistCandidate(TrackerSerialCommandContext& ctx,
                       Stream& out,
-                      TrackerConfig candidate) {
+                      TrackerConfig& candidate) {
     if (!ctx.configStore) {
         tracker_serial_detail::printErr(out, "config store not available");
         return false;
@@ -48,7 +51,7 @@ bool persistCandidate(TrackerSerialCommandContext& ctx,
 
 bool restorePersistedPrevious(TrackerSerialCommandContext& ctx,
                               Stream& out,
-                              TrackerConfig previous) {
+                              TrackerConfig& previous) {
     if (!ctx.configStore) return false;
     if (ctx.configStore->save(previous)) {
         out.println("# WARN previous config restored in NVS");
@@ -128,29 +131,41 @@ bool rollbackImuFifo(TrackerSerialCommandContext& ctx,
     return true;
 }
 
+struct ImuFifoTransactionScratch {
+    TrackerConfig candidate;
+    TrackerConfig previous;
+};
+
 bool commitImuFifoCandidate(TrackerSerialCommandContext& ctx,
                             Stream& out,
-                            TrackerConfig candidate,
+                            const TrackerConfig& candidateInput,
                             bool save,
                             bool rebeginImu) {
     if (!ctx.config) {
         tracker_serial_detail::printErr(out, "config not available");
         return false;
     }
-
-    candidate.sanitize();
-    candidate.updateCrc();
-    const TrackerConfig previous = *ctx.config;
-    *ctx.config = candidate;
+    std::unique_ptr<ImuFifoTransactionScratch> scratch(
+        new (std::nothrow) ImuFifoTransactionScratch{}
+    );
+    if (!scratch) {
+        tracker_serial_detail::printErr(out, "out of memory for config transaction");
+        return false;
+    }
+    scratch->candidate = candidateInput;
+    scratch->candidate.sanitize();
+    scratch->candidate.updateCrc();
+    scratch->previous = *ctx.config;
+    *ctx.config = scratch->candidate;
 
     if (!applyImuFifoHardware(ctx, out, rebeginImu, true)) {
-        (void)rollbackImuFifo(ctx, out, previous, rebeginImu);
+        (void)rollbackImuFifo(ctx, out, scratch->previous, rebeginImu);
         return false;
     }
 
     if (save && !persistCandidate(ctx, out, *ctx.config)) {
-        (void)rollbackImuFifo(ctx, out, previous, rebeginImu);
-        (void)restorePersistedPrevious(ctx, out, previous);
+        (void)rollbackImuFifo(ctx, out, scratch->previous, rebeginImu);
+        (void)restorePersistedPrevious(ctx, out, scratch->previous);
         return false;
     }
     return true;
@@ -160,7 +175,7 @@ bool commitImuFifoCandidate(TrackerSerialCommandContext& ctx,
 
 bool trackerSerialCommitFullHardwareConfig(TrackerSerialCommandContext& ctx,
                                            Stream& out,
-                                           TrackerConfig candidate) {
+                                           const TrackerConfig& candidate) {
     return commitImuFifoCandidate(ctx, out, candidate, false, true);
 }
 
@@ -191,7 +206,7 @@ bool trackerSerialCommitSpiFrequency(TrackerSerialCommandContext& ctx,
         return false;
     }
 
-    const TrackerConfig previous = *ctx.config;
+    TrackerConfig previous = *ctx.config;
     TrackerConfig candidate = previous;
     candidate.data.hardware.spiHz = hz;
     candidate.sanitize();

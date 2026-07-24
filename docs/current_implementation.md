@@ -88,9 +88,27 @@ Runtime calibration currently includes:
 - a separate magnetometer-to-IMU axis-alignment matrix;
 - conservative yaw-only magnetic correction with trust and cooldown gates.
 
-`setup calibration` is the user-facing transactional procedure. It keeps the
-previous active calibration until the complete candidate passes and is saved.
+`setup calibration` is the user-facing transactional procedure. Core config now
+uses CRC-protected dual active slots, a selector and storage-v2 per-slot commit
+markers, so the previous generation remains available after torn writes. A
+separate signed/quality-tagged candidate is bound to the active calibration
+revision, can survive unrelated config saves, and can be atomically promoted
+without changing tracking before selector commit.
 Low-level `cal ...` and `mag ...` commands remain service/developer interfaces.
+
+
+## Calibration storage safety
+
+The old single `tracker/cfg` blob is migration-only. Active config is stored in
+two complete slots plus a CRC-protected selector and per-slot commit markers.
+Every save invalidates the target marker, writes and verifies the inactive slot,
+commits the selector, then writes the new marker. Boot falls back only to a slot
+with commit authority. Present-but-corrupt storage is distinguished from empty
+NVS, and a boot read error latches persistent writes off until an authoritative
+config is successfully applied to hardware/runtime. Candidate calibration is
+stored separately, bound to IMU/mag/ODR/full-scale/frame/schema signature and the
+active calibration revision, and remains inactive until explicit two-phase
+promotion succeeds. No-op saves skip flash and generation changes.
 
 ## Build/profile behavior
 
@@ -249,3 +267,36 @@ A documentation/profile/tooling patch requires no tracker runtime test. A patch
 that changes one hardware boundary should normally request one short focused
 serial/telnet smoke test after all host checks pass, not a collection of long
 ideal-condition captures.
+
+- 0021d separates configuration persistence, calibration snapshots and calibration events; keeps no-op saves/provenance stable; scopes component saves; uses v3 model-only candidate freshness with v1/v2 compatibility; guards unsaved runtime calibration; resets dependent adaptive state on load/promotion/clear; and refreshes SensorInfo when advertised calibration or sensor capability changes.
+
+
+## 0021e calibration epoch and field-ownership hardening
+
+0021e finishes the patch-21 integration audit without changing the persisted blob
+layout. Calibration models, their evidence, runtime policy and unfinished capture
+workspaces now have explicit owners and epoch boundaries:
+
+- invalid gyro, temperature, accel, magnetic and frame models sanitize to canonical
+  fail-honest values and clear only their own evidence; independent enable policy is
+  preserved;
+- a disabled `sensorToDevice` frame is logically identity and dormant matrix bytes no
+  longer create false sensor-signature mismatches;
+- candidate promotion is rejected when the live unsaved ODR/full-scale/FIFO/frame
+  contract differs from the active signature, because calibration-only promotion does
+  not reconfigure hardware;
+- full config apply, promotion, setup commit/rollback and full calibration erase clear
+  incompatible accel, gyro-temperature and magnetic collection workspaces;
+- real gyro/temperature correction changes start a new AHRS/runtime-bias epoch, while
+  no-op toggles do not disturb tracking;
+- guided accel+frame calibration keeps acceleration unavailable until both new models
+  are valid, and guided production policy is applied to live AHRS/quality state before
+  readiness and persistence;
+- manual hard/soft-iron replacement invalidates the previous mag-to-IMU alignment and
+  magnetic-yaw apply state; candidate promotion remains atomic because it transfers the
+  field and axis models together;
+- `cal clear_all` and `ERASE CALIBRATION` also clear the device frame, and persistent
+  erase discards any staged candidate that could otherwise resurrect the old model.
+
+Compact and detailed status now report `sensor_to_device_valid` and
+`motion_frame_config_ready` separately from `accel_cal_valid`.
