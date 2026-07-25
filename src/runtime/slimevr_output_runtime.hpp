@@ -293,6 +293,9 @@ public:
     bool serverFound() const { return serverFound_; }
     SlimeVROutputState state() const { return state_; }
     SlimeVROutputRuntimeStatus status() const;
+    // Returns true only when a live rotation deadline is armed.  outSlackMs is
+    // zero when already due/late and otherwise the wrap-safe time remaining.
+    bool rotationDeadlineSlackMs(uint32_t nowMs, uint32_t& outSlackMs) const;
 
 private:
     void transitionTo(SlimeVROutputState state, uint32_t nowMs);

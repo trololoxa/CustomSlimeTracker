@@ -10,6 +10,8 @@ void MagYawCorrectionController::reset() {
     lastUpdateMs_ = 0;
     cooldownUntilMs_ = 0;
     cooldownReasonFlags_ = MAG_YAW_REJECT_NONE;
+    reacquiring_ = false;
+    reacquireCandidateSinceMs_ = 0;
 }
 
 const MagYawCorrectionOutput& MagYawCorrectionController::last() const {
@@ -35,45 +37,24 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,
     out.horizontalNorm = in.heading.horizontalNorm;
     out.gyroNormDps = in.gyroNormDps;
     out.accelTrust = in.accelTrust;
+    out.fieldStableMs = in.fieldStableMs;
+    out.magneticHeadingRateDegS = in.magneticHeadingRateDegS;
     out.magSeq = in.mag.seq;
     out.magTimestampUs = in.mag.t_us;
 
     expireCooldownIfNeeded(in.nowMs);
-
-    if (stats_.updates > 0) {
-        // Unsigned subtraction is intentionally wrap-safe across millis().
-        out.dtMs = in.nowMs - lastUpdateMs_;
-    } else {
-        out.dtMs = 0;
-    }
+    out.dtMs = stats_.updates > 0 ? in.nowMs - lastUpdateMs_ : 0u;
     lastUpdateMs_ = in.nowMs;
-
     stats_.updates++;
 
-    if (!cfg.enabled) {
-        addReject(out, MAG_YAW_REJECT_DISABLED);
-    }
-
-    if (!in.referenceValid) {
-        addReject(out, MAG_YAW_REJECT_NO_REFERENCE);
-    }
-
-    if (!in.heading.valid) {
-        addReject(out, MAG_YAW_REJECT_HEADING_INVALID);
-    }
-
-    if (!in.magTrustedForUse) {
-        addReject(out, MAG_YAW_REJECT_MAG_NOT_TRUSTED);
-    }
-
-    if (in.magRejectFlagsForUse & MAG_REJECT_STALE) {
-        addReject(out, MAG_YAW_REJECT_MAG_STALE);
-    }
+    if (!cfg.enabled) addReject(out, MAG_YAW_REJECT_DISABLED);
+    if (!in.referenceValid) addReject(out, MAG_YAW_REJECT_NO_REFERENCE);
+    if (!in.heading.valid) addReject(out, MAG_YAW_REJECT_HEADING_INVALID);
+    if (!in.magTrustedForUse || !in.fieldReliable) addReject(out, MAG_YAW_REJECT_MAG_NOT_TRUSTED);
+    if (in.magRejectFlagsForUse & MAG_REJECT_STALE) addReject(out, MAG_YAW_REJECT_MAG_STALE);
 
     out.magAgeMs = MagRuntimeProcessor::ageMsForUse(in.mag, in.nowMs);
-    if (out.magAgeMs > cfg.maxMagAgeMs) {
-        addReject(out, MAG_YAW_REJECT_MAG_STALE);
-    }
+    if (out.magAgeMs > cfg.maxMagAgeMs) addReject(out, MAG_YAW_REJECT_MAG_STALE);
 
     out.horizontalTrust = rampUp(in.heading.horizontalNorm,
                                  cfg.horizontalNormBad,
@@ -96,42 +77,68 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,
         addReject(out, MAG_YAW_REJECT_ACCEL_NOT_TRUSTED);
     }
 
+    bool innovationLarge = false;
+    bool reacquireEligible = false;
     if (in.referenceValid && in.heading.valid) {
         out.errorRad = wrapPi(in.heading.magneticNorthWorldYawRad - in.referenceWorldYawRad);
         out.errorDeg = out.errorRad * MATH_RAD_TO_DEG;
-
         const float absErr = std::fabs(out.errorDeg);
         stats_.lastAbsErrorDeg = absErr;
-        if (stats_.errorSamples == 0 || absErr > stats_.maxAbsErrorDeg) {
-            stats_.maxAbsErrorDeg = absErr;
-        }
+        if (stats_.errorSamples == 0 || absErr > stats_.maxAbsErrorDeg) stats_.maxAbsErrorDeg = absErr;
         stats_.sumAbsErrorDeg += static_cast<double>(absErr);
         stats_.errorSamples++;
 
         if (!tracker::isFinite(out.errorRad) || !tracker::isFinite(out.errorDeg)) {
             addReject(out, MAG_YAW_REJECT_NONFINITE);
-        }
-
-        if (absErr > cfg.maxInnovationDeg) {
-            addReject(out, MAG_YAW_REJECT_INNOVATION_TOO_LARGE);
+        } else if (absErr > cfg.maxInnovationDeg) {
+            innovationLarge = true;
+            const bool withinReacquireRange = absErr <= cfg.reacquireInnovationMaxDeg;
+            const bool reacquireConditions = in.fieldReliable &&
+                std::fabs(in.magneticHeadingRateDegS) <= cfg.reacquireMaxHeadingRateDegS &&
+                in.gyroNormDps <= cfg.gyroNormGoodDps &&
+                in.accelTrust >= cfg.accelTrustGood;
+            if (reacquireConditions && withinReacquireRange) {
+                if (reacquireCandidateSinceMs_ == 0u) reacquireCandidateSinceMs_ = in.nowMs;
+            } else {
+                reacquireCandidateSinceMs_ = 0u;
+            }
+            const uint32_t localStableMs = reacquireCandidateSinceMs_ == 0u
+                ? 0u : in.nowMs - reacquireCandidateSinceMs_;
+            const bool fieldStable = in.fieldStableMs >= cfg.reacquireMinFieldStableMs &&
+                                     localStableMs >= cfg.reacquireMinFieldStableMs;
+            reacquireEligible = cfg.reacquisitionEnabled && withinReacquireRange && fieldStable;
+            if (reacquireEligible) {
+                out.mode = MagYawCorrectionMode::Reacquiring;
+                out.reacquireActive = true;
+                if (!reacquiring_) stats_.reacquireGateOpenCount++;
+                reacquiring_ = true;
+            } else if (cfg.reacquisitionEnabled && withinReacquireRange && in.fieldReliable) {
+                reacquiring_ = false;
+                out.reacquirePending = true;
+                addReject(out, MAG_YAW_REJECT_REACQUIRE_PENDING);
+            } else {
+                reacquiring_ = false;
+                addReject(out, MAG_YAW_REJECT_INNOVATION_TOO_LARGE);
+            }
+        } else {
+            reacquireCandidateSinceMs_ = 0u;
+            if (reacquiring_) {
+                reacquiring_ = false;
+                stats_.reacquireCompletedCount++;
+            }
         }
     }
 
     const uint32_t instantRejectFlags = out.rejectFlags;
-
     if (instantRejectFlags & MAG_YAW_REJECT_GYRO_MOVING) {
         requestCooldown(in.nowMs, cfg.gyroMovingCooldownMs, instantRejectFlags);
     }
-
     if (instantRejectFlags & MAG_YAW_REJECT_ACCEL_NOT_TRUSTED) {
         requestCooldown(in.nowMs, cfg.accelBadCooldownMs, instantRejectFlags);
     }
-
-    if (instantRejectFlags & (
-            MAG_YAW_REJECT_HEADING_INVALID |
-            MAG_YAW_REJECT_MAG_NOT_TRUSTED |
-            MAG_YAW_REJECT_HORIZONTAL_BAD |
-            MAG_YAW_REJECT_INNOVATION_TOO_LARGE)) {
+    if (instantRejectFlags & (MAG_YAW_REJECT_HEADING_INVALID |
+                              MAG_YAW_REJECT_MAG_NOT_TRUSTED |
+                              MAG_YAW_REJECT_HORIZONTAL_BAD)) {
         requestCooldown(in.nowMs, cfg.magDisturbanceCooldownMs, instantRejectFlags);
     }
 
@@ -143,35 +150,34 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,
     }
 
     float dtS = static_cast<float>(out.dtMs) * 0.001f;
-    if (dtS <= 0.0f || dtS > 1.0f || !tracker::isFinite(dtS)) {
-        dtS = cfg.fallbackDtS;
-    }
-
-    if (dtS <= 0.0f || !tracker::isFinite(dtS)) {
-        addReject(out, MAG_YAW_REJECT_DT_INVALID);
-    }
+    if (dtS <= 0.0f || dtS > 1.0f || !tracker::isFinite(dtS)) dtS = cfg.fallbackDtS;
+    if (dtS <= 0.0f || !tracker::isFinite(dtS)) addReject(out, MAG_YAW_REJECT_DT_INVALID);
 
     out.combinedTrust = out.horizontalTrust * out.gyroTrust;
-    if (cfg.requireAccelTrusted) {
-        out.combinedTrust *= out.accelGateTrust;
-    }
+    if (cfg.requireAccelTrusted) out.combinedTrust *= out.accelGateTrust;
     out.combinedTrust = clampf(out.combinedTrust, 0.0f, 1.0f);
 
     if (out.rejectFlags == MAG_YAW_REJECT_NONE) {
         out.gateOpen = true;
         stats_.gateOpenCount++;
 
-        const float tc = cfg.timeConstantS > 0.001f ? cfg.timeConstantS : 30.0f;
+        const bool reacquireMode = innovationLarge && reacquireEligible;
+        const float tc = reacquireMode
+            ? (cfg.reacquireTimeConstantS > 0.001f ? cfg.reacquireTimeConstantS : 90.0f)
+            : (cfg.timeConstantS > 0.001f ? cfg.timeConstantS : 30.0f);
+        const float maxRateDegS = reacquireMode
+            ? cfg.reacquireMaxCorrectionRateDegS
+            : cfg.maxCorrectionRateDegS;
+        const float maxStepDeg = reacquireMode
+            ? cfg.reacquireMaxCorrectionStepDeg
+            : cfg.maxCorrectionStepDeg;
 
         float rateRadS = -out.errorRad / tc;
         rateRadS *= out.combinedTrust;
-
-        const float maxRateRadS = cfg.maxCorrectionRateDegS * MATH_DEG_TO_RAD;
+        const float maxRateRadS = maxRateDegS * MATH_DEG_TO_RAD;
         rateRadS = clampf(rateRadS, -maxRateRadS, maxRateRadS);
-
         float stepRad = rateRadS * dtS;
-
-        const float maxStepRad = cfg.maxCorrectionStepDeg * MATH_DEG_TO_RAD;
+        const float maxStepRad = maxStepDeg * MATH_DEG_TO_RAD;
         stepRad = clampf(stepRad, -maxStepRad, maxStepRad);
 
         out.correctionRateRadS = rateRadS;
@@ -182,6 +188,7 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,
         if (cfg.applyEnabled) {
             out.applyAllowed = true;
             stats_.applyAllowedCount++;
+            if (reacquireMode) stats_.reacquireAppliedCount++;
         } else {
             addReject(out, MAG_YAW_REJECT_APPLY_DISABLED);
         }
@@ -194,9 +201,7 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,
     if (out.applyAllowed && out.correctionStepRad != 0.0f) {
         stats_.lastCorrectionStepDeg = out.correctionStepDeg;
         const float absStep = std::fabs(out.correctionStepDeg);
-        if (absStep > stats_.maxAbsCorrectionStepDeg) {
-            stats_.maxAbsCorrectionStepDeg = absStep;
-        }
+        if (absStep > stats_.maxAbsCorrectionStepDeg) stats_.maxAbsCorrectionStepDeg = absStep;
         stats_.sumCorrectionStepDeg += static_cast<double>(out.correctionStepDeg);
     }
 
@@ -275,6 +280,7 @@ void MagYawCorrectionController::countRejects(uint32_t flags) {
     if (flags & MAG_YAW_REJECT_DT_INVALID)           stats_.rejectDtInvalid++;
     if (flags & MAG_YAW_REJECT_NONFINITE)            stats_.rejectNonfinite++;
     if (flags & MAG_YAW_REJECT_COOLDOWN)             stats_.rejectCooldown++;
+    if (flags & MAG_YAW_REJECT_REACQUIRE_PENDING)     stats_.rejectReacquirePending++;
 }
 
 } // namespace tracker

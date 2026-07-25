@@ -223,27 +223,32 @@ TrackerCalibrationQualitySummary trackerCalibrationQualityFromConfig(const Track
         : 0.0f;
     quality.alignmentScore = config.data.magCal.axisAlignmentValid ? 1.0f : 0.0f;
 
+    trackerCalibrationQualityRecomputeOverall(config, quality);
+    quality.qualityFlags |= tracker_calibration_quality_flags::SOURCE_DERIVED;
+    return quality;
+}
+
+void trackerCalibrationQualityRecomputeOverall(const TrackerConfig& config,
+                                               TrackerCalibrationQualitySummary& quality) {
     float weighted = 0.0f;
     float weight = 0.0f;
     if (config.data.gyroCal.biasValid) {
-        weighted += quality.gyroScore * 0.35f;
+        weighted += clamp01(quality.gyroScore) * 0.35f;
         weight += 0.35f;
     }
     if (config.data.accelCal.valid) {
-        weighted += quality.accelScore * 0.35f;
+        weighted += clamp01(quality.accelScore) * 0.35f;
         weight += 0.35f;
     }
     if (config.data.magCal.calibrationValid) {
-        weighted += quality.magScore * 0.20f;
+        weighted += clamp01(quality.magScore) * 0.20f;
         weight += 0.20f;
     }
     if (config.data.magCal.axisAlignmentValid) {
-        weighted += quality.alignmentScore * 0.10f;
+        weighted += clamp01(quality.alignmentScore) * 0.10f;
         weight += 0.10f;
     }
     quality.overallScore = weight > 0.0f ? clamp01(weighted / weight) : 0.0f;
-    quality.qualityFlags |= tracker_calibration_quality_flags::SOURCE_DERIVED;
-    return quality;
 }
 
 void trackerApplyCalibrationCandidateToConfig(TrackerConfig& active,

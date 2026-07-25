@@ -63,6 +63,9 @@ bool MagHeadingEstimator::update(const MagProcessedSample& mag,
     }
 
     if (out.rejectFlags == MAG_HEADING_REJECT_NONE) {
+        out.dipRad = std::atan2(out.magWorld.z, out.horizontalNorm);
+        out.dipDeg = out.dipRad * MATH_RAD_TO_DEG;
+
         out.magneticFieldWorldYawRad = std::atan2(out.magWorldHorizontal.y, out.magWorldHorizontal.x);
         out.magneticFieldWorldYawDeg = out.magneticFieldWorldYawRad * MATH_RAD_TO_DEG;
 

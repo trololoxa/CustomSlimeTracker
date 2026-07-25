@@ -288,6 +288,15 @@ int main() {
     CHECK(ctx, st.bundledMotionSent == 0u);
     CHECK(ctx, st.rotationSent == 1u);
     CHECK(ctx, st.accelerationSent == 1u);
+    {
+        uint32_t slackMs = 0u;
+        CHECK(ctx, rt.rotationDeadlineSlackMs(1201u, slackMs));
+        CHECK(ctx, slackMs == 9u);
+        CHECK(ctx, rt.rotationDeadlineSlackMs(1207u, slackMs));
+        CHECK(ctx, slackMs == 3u);
+        CHECK(ctx, rt.rotationDeadlineSlackMs(1211u, slackMs));
+        CHECK(ctx, slackMs == 0u);
+    }
     CHECK(ctx, st.accelerationRateLimited == 0u);
     CHECK(ctx, st.accelerationSkippedInvalid == 0u);
     CHECK(ctx, st.accelerationSendFailures == 0u);

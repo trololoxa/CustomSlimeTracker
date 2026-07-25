@@ -80,6 +80,7 @@ static constexpr uint32_t ALREADY_PROMOTED = 1u << 10;
 namespace tracker_calibration_quality_flags {
 static constexpr uint32_t PROVENANCE_SHIFT = 24u;
 static constexpr uint32_t PROVENANCE_MASK = 0x7u << PROVENANCE_SHIFT;
+static constexpr uint32_t ALIGNMENT_MEASURED = 1u << 29;
 static constexpr uint32_t SOURCE_DERIVED = 1u << 30;
 static constexpr uint32_t SOURCE_MEASURED = 1u << 31;
 }
@@ -256,6 +257,8 @@ bool trackerSensorSignaturesEqual(const TrackerSensorSignature& a,
                                   const TrackerSensorSignature& b);
 
 TrackerCalibrationQualitySummary trackerCalibrationQualityFromConfig(const TrackerConfig& config);
+void trackerCalibrationQualityRecomputeOverall(const TrackerConfig& config,
+                                               TrackerCalibrationQualitySummary& quality);
 void trackerApplyCalibrationCandidateToConfig(TrackerConfig& active,
                                                 const TrackerConfig& candidate);
 TrackerConfig trackerComposeCalibrationCandidate(const TrackerConfig& active,

@@ -1073,6 +1073,7 @@ static TrackerAppDeps makeTrackerAppDeps() {
 #endif
     deps.callbacks.publishHealthState = publishTrackerHealthState;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
+    deps.callbacks.updateMagDeferredRuntime = updateMagDeferredRuntime;
 #if TRACKER_HAS_SERIAL_CONSOLE
     deps.callbacks.updateSerialConsoleRuntime = updateSerialConsoleRuntime;
 #endif

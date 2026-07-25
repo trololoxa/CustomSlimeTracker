@@ -103,6 +103,7 @@ struct TrackerAppCallbacks {
     void (*resumeNetworkRuntime)() = nullptr;
 #endif
     bool (*updateNetworkRuntime)() = nullptr;
+    bool (*updateMagDeferredRuntime)() = nullptr;
     bool (*updateSerialConsoleRuntime)() = nullptr;
     bool (*updateRemoteConsoleRuntime)() = nullptr;
     void (*setupTapRuntime)() = nullptr;

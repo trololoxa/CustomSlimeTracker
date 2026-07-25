@@ -286,6 +286,20 @@ static void testSanitizeClearsEvidenceForMissingModels(TestContext& ctx) {
     CHECK_NEAR(ctx, cfg.data.frame.sensorToDevice.determinant(), 1.0f, 1.0e-6f);
 }
 
+
+static void testMagAxisSanitizePreservesContinuousProperRotation(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+    cfg.data.magCal.axisAlignmentValid = true;
+    cfg.data.magCal.magToImu = Quat::fromEulerXYZ(
+        1.0f * MATH_DEG_TO_RAD,
+       -2.0f * MATH_DEG_TO_RAD,
+        0.5f * MATH_DEG_TO_RAD).toRotationMatrix();
+    cfg.sanitize();
+    CHECK(ctx, cfg.data.magCal.axisAlignmentValid);
+    CHECK_NEAR(ctx, cfg.data.magCal.magToImu.determinant(), 1.0f, 1.0e-4f);
+}
+
 static void testFullCalibrationClearAlsoClearsFrame(TestContext& ctx) {
     TrackerConfig cfg;
     cfg.resetDefaults();
@@ -313,6 +327,7 @@ int main() {
     testPerformanceDefaultMigrationPreservesCurrentSettings(ctx);
     testOversizedTemperatureSlopeIsInvalidated(ctx);
     testSanitizeClearsEvidenceForMissingModels(ctx);
+    testMagAxisSanitizePreservesContinuousProperRotation(ctx);
     testFullCalibrationClearAlsoClearsFrame(ctx);
     return ctx.finish("test_config_hardening");
 }

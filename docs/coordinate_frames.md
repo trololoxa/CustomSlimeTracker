@@ -141,6 +141,20 @@ contain off-diagonal cross-axis terms; it is not limited to diagonal scaling.
 `magToImu` is a sensor-to-sensor alignment matrix. It is not a body mounting
 calibration and should not encode SlimeVR body offsets.
 
+The current solver does not assume that physical placement is exactly a 90-degree
+axis mapping. It first finds the nearest of 24 right-handed signed permutations
+and then performs a bounded continuous `SO(3)` refinement:
+
+```text
+magToImu = residual proper rotation * coarse signed permutation
+```
+
+The final matrix must remain orthonormal with determinant `+1`; scale, shear and
+soft-iron effects remain owned by the magnetic ellipsoid calibration. New manual
+and setup/runtime-generated mappings enforce this rule. Legacy finite persisted
+mappings remain readable so a firmware update does not silently erase a working
+calibration.
+
 ## Device/body/mounting frame
 
 Only `sensorToDevice` is an active firmware frame field. Historical bytes that

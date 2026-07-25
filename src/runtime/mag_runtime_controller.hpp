@@ -6,6 +6,8 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "core/math.hpp"
 #include "runtime/mag_runtime_state.hpp"
+#include "sensor/mag_axis_alignment.hpp"
+#include "sensor/mag_field_reliability.hpp"
 #include "sensor/mag_heading.hpp"
 #include "sensor/mag_runtime.hpp"
 #include "sensor/mag_yaw_correction.hpp"
@@ -19,6 +21,22 @@ class Qmc6309;
 class TrackerConfig;
 class TrackerConfigStore;
 class MagCalibrationCollector;
+
+enum MagDeferredServiceRejectFlags : uint32_t {
+    MAG_DEFERRED_REJECT_NONE = 0,
+    MAG_DEFERRED_REJECT_SOFTWARE_FIFO_PENDING = 1u << 0,
+    MAG_DEFERRED_REJECT_HARDWARE_FIFO_STATUS = 1u << 1,
+    MAG_DEFERRED_REJECT_HARDWARE_FIFO_BUSY = 1u << 2,
+    MAG_DEFERRED_REJECT_OUTPUT_DEADLINE = 1u << 3,
+};
+
+struct MagDeferredServiceGate {
+    bool allowed = false;
+    bool fifoStatusValid = false;
+    uint16_t fifoUnreadWords = 0;
+    uint32_t rotationDeadlineSlackMs = 0xFFFFFFFFUL;
+    uint32_t rejectFlags = MAG_DEFERRED_REJECT_NONE;
+};
 
 struct MagRuntimeControllerCallbacks {
     void (*resetFifoRuntime)(void* user) = nullptr;
@@ -39,6 +57,7 @@ struct MagRuntimeControllerCallbacks {
 
     void (*emitMagFrame)(const MagProcessedSample& mag,
                          const MagHeadingSample& heading,
+                         const MagFieldReliabilityOutput& reliability,
                          const MagYawCorrectionOutput& yaw,
                          uint32_t rejectFlagsForUse,
                          bool trustedForUse,
@@ -50,6 +69,10 @@ struct MagRuntimeControllerCallbacks {
                                      const MagYawCorrectionOutput& yaw,
                                      void* user) = nullptr;
     void* recordStaticMagYawSampleUser = nullptr;
+
+    bool (*evaluateDeferredServiceGate)(MagDeferredServiceGate& gate,
+                                        void* user) = nullptr;
+    void* evaluateDeferredServiceGateUser = nullptr;
 };
 
 struct MagRuntimeControllerDeps {
@@ -68,15 +91,23 @@ struct MagRuntimeControllerDeps {
     MagRuntimeProcessor* processor = nullptr;
     MagCalibrationCollector* calibrationCollector = nullptr;
     MagHeadingEstimator* headingEstimator = nullptr;
+    MagFieldReliabilityMonitor* fieldReliability = nullptr;
+    MagAxisAlignmentCollector* axisAlignmentCollector = nullptr;
+    MagAxisAlignmentRuntimeState* axisAlignmentState = nullptr;
+    TrackerConfig* axisAlignmentCandidateWorkspace = nullptr;
     MagHeadingReferenceState* headingRef = nullptr;
     MagHeadingAutoReferenceState* headingAutoRef = nullptr;
     MagYawCorrectionController* yawCorrection = nullptr;
 
     MagProcessedSample* lastProcessed = nullptr;
     MagHeadingSample* lastHeading = nullptr;
+    MagFieldReliabilityOutput* lastFieldReliability = nullptr;
     MagYawCorrectionOutput* lastYawCorrection = nullptr;
 
     const float* lastOutputConfidence = nullptr;
+    const Lsm6dsv::Sample* lastCalibratedSample = nullptr;
+    const uint64_t* lastImuTimestampUs = nullptr;
+    const uint32_t* lastImuSampleSequence = nullptr;
     const bool* accelCalibrationReady = nullptr;
     const uint64_t* fallbackTimestampUs = nullptr;
     bool (*recoveryActive)(void* user) = nullptr;
@@ -94,11 +125,13 @@ public:
     MagRuntimeConfig runtimeConfig() const;
     MagHeadingConfig headingConfig() const;
     MagYawCorrectionConfig yawConfig() const;
+    MagFieldReliabilityConfig fieldReliabilityConfig() const;
 
     float headingErrorToReferenceRad(const MagHeadingSample& heading) const;
     float headingErrorToReferenceDeg(const MagHeadingSample& heading) const;
 
     void resetYawCorrectionRuntime();
+    void resetAxisAlignmentCandidate();
     void resetOrientationState(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase);
 
     bool setEnabled(bool enabled, bool persist);
@@ -117,6 +150,9 @@ public:
     bool applyCalibration(bool persist);
 
     void processRawSample(const Lsm6dsvFifoReader::MagRawSample& mag);
+    // Runs bounded solver/storage work outside the FIFO/mag sample callback.
+    // Returns true when one deferred action was serviced.
+    bool serviceDeferred();
 
 private:
     MagRuntimeControllerDeps deps_;
@@ -138,6 +174,9 @@ private:
                              float gyroNormDps,
                              float accelTrust,
                              bool magTrustedForUse);
+    void updateAxisAlignmentCandidate(const MagFieldReliabilityOutput& reliability, uint32_t nowMs);
+    bool stageAxisAlignmentCandidate(const MagAxisAlignmentResult& result, uint32_t nowMs);
+    bool deferredServiceAllowed(MagDeferredServiceGate& gate) const;
     bool applyYawCorrectionToAhrs(const MagYawCorrectionOutput& yaw);
 };
 

@@ -12,6 +12,7 @@
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/imu_quality.hpp"
 #include "sensor/mag_heading.hpp"
+#include "sensor/mag_field_reliability.hpp"
 #include "sensor/mag_runtime.hpp"
 #include "sensor/mag_yaw_correction.hpp"
 #include "runtime/runtime_bias_types.hpp"
@@ -78,6 +79,7 @@ void machineLogEmitMagFrame(Stream& out,
                             MachineLogCounters& counters,
                             const MagProcessedSample& mag,
                             const MagHeadingSample& heading,
+                            const MagFieldReliabilityOutput& reliability,
                             const MagYawCorrectionOutput& yaw,
                             uint32_t rejectFlagsForUse,
                             bool trustedForUse);

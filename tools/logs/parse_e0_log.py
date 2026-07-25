@@ -190,6 +190,12 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     mag_reject_flags = Counter(r[12] for r in mag_rows if len(r) > 12 and r[12] != "0x0")
     heading_valid = sum(to_int(r[8]) for r in mag_rows if len(r) > 8)
     heading_innov = [abs(to_float(r[10])) for r in mag_rows if len(r) > 10]
+    field_states = Counter(r[14] for r in mag_rows if len(r) > 14)
+    field_trusted = sum(to_int(r[15]) for r in mag_rows if len(r) > 15)
+    field_flags = Counter(r[16] for r in mag_rows if len(r) > 16 and r[16] != "0x0")
+    field_norm_error = [to_float(r[17]) for r in mag_rows if len(r) > 17]
+    field_dip_error = [to_float(r[18]) for r in mag_rows if len(r) > 18]
+    field_heading_error = [to_float(r[19]) for r in mag_rows if len(r) > 19]
 
     magr_raw_x = [to_float(r[4]) for r in magr_rows if len(r) > 18]
     magr_raw_y = [to_float(r[5]) for r in magr_rows if len(r) > 18]
@@ -216,6 +222,11 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
     yaw_trust = [to_float(r[9]) for r in yaw_rows if len(r) > 9]
     yaw_step = [abs(to_float(r[8])) for r in yaw_rows if len(r) > 8]
     yaw_reject_flags = Counter(r[10] for r in yaw_rows if len(r) > 10 and r[10] != "0x0")
+    yaw_modes = Counter(r[12] for r in yaw_rows if len(r) > 12)
+    yaw_reacquire_pending = sum(to_int(r[13]) for r in yaw_rows if len(r) > 13)
+    yaw_reacquire_active = sum(to_int(r[14]) for r in yaw_rows if len(r) > 14)
+    yaw_field_stable_ms = [to_int(r[15]) for r in yaw_rows if len(r) > 15]
+    yaw_heading_rate = [to_float(r[16]) for r in yaw_rows if len(r) > 16]
 
     state_events = Counter(r[3] for r in state_rows if len(r) > 3)
     state_reasons = Counter(r[4] for r in state_rows if len(r) > 4)
@@ -348,6 +359,13 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             "heading_valid_ratio": round(ratio(heading_valid, mag_count), 6),
             "heading_innovation_abs_deg": stats(heading_innov),
             "reject_flags_top": mag_reject_flags.most_common(8),
+            "field_states": dict(field_states),
+            "field_trusted_rows": field_trusted,
+            "field_trusted_ratio": round(ratio(field_trusted, mag_count), 6),
+            "field_flags_top": field_flags.most_common(8),
+            "field_norm_relative_error": stats(field_norm_error),
+            "field_dip_error_deg": stats(field_dip_error),
+            "field_heading_error_deg": stats(field_heading_error),
         },
         "magr": {
             "rows": magr_count,
@@ -389,6 +407,11 @@ def summarize(rows: Dict[str, List[List[str]]], include_samples: int = 0) -> Dic
             "trust": stats(yaw_trust),
             "step_abs_deg": stats(yaw_step),
             "reject_flags_top": yaw_reject_flags.most_common(8),
+            "modes": dict(yaw_modes),
+            "reacquire_pending_rows": yaw_reacquire_pending,
+            "reacquire_active_rows": yaw_reacquire_active,
+            "field_stable_ms": stats(yaw_field_stable_ms),
+            "heading_rate_deg_s": stats(yaw_heading_rate),
         },
         "state_events": {
             "states": dict(state_events),

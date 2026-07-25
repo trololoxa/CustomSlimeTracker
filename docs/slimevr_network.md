@@ -88,7 +88,7 @@ protocol_version=22
 board_type=10       LOLIN_C3_MINI
 imu_type=13         LSM6DSV
 mcu_type=6          ESP32_C3
-firmware_version    c3-6dsv-calibration-epoch-field-safe
+firmware_version    c3-6dsv-mag-promotion-stack-safe
 ```
 
 The feature version names the currently completed firmware capability and is
@@ -427,3 +427,11 @@ TRACKER_ENABLE_SERIAL_STREAM
 ```
 
 `WiFi.setSleep(false)` is currently used for stable latency. Enabling modem sleep may reduce heat, but it must be tested against FIFO stability, UDP packet loss, ping, and SlimeVR preview smoothness.
+
+## Magnetic reliability independence
+
+Patch 0022 changes local magnetic trust, yaw re-entry and calibration-candidate
+diagnostics only. It does not change SlimeVR protocol version, packet formats,
+FeatureFlags, bundle negotiation, output rate or session behavior. During a
+magnetic disturbance rotation remains available from the 6DoF AHRS; only local
+yaw correction is withheld.

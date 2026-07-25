@@ -385,3 +385,36 @@ motion on
 perf status
 motion status
 ```
+
+## Patch 0022 magnetic runtime fields
+
+`mag heading` now prints field-reliability state/flags, trusted-for-yaw, norm/dip
+reference errors, heading step/rate, transition/rejection counters, and continuous
+axis-candidate coverage/solve/storage state. `mag yaw status` additionally prints
+normal versus reacquisition mode, pending/active state, stable-field duration and
+bounded correction statistics. Background alignment never needs a new command:
+when coverage produces a staged result, inspect and manage it with the existing
+`cal candidate status|compare|flush|promote|discard` commands. `flush` and
+`promote` remain explicit user operations.
+
+### Hotfix 0022a fields and axis input
+
+`mag heading` additionally reports instantaneous versus filtered heading rate,
+changed-environment count, coarse/final/active solver scores, refinement angle,
+measured quality, deferred action, service deferrals and solve/storage last/max
+microseconds. The filtered rate is the value used by large-error reacquisition.
+
+`mag axis set <x> <y> <z> [save]` still accepts signed axis tokens, but new manual
+mappings must form a right-handed proper rotation (`det=+1`). Continuous matrices
+produced by setup/background refinement are printed as three matrix rows and are
+stored through the normal calibration path. Existing legacy persisted mappings
+are not silently invalidated by this hotfix.
+
+### Hotfix 0022b fields
+
+`mag heading` and `mag yaw status` additionally expose stationary heading-window
+delta/rate, discontinuity-latch state, training/validation interval and window
+counts, validation winner consistency, normalized separation, observable angular
+motion, and deferred-service reject reasons. Hardware FIFO unread-word and
+rotation-deadline-slack diagnostics explain why a pending solve/stage action was
+deferred. No new mutation command is added; candidate lifecycle remains explicit.

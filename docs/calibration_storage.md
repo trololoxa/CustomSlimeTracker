@@ -138,6 +138,23 @@ field model. Future patches
 0022/0023 will call the same API with their own fit, coverage and held-out quality
 metrics.
 
+### 0022a measured axis quality
+
+Background `magToImu` candidates store the solver-derived alignment quality in
+the existing `TrackerCalibrationQualitySummary` and set
+`ALIGNMENT_MEASURED|SOURCE_MEASURED`. Older active records only encode valid axis
+alignment as binary score `1.0`; when and only when a candidate has measured axis
+quality, comparison treats that old binary value as an unmeasured neutral
+baseline. Runtime staging has already required the candidate to beat active
+alignment on the exact same motion intervals. Once a measured candidate is
+promoted, subsequent candidates compare measured score to measured score.
+
+The quality flag uses an existing metadata bit and does not change config version,
+blob size, candidate format, NVS keys or migration behavior. A lightweight
+`candidateExists()` probe supports deferred background service without scanning
+active slots; structural validation and actual staging still use the normal store
+transaction path.
+
 ## Atomic promotion
 
 Promotion is deliberately two-phase:
@@ -315,3 +332,12 @@ workspaces now have explicit owners and epoch boundaries:
 
 Compact and detailed status now report `sensor_to_device_valid` and
 `motion_frame_config_ready` separately from `accel_cal_valid`.
+
+### 0022b held-out axis evidence
+
+Measured `magToImu` quality staged by the runtime is now derived from held-out
+validation windows. Training windows select/refine the rotation; validation
+windows must reproduce the same winner and show improvement over active alignment.
+The persistent candidate record layout is unchanged. The additional evidence is
+collapsed into the existing measured alignment quality and diagnostic runtime
+fields rather than adding a schema revision.

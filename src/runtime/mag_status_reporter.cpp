@@ -3,6 +3,16 @@
 namespace tracker {
 
 
+const char* magAxisDeferredActionName(MagAxisAlignmentDeferredAction action) {
+    switch (action) {
+        case MagAxisAlignmentDeferredAction::None: return "none";
+        case MagAxisAlignmentDeferredAction::Solve: return "solve";
+        case MagAxisAlignmentDeferredAction::Stage: return "stage";
+        case MagAxisAlignmentDeferredAction::CheckCandidateSlot: return "check_candidate_slot";
+    }
+    return "unknown";
+}
+
 float magStatusHeadingErrorToReferenceRad(const MagHeadingReferenceState& ref,
                                                  const MagHeadingSample& heading) {
     if (!ref.valid || !heading.valid) {
@@ -139,6 +149,9 @@ void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {
     out.print(h.magWorld.y, 6); out.print(',');
     out.println(h.magWorld.z, 6);
 
+    out.print("dip_deg="); out.println(h.dipDeg, 6);
+    out.print("dip_rad="); out.println(h.dipRad, 9);
+
     out.print("mag_world_horizontal=");
     out.print(h.magWorldHorizontal.x, 6); out.print(',');
     out.print(h.magWorldHorizontal.y, 6); out.print(',');
@@ -175,6 +188,107 @@ void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {
     out.print("mag_auto_ref_last_accel_trust="); out.println(autoRef.lastAccelTrust, 6);
     out.print("mag_auto_ref_last_horizontal_trust="); out.println(autoRef.lastHorizontalTrust, 6);
 
+
+    if (deps.lastFieldReliability) {
+        const MagFieldReliabilityOutput& f = *deps.lastFieldReliability;
+        out.println("# MAG FIELD RELIABILITY");
+        out.print("field_state="); out.println(MagFieldReliabilityMonitor::stateName(f.state));
+        out.print("field_trusted_for_yaw="); out.println(f.trustedForYaw ? "yes" : "no");
+        out.print("field_flags=0x"); out.println(f.flags, HEX);
+        out.print("field_reference_valid="); out.println(f.referenceValid ? "yes" : "no");
+        out.print("field_stable_ms="); out.println(f.stableMs);
+        out.print("field_norm_reference="); out.print(f.fieldNorm, 6); out.print(','); out.println(f.referenceNorm, 6);
+        out.print("field_norm_relative_error="); out.println(f.normRelativeError, 6);
+        out.print("field_dip_reference_deg="); out.print(f.dipDeg, 6); out.print(','); out.println(f.referenceDipDeg, 6);
+        out.print("field_dip_error_deg="); out.println(f.dipErrorDeg, 6);
+        out.print("field_reference_heading_yaw_deg="); out.println(f.referenceHeadingYawDeg, 6);
+        out.print("field_reference_heading_error_deg="); out.println(f.referenceHeadingErrorDeg, 6);
+        out.print("field_heading_step_deg="); out.println(f.headingStepDeg, 6);
+        out.print("field_heading_instant_rate_deg_s="); out.println(f.headingInstantRateDegS, 6);
+        out.print("field_heading_rate_deg_s="); out.println(f.headingRateDegS, 6);
+        out.print("field_stationary_window_delta_deg="); out.println(f.stationaryWindowHeadingDeltaDeg, 6);
+        out.print("field_stationary_window_rate_deg_s="); out.println(f.stationaryWindowHeadingRateDegS, 6);
+        out.print("field_stationary_heading_jump_latched="); out.println(f.stationaryHeadingJumpLatched ? "yes" : "no");
+        if (deps.fieldReliability) {
+            const auto& fs = deps.fieldReliability->stats();
+            out.print("field_state_transitions="); out.println(fs.stateTransitions);
+            out.print("field_entered_disturbed="); out.println(fs.enteredDisturbed);
+            out.print("field_entered_recovering="); out.println(fs.enteredRecovering);
+            out.print("field_environment_changes_detected="); out.println(fs.environmentChangesDetected);
+            out.print("field_references_acquired="); out.println(fs.referencesAcquired);
+            out.print("field_stationary_heading_jump_rejects="); out.println(fs.stationaryHeadingJumpRejects);
+            out.print("field_stationary_heading_jumps_latched="); out.println(fs.stationaryHeadingJumpsLatched);
+            out.print("field_stationary_heading_returns="); out.println(fs.stationaryHeadingReturns);
+        }
+    }
+
+    if (deps.axisAlignmentCollector && deps.axisAlignmentState) {
+        const auto& c = *deps.axisAlignmentCollector;
+        const auto& a = *deps.axisAlignmentState;
+        out.println("# MAG AXIS BACKGROUND CANDIDATE");
+        out.print("axis_candidate_intervals="); out.println(c.intervalCount());
+        out.print("axis_candidate_independent_windows="); out.println(c.independentWindows());
+        out.print("axis_candidate_excited_axes="); out.println(c.excitedAxes());
+        out.print("axis_candidate_ready="); out.println(c.readyToSolve() ? "yes" : "no");
+        out.print("axis_candidate_rejected_gyro_skew="); out.println(c.stats().intervalsRejectedGyroSkew);
+        out.print("axis_candidate_skipped_cadence="); out.println(c.stats().intervalsSkippedCadence);
+        out.print("axis_candidate_rejected_capacity="); out.println(c.stats().intervalsRejectedCapacity);
+        out.print("axis_candidate_staged="); out.println(a.candidateStaged ? "yes" : "no");
+        out.print("axis_active_alignment_confirmed="); out.println(a.activeAlignmentConfirmed ? "yes" : "no");
+        out.print("axis_candidate_blocked_existing="); out.println(a.blockedByExistingCandidate ? "yes" : "no");
+        out.print("axis_solve_pending="); out.println(a.solvePending ? "yes" : "no");
+        out.print("axis_stage_pending="); out.println(a.stagePending ? "yes" : "no");
+        out.print("axis_deferred_action="); out.println(magAxisDeferredActionName(a.pendingAction));
+        out.print("axis_last_solve_valid="); out.println(a.lastSolveValid ? "yes" : "no");
+        out.print("axis_last_refined="); out.println(a.lastResult.refined ? "yes" : "no");
+        out.print("axis_last_improves_active="); out.println(a.lastResult.improvesActive ? "yes" : "no");
+        out.print("axis_last_validation_passed="); out.println(a.lastResult.validationPassed ? "yes" : "no");
+        out.print("axis_last_validation_winner_matches_training="); out.println(a.lastResult.validationWinnerMatchesTraining ? "yes" : "no");
+        out.print("axis_last_score_deg="); out.println(a.lastResult.score, 6);
+        out.print("axis_last_training_score_deg="); out.println(a.lastResult.trainingScore, 6);
+        out.print("axis_last_validation_score_deg="); out.println(a.lastResult.validationScore, 6);
+        out.print("axis_last_coarse_score_deg="); out.println(a.lastResult.coarseScore, 6);
+        out.print("axis_last_second_score_deg="); out.println(a.lastResult.secondBestScore, 6);
+        out.print("axis_last_training_second_score_deg="); out.println(a.lastResult.trainingSecondBestScore, 6);
+        out.print("axis_last_validation_second_score_deg="); out.println(a.lastResult.validationSecondBestScore, 6);
+        out.print("axis_last_normalized_separation="); out.println(a.lastResult.normalizedSeparation, 6);
+        out.print("axis_last_training_validation_rotation_difference_deg="); out.println(a.lastResult.trainingValidationRotationDifferenceDeg, 6);
+        out.print("axis_last_active_score_deg="); out.println(a.lastResult.activeScore, 6);
+        out.print("axis_last_active_training_score_deg="); out.println(a.lastResult.activeTrainingScore, 6);
+        out.print("axis_last_direction_error_deg="); out.println(a.lastResult.meanDirectionError, 6);
+        out.print("axis_last_rotation_magnitude_error_deg="); out.println(a.lastResult.meanMagnitudeError, 6);
+        out.print("axis_last_refinement_angle_deg="); out.println(a.lastResult.refinementAngleDeg, 6);
+        out.print("axis_last_quality_score="); out.println(a.lastResult.qualityScore, 6);
+        out.print("axis_last_refinement_evaluations="); out.println(a.lastResult.refinementEvaluations);
+        out.print("axis_last_used_intervals="); out.println(a.lastResult.usedIntervals);
+        out.print("axis_last_training_intervals="); out.println(a.lastResult.trainingUsedIntervals);
+        out.print("axis_last_validation_intervals="); out.println(a.lastResult.validationUsedIntervals);
+        out.print("axis_last_training_windows="); out.println(a.lastResult.trainingWindows);
+        out.print("axis_last_validation_windows="); out.println(a.lastResult.validationWindows);
+        out.print("axis_last_mean_observable_step_deg="); out.println(a.lastResult.meanObservableStepDeg, 6);
+        out.print("axis_last_total_observable_rotation_deg="); out.println(a.lastResult.totalObservableRotationDeg, 6);
+        out.print("axis_stage_attempts="); out.println(a.stageAttempts);
+        out.print("axis_stage_successes="); out.println(a.stageSuccesses);
+        out.print("axis_stage_failures="); out.println(a.stageFailures);
+        out.print("axis_solve_service_calls="); out.println(a.solveServiceCalls);
+        out.print("axis_storage_service_calls="); out.println(a.storageServiceCalls);
+        out.print("axis_service_deferrals="); out.println(a.serviceDeferrals);
+        out.print("axis_service_deferral_software_fifo="); out.println(a.serviceDeferralSoftwareFifo);
+        out.print("axis_service_deferral_hardware_status="); out.println(a.serviceDeferralHardwareStatus);
+        out.print("axis_service_deferral_hardware_busy="); out.println(a.serviceDeferralHardwareBusy);
+        out.print("axis_service_deferral_output_deadline="); out.println(a.serviceDeferralOutputDeadline);
+        out.print("axis_last_deferred_fifo_unread_words="); out.println(a.lastDeferredFifoUnreadWords);
+        out.print("axis_max_deferred_fifo_unread_words="); out.println(a.maxDeferredFifoUnreadWords);
+        out.print("axis_last_deferred_rotation_slack_ms="); out.println(a.lastDeferredRotationSlackMs);
+        out.print("axis_last_deferred_reject_flags=0x"); out.println(a.lastDeferredRejectFlags, HEX);
+        out.print("axis_last_solve_us="); out.println(a.lastSolveUs);
+        out.print("axis_max_solve_us="); out.println(a.maxSolveUs);
+        out.print("axis_last_storage_us="); out.println(a.lastStorageUs);
+        out.print("axis_max_storage_us="); out.println(a.maxStorageUs);
+        out.print("axis_last_solve_attempt_ms="); out.println(a.lastSolveAttemptMs);
+        out.print("axis_last_storage_check_ms="); out.println(a.lastStorageCheckMs);
+    }
+
     out.println("# MAG HEADING STATS");
     out.print("heading_attempts="); out.println(s.attempts);
     out.print("heading_valid_count="); out.println(s.valid);
@@ -199,6 +313,11 @@ void magStatusPrintYawCorrection(Stream& out, const MagStatusReporterDeps& deps)
     out.print("gate_open="); out.println(y.gateOpen ? "yes" : "no");
     out.print("apply_allowed="); out.println(y.applyAllowed ? "yes" : "no");
     out.print("applied_last="); out.println(y.applied ? "yes" : "no");
+    out.print("mode="); out.println(y.mode == MagYawCorrectionMode::Reacquiring ? "reacquiring" : "normal");
+    out.print("reacquire_pending="); out.println(y.reacquirePending ? "yes" : "no");
+    out.print("reacquire_active="); out.println(y.reacquireActive ? "yes" : "no");
+    out.print("field_stable_ms="); out.println(y.fieldStableMs);
+    out.print("mag_heading_rate_deg_s="); out.println(y.magneticHeadingRateDegS, 6);
     out.print("reject_flags=0x"); out.println(y.rejectFlags, HEX);
     out.print("cooldown_active="); out.println(y.cooldownActive ? "yes" : "no");
     out.print("cooldown_remaining_ms="); out.println(y.cooldownRemainingMs);
@@ -233,6 +352,10 @@ void magStatusPrintYawCorrection(Stream& out, const MagStatusReporterDeps& deps)
     out.print("time_constant_s="); out.println(cfg.timeConstantS, 3);
     out.print("max_rate_deg_s="); out.println(cfg.maxCorrectionRateDegS, 3);
     out.print("max_step_deg="); out.println(cfg.maxCorrectionStepDeg, 3);
+    out.print("reacquire_innovation_max_deg="); out.println(cfg.reacquireInnovationMaxDeg, 3);
+    out.print("reacquire_min_field_stable_ms="); out.println(cfg.reacquireMinFieldStableMs);
+    out.print("reacquire_max_heading_rate_deg_s="); out.println(cfg.reacquireMaxHeadingRateDegS, 3);
+    out.print("reacquire_time_constant_s="); out.println(cfg.reacquireTimeConstantS, 3);
 
     out.println("# STATS");
     out.print("updates="); out.println(s.updates);
@@ -256,6 +379,10 @@ void magStatusPrintYawCorrection(Stream& out, const MagStatusReporterDeps& deps)
     out.print("reject_gyro_moving="); out.println(s.rejectGyroMoving);
     out.print("reject_accel_not_trusted="); out.println(s.rejectAccelNotTrusted);
     out.print("reject_cooldown="); out.println(s.rejectCooldown);
+    out.print("reject_reacquire_pending="); out.println(s.rejectReacquirePending);
+    out.print("reacquire_gate_open_count="); out.println(s.reacquireGateOpenCount);
+    out.print("reacquire_applied_count="); out.println(s.reacquireAppliedCount);
+    out.print("reacquire_completed_count="); out.println(s.reacquireCompletedCount);
     out.print("reject_dt_invalid="); out.println(s.rejectDtInvalid);
     out.print("reject_nonfinite="); out.println(s.rejectNonfinite);
 }

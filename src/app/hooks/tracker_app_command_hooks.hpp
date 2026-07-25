@@ -133,6 +133,7 @@ static void emitMachineLogFrame(const Lsm6dsv::RawSample& raw,
 
 static void emitMachineLogMagFrame(const MagProcessedSample& mag,
                                    const MagHeadingSample& heading,
+                                   const MagFieldReliabilityOutput& reliability,
                                    const MagYawCorrectionOutput& yaw,
                                    uint32_t rejectFlagsForUse,
                                    bool trustedForUse) {
@@ -142,12 +143,14 @@ static void emitMachineLogMagFrame(const MagProcessedSample& mag,
                            g_logCounters,
                            mag,
                            heading,
+                           reliability,
                            yaw,
                            rejectFlagsForUse,
                            trustedForUse);
 #else
     (void)mag;
     (void)heading;
+    (void)reliability;
     (void)yaw;
     (void)rejectFlagsForUse;
     (void)trustedForUse;

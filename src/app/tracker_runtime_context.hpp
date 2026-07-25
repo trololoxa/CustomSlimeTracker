@@ -161,6 +161,13 @@ static uint32_t g_lastImuSampleSequence = 0;
 
 static MagHeadingEstimator g_magHeading;
 static MagHeadingSample g_lastMagHeading;
+static MagFieldReliabilityMonitor g_magFieldReliability;
+static MagFieldReliabilityOutput g_lastMagFieldReliability;
+#if TRACKER_ENABLE_CALIBRATION_CANDIDATES
+static MagAxisAlignmentCollector g_magAxisAlignmentCollector;
+static MagAxisAlignmentRuntimeState g_magAxisAlignmentState;
+static TrackerConfig g_magAxisAlignmentCandidateWorkspace;
+#endif
 
 static MagYawCorrectionController g_magYawCorrection;
 static MagRuntimeController g_magRuntime;

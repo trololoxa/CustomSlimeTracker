@@ -18,6 +18,7 @@ static void hookRequestTrackingRecovery(uint32_t reasonFlags,
 #if TRACKER_HAS_MACHINE_LOG
 static void emitMachineLogMagFrame(const MagProcessedSample& mag,
                                    const MagHeadingSample& heading,
+                                   const MagFieldReliabilityOutput& reliability,
                                    const MagYawCorrectionOutput& yaw,
                                    uint32_t rejectFlagsForUse,
                                    bool trustedForUse);
@@ -34,6 +35,44 @@ static bool magControllerRecoveryActiveCallback(void* user) {
     return g_trackingState.recoveryActive();
 }
 
+static bool magControllerEvaluateDeferredServiceGateCallback(
+    MagDeferredServiceGate& gate,
+    void* user) {
+    (void)user;
+    gate = MagDeferredServiceGate{};
+    if (g_fifoRuntime.hasPendingWork() || g_fifoRuntime.urgent()) {
+        gate.rejectFlags |= MAG_DEFERRED_REJECT_SOFTWARE_FIFO_PENDING;
+        return false;
+    }
+
+    Lsm6dsvFifoReader::Status fifoStatus;
+    if (!lsmFifo.readStatus(fifoStatus)) {
+        gate.rejectFlags |= MAG_DEFERRED_REJECT_HARDWARE_FIFO_STATUS;
+        return false;
+    }
+    gate.fifoStatusValid = true;
+    gate.fifoUnreadWords = fifoStatus.unreadWords;
+    static constexpr uint16_t kMaxDeferredUnreadWords = 8u;
+    if (fifoStatus.overrun || fifoStatus.full || fifoStatus.overrunLatched ||
+        fifoStatus.watermark || fifoStatus.unreadWords > kMaxDeferredUnreadWords) {
+        gate.rejectFlags |= MAG_DEFERRED_REJECT_HARDWARE_FIFO_BUSY;
+        return false;
+    }
+
+    uint32_t rotationSlackMs = 0xFFFFFFFFUL;
+    const bool rotationDeadlineArmed =
+        g_slimevrRuntime.rotationDeadlineSlackMs(millis(), rotationSlackMs);
+    gate.rotationDeadlineSlackMs = rotationSlackMs;
+    static constexpr uint32_t kMinDeferredRotationSlackMs = 4u;
+    if (rotationDeadlineArmed && rotationSlackMs < kMinDeferredRotationSlackMs) {
+        gate.rejectFlags |= MAG_DEFERRED_REJECT_OUTPUT_DEADLINE;
+        return false;
+    }
+
+    gate.allowed = true;
+    return true;
+}
+
 static void magControllerEmitStateEventCallback(const char* state,
                                                 const char* reason,
                                                 uint64_t timestampUs,
@@ -47,12 +86,13 @@ static void magControllerEmitStateEventCallback(const char* state,
 #if TRACKER_HAS_MACHINE_LOG
 static void magControllerEmitMachineLogMagFrameCallback(const MagProcessedSample& mag,
                                                         const MagHeadingSample& heading,
+                                                        const MagFieldReliabilityOutput& reliability,
                                                         const MagYawCorrectionOutput& yaw,
                                                         uint32_t rejectFlagsForUse,
                                                         bool trustedForUse,
                                                         void* user) {
     (void)user;
-    emitMachineLogMagFrame(mag, heading, yaw, rejectFlagsForUse, trustedForUse);
+    emitMachineLogMagFrame(mag, heading, reliability, yaw, rejectFlagsForUse, trustedForUse);
 }
 #endif
 
@@ -79,6 +119,8 @@ static MagRuntimeControllerDeps makeMagRuntimeControllerDeps() {
     callbacks.emitMagFrame = magControllerEmitMachineLogMagFrameCallback;
 #endif
     callbacks.recordStaticMagYawSample = magControllerRecordStaticMagYawSampleCallback;
+    callbacks.evaluateDeferredServiceGate =
+        magControllerEvaluateDeferredServiceGateCallback;
 
     MagRuntimeControllerDeps deps;
     deps.out = &appConsoleOutput();
@@ -93,13 +135,23 @@ static MagRuntimeControllerDeps makeMagRuntimeControllerDeps() {
     deps.processor = &g_magProcessor;
     deps.calibrationCollector = &g_magCalCollector;
     deps.headingEstimator = &g_magHeading;
+    deps.fieldReliability = &g_magFieldReliability;
+#if TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    deps.axisAlignmentCollector = &g_magAxisAlignmentCollector;
+    deps.axisAlignmentState = &g_magAxisAlignmentState;
+    deps.axisAlignmentCandidateWorkspace = &g_magAxisAlignmentCandidateWorkspace;
+#endif
     deps.headingRef = &g_magHeadingRef;
     deps.headingAutoRef = &g_magHeadingAutoRef;
     deps.yawCorrection = &g_magYawCorrection;
     deps.lastProcessed = &g_lastMagProcessed;
     deps.lastHeading = &g_lastMagHeading;
+    deps.lastFieldReliability = &g_lastMagFieldReliability;
     deps.lastYawCorrection = &g_lastMagYawCorrection;
     deps.lastOutputConfidence = &g_lastOutputConfidence;
+    deps.lastCalibratedSample = &g_lastCalibratedSample;
+    deps.lastImuTimestampUs = &g_lastSampleTimestampUs;
+    deps.lastImuSampleSequence = &g_lastImuSampleSequence;
     deps.accelCalibrationReady = &g_imuCal.accelCalValid;
     deps.fallbackTimestampUs = &g_lastSampleTimestampUs;
     deps.recoveryActive = magControllerRecoveryActiveCallback;
@@ -192,8 +244,8 @@ static TrackingStateInputs makeTrackingStateInputs() {
     in.qualityFlags = g_lastQualityFlags | g_quality.lastRecoveryFlags();
     in.magRuntimeEnabled = g_magState.runtimeEnabled;
     in.magSampleSeen = g_lastMagProcessed.seq != 0 || g_magProcessor.stats().processedSamples != 0;
-    in.magTrusted = g_lastMagProcessed.trusted;
-    in.magRejectFlags = g_lastMagProcessed.rejectFlags;
+    in.magTrusted = g_lastMagFieldReliability.trustedForYaw;
+    in.magRejectFlags = g_lastMagProcessed.rejectFlags | (g_lastMagFieldReliability.flags << 16u);
     in.magHeadingReferenceValid = g_magHeadingRef.valid;
     in.magYawControllerEnabled = g_config.data.magYaw.controllerEnabled;
     in.magYawApplied = g_lastMagYawCorrection.applied;
@@ -219,6 +271,10 @@ static void processOneMagRawSample(const Lsm6dsvFifoReader::MagRawSample& mag) {
     g_magRuntime.processRawSample(mag);
 }
 
+static bool updateMagDeferredRuntime() {
+    return g_magRuntime.serviceDeferred();
+}
+
 #if TRACKER_ENABLE_DETAILED_MAG_STATUS
 static MagStatusReporterDeps makeMagStatusReporterDeps() {
     MagStatusReporterDeps deps;
@@ -230,6 +286,12 @@ static MagStatusReporterDeps makeMagStatusReporterDeps() {
     deps.lastProcessed = &g_lastMagProcessed;
     deps.headingEstimator = &g_magHeading;
     deps.lastHeading = &g_lastMagHeading;
+    deps.fieldReliability = &g_magFieldReliability;
+    deps.lastFieldReliability = &g_lastMagFieldReliability;
+#if TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    deps.axisAlignmentCollector = &g_magAxisAlignmentCollector;
+    deps.axisAlignmentState = &g_magAxisAlignmentState;
+#endif
     deps.headingRef = &g_magHeadingRef;
     deps.headingAutoRef = &g_magHeadingAutoRef;
     deps.yawCorrection = &g_magYawCorrection;

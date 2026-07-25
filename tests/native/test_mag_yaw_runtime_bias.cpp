@@ -46,6 +46,9 @@ static MagYawCorrectionInput makeGoodMagYawInput(uint32_t nowMs) {
     in.magRejectFlagsForUse = MAG_REJECT_NONE;
     in.gyroNormDps = 0.5f;
     in.accelTrust = 1.0f;
+    in.fieldReliable = true;
+    in.fieldStableMs = 10000;
+    in.magneticHeadingRateDegS = 0.0f;
     in.nowMs = nowMs;
     return in;
 }
@@ -99,6 +102,41 @@ static void testMagYawRejectsAndCooldown(TestContext& ctx) {
     controller.update(afterCooldown, cfg, out);
     CHECK(ctx, out.rejectFlags == MAG_YAW_REJECT_NONE);
     CHECK(ctx, out.gateOpen);
+}
+
+
+static void testMagYawLargeErrorReacquiresWithoutPermanentCooldown(TestContext& ctx) {
+    MagYawCorrectionConfig cfg;
+    cfg.applyEnabled = true;
+    cfg.maxInnovationDeg = 25.0f;
+    cfg.reacquireInnovationMaxDeg = 170.0f;
+    cfg.reacquireMinFieldStableMs = 8000;
+    cfg.reacquireMaxHeadingRateDegS = 2.0f;
+
+    MagYawCorrectionController controller;
+    MagYawCorrectionOutput out;
+
+    MagYawCorrectionInput pending = makeGoodMagYawInput(1000);
+    pending.heading.magneticNorthWorldYawRad = 40.0f * MATH_DEG_TO_RAD;
+    pending.fieldStableMs = 2000;
+    controller.update(pending, cfg, out);
+    CHECK(ctx, out.reacquirePending);
+    CHECK(ctx, (out.rejectFlags & MAG_YAW_REJECT_REACQUIRE_PENDING) != 0u);
+    CHECK(ctx, (out.rejectFlags & MAG_YAW_REJECT_COOLDOWN) == 0u);
+
+    MagYawCorrectionInput ready = pending;
+    ready.nowMs = 9001;
+    ready.mag.receivedMs = ready.nowMs;
+    ready.mag.t_us = static_cast<uint64_t>(ready.nowMs) * 1000ULL;
+    ready.fieldStableMs = 9000;
+    ready.magneticHeadingRateDegS = 0.2f;
+    controller.update(ready, cfg, out);
+    CHECK(ctx, out.gateOpen);
+    CHECK(ctx, out.reacquireActive);
+    CHECK(ctx, out.mode == MagYawCorrectionMode::Reacquiring);
+    CHECK(ctx, out.applyAllowed);
+    CHECK(ctx, out.correctionStepDeg < 0.0f);
+    CHECK(ctx, std::fabs(out.correctionStepDeg) <= cfg.reacquireMaxCorrectionStepDeg + 1.0e-6f);
 }
 
 static void testMagRuntimeBodyNormExtremaInitializeFromFirstSample(TestContext& ctx) {
@@ -165,6 +203,7 @@ int main() {
     testRuntimeBiasStateResets(ctx);
     testMagYawGateOpenAndCorrectionDirection(ctx);
     testMagYawRejectsAndCooldown(ctx);
+    testMagYawLargeErrorReacquiresWithoutPermanentCooldown(ctx);
     testMagRuntimeBodyNormExtremaInitializeFromFirstSample(ctx);
     testMagSampleAgeAcceptsZeroAndWrap(ctx);
     testMagYawDtIsWrapSafe(ctx);

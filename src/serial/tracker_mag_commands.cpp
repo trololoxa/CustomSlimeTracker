@@ -8,6 +8,7 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "connection/lsm6dsv_sensorhub.hpp"
 #include "sensor/qmc6309.hpp"
+#include "sensor/frame_transform.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
@@ -135,7 +136,7 @@ bool makeMagAxisMatrixFromTokens(const char* bodyXToken,
             out.m[row][axis[row]] = sign[row];
         }
 
-        return true;
+        return isProperRotationMatrix(out, 0.001f, 0.001f, 0.001f);
     }
 
 bool saveConfigIfRequested(TrackerSerialCommandContext& ctx, bool saveRequested) {
@@ -733,7 +734,7 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
 
                 Mat3 m = Mat3::identity();
                 if (!makeMagAxisMatrixFromTokens(argv[3], argv[4], argv[5], m)) {
-                    tracker_serial_detail::printErr(out, "invalid axis mapping; use each of x/y/z exactly once, with optional +/-");
+                    tracker_serial_detail::printErr(out, "invalid axis mapping; use each axis once and keep a right-handed rotation (det=+1)");
                     out.println("# valid examples:");
                     out.println("#   mag axis set +x +y +z");
                     out.println("#   mag axis set +y -x +z");

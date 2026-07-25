@@ -13,7 +13,7 @@ This inventory is the current ownership map. It is intentionally compact; update
 | `src/connection/` | hardware/protocol | LSM6DSV, FIFO, sensor-hub, and low-level magnetometer transport | No app/serial dependencies. |
 | `src/core/` | pure core | Math primitives and small shared utilities | Host-test friendly. |
 | `src/runtime/` | runtime controllers | FIFO runtime, sample pipeline, logs, output snapshots, static tests, bias, mag runtime, state | Should expose status/results, not own CLI parsing. |
-| `src/sensor/` | sensor math/models | AHRS, calibration, IMU quality, mag heading/yaw correction | Prefer pure/host-testable logic. |
+| `src/sensor/` | sensor math/models | AHRS, calibration, IMU quality, mag heading/field reliability/yaw correction and axis solving | Prefer pure/host-testable logic. |
 | `src/serial/` | developer CLI | Fixed-buffer parser, command context, domain command handlers, serial stream helpers | Domain commands live in `.cpp`; headers expose API only. |
 | `src/network/` | transport | Wi-Fi station management and UDP transport primitives | No AHRS/FIFO logic or SlimeVR packet formatting here. |
 | `src/output/` | protocol output | Host-safe SlimeVR packet writer/protocol helpers | No Wi-Fi state or sensor fusion ownership. |

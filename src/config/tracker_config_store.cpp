@@ -1408,7 +1408,26 @@ bool TrackerConfigStore::candidateQualityComparison(TrackerCalibrationCandidateR
     }
 
     const auto& cq = candidate.metadata.quality;
-    const auto& aq = active->quality;
+    TrackerCalibrationQualitySummary effectiveActiveQuality = active->quality;
+    const bool candidateHasMeasuredAlignment =
+        (cq.qualityFlags & tracker_calibration_quality_flags::ALIGNMENT_MEASURED) != 0u;
+    const bool activeHasMeasuredAlignment =
+        (effectiveActiveQuality.qualityFlags &
+         tracker_calibration_quality_flags::ALIGNMENT_MEASURED) != 0u;
+    if (candidateHasMeasuredAlignment && !activeHasMeasuredAlignment &&
+        active->payload.magCal.axisAlignmentValid) {
+        // Older active records only know that an axis matrix is valid and
+        // therefore persisted a binary alignmentScore=1. That value is not a
+        // measured fit score and cannot be compared to a gyro-assisted solve.
+        // Treat the unmeasured-but-valid baseline as neutral; the runtime
+        // solver separately proves pairwise improvement on the exact same
+        // intervals before it is allowed to stage this candidate.
+        TrackerConfig activeConfig;
+        activeConfig.data = active->payload;
+        effectiveActiveQuality.alignmentScore = 0.50f;
+        trackerCalibrationQualityRecomputeOverall(activeConfig, effectiveActiveQuality);
+    }
+    const auto& aq = effectiveActiveQuality;
     if (qualityRegressed(cq.gyroScore, aq.gyroScore))
         flags |= tracker_calibration_comparison_flags::GYRO_REGRESSION;
     if (qualityRegressed(cq.accelScore, aq.accelScore))
@@ -1542,6 +1561,29 @@ bool TrackerConfigStore::candidateDirty() const {
     return false;
 #else
     return ramCandidateDirty_;
+#endif
+}
+
+bool TrackerConfigStore::candidateExists(bool& outExists) {
+    outExists = false;
+#if !TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    lastError_ = TrackerConfigError::None;
+    return true;
+#else
+    if (ramCandidateValid_) {
+        outExists = true;
+        lastError_ = TrackerConfigError::None;
+        return true;
+    }
+    Preferences prefs;
+    if (!prefs.begin(ns_, true)) {
+        lastError_ = TrackerConfigError::NvsBeginFailed;
+        return false;
+    }
+    outExists = prefs.isKey(candidateKey_);
+    prefs.end();
+    lastError_ = TrackerConfigError::None;
+    return true;
 #endif
 }
 
@@ -1815,7 +1857,13 @@ bool TrackerConfigStore::prepareCandidatePromotion(TrackerPreparedConfigPromotio
     TrackerConfig& activeConfig = scratch->activeConfig;
     if (hasActive) {
         activeConfig.data = active.payload;
-        composed = trackerComposeCalibrationCandidate(activeConfig, candidateSnapshot);
+        // Compose directly into the heap-backed promotion workspace. Returning
+        // TrackerConfig by value here creates a 756-byte ABI-dependent return
+        // temporary on some host/embedded compilers and can exceed the bounded
+        // promotion stack budget even though the persistent records are already
+        // off-stack.
+        composed = activeConfig;
+        trackerApplyCalibrationCandidateToConfig(composed, candidateSnapshot);
     } else {
         composed = candidateSnapshot;
         composed.sanitize();

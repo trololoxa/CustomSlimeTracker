@@ -670,6 +670,17 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     return s;
 }
 
+bool SlimeVROutputRuntime::rotationDeadlineSlackMs(uint32_t nowMs,
+                                                   uint32_t& outSlackMs) const {
+    if (!enabled_ || !serverFound_ || !rotationDeadlineArmed_) {
+        outSlackMs = 0xFFFFFFFFUL;
+        return false;
+    }
+    const int32_t remaining = static_cast<int32_t>(nextRotationDeadlineMs_ - nowMs);
+    outSlackMs = remaining > 0 ? static_cast<uint32_t>(remaining) : 0u;
+    return true;
+}
+
 void SlimeVROutputRuntime::transitionTo(SlimeVROutputState state, uint32_t nowMs) {
     if (state_ == state) return;
     state_ = state;

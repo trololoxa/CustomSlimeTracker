@@ -27,6 +27,12 @@ enum MagYawCorrectionRejectFlags : uint32_t {
     // after strong motion or magnetic disturbance, keep yaw correction closed
     // for a short time even after instant gates become good again.
     MAG_YAW_REJECT_COOLDOWN              = 1u << 12,
+    MAG_YAW_REJECT_REACQUIRE_PENDING      = 1u << 13,
+};
+
+enum class MagYawCorrectionMode : uint8_t {
+    Normal = 0,
+    Reacquiring = 1,
 };
 
 struct MagYawCorrectionConfig {
@@ -56,6 +62,14 @@ struct MagYawCorrectionConfig {
     uint32_t gyroMovingCooldownMs = 1000;
     uint32_t accelBadCooldownMs = 750;
     uint32_t magDisturbanceCooldownMs = 3000;
+
+    bool reacquisitionEnabled = true;
+    float reacquireInnovationMaxDeg = 170.0f;
+    uint32_t reacquireMinFieldStableMs = 8000;
+    float reacquireMaxHeadingRateDegS = 2.0f;
+    float reacquireTimeConstantS = 90.0f;
+    float reacquireMaxCorrectionRateDegS = 0.75f;
+    float reacquireMaxCorrectionStepDeg = 0.08f;
 };
 
 struct MagYawCorrectionInput {
@@ -70,6 +84,9 @@ struct MagYawCorrectionInput {
 
     float gyroNormDps = 0.0f;
     float accelTrust = 0.0f;
+    bool fieldReliable = false;
+    uint32_t fieldStableMs = 0;
+    float magneticHeadingRateDegS = 0.0f;
 
     uint32_t nowMs = 0;
 };
@@ -80,6 +97,9 @@ struct MagYawCorrectionOutput {
     bool gateOpen = false;
     bool applyAllowed = false;
     bool applied = false;
+    MagYawCorrectionMode mode = MagYawCorrectionMode::Normal;
+    bool reacquirePending = false;
+    bool reacquireActive = false;
 
     uint32_t rejectFlags = MAG_YAW_REJECT_NONE;
 
@@ -97,6 +117,8 @@ struct MagYawCorrectionOutput {
 
     float accelTrust = 0.0f;
     float accelGateTrust = 0.0f;
+    uint32_t fieldStableMs = 0;
+    float magneticHeadingRateDegS = 0.0f;
 
     float combinedTrust = 0.0f;
 
@@ -135,6 +157,10 @@ struct MagYawCorrectionStats {
     uint32_t rejectDtInvalid = 0;
     uint32_t rejectNonfinite = 0;
     uint32_t rejectCooldown = 0;
+    uint32_t rejectReacquirePending = 0;
+    uint32_t reacquireGateOpenCount = 0;
+    uint32_t reacquireAppliedCount = 0;
+    uint32_t reacquireCompletedCount = 0;
 
     float lastAbsErrorDeg = 0.0f;
     float maxAbsErrorDeg = 0.0f;
@@ -188,6 +214,8 @@ private:
 
     uint32_t cooldownUntilMs_ = 0;
     uint32_t cooldownReasonFlags_ = MAG_YAW_REJECT_NONE;
+    bool reacquiring_ = false;
+    uint32_t reacquireCandidateSinceMs_ = 0;
 };
 
 } // namespace tracker

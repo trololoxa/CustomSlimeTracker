@@ -300,3 +300,37 @@ workspaces now have explicit owners and epoch boundaries:
 
 Compact and detailed status now report `sensor_to_device_valid` and
 `motion_frame_config_ready` separately from `accel_cal_valid`.
+
+
+## Patch 0022 magnetic heading reliability
+
+The current magnetic runtime inserts a temporal field-reliability monitor between
+calibrated heading and yaw correction. Norm, world dip, stationary heading steps,
+reference consistency and dwell/hysteresis classify the field as acquiring,
+trusted, suspect, disturbed or recovering. Only trusted field is usable for yaw.
+Large finite yaw errors use a separate slow reacquisition mode instead of renewing
+cooldown indefinitely. A bounded runtime collector can solve a right-handed
+mag-to-IMU axis candidate from coherent gyro/magnetometer motion, but it can only
+stage an inactive calibration candidate; it never writes or promotes active
+calibration in the tracking loop. See [magnetic_heading_reliability.md](magnetic_heading_reliability.md).
+
+### 0022a hardening
+
+The current implementation uses a two-stage mag-axis solve: right-handed signed
+permutations establish the coarse frame and bounded `SO(3)` refinement estimates
+continuous residual mounting error. Solver evidence is compared with the active
+matrix on the same intervals and is persisted as measured candidate quality, so a
+real improvement can use ordinary candidate comparison/promotion without `force`.
+Reacquisition consumes filtered heading rate, changed environments remain
+fail-closed, and solver/NVS work is deferred outside the magnetic sample callback
+until FIFO has no pending or urgent work. Legacy persisted finite axis matrices
+remain readable; newly generated/setup/manual mappings must be proper rotations.
+
+### 0022b magnetic proof and field-jump behavior
+
+The active magnetic runtime now treats abrupt stationary direction changes as a
+latched environment discontinuity, not as a transient suspect sample. Candidate
+axis solving uses independent training/validation temporal windows and
+rate-normalized confidence. Deferred candidate work requires actual hardware FIFO
+slack and rotation-output deadline slack. Active calibration remains unchanged
+until explicit candidate promotion.

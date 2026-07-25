@@ -6,6 +6,7 @@
 #include "Preferences.h"
 #include "config/tracker_config_store.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
+#include "sensor/mag_axis_alignment.hpp"
 
 using namespace tracker;
 
@@ -1101,6 +1102,141 @@ void testPromotionRejectsDivergedRuntimeSensorContract(TestContext& ctx) {
     CHECK(ctx, store.lastError() == TrackerConfigError::RuntimeSensorSignatureDiverged);
 }
 
+
+void testMeasuredAxisCandidateBeatsUnmeasuredValidAlignment(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore store("cfg_axis_quality", "cfg");
+
+    TrackerConfig active = makeConfig(100, 0.90f, true);
+    active.data.magCal.calibrationValid = true;
+    active.data.magCal.axisAlignmentValid = true;
+    active.data.magCal.magToImu = Mat3::identity();
+    active.data.magCalQuality.coverageScore = 0.90f;
+    active.data.magCalQuality.residualRms = 0.02f;
+    active.updateCrc();
+    CHECK(ctx, store.save(active));
+
+    TrackerConfig candidate = active;
+    candidate.data.magCal.magToImu = Quat::fromEulerXYZ(
+        0.5f * MATH_DEG_TO_RAD,
+       -1.0f * MATH_DEG_TO_RAD,
+        1.5f * MATH_DEG_TO_RAD).toRotationMatrix();
+    candidate.updateCrc();
+
+    TrackerCalibrationCandidateMetadata metadata;
+    metadata.provenance = TrackerCalibrationProvenance::Background;
+    metadata.sampleCount = 64u;
+    metadata.independentWindowCount = 5u;
+    metadata.quality = trackerCalibrationQualityFromConfig(candidate);
+    metadata.quality.alignmentScore = 0.80f;
+    metadata.quality.qualityFlags |=
+        tracker_calibration_quality_flags::ALIGNMENT_MEASURED |
+        tracker_calibration_quality_flags::SOURCE_MEASURED;
+    trackerCalibrationQualityRecomputeOverall(candidate, metadata.quality);
+    trackerCalibrationQualitySetProvenance(
+        metadata.quality, TrackerCalibrationProvenance::Background);
+
+    CHECK(ctx, store.stageCandidate(candidate, metadata, 1000u));
+    bool exists = false;
+    CHECK(ctx, store.candidateExists(exists));
+    CHECK(ctx, exists);
+
+    TrackerCalibrationCandidateRecord compared;
+    TrackerCalibrationComparisonResult result = TrackerCalibrationComparisonResult::NotCompared;
+    uint32_t flags = 0u;
+    CHECK(ctx, store.compareCandidate(compared, result, flags));
+    CHECK(ctx, result == TrackerCalibrationComparisonResult::Better);
+    CHECK(ctx, (flags & tracker_calibration_comparison_flags::BELOW_MIN_IMPROVEMENT) == 0u);
+    CHECK(ctx, (flags & tracker_calibration_comparison_flags::ALIGNMENT_REGRESSION) == 0u);
+
+    TrackerPreparedConfigPromotion prepared;
+    TrackerConfig preparedConfig;
+    CHECK(ctx, store.prepareCandidatePromotion(prepared, preparedConfig));
+    CHECK(ctx, prepared.valid);
+    CHECK(ctx, preparedConfig.data.magCal.axisAlignmentValid);
+}
+
+void testSolverMeasuredAxisCandidateUsesNormalStorePromotionPath(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore store("cfg_axis_solver", "cfg");
+
+    TrackerConfig active = makeConfig(100, 0.90f, true);
+    active.data.magCal.calibrationValid = true;
+    active.data.magCal.hardIron = Vec3::zero();
+    active.data.magCal.softIron = Mat3::identity();
+    active.data.magCal.axisAlignmentValid = true;
+    const Mat3 coarse(0,-1,0, 1,0,0, 0,0,1);
+    active.data.magCal.magToImu = coarse;
+    active.updateCrc();
+    CHECK(ctx, store.save(active));
+
+    const Mat3 residual = Quat::fromEulerXYZ(
+        0.7f * MATH_DEG_TO_RAD,
+       -1.1f * MATH_DEG_TO_RAD,
+        1.6f * MATH_DEG_TO_RAD).toRotationMatrix();
+    const Mat3 expected = residual * coarse;
+    const Mat3 inverse = expected.transposed();
+    MagAxisAlignmentInterval intervals[64];
+    Vec3 field = Vec3(0.45f, 0.20f, 0.87f).normalized();
+    const float rate = 90.0f * MATH_DEG_TO_RAD;
+    for (uint16_t i = 0; i < 64u; ++i) {
+        const Vec3 axis = (i % 4u == 0u) ? Vec3(1.0f, 0.2f, 0.1f).normalized()
+                        : (i % 4u == 1u) ? Vec3(0.1f, 1.0f, 0.3f).normalized()
+                        : (i % 4u == 2u) ? Vec3(0.25f, -0.1f, 1.0f).normalized()
+                                         : Vec3(-0.7f, 0.5f, 0.5f).normalized();
+        const Vec3 gyro = axis * rate;
+        const float dt = 0.017f;
+        const Vec3 next = Quat::fromRotationVector(gyro * (-dt)).rotate(field).normalized();
+        intervals[i] = MagAxisAlignmentInterval{
+            gyro, inverse * field, inverse * next, dt,
+            static_cast<uint16_t>(i / 8u)};
+        field = next;
+    }
+
+    MagAxisAlignmentSolvePolicy policy;
+    MagAxisAlignmentResult solved;
+    CHECK(ctx, solveMagAxisAlignmentDataset(
+        intervals, 64u, Vec3::zero(), Mat3::identity(), 3u, 8u,
+        &coarse, policy, solved));
+    CHECK(ctx, solved.valid);
+    CHECK(ctx, solved.validationPassed);
+    CHECK(ctx, solved.improvesActive);
+    CHECK(ctx, solved.qualityScore >= 0.62f);
+
+    TrackerConfig candidate = active;
+    candidate.data.magCal.magToImu = solved.magToImu;
+    candidate.updateCrc();
+
+    TrackerCalibrationCandidateMetadata metadata;
+    metadata.provenance = TrackerCalibrationProvenance::Background;
+    metadata.sampleCount = solved.usedIntervals;
+    metadata.independentWindowCount = solved.independentWindows;
+    metadata.quality = trackerCalibrationQualityFromConfig(candidate);
+    metadata.quality.alignmentScore = solved.qualityScore;
+    metadata.quality.qualityFlags |=
+        tracker_calibration_quality_flags::ALIGNMENT_MEASURED |
+        tracker_calibration_quality_flags::SOURCE_MEASURED;
+    trackerCalibrationQualityRecomputeOverall(candidate, metadata.quality);
+    trackerCalibrationQualitySetProvenance(
+        metadata.quality, TrackerCalibrationProvenance::Background);
+
+    CHECK(ctx, store.stageCandidate(candidate, metadata, 1000u));
+    TrackerCalibrationCandidateRecord compared;
+    TrackerCalibrationComparisonResult result =
+        TrackerCalibrationComparisonResult::NotCompared;
+    uint32_t flags = 0u;
+    CHECK(ctx, store.compareCandidate(compared, result, flags));
+    CHECK(ctx, result == TrackerCalibrationComparisonResult::Better);
+    CHECK(ctx, (flags & tracker_calibration_comparison_flags::BELOW_MIN_IMPROVEMENT) == 0u);
+
+    TrackerPreparedConfigPromotion prepared;
+    TrackerConfig preparedConfig;
+    CHECK(ctx, store.prepareCandidatePromotion(prepared, preparedConfig));
+    CHECK(ctx, prepared.valid);
+    CHECK(ctx, magAxisRotationDifferenceDeg(
+        preparedConfig.data.magCal.magToImu, expected) < 1.0f);
+}
+
 void testGenerationWrapComparison(TestContext& ctx) {
     CHECK(ctx, trackerGenerationIsNewer(1u, UINT32_MAX));
     CHECK(ctx, !trackerGenerationIsNewer(UINT32_MAX, 1u));
@@ -1151,6 +1287,8 @@ int main() {
     testDegradedStateBlocksCandidateDiscardButAllowsFullErase(ctx);
     testDormantFrameBytesDoNotChangeSensorSignature(ctx);
     testPromotionRejectsDivergedRuntimeSensorContract(ctx);
+    testMeasuredAxisCandidateBeatsUnmeasuredValidAlignment(ctx);
+    testSolverMeasuredAxisCandidateUsesNormalStorePromotionPath(ctx);
     testGenerationWrapComparison(ctx);
     return ctx.finish("test_config_storage");
 }

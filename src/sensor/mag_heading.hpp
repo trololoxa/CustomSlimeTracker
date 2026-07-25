@@ -38,6 +38,8 @@ struct MagHeadingSample {
     float magBodyNorm = 0.0f;
     float magWorldNorm = 0.0f;
     float horizontalNorm = 0.0f;
+    float dipRad = 0.0f;
+    float dipDeg = 0.0f;
 
     float magneticFieldWorldYawRad = 0.0f;
     float magneticFieldWorldYawDeg = 0.0f;

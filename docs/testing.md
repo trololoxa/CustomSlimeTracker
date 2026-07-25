@@ -880,3 +880,61 @@ Integration acceptance must also verify:
 - a persisted temperature slope without a valid gyro bias sanitizes to no
   temperature model and clears its evidence; `cal temp set_slope` must reject
   the same missing-bias state without writing NVS.
+
+## Patch 0022 magnetic acceptance
+
+The native suite includes temporal field disturbance/recovery, repeated
+independent disturbance cycles, proper-rotation enumeration/reflection rejection,
+gyro/mag timestamp-skew rejection, synthetic axis solve, and large-yaw
+reacquisition. Hardware acceptance must also cover a same-norm directional
+magnetic disturbance, removal/re-entry, a yaw error beyond the normal innovation
+limit, multi-axis motion coverage/candidate staging, and concurrent FIFO/network
+counters. See [magnetic_heading_reliability.md](magnetic_heading_reliability.md)
+for the exact sequence and expected states.
+
+### 0022a regression matrix
+
+The hotfix adds integrated native coverage for:
+
+- actual 60 Hz noisy heading samples through the field monitor into yaw
+  reacquisition;
+- stable changed-environment fail-closed behavior and explicit reference restart;
+- two-stage coarse-plus-`SO(3)` recovery of an approximately two-degree mechanical
+  misalignment;
+- orthonormal/determinant constraints and reflection/shear rejection for new
+  solver results;
+- active and candidate scoring on one dataset;
+- measured axis candidate comparison and normal promotion preparation without
+  `force`;
+- policy enforcement that sample callbacks contain no full storage inspection,
+  candidate flush or promotion.
+
+Hardware acceptance must additionally measure solve/storage max duration while
+960 Hz FIFO and 100 Hz network output are active, and require zero FIFO
+full/overrun, no recovery entry and normal delivery during deferred service.
+
+### 0022b regression matrix
+
+Native and policy coverage additionally requires:
+
+- abrupt stationary heading shifts of 5, 9, 12 and 19 degrees remain disturbed;
+- slow drift and the maximum normal 2 deg/s yaw correction do not self-latch;
+- real physical rotation with nonzero gyro does not trigger the stationary latch;
+- realistic 60 Hz datasets solve at 30, 60, 90 and 120 deg/s using normalized
+  confidence;
+- a hypothesis that fits training windows but not held-out windows is rejected;
+- training and validation each contain multiple independent temporal windows;
+- rotation-deadline slack reports armed, future and due states correctly;
+- policy gates require real FIFO status, output-deadline admission and
+  axis-independent collection for repairing bad active alignment.
+
+Hardware acceptance must still establish actual ESP32-C3 solve/storage duration
+and require zero FIFO overrun/full, no recovery entry and normal packet delivery.
+
+### 0022c cross-ABI promotion stack regression
+
+`tools/test_calibration_storage_stack_policy.py` now rejects by-value
+`TrackerConfig` composition inside `prepareCandidatePromotion` and enforces a
+promotion-specific 768-byte host stack ceiling. This provides margin below the
+1 KiB project limit across GCC ABIs; 0022b was 1008 bytes on Linux and 1040 bytes
+on Windows/MSYS2.

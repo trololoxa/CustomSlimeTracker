@@ -79,6 +79,15 @@ def main() -> int:
     ).read_text(encoding="utf-8"):
         raise SystemExit("CRC calculation must not allocate a candidate-sized stack buffer")
 
+    prepare = function_body(store, "bool TrackerConfigStore::prepareCandidatePromotion")
+    if "trackerComposeCalibrationCandidate" in prepare:
+        raise SystemExit(
+            "prepareCandidatePromotion must compose in-place; returning TrackerConfig by value "
+            "creates an ABI-dependent candidate-sized stack temporary"
+        )
+    if "trackerApplyCalibrationCandidateToConfig(composed, candidateSnapshot)" not in prepare:
+        raise SystemExit("prepareCandidatePromotion must use heap-backed in-place composition")
+
     with tempfile.TemporaryDirectory(prefix="tracker-stack-policy-") as tmp:
         tmp_path = Path(tmp)
         cxx = compiler()
@@ -109,7 +118,6 @@ def main() -> int:
         "TrackerConfigStore::inspectStorage",
         "TrackerConfigStore::stageCandidate",
         "TrackerConfigStore::flushCandidate",
-        "TrackerConfigStore::prepareCandidatePromotion",
         "TrackerConfigStore::load(",
         "TrackerConfigStore::migrateLegacy",
         "TrackerCalibrationCommandDispatcher::cmdCalCandidate",
@@ -117,6 +125,9 @@ def main() -> int:
         "trackerSerialCommitFullHardwareConfig",
     ):
         require_limit(usage, function, 1024)
+    # Keep promotion comfortably below the cross-ABI 1 KiB ceiling. 0022b
+    # measured 1008 bytes on Linux/GCC but 1040 bytes on Windows/MSYS2 GCC.
+    require_limit(usage, "TrackerConfigStore::prepareCandidatePromotion", 768)
 
     print("# calibration_storage_stack_policy: PASS")
     return 0

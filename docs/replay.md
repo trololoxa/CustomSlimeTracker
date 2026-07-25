@@ -166,3 +166,14 @@ max yaw drift diag:      2.0 deg/min
 Warnings about missing yaw application are expected for this fixture. Add a
 separate fixture later when testing mag reference + yaw correction apply.
 
+
+## LOGVER 3 magnetic fields
+
+Patch 0022 keeps existing machine-log columns stable and appends magnetic
+reliability data. `MAG` adds world dip, field state/trust/flags and norm/dip/heading
+reference errors. `YAW` adds normal/reacquisition mode, pending/active state,
+stable-field duration and magnetic heading rate. In 0022a the logged
+`field_heading_rate_deg_s` is the filtered signed-rate magnitude used by
+reacquisition rather than the instantaneous two-sample derivative; CLI status
+prints both values. `tools/logs/parse_e0_log.py` reads these fields when present
+and remains compatible with LOGVER 2 captures.

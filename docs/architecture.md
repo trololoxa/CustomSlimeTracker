@@ -796,3 +796,54 @@ change without forcing recovery. A genuinely superseded gyro is marked as an
 orphan for diagnostics, but orphan/component-loss flags do not become timing
 recovery triggers. Normal pending state across FIFO drain boundaries is not
 marked as orphaned.
+
+## 0022 magnetic reliability ownership
+
+Pure sensor-domain logic is split into:
+
+```text
+sensor/mag_field_reliability.*  temporal field reference, disturbance and recovery
+sensor/mag_axis_alignment.*     proper-rotation gyro/mag solver and bounded collector
+sensor/mag_yaw_correction.*     normal and large-error yaw correction gates
+```
+
+`runtime/mag_runtime_controller.*` owns orchestration, timestamps, bounded solve
+scheduling and calibration-candidate staging. It may inspect/stage candidate
+storage through explicit dependencies, but it cannot flush or promote. App hooks
+only wire current gyro timestamp/state and storage callbacks. This keeps magnetic
+math host-testable and prevents storage or CLI ownership from entering the
+per-sample algorithm modules.
+
+### 0022a deferred ownership and continuous rotation
+
+The magnetic sample path may only collect bounded observations and set a pending
+action. `TrackerApp::loop()` services at most one solve/slot-check/stage action
+after FIFO and network work; the app callback rejects service while FIFO is
+pending or urgent. Storage presence probing is lightweight and fail-closed.
+
+`mag_axis_alignment` owns the complete numerical solve. It first enumerates the
+24 proper signed permutations, then refines the best hypotheses on `SO(3)` within
+a bounded angular radius. The result is therefore a pure rotation, not a general
+3x3 calibration matrix. `runtime/mag_runtime_controller` may stage a measured RAM
+candidate only when the result beats active alignment on the same intervals. The
+storage layer owns comparison/promotion and recognizes measured alignment quality
+without changing the persistent record layout.
+
+### 0022b independent evidence and realtime admission
+
+`mag_field_reliability` owns the stationary-discontinuity latch. It is active only
+under the existing gyro/accel stationary condition, is deliberately above the
+normal yaw-correction rate, and can only clear through stable return to the
+established field or explicit reference restart.
+
+`mag_axis_alignment` assigns every retained interval to a temporal window. Even
+and odd window IDs form deterministic training and validation partitions. Coarse
+search and `SO(3)` refinement use training data only; validation independently
+selects the winner, evaluates active alignment and supplies candidate quality.
+Confidence is normalized by observable angular motion instead of raw score
+separation.
+
+The app composition owns deferred admission because only it can inspect both the
+real LSM FIFO and output scheduler. The controller receives a structured gate
+result and records software-FIFO, hardware-status, hardware-busy and output-
+deadline deferrals. Numerical/storage modules remain unaware of hardware globals.

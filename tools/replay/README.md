@@ -41,3 +41,9 @@ python tools/replay/compare_replay_metrics.py before.json after.json --pretty
 The comparator tracks only stable, high-signal metrics: sample counts, FIFO
 fault rows, confidence/trust minima, diagnostic yaw drift, mag/yaw ratios,
 MAGR vector coverage when present, recovery events, and runtime bias updates.
+
+## Magnetic reliability logs
+
+LOGVER 3 appends field-reliability columns to `MAG` and reacquisition columns to
+`YAW`. Older captures remain valid because existing column positions are unchanged
+and the parser treats appended fields as optional.

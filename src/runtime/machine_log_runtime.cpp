@@ -83,7 +83,7 @@ void machineLogResetCounters(MachineLogCounters& counters, uint32_t& lastBiasEmi
 void machineLogEmitHeader(Stream& out,
                                  const TrackerSerialLogState& state,
                                  const TrackerConfig& config) {
-    out.print("LOGVER,2,E0,mode,"); out.print(machineLogModeName(state.mode));
+    out.print("LOGVER,3,E0,mode,"); out.print(machineLogModeName(state.mode));
     out.print(",rate_hz,"); out.print(state.rateHz);
     out.print(",config_crc,0x"); out.print(config.data.crc32, HEX);
     out.print(",config_version,"); out.print(config.data.version);
@@ -95,9 +95,9 @@ void machineLogEmitHeader(Stream& out,
     out.println("LOGFMT,CAL,t_us,seq,ax_g,ay_g,az_g,gx_rads,gy_rads,gz_rads,temp_c,quality_flags");
     out.println("LOGFMT,BIAS,t_us,seq,temp_c,bx_dps,by_dps,bz_dps,source,quality,flags,rt_enabled,rt_updates");
     out.println("LOGFMT,BIASUPD,t_us,seq,temp_c,rx_dps,ry_dps,rz_dps,sx_dps,sy_dps,sz_dps,dx_dps,dy_dps,dz_dps,trim_x_dps,trim_y_dps,trim_z_dps,flags");
-    out.println("LOGFMT,MAG,t_us,seq,mag_seq,age_ms,raw_norm,body_norm,horiz_norm,heading_valid,heading_yaw_deg,heading_innov_deg,trusted,reject_flags");
+    out.println("LOGFMT,MAG,t_us,seq,mag_seq,age_ms,raw_norm,body_norm,horiz_norm,heading_valid,heading_yaw_deg,heading_innov_deg,trusted,reject_flags,dip_deg,field_state,field_trusted,field_flags,field_norm_error,field_dip_error_deg,field_heading_error_deg");
     out.println("LOGFMT,MAGR,t_us,seq,mag_seq,raw_x,raw_y,raw_z,cal_x,cal_y,cal_z,body_x,body_y,body_z,raw_norm,cal_norm,body_norm,raw_flags,reject_flags,trusted");
-    out.println("LOGFMT,YAW,t_us,seq,valid,gate_open,apply_allowed,applied,error_deg,step_deg,trust,reject_flags,cooldown_ms");
+    out.println("LOGFMT,YAW,t_us,seq,valid,gate_open,apply_allowed,applied,error_deg,step_deg,trust,reject_flags,cooldown_ms,mode,reacquire_pending,reacquire_active,field_stable_ms,heading_rate_deg_s");
     out.println("LOGFMT,STATE,t_us,seq,state,reason,flags,conf");
     out.println("LOGFMT,LOGSUM,uptime_ms,mode,rate_hz,q,cal,fifo,mag,yaw,state,bias,samples,quality_samples,fifo_overruns,fifo_full,large_gaps,recoveries,mag_trusted,mag_rejected,yaw_applied");
 }
@@ -332,6 +332,7 @@ void machineLogEmitMagFrame(Stream& out,
                                    MachineLogCounters& counters,
                                    const MagProcessedSample& mag,
                                    const MagHeadingSample& heading,
+                                   const MagFieldReliabilityOutput& reliability,
                                    const MagYawCorrectionOutput& yaw,
                                    uint32_t rejectFlagsForUse,
                                    bool trustedForUse) {
@@ -341,6 +342,7 @@ void machineLogEmitMagFrame(Stream& out,
     (void)counters;
     (void)mag;
     (void)heading;
+    (void)reliability;
     (void)yaw;
     (void)rejectFlagsForUse;
     (void)trustedForUse;
@@ -371,7 +373,14 @@ void machineLogEmitMagFrame(Stream& out,
     out.print(','); out.print(heading.magneticNorthWorldYawDeg, 4);
     out.print(','); out.print(heading.yawInnovationDeg, 4);
     out.print(','); out.print(trustedForUse ? 1 : 0);
-    out.print(",0x"); out.println(rejectFlagsForUse, HEX);
+    out.print(",0x"); out.print(rejectFlagsForUse, HEX);
+    out.print(','); out.print(heading.dipDeg, 4);
+    out.print(','); out.print(static_cast<uint8_t>(reliability.state));
+    out.print(','); out.print(reliability.trustedForYaw ? 1 : 0);
+    out.print(",0x"); out.print(reliability.flags, HEX);
+    out.print(','); out.print(reliability.normRelativeError, 5);
+    out.print(','); out.print(reliability.dipErrorDeg, 4);
+    out.print(','); out.println(reliability.referenceHeadingErrorDeg, 4);
     counters.mag++;
 
     if (state.mode == TrackerLogMode::Full) {
@@ -405,7 +414,12 @@ void machineLogEmitMagFrame(Stream& out,
     out.print(','); out.print(yaw.correctionStepDeg, 7);
     out.print(','); out.print(yaw.combinedTrust, 4);
     out.print(",0x"); out.print(yaw.rejectFlags, HEX);
-    out.print(','); out.println(yaw.cooldownRemainingMs);
+    out.print(','); out.print(yaw.cooldownRemainingMs);
+    out.print(','); out.print(static_cast<uint8_t>(yaw.mode));
+    out.print(','); out.print(yaw.reacquirePending ? 1 : 0);
+    out.print(','); out.print(yaw.reacquireActive ? 1 : 0);
+    out.print(','); out.print(yaw.fieldStableMs);
+    out.print(','); out.println(yaw.magneticHeadingRateDegS, 4);
     counters.yaw++;
 #endif
 }

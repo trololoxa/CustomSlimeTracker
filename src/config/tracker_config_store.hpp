@@ -105,6 +105,9 @@ public:
                         TrackerCalibrationCandidateMetadata metadata,
                         uint32_t nowMs);
     bool candidateDirty() const;
+    // Lightweight fail-closed presence check used by deferred background
+    // services. It does not scan active slots or allocate large scratch state.
+    bool candidateExists(bool& outExists);
     bool flushCandidate(uint32_t nowMs, bool force = false);
     bool loadCandidate(TrackerCalibrationCandidateRecord& out);
     bool discardCandidate();

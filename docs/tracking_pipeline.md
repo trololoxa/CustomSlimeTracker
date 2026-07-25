@@ -119,3 +119,16 @@ tracker is briefly still and preserves the heading available before and after
 the gap. FIFO timestamp reconstruction also resets the sensor-hub/magnetometer
 timestamp baseline so the first post-recovery mag sample is anchored to the new
 IMU stream instead of inheriting a stale pre-recovery 60 Hz mag cadence.
+
+## Magnetic reliability and continuous alignment candidate
+
+After calibrated/body-frame magnetic processing, heading now includes world dip
+and passes through `MagFieldReliabilityMonitor`. The monitor applies temporal
+norm/dip/heading checks and hysteretic state transitions. `MagYawCorrectionController`
+receives only the resulting trusted-field state and uses a separate low-rate
+reacquisition mode for innovations above the ordinary gate. In parallel,
+`MagAxisAlignmentCollector` observes timestamp-coherent gyro/mag motion, performs
+bounded coverage checks and may stage a calibration candidate. This branch is
+calibration-only: it does not touch AHRS/FIFO configuration, active calibration,
+NVS or the output snapshot unless the user later performs the normal candidate
+promotion transaction.

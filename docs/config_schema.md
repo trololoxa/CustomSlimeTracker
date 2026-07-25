@@ -154,3 +154,13 @@ workspaces now have explicit owners and epoch boundaries:
 
 Compact and detailed status now report `sensor_to_device_valid` and
 `motion_frame_config_ready` separately from `accel_cal_valid`.
+
+
+## 0022 runtime-only magnetic reliability state
+
+Patch 0022 does not change `TrackerConfigBlob`, config version, candidate format,
+or NVS layout. Field-reliability thresholds, large-error reacquisition tuning and
+continuous-axis collector scheduling are bounded firmware defaults. The only
+persistable result is an ordinary calibration candidate using the existing 0021
+model/signature/evidence transaction. Active calibration changes only after an
+explicit candidate promotion.

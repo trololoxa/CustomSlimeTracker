@@ -240,3 +240,84 @@ workspaces now have explicit owners and epoch boundaries:
 
 Compact and detailed status now report `sensor_to_device_valid` and
 `motion_frame_config_ready` separately from `accel_cal_valid`.
+
+
+## Patch 0022 continuous magnetic alignment and heading reliability
+
+Patch 0022 closes the planned magnetic reliability wave without changing the
+persisted config schema, IMU/FIFO baseline, SlimeVR protocol, or active calibration
+automatically:
+
+- temporal norm/dip/heading consistency with explicit acquiring/trusted/suspect/disturbed/recovering states;
+- long-dwell new-environment recovery and bounded reference adaptation;
+- slow large-innovation yaw reacquisition without permanent cooldown lockout;
+- continuous gyro-assisted mag-axis candidate collection with timestamp coherence,
+  independent-window/axis coverage and only 24 proper rotations;
+- rate-limited solve/storage checks so the 60 Hz mag path does not repeatedly run
+  expensive solves or NVS inspection;
+- background results stage only through the 0021 candidate lifecycle and never
+  flush, promote, reconfigure FIFO or mutate active calibration automatically;
+- LOGVER 3 and expanded CLI/machine diagnostics for field state, re-entry,
+  reacquisition and candidate progress.
+
+The next planned main stage is 0023 safe background calibration autonomy.
+
+## Hotfix 0022a magnetic candidate, reacquisition and realtime hardening
+
+The post-0022 integration review found that measured axis quality was not
+comparable to the older binary alignment-valid score, instantaneous 60 Hz heading
+rate could keep reacquisition closed forever, a stable shifted field could become
+trusted against the old heading reference, and candidate storage inspection still
+ran from the magnetic sample path. 0022a fixes those defects and adds a two-stage
+axis solver:
+
+- 24 proper signed permutations provide the coarse axis/sign mapping;
+- a bounded local `SO(3)` refinement represents real residual mechanical rotation
+  without introducing scale, shear or reflection;
+- finite interval prediction uses `Exp(-omega*dt)` instead of a first-order
+  derivative approximation;
+- the active matrix is scored on the same intervals and only a proven improvement
+  receives measured candidate quality;
+- noisy large-error reacquisition uses filtered signed heading rate;
+- changed magnetic environments remain fail-closed until the old field returns or
+  the reference is explicitly reacquired;
+- solve and lightweight candidate-slot/storage work are deferred until FIFO is
+  neither pending nor urgent, with explicit timing/deferral counters.
+
+0022a keeps config/candidate formats unchanged and does not add automatic flush,
+promotion, rollback or candidate cleanup. Those autonomous lifecycle operations
+remain the scope of 0023 after hardware acceptance of this hotfix.
+
+## Hotfix 0022b magnetic environment and solver confidence hardening
+
+The post-0022a quality audit found three remaining integration defects: moderate
+5-19 degree stationary field jumps could clear the one-sample suspect gate and
+pull tracker yaw, fixed-degree solver separation rejected correct ordinary-speed
+motion, and the same observations were used to fit and prove a candidate. 0022b:
+
+- latches abrupt cumulative stationary heading discontinuities above the normal
+  bounded yaw-correction rate and remains fail-closed until the original field
+  returns or reference acquisition is explicitly restarted;
+- splits independent temporal windows into training and validation partitions;
+- normalizes winner separation by observable magnetic angular motion, allowing
+  valid 30-120 deg/s datasets without weakening ambiguity rejection;
+- compares the refined winner and active alignment only on held-out evidence and
+  rejects training-only fits or mismatched validation winners;
+- permits axis-independent finite/in-range observation collection so a
+  bad-but-valid active mapping can be repaired;
+- gates deferred solve/storage work on both software state, actual LSM FIFO status
+  and SlimeVR rotation-deadline slack.
+
+0022b retains the same persistent config and candidate formats. Automatic flush,
+promotion, probation, rollback and cleanup remain the scope of 0023.
+
+## Hotfix 0022c promotion stack hardening
+
+Windows/MSYS2 GCC reported a 1040-byte stack frame for
+`TrackerConfigStore::prepareCandidatePromotion`, exceeding the 1024-byte storage
+policy even though Linux/GCC measured 1008 bytes. The cause was an ABI-dependent
+756-byte `TrackerConfig` return temporary from `trackerComposeCalibrationCandidate`.
+0022c composes the calibration candidate directly into the heap-backed promotion
+workspace and adds a source policy plus a 768-byte promotion-specific ceiling.
+Persistent schemas, candidate semantics, magnetic behavior, FIFO, network, and
+tracking math are unchanged.

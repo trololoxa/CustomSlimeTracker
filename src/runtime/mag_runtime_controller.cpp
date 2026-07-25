@@ -11,6 +11,7 @@
 #include "runtime/tracker_console_suppress.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/imu_quality.hpp"
+#include "sensor/frame_transform.hpp"
 #include "sensor/mag_calibration.hpp"
 #include "sensor/qmc6309.hpp"
 
@@ -91,6 +92,10 @@ MagYawCorrectionConfig MagRuntimeController::yawConfig() const {
     return c;
 }
 
+MagFieldReliabilityConfig MagRuntimeController::fieldReliabilityConfig() const {
+    return MagFieldReliabilityConfig{};
+}
+
 float MagRuntimeController::headingErrorToReferenceRad(const MagHeadingSample& heading) const {
     if (!deps_.headingRef || !deps_.headingRef->valid || !heading.valid) {
         return 0.0f;
@@ -107,9 +112,19 @@ void MagRuntimeController::resetYawCorrectionRuntime() {
     if (deps_.lastYawCorrection) *deps_.lastYawCorrection = MagYawCorrectionOutput{};
 }
 
+void MagRuntimeController::resetAxisAlignmentCandidate() {
+#if TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    if (deps_.axisAlignmentCollector) deps_.axisAlignmentCollector->reset();
+    if (deps_.axisAlignmentState) deps_.axisAlignmentState->reset();
+#endif
+}
+
 void MagRuntimeController::resetOrientationState(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase) {
     if (deps_.headingEstimator) deps_.headingEstimator->reset();
     if (deps_.lastHeading) *deps_.lastHeading = MagHeadingSample{};
+    if (deps_.fieldReliability) deps_.fieldReliability->reset();
+    if (deps_.lastFieldReliability) *deps_.lastFieldReliability = MagFieldReliabilityOutput{};
+    resetAxisAlignmentCandidate();
 
     if (deps_.headingRef) deps_.headingRef->clear();
     if (deps_.headingAutoRef) {
@@ -314,6 +329,13 @@ void MagRuntimeController::clearHeadingReference() {
     if (deps_.headingAutoRef) {
         deps_.headingAutoRef->done = false;
         deps_.headingAutoRef->resetCandidate();
+    }
+    // An explicit clear is also the safe user action for accepting a genuinely
+    // new magnetic environment. The monitor must reacquire norm/dip/heading as
+    // one coherent reference before auto-reference or yaw correction can resume.
+    if (deps_.fieldReliability) deps_.fieldReliability->restartAcquisition();
+    if (deps_.lastFieldReliability) {
+        *deps_.lastFieldReliability = MagFieldReliabilityOutput{};
     }
     resetYawCorrectionRuntime();
 }
@@ -536,11 +558,26 @@ void MagRuntimeController::processRawSample(const Lsm6dsvFifoReader::MagRawSampl
     const float gyroNormDps = ahrsStats.lastGyroRadS.norm() * MATH_RAD_TO_DEG;
     const float accelTrust = ahrsStats.lastAccelGate.trust;
 
-    const bool magTrustedForUse =
+    const bool processorTrustedForUse =
         MagRuntimeProcessor::trustedForUse(*deps_.lastProcessed, magCfg, nowMs);
     const uint32_t magRejectFlagsForUse =
         MagRuntimeProcessor::rejectFlagsForUse(*deps_.lastProcessed, magCfg, nowMs);
 
+    MagFieldReliabilityOutput reliability;
+    if (deps_.fieldReliability) {
+        MagFieldReliabilityInput fieldIn;
+        fieldIn.mag = *deps_.lastProcessed;
+        fieldIn.heading = *deps_.lastHeading;
+        fieldIn.processorTrustedForUse = processorTrustedForUse;
+        fieldIn.gyroNormDps = gyroNormDps;
+        fieldIn.accelTrust = accelTrust;
+        fieldIn.nowMs = nowMs;
+        deps_.fieldReliability->update(fieldIn, fieldReliabilityConfig(), reliability);
+    }
+    if (deps_.lastFieldReliability) *deps_.lastFieldReliability = reliability;
+    const bool magTrustedForUse = processorTrustedForUse && reliability.trustedForYaw;
+
+    updateAxisAlignmentCandidate(reliability, nowMs);
     updateAutoReference(nowMs, gyroNormDps, accelTrust, magTrustedForUse);
 
     MagYawCorrectionInput yawIn;
@@ -552,6 +589,9 @@ void MagRuntimeController::processRawSample(const Lsm6dsvFifoReader::MagRawSampl
     yawIn.magRejectFlagsForUse = magRejectFlagsForUse;
     yawIn.gyroNormDps = gyroNormDps;
     yawIn.accelTrust = accelTrust;
+    yawIn.fieldReliable = reliability.trustedForYaw;
+    yawIn.fieldStableMs = reliability.stableMs;
+    yawIn.magneticHeadingRateDegS = reliability.headingRateDegS;
     yawIn.nowMs = nowMs;
 
     MagYawCorrectionOutput yawOut;
@@ -567,6 +607,7 @@ void MagRuntimeController::processRawSample(const Lsm6dsvFifoReader::MagRawSampl
     if (deps_.callbacks.emitMagFrame) {
         deps_.callbacks.emitMagFrame(*deps_.lastProcessed,
                                      *deps_.lastHeading,
+                                     reliability,
                                      *deps_.lastYawCorrection,
                                      magRejectFlagsForUse,
                                      magTrustedForUse,
@@ -645,6 +686,9 @@ void MagRuntimeController::resetRuntimeCounters() {
 
     if (deps_.headingEstimator) deps_.headingEstimator->reset();
     if (deps_.lastHeading) *deps_.lastHeading = MagHeadingSample{};
+    if (deps_.fieldReliability) deps_.fieldReliability->reset();
+    if (deps_.lastFieldReliability) *deps_.lastFieldReliability = MagFieldReliabilityOutput{};
+    resetAxisAlignmentCandidate();
 
     resetYawCorrectionRuntime();
 
@@ -756,6 +800,313 @@ float MagRuntimeController::rampUp(float x, float bad, float good) {
     if (x <= bad) return 0.0f;
     if (good <= bad) return 0.0f;
     return (x - bad) / (good - bad);
+}
+
+bool MagRuntimeController::deferredServiceAllowed(MagDeferredServiceGate& gate) const {
+    gate = MagDeferredServiceGate{};
+    if (!deps_.callbacks.evaluateDeferredServiceGate) {
+        gate.allowed = true;
+        return true;
+    }
+    return deps_.callbacks.evaluateDeferredServiceGate(
+        gate, deps_.callbacks.evaluateDeferredServiceGateUser);
+}
+
+void MagRuntimeController::updateAxisAlignmentCandidate(
+    const MagFieldReliabilityOutput& reliability,
+    uint32_t nowMs) {
+#if TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    if (!deps_.axisAlignmentCollector || !deps_.axisAlignmentState || !deps_.config ||
+        !deps_.configStore || !deps_.lastCalibratedSample || !deps_.lastImuTimestampUs ||
+        !deps_.lastProcessed) {
+        return;
+    }
+    if (!deps_.config->data.magCal.calibrationValid) return;
+    if (deps_.calibrationCollector && deps_.calibrationCollector->active()) return;
+
+    // A staged/foreign candidate owns the single candidate slot. Do not keep
+    // collecting a dataset that cannot be consumed; only request a deferred,
+    // rate-limited slot check outside the sample callback.
+    if (deps_.axisAlignmentState->candidateStaged ||
+        deps_.axisAlignmentState->blockedByExistingCandidate) {
+        deps_.axisAlignmentState->pendingAction =
+            MagAxisAlignmentDeferredAction::CheckCandidateSlot;
+        return;
+    }
+
+    const uint32_t axisIndependentRejects = deps_.lastProcessed->rejectFlags &
+        ~(static_cast<uint32_t>(MAG_REJECT_AXIS_NOT_ALIGNED));
+    // Axis learning must be able to repair a bad-but-formally-valid active
+    // mapping.  Dip and world-heading reliability are computed after applying
+    // that mapping and can otherwise create a self-locking dependency.  The
+    // gyro/mag finite-rotation objective is independent of absolute magnetic
+    // heading, so collect from calibrated, finite, in-range sensor-frame data
+    // and let train/holdout validation reject non-rigid/transient fields.
+    const bool collectionFieldUsable =
+        deps_.lastProcessed->valid && axisIndependentRejects == MAG_REJECT_NONE;
+    if (!collectionFieldUsable) return;
+
+    Vec3 gyroSensor = deps_.lastCalibratedSample->gyro_rad_s;
+    const SensorToDeviceFrame frame = makeSensorToDeviceFrame(
+        deps_.config->data.frame.sensorToDeviceValid,
+        deps_.config->data.frame.sensorToDevice);
+    gyroSensor = frame.inverseApply(gyroSensor);
+    deps_.axisAlignmentCollector->observe(
+        gyroSensor,
+        *deps_.lastImuTimestampUs,
+        *deps_.lastProcessed,
+        collectionFieldUsable);
+
+    static constexpr uint32_t kSolveRetryMs = 5000u;
+    if (!deps_.axisAlignmentCollector->readyToSolve() ||
+        deps_.axisAlignmentState->solvePending ||
+        deps_.axisAlignmentState->stagePending) {
+        return;
+    }
+    if (deps_.axisAlignmentState->lastSolveAttemptMs != 0u &&
+        nowMs - deps_.axisAlignmentState->lastSolveAttemptMs < kSolveRetryMs) {
+        return;
+    }
+
+    deps_.axisAlignmentState->solvePending = true;
+    deps_.axisAlignmentState->pendingAction = MagAxisAlignmentDeferredAction::Solve;
+#else
+    (void)reliability;
+    (void)nowMs;
+#endif
+}
+
+bool MagRuntimeController::serviceDeferred() {
+#if !TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    return false;
+#else
+    if (!deps_.axisAlignmentCollector || !deps_.axisAlignmentState || !deps_.config ||
+        !deps_.configStore) {
+        return false;
+    }
+    MagAxisAlignmentRuntimeState& state = *deps_.axisAlignmentState;
+    const uint32_t nowMs = millis();
+    static constexpr uint32_t kCandidateSlotRetryMs = 10000u;
+
+    const bool slotCheckDue =
+        (state.candidateStaged || state.blockedByExistingCandidate) &&
+        (state.lastStorageCheckMs == 0u ||
+         nowMs - state.lastStorageCheckMs >= kCandidateSlotRetryMs);
+    const bool stageRetryDue = state.stagePending &&
+        (state.lastStorageCheckMs == 0u ||
+         nowMs - state.lastStorageCheckMs >= kCandidateSlotRetryMs);
+    const bool workPending = state.solvePending || stageRetryDue || slotCheckDue;
+    if (!workPending) return false;
+
+    MagDeferredServiceGate serviceGate;
+    if (!deferredServiceAllowed(serviceGate)) {
+        state.serviceDeferrals++;
+        state.lastDeferredFifoUnreadWords = serviceGate.fifoUnreadWords;
+        if (serviceGate.fifoUnreadWords > state.maxDeferredFifoUnreadWords) {
+            state.maxDeferredFifoUnreadWords = serviceGate.fifoUnreadWords;
+        }
+        state.lastDeferredRotationSlackMs = serviceGate.rotationDeadlineSlackMs;
+        state.lastDeferredRejectFlags = serviceGate.rejectFlags;
+        if (serviceGate.rejectFlags & MAG_DEFERRED_REJECT_SOFTWARE_FIFO_PENDING) {
+            state.serviceDeferralSoftwareFifo++;
+        }
+        if (serviceGate.rejectFlags & MAG_DEFERRED_REJECT_HARDWARE_FIFO_STATUS) {
+            state.serviceDeferralHardwareStatus++;
+        }
+        if (serviceGate.rejectFlags & MAG_DEFERRED_REJECT_HARDWARE_FIFO_BUSY) {
+            state.serviceDeferralHardwareBusy++;
+        }
+        if (serviceGate.rejectFlags & MAG_DEFERRED_REJECT_OUTPUT_DEADLINE) {
+            state.serviceDeferralOutputDeadline++;
+        }
+        return false;
+    }
+    state.lastDeferredFifoUnreadWords = serviceGate.fifoUnreadWords;
+    if (serviceGate.fifoUnreadWords > state.maxDeferredFifoUnreadWords) {
+        state.maxDeferredFifoUnreadWords = serviceGate.fifoUnreadWords;
+    }
+    state.lastDeferredRotationSlackMs = serviceGate.rotationDeadlineSlackMs;
+    state.lastDeferredRejectFlags = MAG_DEFERRED_REJECT_NONE;
+
+    if (slotCheckDue) {
+        const uint32_t startUs = micros();
+        bool exists = true;
+        const bool ok = deps_.configStore->candidateExists(exists);
+        const uint32_t elapsedUs = micros() - startUs;
+        state.lastStorageUs = elapsedUs;
+        if (elapsedUs > state.maxStorageUs) state.maxStorageUs = elapsedUs;
+        state.storageServiceCalls++;
+        state.lastStorageCheckMs = nowMs;
+        if (ok && !exists) {
+            state.candidateStaged = false;
+            state.blockedByExistingCandidate = false;
+            state.pendingAction = MagAxisAlignmentDeferredAction::None;
+            deps_.axisAlignmentCollector->reset();
+        }
+        return true;
+    }
+
+    if (state.solvePending) {
+        state.solvePending = false;
+        state.lastSolveAttemptMs = nowMs;
+        state.pendingAction = MagAxisAlignmentDeferredAction::None;
+        state.solveServiceCalls++;
+
+        const Mat3* activeAlignment = deps_.config->data.magCal.axisAlignmentValid
+            ? &deps_.config->data.magCal.magToImu
+            : nullptr;
+        MagAxisAlignmentResult result;
+        const uint32_t startUs = micros();
+        const bool solved = deps_.axisAlignmentCollector->solve(
+            deps_.config->data.magCal.hardIron,
+            deps_.config->data.magCal.softIron,
+            result,
+            activeAlignment);
+        const uint32_t elapsedUs = micros() - startUs;
+        state.lastSolveUs = elapsedUs;
+        if (elapsedUs > state.maxSolveUs) state.maxSolveUs = elapsedUs;
+        state.lastResult = result;
+        state.lastSolveValid = solved;
+
+        if (!solved) {
+            if (deps_.axisAlignmentCollector->intervalCount() >=
+                MagAxisAlignmentCollector::kMaxIntervals) {
+                deps_.axisAlignmentCollector->reset();
+            }
+            return true;
+        }
+
+        if (activeAlignment &&
+            magAxisMatricesEquivalent(result.magToImu, *activeAlignment)) {
+            state.activeAlignmentConfirmed = true;
+            deps_.axisAlignmentCollector->reset();
+            return true;
+        }
+
+        if (activeAlignment && !result.improvesActive) {
+            // The candidate fit is valid in isolation but did not beat the
+            // active matrix on independent training and held-out intervals. Discard the dataset
+            // rather than polluting the candidate slot with an unproven change.
+            deps_.axisAlignmentCollector->reset();
+            return true;
+        }
+        if (result.qualityScore < 0.62f) {
+            // A numerically valid fit with weak absolute evidence is not a
+            // persistence candidate. Do not retry it every loop.
+            deps_.axisAlignmentCollector->reset();
+            return true;
+        }
+
+        state.stagePending = true;
+        state.pendingAction = MagAxisAlignmentDeferredAction::Stage;
+        state.lastStorageCheckMs = 0u;
+        return true;
+    }
+
+    if (stageRetryDue) {
+        const bool staged = stageAxisAlignmentCandidate(state.lastResult, nowMs);
+        if (staged) {
+            state.stagePending = false;
+            state.pendingAction = MagAxisAlignmentDeferredAction::CheckCandidateSlot;
+            deps_.axisAlignmentCollector->reset();
+        } else if (state.blockedByExistingCandidate) {
+            state.stagePending = false;
+            state.pendingAction = MagAxisAlignmentDeferredAction::CheckCandidateSlot;
+        }
+        return true;
+    }
+
+    return false;
+#endif
+}
+
+bool MagRuntimeController::stageAxisAlignmentCandidate(
+    const MagAxisAlignmentResult& result,
+    uint32_t nowMs) {
+#if !TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    (void)result;
+    (void)nowMs;
+    return false;
+#else
+    if (!deps_.axisAlignmentState || !deps_.axisAlignmentCandidateWorkspace ||
+        !deps_.config || !deps_.configStore || !result.valid ||
+        result.qualityScore < 0.62f) {
+        return false;
+    }
+    MagAxisAlignmentRuntimeState& state = *deps_.axisAlignmentState;
+    state.stageAttempts++;
+
+    const uint32_t storageStartUs = micros();
+    bool candidateExists = true;
+    const bool presenceRead = deps_.configStore->candidateExists(candidateExists);
+    state.lastStorageCheckMs = nowMs;
+    if (!presenceRead) {
+        state.stageFailures++;
+        const uint32_t elapsedUs = micros() - storageStartUs;
+        state.lastStorageUs = elapsedUs;
+        if (elapsedUs > state.maxStorageUs) state.maxStorageUs = elapsedUs;
+        state.storageServiceCalls++;
+        return false;
+    }
+    if (candidateExists) {
+        state.blockedByExistingCandidate = true;
+        const uint32_t elapsedUs = micros() - storageStartUs;
+        state.lastStorageUs = elapsedUs;
+        if (elapsedUs > state.maxStorageUs) state.maxStorageUs = elapsedUs;
+        state.storageServiceCalls++;
+        return false;
+    }
+
+    TrackerConfig& candidate = *deps_.axisAlignmentCandidateWorkspace;
+    candidate = *deps_.config;
+    candidate.data.magCal.magToImu = result.magToImu;
+    candidate.data.magCal.axisAlignmentValid = true;
+    candidate.sanitize();
+    candidate.updateCrc();
+    if (!candidate.data.magCal.axisAlignmentValid ||
+        !magAxisMatricesEquivalent(candidate.data.magCal.magToImu,
+                                   result.magToImu,
+                                   0.05f)) {
+        state.stageFailures++;
+        state.stagePending = false;
+        state.pendingAction = MagAxisAlignmentDeferredAction::None;
+        deps_.axisAlignmentCollector->reset();
+        const uint32_t elapsedUs = micros() - storageStartUs;
+        state.lastStorageUs = elapsedUs;
+        if (elapsedUs > state.maxStorageUs) state.maxStorageUs = elapsedUs;
+        state.storageServiceCalls++;
+        return false;
+    }
+
+    TrackerCalibrationCandidateMetadata metadata;
+    metadata.provenance = TrackerCalibrationProvenance::Background;
+    metadata.sampleCount = result.usedIntervals;
+    metadata.independentWindowCount = result.independentWindows;
+    metadata.quality = trackerCalibrationQualityFromConfig(candidate);
+    metadata.quality.alignmentScore = result.qualityScore;
+    metadata.quality.qualityFlags |=
+        tracker_calibration_quality_flags::ALIGNMENT_MEASURED |
+        tracker_calibration_quality_flags::SOURCE_MEASURED;
+    trackerCalibrationQualityRecomputeOverall(candidate, metadata.quality);
+    trackerCalibrationQualitySetProvenance(
+        metadata.quality, TrackerCalibrationProvenance::Background);
+
+    const bool staged = deps_.configStore->stageCandidate(candidate, metadata, nowMs);
+    const uint32_t elapsedUs = micros() - storageStartUs;
+    state.lastStorageUs = elapsedUs;
+    if (elapsedUs > state.maxStorageUs) state.maxStorageUs = elapsedUs;
+    state.storageServiceCalls++;
+    if (!staged) {
+        state.stageFailures++;
+        return false;
+    }
+
+    state.candidateStaged = true;
+    state.blockedByExistingCandidate = false;
+    state.stageSuccesses++;
+    state.lastStageMs = nowMs;
+    return true;
+#endif
 }
 
 void MagRuntimeController::updateAutoReference(uint32_t nowMs,

@@ -7,6 +7,8 @@
 #include "sensor/qmc6309.hpp"
 #include "sensor/mag_calibration.hpp"
 #include "sensor/mag_runtime.hpp"
+#include "sensor/mag_axis_alignment.hpp"
+#include "sensor/mag_field_reliability.hpp"
 #include "sensor/mag_heading.hpp"
 #include "sensor/mag_yaw_correction.hpp"
 #include "runtime/mag_runtime_state.hpp"
@@ -26,6 +28,10 @@ struct MagStatusReporterDeps {
 
     MagHeadingEstimator* headingEstimator = nullptr;
     MagHeadingSample* lastHeading = nullptr;
+    MagFieldReliabilityMonitor* fieldReliability = nullptr;
+    MagFieldReliabilityOutput* lastFieldReliability = nullptr;
+    MagAxisAlignmentCollector* axisAlignmentCollector = nullptr;
+    MagAxisAlignmentRuntimeState* axisAlignmentState = nullptr;
     MagHeadingReferenceState* headingRef = nullptr;
     MagHeadingAutoReferenceState* headingAutoRef = nullptr;
 

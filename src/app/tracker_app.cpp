@@ -231,6 +231,11 @@ void TrackerApp::loop() {
     timing.tapWorked = tapWorked;
     timing.ledWorked = ledWorked;
 #endif
+    // Calibration solving and NVS candidate work are deliberately outside the
+    // FIFO/mag callbacks and outside the historical network timing bucket.
+    // The composition hook itself refuses service while runtime queues are
+    // pending or urgent; the magnetic diagnostics expose its own timings.
+    const bool magDeferredWorked = callBool(deps_.callbacks.updateMagDeferredRuntime);
 
     // Tracking delivery has priority over all diagnostic I/O. CLI command
     // dispatch, telnet socket work and output drains run only after FIFO/AHRS
@@ -328,6 +333,7 @@ void TrackerApp::loop() {
                          networkWorked ||
                          tapWorked ||
                          ledWorked ||
+                         magDeferredWorked ||
                          remoteConsoleWorked ||
                          heartbeatPrinted;
 #if TRACKER_HAS_RUNTIME_PROFILER
@@ -856,6 +862,8 @@ void TrackerApp::serviceRuntimeForBlockingCommand() {
         (void)callBool(deps_.callbacks.updateTapRuntime);
     }
     (void)callBool(deps_.callbacks.updateStatusLedRuntime);
+    // Deferred calibration solving/storage intentionally pauses while a
+    // blocking setup/calibration command owns the runtime transaction.
 #if TRACKER_HAS_RUNTIME_TEST
     deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);
 #endif

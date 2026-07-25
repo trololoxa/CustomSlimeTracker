@@ -67,7 +67,8 @@ def main() -> int:
     require(store, "CandidateAlreadyPromoted", "repeat-promotion hard block")
     require(store, "promotedMetadataRetry", "promoted metadata retry")
     require(store, "invalidatePreparedSlot", "prepared slot cleanup")
-    require(store, "trackerComposeCalibrationCandidate", "calibration-only candidate composition")
+    require(store, "trackerApplyCalibrationCandidateToConfig(composed, candidateSnapshot)",
+            "in-place calibration-only candidate composition")
     require(store, "TrackerConfigError::RuntimeCalibrationDiverged", "unsaved runtime calibration protection")
     require(store, "runtimeCalibration", "promotion receives current runtime calibration")
 
@@ -123,7 +124,7 @@ def main() -> int:
     require(scenarios, "firstSavePowerLossWindow", "first-save interruption scenario")
     require(scenarios, "noOpAndCandidate", "no-op/candidate scenario")
 
-    require(version, '"c3-6dsv-calibration-epoch-field-safe"', "0021e feature identity")
+    require(version, '"c3-6dsv-mag-promotion-stack-safe"', "0022c feature identity")
     require(features, "TRACKER_ENABLE_CALIBRATION_CANDIDATES", "candidate profile gate")
     require(store_header, "#if TRACKER_ENABLE_CALIBRATION_CANDIDATES", "Slim RAM candidate removal")
 
