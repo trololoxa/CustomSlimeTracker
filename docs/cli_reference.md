@@ -221,7 +221,7 @@ Safety behavior: `perf` and `motion` are runtime-only diagnostics. `motion` does
 | Command | Effect | Persisted | Notes |
 |---|---|---:|---|
 | `perf on` / `perf off` | Enable/disable rolling loop-section profiler | Runtime | Off by default; enabling resets the timing window. |
-| `perf status` | Print loop-section timing plus temperature/system, Wi-Fi, quality and SlimeVR counters | No | Shows all measured sections (`loop`, `cli`, `remote`, `fifo`, `battery`, `network`, `tap`, `led`, `heartbeat`, `idle_yield`), not only the top offender. |
+| `perf status` | Print loop-section timing plus temperature/system, Wi-Fi, quality and SlimeVR counters | No | Shows all measured sections (`loop`, `cli`, `remote`, `fifo`, `battery`, `network`, `calibration_0022`, `calibration_0023`, `tap`, `led`, `heartbeat`, `idle_yield`), not only the top offender. |
 | `perf top` | Print highest average/max section summary plus correlation blocks | No | Shortcut for TPS-drop triage. |
 | `perf tracking reset` | Capture a compact, non-destructive FIFO/tracking baseline | Runtime | Does not reset timestamp reconstruction, quality state, recovery state or transport counters. |
 | `perf tracking` / `perf brief` | Print compact deltas and effective rotation rate | No | Before the first reset it reports counters since boot; after reset it reports only the selected test window. Intended for low-intrusion hardware validation. |
@@ -252,6 +252,14 @@ slime debug
 | `config slots` / `config nvs` | Print both active slots, selector, generations, signatures, quality, boot load/degraded state, legacy/candidate state and transaction counters | No | Does not change the selected config. |
 | `config verify` | Read-only verification of the authoritative slot/selector/commit marker | No | Does not migrate, repair, apply runtime state or clear a degraded-storage write latch. Use `config load` for authoritative recovery. |
 | `config migrate` | Explicitly migrate a valid legacy `cfg` blob when no committed dual-slot generation exists | Yes | Never overwrites an existing authoritative dual-slot config; otherwise only performs stale legacy cleanup. |
+| `cal status` | Print saved calibration validity plus the full autonomy status block | No | Read-only convenience summary. |
+| `cal autonomy status` | Print 0022/0023 enable state, lifecycle, evidence, probation, rollback, storage error, motion-sleep blocker/reason and workload counters | No | Read-only. |
+| `cal autonomy 0022 on\|off [save]` | Enable/disable background `magToImu` learning from wave 0022 | Optional | Without `save`, applies only until reboot. Disabling removes only an owned 0022 background candidate. |
+| `cal autonomy 0023 on\|off [save]` | Enable/disable safe background calibration lifecycle | Optional | Disabling an active provisional promotion performs rollback before turning autonomy off. |
+| `cal autonomy rollback` | Roll back the current provisional autonomy promotion | Yes | Available only when a valid write-ahead rollback journal exists. |
+| `cal autonomy reset` | Clear RAM-only evidence and independent sessions | No | Active calibration and NVS are unchanged. |
+| `cal autonomy clear_rejections` | Clear bounded rejected-candidate memory | Yes | Does not change active calibration. |
+| `cal erase_all confirm` | Completely erase saved calibration state | Yes | Works even from `suspended_storage` or with an obsolete/corrupt autonomy journal. A verified erase-recovery marker is written first; boot completes the operation after a power loss. The command installs a calibrationless authoritative config preserving ordinary Wi-Fi/output policy, then removes journal/rejection metadata and the marker last. Explicit confirmation is required. |
 | `cal candidate status` | Print candidate metadata, signature, quality and comparison reasons | No | Reads RAM candidate first, then NVS. |
 | `cal candidate stage [manual|setup|background] [flush|force]` | Capture current runtime config/calibration as an inactive candidate | RAM; optional NVS | Does not change active tracking. |
 | `cal candidate flush [force]` | Persist the staged candidate | Yes | Normal flush obeys quality and minimum-write-interval gates. |
@@ -283,11 +291,14 @@ promotion contracts.
 | `setup guide` | Print the first-run sequence | Does not modify state. |
 | `setup status` | Print readiness checklist and next step | Includes 6DoF, mag-yaw, temp model, Wi-Fi and SlimeVR readiness. |
 | `setup wifi` | Interactive Wi-Fi provisioning | Scans visible networks, asks for a network number and password, tries to connect, saves successful credentials to NVS, starts SlimeVR discovery and enables Wi-Fi/SlimeVR autostart. If Wi-Fi connects but the server is not found within the setup timeout, Wi-Fi remains saved and discovery continues in normal runtime. |
-| `setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]` | Run the guided production calibration | Performs rest/gyro, Wi-Fi heat warm-up, dedicated gyro temperature capture/fit, auto-detected accel 6-position calibration, sensor-to-device frame alignment, optional mag hard/soft collection and automatic mag axis inference, then enables production tracking and saves. In full mode the top/+Z and forward/+Y frame observations are the first two of the same six accel captures, so no extra face positions are added. Resume mode skips valid stages. Mag axis tokens remain an override/fallback path. |
+| `setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]` | Run the guided production calibration | Performs continuous-window rest/gyro with held-out validation, Wi-Fi heat warm-up, leave-one-bin-out gyro-temperature fit, the same six ordinary accel faces with automatic held-out validation, sensor-to-device frame alignment, optional mag hard/soft collection and automatic mag axis inference, then verifies final coherent quaternion/linear acceleration output before saving. No diagonal or precise-angle pose is required. Resume mode skips valid stages. |
+| `setup verify` | Verify final runtime quaternion/linear acceleration | No | With the tracker still on any stable ordinary face, checks coherent snapshot availability, quaternion norm/continuity, gravity-removed acceleration residual and FIFO/timestamp/recovery health. Does not alter calibration. |
 | `setup frame status` | Print the physical sensor-to-device frame | Shows validity, determinant and all three rotation rows. |
 | `setup frame calibrate` | Repeat only physical case-frame alignment | Requires an existing accel calibration, asks for top/+Z and forward/+Y up, validates the proper rotation and saves transactionally. |
 
-`setup calibration` is transactional. It snapshots the current RAM calibration/config at start, performs every stage in RAM, and writes to NVS only once after all quality gates pass. If any stage fails or is aborted, the command stops mag/temp captures, restores the previous RAM calibration/config, resets AHRS/mag/runtime-bias transient state, and leaves the previous NVS calibration untouched. The temperature stage no longer depends on `test static`; it uses a dedicated setup capture that commits only short contiguous stationary windows from the normal FIFO pipeline. Brief touches, slow rotation, vibration, timestamp/FIFO faults or accel instability reject only the current candidate window; accepted temperature-bin progress is retained and capture resumes automatically. During the magnetometer motion stage, setup also records gyro/mag motion intervals and uses them to validate the signed axis permutation before enabling mag yaw.
+`setup calibration` is transaction-safe. Full mode snapshots the current RAM calibration/config, performs all stages in RAM, and writes NVS once after every quality gate passes. Resume mode uses the same rollback semantics per missing stage and commits each completed checkpoint so a later interruption does not discard earlier successful work. If a stage fails or is aborted, setup stops active mag/temp captures, restores the stage snapshot, resets AHRS/mag/runtime-bias transient state, and does not overwrite the previous authoritative calibration. The temperature stage no longer depends on `test static`; it uses a dedicated setup capture that commits only short contiguous stationary windows from the normal FIFO pipeline. Brief touches, constant slow rotation, excessive vibration, timestamp/FIFO faults or accel instability reject only the current candidate window; accepted temperature-bin progress is retained and capture resumes automatically. High-rate sensor noise is judged by a hard vibration ceiling plus the statistical precision and cross-window consistency of the mean, so a quiet surface is required but unrealistically noiseless individual 960 Hz samples are not. Type `q` then Enter to abort any long guided collection safely.
+
+During the magnetometer motion stage, setup records gyro/mag motion intervals and uses them to validate the signed axis permutation before enabling mag yaw. The hard/soft-iron collector uses a deterministic Algorithm-R reservoir over the complete accepted capture, so a long late sweep cannot replace the whole fit set with only the newest orientation. Coverage gates are computed from that exact bounded fit set; full-capture extrema remain diagnostics only. Guided axis intervals use a second fixed-memory stratified reservoir keyed by dominant gyro axis and train/validation window parity. It continues admitting and replacing intervals after 160 candidates instead of freezing on the first 160, while a 75 ms admission cadence prevents near-duplicate samples from dominating. Diagnostics expose candidate count, replacements/skips, stored/seen windows, excited axes, axes confirmed independently in both train/validation partitions, and all six bucket counts. Failure output separates full-capture and fit-set spans/norms and reports `mag_cal_failure_reason`; finite rejected fits also report `last_fit_quality` as algebraic RMS, normalized geometric RMS, directional coverage, inlier ratio, axis ratio and box coverage, plus `last_fit_quality_limits` in the same gate order. A large skip count is expected after reservoir activation and is not itself a quality failure.
 
 `setup status` reports:
 
@@ -418,3 +429,58 @@ counts, validation winner consistency, normalized separation, observable angular
 motion, and deferred-service reject reasons. Hardware FIFO unread-word and
 rotation-deadline-slack diagnostics explain why a pending solve/stage action was
 deferred. No new mutation command is added; candidate lifecycle remains explicit.
+
+## 0023gd magnetic calibration diagnostics
+
+Magnetic status/failure output now distinguishes numerical solver progress from physical quality rejection. Relevant fields include:
+
+```text
+last_fit_solver_stage
+last_fit_normalization_center
+last_fit_normalization_scale
+last_fit_solver_pivot_ratio
+last_fit_solver_samples
+last_fit_quality
+last_fit_quality_limits
+gyro_endpoint_valid
+gyro_endpoint_t_us
+gyro_endpoint_skew_us
+```
+
+Guided alignment additionally reports:
+
+```text
+dynamic_axis_gyro_skew_rejected
+dynamic_axis_timing_rejected
+dynamic_axis_motion_rejected
+dynamic_axis_excited_axes
+dynamic_axis_partition_confirmed_axes
+dynamic_axis_bucket_counts
+```
+
+A numerical failure should be diagnosed from `mag_cal_failure_reason`, solver stage, normalization and pivot ratio. A finite fit rejected by a physical gate should be diagnosed from `last_fit_quality` against `last_fit_quality_limits`; do not collect indefinitely when the failing value indicates a disturbed/non-ellipsoidal environment rather than missing coverage.
+
+## 0023ge FIFO magnetic callback diagnostics
+
+`status` adds:
+
+```text
+fifo_runtime_mag_count_deferrals
+fifo_runtime_mag_budget_deferrals
+```
+
+`perf tracking` adds window deltas:
+
+```text
+runtime_mag_count_deferrals_delta
+runtime_mag_budget_deferrals_delta
+```
+
+A count deferral means the bounded per-pass mag callback allowance was reached.
+A budget deferral means the cooperative callback-time budget was reached. In
+both cases the raw timeline remains parked at the last coherent gyro endpoint
+until the due magnetic backlog is serviced.
+
+## 0023gg magnetic timestamp and setup verification diagnostics
+
+FIFO, magnetic status, and runtime status reports include `mag_timestamp_imu_anchors`, `mag_timestamp_nominal_fallbacks`, `mag_timestamp_monotonic_adjustments`, `mag_timestamp_last_anchor_correction_us`, and `mag_timestamp_max_anchor_correction_us`. Guided mag-axis diagnostics distinguish `gyro_mag_axis_coarse_winner_matches_training`, `gyro_mag_axis_continuous_refinement_agreement`, and `gyro_mag_axis_coarse_consensus_fallback_used`. Final setup verification prints `capture_duration_ms` plus the individual `stationary_input_sample_count_passed`, `stationary_gyro_mean_passed`, `stationary_gyro_precision_passed`, `stationary_accel_mean_passed`, and `stationary_accel_std_passed` gates.

@@ -8,6 +8,7 @@
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/imu_quality.hpp"
+#include "sensor/qmc6309.hpp"
 
 using namespace tracker;
 
@@ -58,6 +59,18 @@ public:
                                   value, static_cast<int16_t>(value + 1), static_cast<int16_t>(value + 2)));
     }
 
+    void sensorHub(uint8_t counter, int16_t x, int16_t y, int16_t z) {
+        words_.push_back(makeWord(Lsm6dsvFifoReader::TAG_SENSORHUB_SLAVE0, counter, x, y, z));
+    }
+
+    void timestamp(uint32_t ticks) {
+        words_.push_back(makeWord(
+            Lsm6dsvFifoReader::TAG_TIMESTAMP, 0u,
+            static_cast<int16_t>(ticks & 0xFFFFu),
+            static_cast<int16_t>((ticks >> 16) & 0xFFFFu),
+            0));
+    }
+
     void clearWrites() { writes_.clear(); }
     const std::vector<std::array<uint8_t, 2>>& writes() const { return writes_; }
 
@@ -87,12 +100,20 @@ struct Fixture {
     Lsm6dsv lsm{bus};
     Lsm6dsvFifoReader fifo{bus, lsm};
 
-    bool begin() {
+    bool begin(uint16_t sensorHubSaturationAbs = 0u,
+               bool enableSensorHub = false,
+               float sensorHubPeriodUs = 0.0f,
+               bool useHardwareTimestamps = false) {
         Lsm6dsvFifoReader::Config cfg;
-        cfg.enableTimestampCounter = false;
-        cfg.useHardwareTimestamps = false;
-        cfg.timestampBatch = Lsm6dsvFifoReader::TimestampBatch::Off;
+        cfg.enableTimestampCounter = useHardwareTimestamps;
+        cfg.useHardwareTimestamps = useHardwareTimestamps;
+        cfg.timestampBatch = useHardwareTimestamps
+            ? Lsm6dsvFifoReader::TimestampBatch::Decimation1
+            : Lsm6dsvFifoReader::TimestampBatch::Off;
         cfg.temperatureBatch = Lsm6dsvFifoReader::TemperatureBatch::Off;
+        cfg.enableSensorHubSlave0 = enableSensorHub || sensorHubSaturationAbs != 0u;
+        cfg.sensorHubSlave0PeriodUs = sensorHubPeriodUs;
+        cfg.sensorHubSlave0SaturationAbs = sensorHubSaturationAbs;
         return fifo.configure(cfg);
     }
 
@@ -266,6 +287,119 @@ void testPausePreservesConfiguredFifoRegisters(TestContext& ctx) {
     }
 }
 
+
+void testSensorHubTimestampsReanchorToImuTimeline(TestContext& ctx) {
+    Fixture f;
+    CHECK(ctx, f.begin(0u, true, 1000000.0f / 60.0f));
+
+    // Model a real sensor-hub cadence that differs from the nominal 60 Hz
+    // period. A free-running mag clock would accumulate more than 5 ms of
+    // gyro/mag skew after only a few frames; every frame must instead anchor
+    // to the current FIFO/IMU timeline.
+    uint8_t counter = 0u;
+    for (uint8_t magIndex = 0u; magIndex < 6u; ++magIndex) {
+        for (uint8_t i = 0u; i < 18u; ++i) {
+            f.bus.gyro(counter, static_cast<int16_t>(100 + magIndex * 20 + i));
+            f.bus.accel(counter, static_cast<int16_t>(200 + magIndex * 20 + i));
+            counter = static_cast<uint8_t>((counter + 1u) & 0x03u);
+        }
+        f.bus.sensorHub(magIndex & 0x03u,
+                        static_cast<int16_t>(1000 + magIndex),
+                        static_cast<int16_t>(-500 - magIndex),
+                        static_cast<int16_t>(250 + magIndex));
+    }
+
+    Lsm6dsv::RawSample out[128]{};
+    CHECK(ctx, f.drain(out, 128) == 108u);
+
+    Lsm6dsvFifoReader::MagRawSample mags[6]{};
+    for (auto& mag : mags) {
+        CHECK(ctx, f.fifo.popMagSample(mag));
+        CHECK(ctx, (mag.flags & Lsm6dsvFifoReader::MAG_FLAG_TIMESTAMP_IMU_ANCHORED) != 0u);
+    }
+    CHECK(ctx, !f.fifo.hasMagSamples());
+
+    const uint64_t nominalLast = mags[0].t_us + 5u * 16667u;
+    CHECK(ctx, mags[5].t_us > nominalLast + 5000u);
+    for (uint8_t i = 1u; i < 6u; ++i) {
+        const uint64_t dtUs = mags[i].t_us - mags[i - 1u].t_us;
+        CHECK(ctx, dtUs >= 18000u);
+        CHECK(ctx, dtUs <= 19500u);
+    }
+    CHECK(ctx, f.fifo.stats().magTimestampImuAnchors == 6u);
+    CHECK(ctx, f.fifo.stats().magTimestampNominalFallbacks == 0u);
+    CHECK(ctx, f.fifo.stats().magTimestampMonotonicAdjustments == 0u);
+    CHECK(ctx, f.fifo.stats().maxMagAnchorCorrectionUs < 5000u);
+}
+
+
+void testSensorHubTimestampsUseHardwareImuAnchor(TestContext& ctx) {
+    Fixture f;
+    CHECK(ctx, f.begin(0u, true, 1000000.0f / 60.0f, true));
+
+    for (uint8_t i = 0u; i < 4u; ++i) {
+        f.bus.gyro(i & 0x03u, static_cast<int16_t>(10 + i));
+        f.bus.accel(i & 0x03u, static_cast<int16_t>(100 + i));
+        f.bus.timestamp(static_cast<uint32_t>(1000u + i * 700u));
+        f.bus.sensorHub(i & 0x03u, static_cast<int16_t>(500 + i), 20, -30);
+    }
+
+    Lsm6dsv::RawSample raw[8]{};
+    CHECK(ctx, f.drain(raw, 8) == 4u);
+    for (uint8_t i = 0u; i < 4u; ++i) {
+        Lsm6dsvFifoReader::MagRawSample mag{};
+        CHECK(ctx, f.fifo.popMagSample(mag));
+        CHECK(ctx, mag.t_us == raw[i].t_us);
+        CHECK(ctx, (mag.flags & Lsm6dsvFifoReader::MAG_FLAG_TIMESTAMP_IMU_ANCHORED) != 0u);
+        CHECK(ctx, (mag.flags & Lsm6dsvFifoReader::MAG_FLAG_TIMESTAMP_FALLBACK) == 0u);
+    }
+    CHECK(ctx, f.fifo.stats().magTimestampImuAnchors == 4u);
+}
+
+
+void testSensorHubRepeatedAnchorUsesFailHonestMonotonicMarker(TestContext& ctx) {
+    Fixture f;
+    CHECK(ctx, f.begin(0u, true, 1000000.0f / 60.0f));
+
+    f.bus.gyro(0u, 10);
+    f.bus.accel(0u, 20);
+    f.bus.sensorHub(0u, 100, 200, 300);
+    // A second external-sensor word without any intervening IMU timeline
+    // advance has no honest timestamp. It must not fabricate a full nominal
+    // period; mark a minimal monotonic value that interval admission rejects.
+    f.bus.sensorHub(1u, 101, 201, 301);
+
+    Lsm6dsv::RawSample raw[2]{};
+    CHECK(ctx, f.drain(raw, 2) == 1u);
+    Lsm6dsvFifoReader::MagRawSample first{};
+    Lsm6dsvFifoReader::MagRawSample second{};
+    CHECK(ctx, f.fifo.popMagSample(first));
+    CHECK(ctx, f.fifo.popMagSample(second));
+    CHECK(ctx, second.t_us == first.t_us + 1u);
+    CHECK(ctx, (first.flags & Lsm6dsvFifoReader::MAG_FLAG_TIMESTAMP_IMU_ANCHORED) != 0u);
+    CHECK(ctx, (second.flags & Lsm6dsvFifoReader::MAG_FLAG_TIMESTAMP_FALLBACK) != 0u);
+    CHECK(ctx, f.fifo.stats().magTimestampMonotonicAdjustments == 1u);
+    CHECK(ctx, f.fifo.stats().magTimestampNominalFallbacks == 0u);
+}
+
+void testSensorHubNearRailSaturationIsFlagged(TestContext& ctx) {
+    Fixture f;
+    CHECK(ctx, f.begin(Qmc6309::RAW_SATURATION_ABS_COUNTS));
+
+    f.bus.sensorHub(0, 31800, -1200, 900);
+    f.bus.sensorHub(1, 31950, 200, -300);
+
+    Lsm6dsv::RawSample out[1]{};
+    CHECK(ctx, f.drain(out, 1) == 0);
+
+    Lsm6dsvFifoReader::MagRawSample mag{};
+    CHECK(ctx, f.fifo.popMagSample(mag));
+    CHECK(ctx, (mag.flags & Lsm6dsvFifoReader::MAG_FLAG_RAW_SATURATED) == 0u);
+    CHECK(ctx, f.fifo.popMagSample(mag));
+    CHECK(ctx, (mag.flags & Lsm6dsvFifoReader::MAG_FLAG_RAW_SATURATED) != 0u);
+    CHECK(ctx, f.fifo.stats().magRawSaturationCount == 1u);
+}
+
 void testFirstFallbackTimestampUsesDrainClock(TestContext& ctx) {
     PairingTransport bus;
     Lsm6dsv lsm(bus);
@@ -303,6 +437,10 @@ int main() {
     testCounterMismatchDegradesOnlyAccel(ctx);
     testCompletedQueueOverflowIsAccountedSeparately(ctx);
     testPausePreservesConfiguredFifoRegisters(ctx);
+    testSensorHubTimestampsReanchorToImuTimeline(ctx);
+    testSensorHubTimestampsUseHardwareImuAnchor(ctx);
+    testSensorHubRepeatedAnchorUsesFailHonestMonotonicMarker(ctx);
+    testSensorHubNearRailSaturationIsFlagged(ctx);
     testFirstFallbackTimestampUsesDrainClock(ctx);
     return ctx.finish("test_fifo_pair_coherency");
 }

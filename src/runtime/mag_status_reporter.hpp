@@ -6,6 +6,7 @@
 #include "connection/lsm6dsv_sensorhub.hpp"
 #include "sensor/qmc6309.hpp"
 #include "sensor/mag_calibration.hpp"
+#include "runtime/mag_calibration_fit_quality_reporter.hpp"
 #include "sensor/mag_runtime.hpp"
 #include "sensor/mag_axis_alignment.hpp"
 #include "sensor/mag_field_reliability.hpp"
@@ -46,6 +47,7 @@ struct MagStatusReporterDeps {
 
 float magStatusHeadingErrorToReferenceRad(const MagHeadingReferenceState& ref,
                                           const MagHeadingSample& heading);
+
 void magStatusPrintRuntime(Stream& out, const MagStatusReporterDeps& deps);
 void magStatusPrintProcessed(Stream& out, const MagStatusReporterDeps& deps);
 void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps);

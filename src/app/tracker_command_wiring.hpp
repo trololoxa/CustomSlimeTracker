@@ -36,6 +36,10 @@ struct TrackerCommandRuntimeObjects {
     RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
     FifoRuntimeProcessor* fifoRuntime = nullptr;
     TrackingStateController* trackingState = nullptr;
+    PreparedOutputRuntime* preparedOutput = nullptr;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    CalibrationAutonomyController* calibrationAutonomy = nullptr;
+#endif
 
     FifoCalibrationIo* calibrationIo = nullptr;
     FifoAccel6PosCalibrationRunner* accelCalRunner = nullptr;

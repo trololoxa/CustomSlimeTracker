@@ -80,6 +80,11 @@ void trackerSerialPrintFifoStats(Stream& out, const Lsm6dsvFifoReader::DrainStat
     out.print("sensorhub_nack_words="); out.println(fs.sensorHubNackWords);
     out.print("mag_samples_produced="); out.println(fs.magSamplesProduced);
     out.print("mag_queue_overflow="); out.println(fs.magQueueOverflow);
+    out.print("mag_timestamp_imu_anchors="); out.println(fs.magTimestampImuAnchors);
+    out.print("mag_timestamp_nominal_fallbacks="); out.println(fs.magTimestampNominalFallbacks);
+    out.print("mag_timestamp_monotonic_adjustments="); out.println(fs.magTimestampMonotonicAdjustments);
+    out.print("mag_timestamp_last_anchor_correction_us="); out.println(fs.lastMagAnchorCorrectionUs);
+    out.print("mag_timestamp_max_anchor_correction_us="); out.println(fs.maxMagAnchorCorrectionUs);
     out.print("mag_tag_counter_jumps="); out.println(fs.magTagCounterJumps);
     out.print("mag_raw_saturation_count="); out.println(fs.magRawSaturationCount);
     out.print("mag_last_xyz="); out.print(fs.lastMagX); out.print(','); out.print(fs.lastMagY); out.print(','); out.println(fs.lastMagZ);

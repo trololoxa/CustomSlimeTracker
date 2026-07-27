@@ -248,3 +248,27 @@ When adding or changing frame-related code:
 6. Add or update native tests for quaternion/frame invariants when possible.
 7. Do not lower the handshake below protocol 22 while corrected device-frame
    acceleration is emitted; older server behavior rotates acceleration alone.
+
+## 0023gd magnetic fit and alignment equations
+
+Hard/soft fitting is performed in affine-normalized raw coordinates:
+
+```text
+y = D^-1 (x - mu)
+y^T Q y + l^T y = 1
+c = -0.5 Q^-1 l
+k = 1 + c^T Q c
+S_raw = D^-T (Q/k) D^-1
+hardIron = mu + D c
+```
+
+The principal SPD square root of `S_raw`, scaled to the fitted mean radius, is the soft-iron correction. It intentionally contains no reflection or arbitrary rigid rotation; rigid sensor-to-sensor orientation remains owned by `magToImu`.
+
+Dynamic alignment uses native IMU gyro endpoints captured at the same FIFO timestamps as consecutive magnetic frames:
+
+```text
+m0 = magToImu * softIron * (raw0 - hardIron)
+m1 ~= Exp(-omega_sensor * dt) * m0
+```
+
+The negative sign follows passive evolution of a fixed world magnetic vector in a rotating sensor frame. `magToImu` remains a proper `SO(3)` rotation with determinant `+1`. Motion-only magnetic-vector kinematics cannot resolve a reflected driver coordinate frame, so QMC6309 register/package X/Y/Z handedness is a driver invariant rather than a calibration degree of freedom.

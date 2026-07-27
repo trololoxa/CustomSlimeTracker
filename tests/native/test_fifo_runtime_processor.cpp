@@ -1,5 +1,7 @@
 #include "test_common.hpp"
 
+
+
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -56,6 +58,13 @@ public:
                                   static_cast<int16_t>(sequence + 12)));
     }
 
+    void addMag(int16_t sequence) {
+        words_.push_back(makeWord(Lsm6dsvFifoReader::TAG_SENSORHUB_SLAVE0,
+                                  static_cast<int16_t>(sequence + 100),
+                                  static_cast<int16_t>(sequence + 200),
+                                  static_cast<int16_t>(sequence + 300)));
+    }
+
     size_t remainingWords() const { return words_.size() - readIndex_; }
     uint32_t dataReads() const { return dataReads_; }
     void setDataReadCostUs(uint32_t value) { dataReadCostUs_ = value; }
@@ -91,14 +100,18 @@ struct CallbackProbe {
     uint32_t magCalls = 0;
     uint32_t recoverOnCall = 0;
     uint32_t rawCallbackCostUs = 0;
+    uint32_t magCallbackCostUs = 0;
+    uint64_t latestRawTimestampUs = 0;
+    std::vector<uint64_t> magEndpointSkewUs;
     std::vector<uint32_t> statsDeltaCalls;
 };
 
-FifoRuntimeSampleResult onRaw(const Lsm6dsv::RawSample&,
+FifoRuntimeSampleResult onRaw(const Lsm6dsv::RawSample& raw,
                               bool checkFifoStatsDelta,
                               void* user) {
     auto& probe = *static_cast<CallbackProbe*>(user);
     probe.rawCalls++;
+    probe.latestRawTimestampUs = raw.t_us;
     trackerTestAdvanceMicros(probe.rawCallbackCostUs);
     if (checkFifoStatsDelta) probe.statsDeltaCalls.push_back(probe.rawCalls);
     if (probe.recoverOnCall != 0u && probe.rawCalls == probe.recoverOnCall) {
@@ -107,8 +120,14 @@ FifoRuntimeSampleResult onRaw(const Lsm6dsv::RawSample&,
     return FifoRuntimeSampleResult::Continue;
 }
 
-void onMag(const Lsm6dsvFifoReader::MagRawSample&, void* user) {
-    static_cast<CallbackProbe*>(user)->magCalls++;
+void onMag(const Lsm6dsvFifoReader::MagRawSample& mag, void* user) {
+    auto& probe = *static_cast<CallbackProbe*>(user);
+    probe.magCalls++;
+    trackerTestAdvanceMicros(probe.magCallbackCostUs);
+    const uint64_t skew = probe.latestRawTimestampUs >= mag.t_us
+        ? probe.latestRawTimestampUs - mag.t_us
+        : UINT64_MAX;
+    probe.magEndpointSkewUs.push_back(skew);
 }
 
 void onTime(uint32_t, void*) {}
@@ -125,6 +144,7 @@ struct Fixture {
     uint8_t rawQueueFlags[256]{};
     Lsm6dsvFifoReader::MagRawSample magQueue[64]{};
     CallbackProbe probe;
+    float magPeriodUs = 16667.0f;
     FifoRuntimeProcessor processor;
     Stream out;
 
@@ -134,6 +154,8 @@ struct Fixture {
         config.useHardwareTimestamps = false;
         config.timestampBatch = Lsm6dsvFifoReader::TimestampBatch::Off;
         config.temperatureBatch = Lsm6dsvFifoReader::TemperatureBatch::Off;
+        config.enableSensorHubSlave0 = true;
+        config.sensorHubSlave0PeriodUs = magPeriodUs;
         if (!fifo.configure(config)) return false;
         events.begin(&irqCount, &fifo, nullptr, 2000);
         processor.begin(&events,
@@ -233,6 +255,88 @@ void testExternalResetDropsPendingBatch(TestContext& ctx) {
     CHECK(ctx, f.probe.rawCalls == 12);
 }
 
+void testMagCallbacksFollowNearestRawTimestamp(TestContext& ctx) {
+    trackerTestSetMicros(1000000);
+    Fixture f;
+    for (int16_t i = 0; i < 80; ++i) {
+        f.bus.addSample(i);
+        if ((i + 1) % 16 == 0) {
+            f.bus.addMag(i);
+        }
+    }
+    CHECK(ctx, f.begin());
+    f.irqCount = 1;
+
+    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
+    CHECK(ctx, f.probe.rawCalls == 64);
+    CHECK(ctx, f.probe.magCalls == 4);
+    CHECK(ctx, f.probe.magEndpointSkewUs.size() == 4);
+    for (const uint64_t skewUs : f.probe.magEndpointSkewUs) {
+        // One 960 Hz raw period plus rounding headroom. The historical
+        // raw-first scheduler produced tens of milliseconds here.
+        CHECK(ctx, skewUs <= 1200u);
+    }
+
+    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
+    CHECK(ctx, f.probe.rawCalls == 80);
+    CHECK(ctx, f.probe.magCalls == 5);
+    CHECK(ctx, f.probe.magEndpointSkewUs.back() <= 1200u);
+    CHECK(ctx, f.processor.queueStats().magChronologicalDeferrals == 0u);
+}
+
+void testMagCallbacksRespectCountBudget(TestContext& ctx) {
+    trackerTestSetMicros(1000000);
+    Fixture f;
+    f.magPeriodUs = 1.0f;
+    for (int16_t i = 0; i < 10; ++i) f.bus.addMag(i);
+    for (int16_t i = 0; i < 32; ++i) f.bus.addSample(i);
+    CHECK(ctx, f.begin());
+    f.irqCount = 1;
+
+    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
+    CHECK(ctx, f.probe.magCalls == cfg::FIFO_RUNTIME_MAX_MAG_CALLBACKS_PER_SLICE);
+    CHECK(ctx, f.processor.queueStats().magCallbackCountDeferrals == 1u);
+    CHECK(ctx, f.processor.queueStats().magCallbackBudgetDeferrals == 0u);
+    CHECK(ctx, f.processor.queueStats().magChronologicalDeferrals == 1u);
+    const uint32_t rawAfterFirstPass = f.probe.rawCalls;
+
+    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
+    CHECK(ctx, f.probe.magCalls == 10u);
+    CHECK(ctx, f.probe.rawCalls >= rawAfterFirstPass);
+    for (const uint64_t skewUs : f.probe.magEndpointSkewUs) {
+        CHECK(ctx, skewUs <= 1200u);
+    }
+}
+
+void testMagCallbacksRespectCooperativeTimeBudget(TestContext& ctx) {
+    trackerTestSetMicros(1000000);
+    Fixture f;
+    f.magPeriodUs = 1.0f;
+    // A delayed sensor-hub burst can place many old mag frames before the
+    // next raw endpoint. They are all chronologically due at once.
+    for (int16_t i = 0; i < 10; ++i) f.bus.addMag(i);
+    for (int16_t i = 0; i < 32; ++i) f.bus.addSample(i);
+    CHECK(ctx, f.begin());
+    f.probe.magCallbackCostUs = 1000;
+    f.irqCount = 1;
+
+    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
+    CHECK(ctx, f.probe.magCalls == 4u);
+    CHECK(ctx, f.processor.queueStats().magCallbackBudgetDeferrals == 1u);
+    CHECK(ctx, f.processor.queueStats().magChronologicalDeferrals == 1u);
+    const uint32_t rawAfterFirstPass = f.probe.rawCalls;
+    CHECK(ctx, rawAfterFirstPass <= 2u);
+
+    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
+    CHECK(ctx, f.probe.magCalls >= 8u);
+    CHECK(ctx, f.probe.rawCalls == rawAfterFirstPass);
+    for (const uint64_t skewUs : f.probe.magEndpointSkewUs) {
+        CHECK(ctx, skewUs <= 1200u);
+    }
+}
+
+
+
 void testRamQueueAbsorbsSecondHardwareBurst(TestContext& ctx) {
     trackerTestSetMicros(0);
     Fixture f;
@@ -261,6 +365,9 @@ int main() {
     testHardwareDrainTimeDoesNotConsumeCallbackBudget(ctx);
     testRecoveryDropsRemainderOfPredateBatch(ctx);
     testExternalResetDropsPendingBatch(ctx);
+    testMagCallbacksFollowNearestRawTimestamp(ctx);
+    testMagCallbacksRespectCountBudget(ctx);
+    testMagCallbacksRespectCooperativeTimeBudget(ctx);
     testRamQueueAbsorbsSecondHardwareBurst(ctx);
     return ctx.finish("test_fifo_runtime_processor");
 }

@@ -123,6 +123,7 @@ void TrackerApp::setup() {
     }
 
     call(deps_.callbacks.setupNetworkRuntime);
+    call(deps_.callbacks.setupCalibrationAutonomy);
     publishHealthState();
 
     if (sensorRuntimeReady_) {
@@ -235,7 +236,29 @@ void TrackerApp::loop() {
     // FIFO/mag callbacks and outside the historical network timing bucket.
     // The composition hook itself refuses service while runtime queues are
     // pending or urgent; the magnetic diagnostics expose its own timings.
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) profilerSectionStartUs = micros();
+#endif
     const bool magDeferredWorked = callBool(deps_.callbacks.updateMagDeferredRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Calibration0022,
+                         micros() - profilerSectionStartUs,
+                         magDeferredWorked,
+                         profilerNowMs);
+        profilerSectionStartUs = micros();
+    }
+#endif
+    const bool calibrationAutonomyWorked =
+        callBool(deps_.callbacks.updateCalibrationAutonomyRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Calibration0023,
+                         micros() - profilerSectionStartUs,
+                         calibrationAutonomyWorked,
+                         profilerNowMs);
+    }
+#endif
 
     // Tracking delivery has priority over all diagnostic I/O. CLI command
     // dispatch, telnet socket work and output drains run only after FIFO/AHRS
@@ -334,6 +357,7 @@ void TrackerApp::loop() {
                          tapWorked ||
                          ledWorked ||
                          magDeferredWorked ||
+                         calibrationAutonomyWorked ||
                          remoteConsoleWorked ||
                          heartbeatPrinted;
 #if TRACKER_HAS_RUNTIME_PROFILER
@@ -642,6 +666,8 @@ bool TrackerApp::motionLightSleepBlocked() const {
 #if TRACKER_HAS_RUNTIME_TEST_STATE
     if (deps_.runtime.runtimeTestRunner != nullptr && deps_.runtime.runtimeTestRunner->active()) return true;
 #endif
+    if (deps_.callbacks.calibrationBlocksMotionSleep != nullptr &&
+        deps_.callbacks.calibrationBlocksMotionSleep()) return true;
     // These hooks own the non-IMU resources that must be quiesced before the
     // shared INT1 line is repurposed as a level wake source.
     return deps_.bootstrap.lsm == nullptr ||

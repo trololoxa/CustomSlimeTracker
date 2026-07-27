@@ -97,6 +97,7 @@ struct TrackerAppCallbacks {
     void (*setupMagRuntimeController)() = nullptr;
     void (*setupCommandInterface)() = nullptr;
     void (*setupNetworkRuntime)() = nullptr;
+    void (*setupCalibrationAutonomy)() = nullptr;
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     // Rebuild radio/UDP state after light sleep without reloading NVS and
     // discarding unsaved runtime network changes.
@@ -104,6 +105,7 @@ struct TrackerAppCallbacks {
 #endif
     bool (*updateNetworkRuntime)() = nullptr;
     bool (*updateMagDeferredRuntime)() = nullptr;
+    bool (*updateCalibrationAutonomyRuntime)() = nullptr;
     bool (*updateSerialConsoleRuntime)() = nullptr;
     bool (*updateRemoteConsoleRuntime)() = nullptr;
     void (*setupTapRuntime)() = nullptr;
@@ -122,6 +124,7 @@ struct TrackerAppCallbacks {
     // Light-sleep composition hooks. They intentionally do not change
     // persistent/NVS settings: resume reuses the same runtime configuration.
     bool (*serverFoundForMotionSleep)() = nullptr;
+    bool (*calibrationBlocksMotionSleep)() = nullptr;
     void (*prepareMotionLightSleepRuntime)() = nullptr;
 #endif
     void (*resetOrientationState)(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase) = nullptr;

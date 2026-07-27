@@ -1,5 +1,7 @@
 #include "sensor/mag_calibration.hpp"
 
+#include "core/deterministic_reservoir.hpp"
+
 #include <cmath>
 
 namespace tracker {
@@ -11,6 +13,10 @@ const char* magCalibrationFailureReasonName(MagCalibrationFailureReason reason) 
         case MagCalibrationFailureReason::AxisRadiusTooSmall: return "axis_radius_too_small";
         case MagCalibrationFailureReason::BoxCoverageTooLow: return "box_coverage_too_low";
         case MagCalibrationFailureReason::RawNormFilterFailed: return "raw_norm_filter_failed";
+        case MagCalibrationFailureReason::FitNormalizationFailed: return "fit_normalization_failed";
+        case MagCalibrationFailureReason::LinearSolveFailed: return "linear_solve_failed";
+        case MagCalibrationFailureReason::QuadraticCenterFailed: return "quadratic_center_failed";
+        case MagCalibrationFailureReason::NonPositiveDefiniteShape: return "non_positive_definite_shape";
         case MagCalibrationFailureReason::EllipsoidFitFailed: return "ellipsoid_fit_failed";
         case MagCalibrationFailureReason::InlierRatioTooLow: return "inlier_ratio_too_low";
         case MagCalibrationFailureReason::GeometricResidualTooHigh: return "geometric_residual_too_high";
@@ -20,9 +26,34 @@ const char* magCalibrationFailureReasonName(MagCalibrationFailureReason reason) 
     return "unknown";
 }
 
+const char* magCalibrationSolverStageName(MagCalibrationSolverStage stage) {
+    switch (stage) {
+        case MagCalibrationSolverStage::None: return "none";
+        case MagCalibrationSolverStage::Normalized: return "normalized";
+        case MagCalibrationSolverStage::LinearSolved: return "linear_solved";
+        case MagCalibrationSolverStage::CenterSolved: return "center_solved";
+        case MagCalibrationSolverStage::ShapeSolved: return "shape_solved";
+        case MagCalibrationSolverStage::EigenSolved: return "eigen_solved";
+        case MagCalibrationSolverStage::CandidateBuilt: return "candidate_built";
+    }
+    return "unknown";
+}
+
 namespace {
 
 constexpr int kMagFitTerms = 9;
+
+#if defined(__GNUC__) || defined(__clang__)
+#define TRACKER_MAG_FIT_NOINLINE __attribute__((noinline))
+#else
+#define TRACKER_MAG_FIT_NOINLINE
+#endif
+
+struct FitNormalization {
+    double center[3] = {};
+    double scale[3] = {1.0, 1.0, 1.0};
+    bool valid = false;
+};
 
 struct FitAccumulator {
     double normal[kMagFitTerms][kMagFitTerms] = {};
@@ -32,6 +63,11 @@ struct FitAccumulator {
 
 struct FitCandidate {
     bool valid = false;
+    MagCalibrationFailureReason failureReason = MagCalibrationFailureReason::EllipsoidFitFailed;
+    MagCalibrationSolverStage solverStage = MagCalibrationSolverStage::None;
+    FitNormalization normalization;
+    float solverPivotRatio = 0.0f;
+    uint32_t solverSamples = 0;
     Vec3 hardIron = Vec3::zero();
     Mat3 softIron = Mat3::identity();
     float expectedNorm = 1.0f;
@@ -64,10 +100,12 @@ void resetAccumulator(FitAccumulator& acc) {
     }
 }
 
-void accumulateSample(FitAccumulator& acc, const Vec3& sample) {
-    const double x = static_cast<double>(sample.x);
-    const double y = static_cast<double>(sample.y);
-    const double z = static_cast<double>(sample.z);
+void accumulateSample(FitAccumulator& acc,
+                      const Vec3& sample,
+                      const FitNormalization& normalization) {
+    const double x = (static_cast<double>(sample.x) - normalization.center[0]) / normalization.scale[0];
+    const double y = (static_cast<double>(sample.y) - normalization.center[1]) / normalization.scale[1];
+    const double z = (static_cast<double>(sample.z) - normalization.center[2]) / normalization.scale[2];
     const double terms[kMagFitTerms] = {
         x * x,
         y * y,
@@ -88,23 +126,32 @@ void accumulateSample(FitAccumulator& acc, const Vec3& sample) {
     acc.count++;
 }
 
-bool solveLinear9(const double inA[kMagFitTerms][kMagFitTerms],
-                  const double inB[kMagFitTerms],
-                  double outX[kMagFitTerms]) {
-    double a[kMagFitTerms][kMagFitTerms + 1] = {};
-    double maxAbs = 0.0;
-    for (int r = 0; r < kMagFitTerms; ++r) {
-        for (int c = 0; c < kMagFitTerms; ++c) {
-            a[r][c] = inA[r][c];
-            const double av = std::fabs(a[r][c]);
-            if (av > maxAbs) maxAbs = av;
-        }
-        a[r][kMagFitTerms] = inB[r];
+TRACKER_MAG_FIT_NOINLINE bool solveLinear9(
+    const double inA[kMagFitTerms][kMagFitTerms],
+    const double inB[kMagFitTerms],
+    double outX[kMagFitTerms],
+    float& pivotRatioOut) {
+    // Equilibrate the normal equations before elimination. Quadratic, cross
+    // and linear columns naturally have very different magnitudes even after
+    // sample-space normalization. Unit-diagonal scaling makes the pivot test
+    // a meaningful conditioning check instead of a raw-unit accident.
+    double columnScale[kMagFitTerms] = {};
+    for (int i = 0; i < kMagFitTerms; ++i) {
+        const double diagonal = std::fabs(inA[i][i]);
+        if (!std::isfinite(diagonal) || diagonal <= 1.0e-18) return false;
+        columnScale[i] = std::sqrt(diagonal);
     }
 
-    if (!std::isfinite(maxAbs) || maxAbs <= 0.0) return false;
+    double a[kMagFitTerms][kMagFitTerms + 1] = {};
+    for (int r = 0; r < kMagFitTerms; ++r) {
+        for (int c = 0; c < kMagFitTerms; ++c) {
+            a[r][c] = inA[r][c] / (columnScale[r] * columnScale[c]);
+        }
+        a[r][kMagFitTerms] = inB[r] / columnScale[r];
+    }
 
-    const double eps = maxAbs * 1.0e-12;
+    double minPivot = 1.0e300;
+    double maxPivot = 0.0;
     for (int col = 0; col < kMagFitTerms; ++col) {
         int pivot = col;
         double pivotAbs = std::fabs(a[col][col]);
@@ -116,7 +163,9 @@ bool solveLinear9(const double inA[kMagFitTerms][kMagFitTerms],
             }
         }
 
-        if (!std::isfinite(pivotAbs) || pivotAbs <= eps) return false;
+        if (!std::isfinite(pivotAbs) || pivotAbs <= 1.0e-12) return false;
+        if (pivotAbs < minPivot) minPivot = pivotAbs;
+        if (pivotAbs > maxPivot) maxPivot = pivotAbs;
 
         if (pivot != col) {
             for (int c = col; c <= kMagFitTerms; ++c) {
@@ -137,10 +186,33 @@ bool solveLinear9(const double inA[kMagFitTerms][kMagFitTerms],
         }
     }
 
+    if (!std::isfinite(minPivot) || !std::isfinite(maxPivot) || maxPivot <= 0.0) return false;
+    const double pivotRatio = minPivot / maxPivot;
+    if (!std::isfinite(pivotRatio) || pivotRatio <= 1.0e-10) return false;
+    pivotRatioOut = static_cast<float>(pivotRatio);
+
     for (int i = 0; i < kMagFitTerms; ++i) {
-        outX[i] = a[i][kMagFitTerms];
+        outX[i] = a[i][kMagFitTerms] / columnScale[i];
         if (!std::isfinite(outX[i])) return false;
     }
+    return true;
+}
+
+bool inverseSymmetric3(const double a[3][3], double out[3][3]) {
+    const double c00 = a[1][1] * a[2][2] - a[1][2] * a[1][2];
+    const double c01 = a[0][2] * a[1][2] - a[0][1] * a[2][2];
+    const double c02 = a[0][1] * a[1][2] - a[0][2] * a[1][1];
+    const double c11 = a[0][0] * a[2][2] - a[0][2] * a[0][2];
+    const double c12 = a[0][1] * a[0][2] - a[0][0] * a[1][2];
+    const double c22 = a[0][0] * a[1][1] - a[0][1] * a[0][1];
+    const double det = a[0][0] * c00 + a[0][1] * c01 + a[0][2] * c02;
+    const double scale = std::fabs(a[0][0]) + std::fabs(a[1][1]) + std::fabs(a[2][2]);
+    const double eps = std::max(1.0e-15, scale * scale * scale * 1.0e-12);
+    if (!std::isfinite(det) || std::fabs(det) <= eps) return false;
+    const double invDet = 1.0 / det;
+    out[0][0] = c00 * invDet; out[0][1] = c01 * invDet; out[0][2] = c02 * invDet;
+    out[1][0] = c01 * invDet; out[1][1] = c11 * invDet; out[1][2] = c12 * invDet;
+    out[2][0] = c02 * invDet; out[2][1] = c12 * invDet; out[2][2] = c22 * invDet;
     return true;
 }
 
@@ -225,92 +297,159 @@ Mat3 makeSoftIronFromEigen(const double eigVec[3][3], const double eigVal[3], do
     );
 }
 
-bool fitFromAccumulator(const FitAccumulator& acc, const MagCalibrationParams& params, FitCandidate& out) {
+TRACKER_MAG_FIT_NOINLINE bool fitFromAccumulator(
+    const FitAccumulator& acc,
+    const FitNormalization& normalization,
+    const MagCalibrationParams& params,
+    FitCandidate& out) {
     out = FitCandidate{};
-    if (acc.count < params.minSamples) return false;
+    out.normalization = normalization;
+    out.solverSamples = acc.count;
+    if (!normalization.valid || acc.count < params.minSamples) {
+        out.failureReason = MagCalibrationFailureReason::FitNormalizationFailed;
+        return false;
+    }
+    out.solverStage = MagCalibrationSolverStage::Normalized;
 
     double coeff[kMagFitTerms] = {};
-    if (!solveLinear9(acc.normal, acc.rhs, coeff)) return false;
+    if (!solveLinear9(acc.normal, acc.rhs, coeff, out.solverPivotRatio)) {
+        out.failureReason = MagCalibrationFailureReason::LinearSolveFailed;
+        return false;
+    }
+    out.solverStage = MagCalibrationSolverStage::LinearSolved;
 
-    Mat3 quad(
-        static_cast<float>(coeff[0]), static_cast<float>(coeff[3]), static_cast<float>(coeff[4]),
-        static_cast<float>(coeff[3]), static_cast<float>(coeff[1]), static_cast<float>(coeff[5]),
-        static_cast<float>(coeff[4]), static_cast<float>(coeff[5]), static_cast<float>(coeff[2])
-    );
-    if (!quad.isFinite()) return false;
-
-    Mat3 quadInv;
-    if (!quad.inverse(quadInv, 1.0e-18f)) return false;
-
-    const Vec3 lin(static_cast<float>(coeff[6]), static_cast<float>(coeff[7]), static_cast<float>(coeff[8]));
-    const Vec3 center = (quadInv * lin) * -0.5f;
-    if (!center.isFinite()) return false;
-
-    const double cx = static_cast<double>(center.x);
-    const double cy = static_cast<double>(center.y);
-    const double cz = static_cast<double>(center.z);
-    const double centerQuad =
-        cx * static_cast<double>(quad.m[0][0]) * cx +
-        cy * static_cast<double>(quad.m[1][1]) * cy +
-        cz * static_cast<double>(quad.m[2][2]) * cz +
-        2.0 * cx * static_cast<double>(quad.m[0][1]) * cy +
-        2.0 * cx * static_cast<double>(quad.m[0][2]) * cz +
-        2.0 * cy * static_cast<double>(quad.m[1][2]) * cz;
-    const double k = 1.0 + centerQuad;
-    if (!std::isfinite(k) || std::fabs(k) <= 1.0e-18) return false;
-
-    const double shape[3][3] = {
-        {static_cast<double>(quad.m[0][0]) / k, static_cast<double>(quad.m[0][1]) / k, static_cast<double>(quad.m[0][2]) / k},
-        {static_cast<double>(quad.m[1][0]) / k, static_cast<double>(quad.m[1][1]) / k, static_cast<double>(quad.m[1][2]) / k},
-        {static_cast<double>(quad.m[2][0]) / k, static_cast<double>(quad.m[2][1]) / k, static_cast<double>(quad.m[2][2]) / k},
+    const double quad[3][3] = {
+        {coeff[0], coeff[3], coeff[4]},
+        {coeff[3], coeff[1], coeff[5]},
+        {coeff[4], coeff[5], coeff[2]},
     };
+    double quadInv[3][3] = {};
+    if (!inverseSymmetric3(quad, quadInv)) {
+        out.failureReason = MagCalibrationFailureReason::QuadraticCenterFailed;
+        return false;
+    }
+
+    const double lin[3] = {coeff[6], coeff[7], coeff[8]};
+    double centerNormalized[3] = {};
+    for (int r = 0; r < 3; ++r) {
+        centerNormalized[r] = -0.5 * (
+            quadInv[r][0] * lin[0] +
+            quadInv[r][1] * lin[1] +
+            quadInv[r][2] * lin[2]);
+        if (!std::isfinite(centerNormalized[r])) {
+            out.failureReason = MagCalibrationFailureReason::QuadraticCenterFailed;
+            return false;
+        }
+    }
+    out.solverStage = MagCalibrationSolverStage::CenterSolved;
+
+    double centerQuad = 0.0;
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            centerQuad += centerNormalized[r] * quad[r][c] * centerNormalized[c];
+        }
+    }
+    const double k = 1.0 + centerQuad;
+    if (!std::isfinite(k) || k <= 1.0e-12) {
+        out.failureReason = MagCalibrationFailureReason::NonPositiveDefiniteShape;
+        return false;
+    }
+
+    // Convert the centered normalized-coordinate shape back to raw sensor
+    // coordinates. For x = origin + D*y, Sx = D^-T * Sy * D^-1.
+    double shapeRaw[3][3] = {};
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            shapeRaw[r][c] = quad[r][c] /
+                (k * normalization.scale[r] * normalization.scale[c]);
+            if (!std::isfinite(shapeRaw[r][c])) {
+                out.failureReason = MagCalibrationFailureReason::NonPositiveDefiniteShape;
+                return false;
+            }
+        }
+    }
+    out.solverStage = MagCalibrationSolverStage::ShapeSolved;
 
     double eigVec[3][3] = {};
     double eigVal[3] = {};
-    if (!jacobiEigenSymmetric3(shape, eigVec, eigVal)) return false;
-
-    for (int i = 0; i < 3; ++i) {
-        if (!std::isfinite(eigVal[i]) || eigVal[i] <= 0.0) return false;
+    if (!jacobiEigenSymmetric3(shapeRaw, eigVec, eigVal)) {
+        out.failureReason = MagCalibrationFailureReason::NonPositiveDefiniteShape;
+        return false;
     }
+    for (int i = 0; i < 3; ++i) {
+        if (!std::isfinite(eigVal[i]) || eigVal[i] <= 0.0) {
+            out.failureReason = MagCalibrationFailureReason::NonPositiveDefiniteShape;
+            return false;
+        }
+    }
+    out.solverStage = MagCalibrationSolverStage::EigenSolved;
 
     const double r0 = 1.0 / std::sqrt(eigVal[0]);
     const double r1 = 1.0 / std::sqrt(eigVal[1]);
     const double r2 = 1.0 / std::sqrt(eigVal[2]);
-    double minRadius = r0;
-    if (r1 < minRadius) minRadius = r1;
-    if (r2 < minRadius) minRadius = r2;
-    double maxRadius = r0;
-    if (r1 > maxRadius) maxRadius = r1;
-    if (r2 > maxRadius) maxRadius = r2;
-
-    if (!std::isfinite(minRadius) || !std::isfinite(maxRadius) || minRadius < static_cast<double>(params.minAxisRadius)) return false;
-
+    double minRadius = std::min(r0, std::min(r1, r2));
+    double maxRadius = std::max(r0, std::max(r1, r2));
+    if (!std::isfinite(minRadius) || !std::isfinite(maxRadius) ||
+        minRadius < static_cast<double>(params.minAxisRadius)) {
+        out.failureReason = MagCalibrationFailureReason::EllipsoidFitFailed;
+        return false;
+    }
     const double axisRatio = maxRadius / minRadius;
-    if (!std::isfinite(axisRatio) || axisRatio > static_cast<double>(params.maxAxisRatio)) return false;
-
+    if (!std::isfinite(axisRatio) || axisRatio > static_cast<double>(params.maxAxisRatio)) {
+        out.failureReason = MagCalibrationFailureReason::EllipsoidFitFailed;
+        return false;
+    }
     const double targetRadius = (r0 + r1 + r2) / 3.0;
-    if (!std::isfinite(targetRadius) || targetRadius <= 0.0) return false;
+    if (!std::isfinite(targetRadius) || targetRadius <= 0.0) {
+        out.failureReason = MagCalibrationFailureReason::EllipsoidFitFailed;
+        return false;
+    }
 
-    const double pNp = [&]() {
-        double accSum = 0.0;
-        for (int i = 0; i < kMagFitTerms; ++i) {
-            for (int j = 0; j < kMagFitTerms; ++j) accSum += coeff[i] * acc.normal[i][j] * coeff[j];
+    const Vec3 centerRaw(
+        static_cast<float>(normalization.center[0] + normalization.scale[0] * centerNormalized[0]),
+        static_cast<float>(normalization.center[1] + normalization.scale[1] * centerNormalized[1]),
+        static_cast<float>(normalization.center[2] + normalization.scale[2] * centerNormalized[2]));
+    if (!centerRaw.isFinite()) {
+        out.failureReason = MagCalibrationFailureReason::QuadraticCenterFailed;
+        return false;
+    }
+
+    double pNp = 0.0;
+    for (int i = 0; i < kMagFitTerms; ++i) {
+        for (int j = 0; j < kMagFitTerms; ++j) {
+            pNp += coeff[i] * acc.normal[i][j] * coeff[j];
         }
-        return accSum;
-    }();
+    }
     double pRhs = 0.0;
     for (int i = 0; i < kMagFitTerms; ++i) pRhs += coeff[i] * acc.rhs[i];
-    double residualVar = (pNp - 2.0 * pRhs + static_cast<double>(acc.count)) / static_cast<double>(acc.count);
+    double residualVar = (pNp - 2.0 * pRhs + static_cast<double>(acc.count)) /
+        static_cast<double>(acc.count);
     if (residualVar < 0.0 && residualVar > -1.0e-9) residualVar = 0.0;
-    if (!std::isfinite(residualVar) || residualVar < 0.0) return false;
-    const double residualRms = std::sqrt(residualVar);
-    if (!std::isfinite(residualRms)) return false;
+    if (!std::isfinite(residualVar) || residualVar < 0.0) {
+        out.failureReason = MagCalibrationFailureReason::EllipsoidFitFailed;
+        return false;
+    }
+    // The translation-invariant and approximately twice first-order radial
+    // error for a normalized ellipsoid. Divide by the completed-square scale
+    // so the metric is independent of hard-iron translation.
+    const double residualRms = std::sqrt(residualVar) / std::fabs(k);
+    if (!std::isfinite(residualRms)) {
+        out.failureReason = MagCalibrationFailureReason::EllipsoidFitFailed;
+        return false;
+    }
 
     const Mat3 softIron = makeSoftIronFromEigen(eigVec, eigVal, targetRadius);
-    if (!softIron.isFinite()) return false;
+    Mat3 softIronInv;
+    if (!softIron.isFinite() || softIron.determinant() <= 0.0f ||
+        !softIron.inverse(softIronInv, 1.0e-9f)) {
+        out.failureReason = MagCalibrationFailureReason::NonPositiveDefiniteShape;
+        return false;
+    }
 
     out.valid = true;
-    out.hardIron = center;
+    out.failureReason = MagCalibrationFailureReason::None;
+    out.solverStage = MagCalibrationSolverStage::CandidateBuilt;
+    out.hardIron = centerRaw;
     out.softIron = softIron;
     out.expectedNorm = static_cast<float>(targetRadius);
     out.radiusX = static_cast<float>(r0);
@@ -319,6 +458,17 @@ bool fitFromAccumulator(const FitAccumulator& acc, const MagCalibrationParams& p
     out.axisRatio = static_cast<float>(axisRatio);
     out.algebraicResidualRms = static_cast<float>(residualRms);
     return true;
+}
+
+TRACKER_MAG_FIT_NOINLINE void tryReplaceFitFromAccumulator(
+    const FitAccumulator& acc,
+    const FitNormalization& normalization,
+    const MagCalibrationParams& params,
+    FitCandidate& inOut) {
+    FitCandidate replacement;
+    if (fitFromAccumulator(acc, normalization, params, replacement)) {
+        inOut = replacement;
+    }
 }
 
 float residualAbs(const FitCandidate& fit, const MagCalibrationStoredSample& s) {
@@ -399,45 +549,162 @@ bool accumulateInliers(const MagCalibrationStoredSample* samples,
                        uint16_t count,
                        const FitCandidate& reference,
                        float threshold,
+                       const FitNormalization& normalization,
                        FitAccumulator& out) {
     resetAccumulator(out);
     for (uint16_t i = 0; i < count; ++i) {
         if (residualAbs(reference, samples[i]) <= threshold) {
-            accumulateSample(out, storedToVec3(samples[i]));
+            accumulateSample(out, storedToVec3(samples[i]), normalization);
         }
     }
     return out.count > 0;
 }
 
 
-bool accumulateRawNormFiltered(const MagCalibrationStoredSample* samples,
-                               uint16_t count,
-                               FitAccumulator& out) {
+TRACKER_MAG_FIT_NOINLINE bool accumulateCenteredNormFiltered(
+    const MagCalibrationStoredSample* samples,
+    uint16_t count,
+    const MagCalibrationParams& params,
+    FitNormalization& normalization,
+    FitAccumulator& out,
+    MagCalibrationFailureReason& failureReason,
+    float& boxCoverageScoreOut,
+    float& minBoxRadiusOut) {
     resetAccumulator(out);
-    if (!samples || count == 0) return false;
+    normalization = FitNormalization{};
+    failureReason = MagCalibrationFailureReason::RawNormFilterFailed;
+    boxCoverageScoreOut = 0.0f;
+    minBoxRadiusOut = 0.0f;
+    if (!samples || count == 0u) return false;
 
-    double sum = 0.0;
-    double sumSq = 0.0;
+    double mean[3] = {};
+    uint32_t finiteCount = 0u;
     for (uint16_t i = 0; i < count; ++i) {
-        const double n = static_cast<double>(storedToVec3(samples[i]).norm());
-        sum += n;
-        sumSq += n * n;
+        const Vec3 v = storedToVec3(samples[i]);
+        if (!v.isFinite()) continue;
+        mean[0] += static_cast<double>(v.x);
+        mean[1] += static_cast<double>(v.y);
+        mean[2] += static_cast<double>(v.z);
+        finiteCount++;
     }
-    const double mean = sum / static_cast<double>(count);
-    double var = sumSq / static_cast<double>(count) - mean * mean;
-    if (var < 0.0 && var > -1.0e-6) var = 0.0;
-    const double stddev = var > 0.0 ? std::sqrt(var) : 0.0;
-    const double lo = mean - 3.5 * stddev;
-    const double hi = mean + 3.5 * stddev;
+    if (finiteCount < params.minSamples) return false;
+    const double invFiniteCount = 1.0 / static_cast<double>(finiteCount);
+    for (double& v : mean) v *= invFiniteCount;
+
+    // The old filter used |raw| and therefore changed when hard-iron moved
+    // the same ellipsoid relative to the ADC origin. Filter by distance from
+    // the sample centroid instead, then derive the final affine normalization
+    // from exactly the retained set.
+    double radiusSum = 0.0;
+    double radiusSumSq = 0.0;
+    for (uint16_t i = 0; i < count; ++i) {
+        const Vec3 v = storedToVec3(samples[i]);
+        const double dx = static_cast<double>(v.x) - mean[0];
+        const double dy = static_cast<double>(v.y) - mean[1];
+        const double dz = static_cast<double>(v.z) - mean[2];
+        const double radius = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (!std::isfinite(radius)) continue;
+        radiusSum += radius;
+        radiusSumSq += radius * radius;
+    }
+    const double radiusMean = radiusSum * invFiniteCount;
+    double radiusVar = radiusSumSq * invFiniteCount - radiusMean * radiusMean;
+    if (radiusVar < 0.0 && radiusVar > -1.0e-6) radiusVar = 0.0;
+    if (!std::isfinite(radiusVar) || radiusVar < 0.0) return false;
+    const double radiusStd = std::sqrt(radiusVar);
+    const double lo = std::max(0.0, radiusMean - 3.5 * radiusStd);
+    const double hi = radiusMean + 3.5 * radiusStd;
+
+    double retainedSum[3] = {};
+    double retainedSumSq[3] = {};
+    uint32_t retained = 0u;
+    for (uint16_t i = 0; i < count; ++i) {
+        const Vec3 v = storedToVec3(samples[i]);
+        const double dx = static_cast<double>(v.x) - mean[0];
+        const double dy = static_cast<double>(v.y) - mean[1];
+        const double dz = static_cast<double>(v.z) - mean[2];
+        const double radius = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (!std::isfinite(radius) || radius < lo || radius > hi) continue;
+        const double values[3] = {
+            static_cast<double>(v.x),
+            static_cast<double>(v.y),
+            static_cast<double>(v.z)};
+        for (int axis = 0; axis < 3; ++axis) {
+            retainedSum[axis] += values[axis];
+            retainedSumSq[axis] += values[axis] * values[axis];
+        }
+        retained++;
+    }
+    if (retained < params.minSamples) return false;
+
+    for (int axis = 0; axis < 3; ++axis) {
+        normalization.center[axis] = retainedSum[axis] / static_cast<double>(retained);
+        double variance = retainedSumSq[axis] / static_cast<double>(retained) -
+            normalization.center[axis] * normalization.center[axis];
+        if (variance < 0.0 && variance > -1.0e-6) variance = 0.0;
+        if (!std::isfinite(variance) || variance <= 1.0e-6) {
+            failureReason = MagCalibrationFailureReason::FitNormalizationFailed;
+            return false;
+        }
+        normalization.scale[axis] = std::sqrt(variance);
+        if (!std::isfinite(normalization.scale[axis]) ||
+            normalization.scale[axis] < 1.0) {
+            failureReason = MagCalibrationFailureReason::FitNormalizationFailed;
+            return false;
+        }
+    }
+    normalization.valid = true;
+    double retainedMin[3] = {1.0e300, 1.0e300, 1.0e300};
+    double retainedMax[3] = {-1.0e300, -1.0e300, -1.0e300};
 
     for (uint16_t i = 0; i < count; ++i) {
         const Vec3 v = storedToVec3(samples[i]);
-        const double n = static_cast<double>(v.norm());
-        if (std::isfinite(n) && n >= lo && n <= hi) {
-            accumulateSample(out, v);
+        const double dx = static_cast<double>(v.x) - mean[0];
+        const double dy = static_cast<double>(v.y) - mean[1];
+        const double dz = static_cast<double>(v.z) - mean[2];
+        const double radius = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::isfinite(radius) && radius >= lo && radius <= hi) {
+            const double values[3] = {
+                static_cast<double>(v.x),
+                static_cast<double>(v.y),
+                static_cast<double>(v.z)};
+            for (int axis = 0; axis < 3; ++axis) {
+                if (values[axis] < retainedMin[axis]) retainedMin[axis] = values[axis];
+                if (values[axis] > retainedMax[axis]) retainedMax[axis] = values[axis];
+            }
+            accumulateSample(out, v, normalization);
         }
     }
-    return out.count > 0;
+    if (out.count >= params.minSamples) {
+        const double radiusX = 0.5 * (retainedMax[0] - retainedMin[0]);
+        const double radiusY = 0.5 * (retainedMax[1] - retainedMin[1]);
+        const double radiusZ = 0.5 * (retainedMax[2] - retainedMin[2]);
+        const double minRadius = std::min(radiusX, std::min(radiusY, radiusZ));
+        const double maxRadius = std::max(radiusX, std::max(radiusY, radiusZ));
+        minBoxRadiusOut = static_cast<float>(minRadius);
+        boxCoverageScoreOut = maxRadius > 0.0
+            ? static_cast<float>(minRadius / maxRadius)
+            : 0.0f;
+    }
+    failureReason = out.count >= params.minSamples
+        ? MagCalibrationFailureReason::None
+        : MagCalibrationFailureReason::RawNormFilterFailed;
+    return out.count >= params.minSamples;
+}
+
+void copyFitDiagnostics(const FitCandidate& fit, MagCalibrationResult& out) {
+    out.fitAvailable = fit.valid;
+    out.solverStage = fit.solverStage;
+    out.fitNormalizationCenter = Vec3(
+        static_cast<float>(fit.normalization.center[0]),
+        static_cast<float>(fit.normalization.center[1]),
+        static_cast<float>(fit.normalization.center[2]));
+    out.fitNormalizationScale = Vec3(
+        static_cast<float>(fit.normalization.scale[0]),
+        static_cast<float>(fit.normalization.scale[1]),
+        static_cast<float>(fit.normalization.scale[2]));
+    out.solverPivotRatio = fit.solverPivotRatio;
+    out.solverSamples = fit.solverSamples;
 }
 
 } // namespace
@@ -469,6 +736,8 @@ void MagCalibrationCollector::reset() {
     normSum_ = 0.0;
     storedSamples_ = 0;
     storedSequence_ = 0;
+    reservoirReplacements_ = 0;
+    reservoirSkipped_ = 0;
     for (auto& s : stored_) s = MagCalibrationStoredSample{};
     lastResult_ = MagCalibrationResult{};
     lastFailureReason_ = MagCalibrationFailureReason::None;
@@ -524,15 +793,25 @@ void MagCalibrationCollector::push(const Lsm6dsvFifoReader::MagRawSample& m, flo
     }
 
     const MagCalibrationStoredSample stored{m.x, m.y, m.z};
+    const uint32_t seenCount = storedSequence_ + 1u;
     if (storedSamples_ < kMaxStoredSamples) {
         stored_[storedSamples_++] = stored;
     } else {
-        // Deterministic bounded reservoir. Calibration does not need every raw
-        // sample; it needs a representative all-orientation subset without heap.
-        const uint16_t idx = static_cast<uint16_t>((storedSequence_ * 2654435761UL) % kMaxStoredSamples);
-        stored_[idx] = stored;
+        // Deterministic Algorithm-R reservoir sampling.  Every accepted sample
+        // seen since start() has the same probability of remaining in the
+        // bounded fit set.  The previous implementation permuted all 768 slots
+        // repeatedly, so after a few seconds it retained only the most recent
+        // orientations and could erase otherwise-good full-sphere coverage.
+        const uint32_t candidate = deterministicReservoirCandidate(
+            storedSequence_, seenCount, 0x9E3779B9u);
+        if (candidate < kMaxStoredSamples) {
+            stored_[static_cast<uint16_t>(candidate)] = stored;
+            reservoirReplacements_++;
+        } else {
+            reservoirSkipped_++;
+        }
     }
-    storedSequence_++;
+    storedSequence_ = seenCount;
 
     sumX_ += x;
     sumY_ += y;
@@ -553,65 +832,125 @@ bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
         return false;
     }
 
-    const float spanX = maxX_ - minX_;
-    const float spanY = maxY_ - minY_;
-    const float spanZ = maxZ_ - minZ_;
-
-    const float boxRadiusX = 0.5f * spanX;
-    const float boxRadiusY = 0.5f * spanY;
-    const float boxRadiusZ = 0.5f * spanZ;
-
-    if (boxRadiusX < params_.minAxisRadius ||
-        boxRadiusY < params_.minAxisRadius ||
-        boxRadiusZ < params_.minAxisRadius) {
-        lastFailureReason_ = MagCalibrationFailureReason::AxisRadiusTooSmall;
+    // All fit gates must describe the same bounded set that is actually fed
+    // to the ellipsoid solver. Full-capture extrema are useful diagnostics,
+    // but using them here can claim good coverage from samples that no longer
+    // exist in the fit reservoir.
+    const MagCalibrationFitSetDiagnostics fitSet = fitSetDiagnostics();
+    if (!fitSet.valid || fitSet.samples < minSamples) {
+        lastFailureReason_ = MagCalibrationFailureReason::InsufficientSamples;
         lastResult_ = out;
         return false;
     }
 
-    float minBoxRadius = boxRadiusX;
-    if (boxRadiusY < minBoxRadius) minBoxRadius = boxRadiusY;
-    if (boxRadiusZ < minBoxRadius) minBoxRadius = boxRadiusZ;
-    float maxBoxRadius = boxRadiusX;
-    if (boxRadiusY > maxBoxRadius) maxBoxRadius = boxRadiusY;
-    if (boxRadiusZ > maxBoxRadius) maxBoxRadius = boxRadiusZ;
-    const float boxCoverageScore = maxBoxRadius > 0.0f ? minBoxRadius / maxBoxRadius : 0.0f;
-    if (!tracker::isFinite(boxCoverageScore) || boxCoverageScore < params_.minCoverageScore) {
+    // FitAccumulator is the dominant local object (9x9 doubles plus RHS).
+    // Reuse one workspace for the raw and inlier passes instead of keeping two
+    // simultaneously live.  This preserves the exact fit/refit semantics while
+    // leaving a safe cross-ABI stack margin on MSYS2 and the ESP toolchain.
+    FitAccumulator fitAccumulator;
+    FitNormalization fitNormalization;
+    MagCalibrationFailureReason accumulationFailure = MagCalibrationFailureReason::RawNormFilterFailed;
+    float boxCoverageScore = 0.0f;
+    float minBoxRadius = 0.0f;
+    if (!accumulateCenteredNormFiltered(
+            stored_, storedSamples_, params_, fitNormalization, fitAccumulator,
+            accumulationFailure, boxCoverageScore, minBoxRadius) ||
+        fitAccumulator.count < minSamples) {
+        out.solverStage = fitNormalization.valid
+            ? MagCalibrationSolverStage::Normalized
+            : MagCalibrationSolverStage::None;
+        out.fitNormalizationCenter = Vec3(
+            static_cast<float>(fitNormalization.center[0]),
+            static_cast<float>(fitNormalization.center[1]),
+            static_cast<float>(fitNormalization.center[2]));
+        out.fitNormalizationScale = Vec3(
+            static_cast<float>(fitNormalization.scale[0]),
+            static_cast<float>(fitNormalization.scale[1]),
+            static_cast<float>(fitNormalization.scale[2]));
+        out.solverSamples = fitAccumulator.count;
+        lastFailureReason_ = accumulationFailure;
+        lastResult_ = out;
+        return false;
+    }
+    // Normalization and retained-sample diagnostics are already authoritative
+    // at this point. Preserve them even if a pre-solve physical coverage gate
+    // rejects the dataset, so guided setup never reports an opaque all-zero
+    // solver state after successfully examining the samples.
+    out.solverStage = MagCalibrationSolverStage::Normalized;
+    out.fitNormalizationCenter = Vec3(
+        static_cast<float>(fitNormalization.center[0]),
+        static_cast<float>(fitNormalization.center[1]),
+        static_cast<float>(fitNormalization.center[2]));
+    out.fitNormalizationScale = Vec3(
+        static_cast<float>(fitNormalization.scale[0]),
+        static_cast<float>(fitNormalization.scale[1]),
+        static_cast<float>(fitNormalization.scale[2]));
+    out.solverSamples = fitAccumulator.count;
+
+    // Coverage and minimum-radius gates describe the same centered, robustly
+    // retained set that enters the normal equations. Full-reservoir extrema
+    // remain diagnostics only and cannot veto the fit before filtering.
+    if (!tracker::isFinite(minBoxRadius) || minBoxRadius < params_.minAxisRadius) {
+        lastFailureReason_ = MagCalibrationFailureReason::AxisRadiusTooSmall;
+        lastResult_ = out;
+        return false;
+    }
+    const float effectiveMinBoxCoverage = magCalibrationEffectiveMinBoxCoverage(params_);
+    if (!tracker::isFinite(boxCoverageScore) ||
+        boxCoverageScore < effectiveMinBoxCoverage) {
         lastFailureReason_ = MagCalibrationFailureReason::BoxCoverageTooLow;
         lastResult_ = out;
         return false;
     }
 
-    FitAccumulator all;
-    if (!accumulateRawNormFiltered(stored_, storedSamples_, all) || all.count < minSamples) {
-        lastFailureReason_ = MagCalibrationFailureReason::RawNormFilterFailed;
+    const uint32_t rawFitSamples = fitAccumulator.count;
+
+    FitCandidate finalFit;
+    if (!fitFromAccumulator(fitAccumulator, fitNormalization, params_, finalFit)) {
+        copyFitDiagnostics(finalFit, out);
+        lastFailureReason_ = finalFit.failureReason;
         lastResult_ = out;
         return false;
     }
 
-    FitCandidate initial;
-    if (!fitFromAccumulator(all, params_, initial)) {
-        lastFailureReason_ = MagCalibrationFailureReason::EllipsoidFitFailed;
-        lastResult_ = out;
-        return false;
+    GeometricMetrics metrics = computeGeometricMetrics(
+        finalFit, stored_, storedSamples_, 999999.0f);
+    const float initialThreshold = robustThreshold(params_, finalFit, metrics);
+
+    if (accumulateInliers(stored_, storedSamples_, finalFit, initialThreshold, fitNormalization, fitAccumulator) &&
+        fitAccumulator.count >= minSamples &&
+        static_cast<float>(fitAccumulator.count) / static_cast<float>(storedSamples_) >= params_.minInlierRatio &&
+        fitAccumulator.count < rawFitSamples) {
+        tryReplaceFitFromAccumulator(
+            fitAccumulator, fitNormalization, params_, finalFit);
     }
 
-    const GeometricMetrics initialAll = computeGeometricMetrics(initial, stored_, storedSamples_, 999999.0f);
-    const float initialThreshold = robustThreshold(params_, initial, initialAll);
+    metrics = computeGeometricMetrics(finalFit, stored_, storedSamples_, 999999.0f);
+    const float finalThreshold = robustThreshold(params_, finalFit, metrics);
+    metrics = computeGeometricMetrics(finalFit, stored_, storedSamples_, finalThreshold);
+    const GeometricMetrics& finalMetrics = metrics;
 
-    FitCandidate finalFit = initial;
-    FitAccumulator inlierAcc;
-    if (accumulateInliers(stored_, storedSamples_, initial, initialThreshold, inlierAcc) &&
-        inlierAcc.count >= minSamples &&
-        static_cast<float>(inlierAcc.count) / static_cast<float>(storedSamples_) >= params_.minInlierRatio &&
-        inlierAcc.count < all.count) {
-        FitCandidate refit;
-        if (fitFromAccumulator(inlierAcc, params_, refit)) finalFit = refit;
-    }
+    copyFitDiagnostics(finalFit, out);
 
-    const GeometricMetrics finalAll = computeGeometricMetrics(finalFit, stored_, storedSamples_, 999999.0f);
-    const float finalThreshold = robustThreshold(params_, finalFit, finalAll);
-    const GeometricMetrics finalMetrics = computeGeometricMetrics(finalFit, stored_, storedSamples_, finalThreshold);
+    // Keep the best finite fit diagnostics even when a quality gate rejects
+    // the model.  Guided setup can then distinguish poor physical data from a
+    // solver/policy defect instead of printing only the terminal enum.
+    out.hardIron = finalFit.hardIron;
+    out.softIron = finalFit.softIron;
+    out.expectedNorm = finalFit.expectedNorm;
+    out.minTrustNorm = static_cast<float>(static_cast<double>(finalFit.expectedNorm) * static_cast<double>(params_.trustNormMinFactor));
+    out.maxTrustNorm = static_cast<float>(static_cast<double>(finalFit.expectedNorm) * static_cast<double>(params_.trustNormMaxFactor));
+    out.radiusX = finalFit.radiusX;
+    out.radiusY = finalFit.radiusY;
+    out.radiusZ = finalFit.radiusZ;
+    out.coverageScore = boxCoverageScore;
+    out.directionalCoverageScore = finalMetrics.directionalCoverageScore;
+    out.residualRms = finalFit.algebraicResidualRms;
+    out.geometricResidualRms = finalMetrics.rms;
+    out.normalizedResidualRms = finalMetrics.normalizedRms;
+    out.axisRatio = finalFit.axisRatio;
+    out.inlierRatio = finalMetrics.inlierRatio;
+    out.inlierSamples = finalMetrics.inliers;
 
     if (finalMetrics.inliers < minSamples || finalMetrics.inlierRatio < params_.minInlierRatio) {
         lastFailureReason_ = MagCalibrationFailureReason::InlierRatioTooLow;
@@ -638,23 +977,6 @@ bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
     }
 
     out.valid = true;
-    out.hardIron = finalFit.hardIron;
-    out.softIron = finalFit.softIron;
-    out.expectedNorm = finalFit.expectedNorm;
-    out.minTrustNorm = static_cast<float>(static_cast<double>(finalFit.expectedNorm) * static_cast<double>(params_.trustNormMinFactor));
-    out.maxTrustNorm = static_cast<float>(static_cast<double>(finalFit.expectedNorm) * static_cast<double>(params_.trustNormMaxFactor));
-    out.radiusX = finalFit.radiusX;
-    out.radiusY = finalFit.radiusY;
-    out.radiusZ = finalFit.radiusZ;
-    out.coverageScore = boxCoverageScore;
-    out.directionalCoverageScore = finalMetrics.directionalCoverageScore;
-    out.residualRms = finalFit.algebraicResidualRms;
-    out.geometricResidualRms = finalMetrics.rms;
-    out.normalizedResidualRms = finalMetrics.normalizedRms;
-    out.axisRatio = finalFit.axisRatio;
-    out.inlierRatio = finalMetrics.inlierRatio;
-    out.inlierSamples = finalMetrics.inliers;
-
     lastResult_ = out;
     return true;
 }
@@ -665,15 +987,46 @@ const char* MagCalibrationCollector::lastFailureReasonName() const {
     return magCalibrationFailureReasonName(lastFailureReason_);
 }
 
-MagCalibrationResult MagCalibrationCollector::compute() {
-    MagCalibrationResult out;
-    compute(out);
-    return out;
-}
 
 bool MagCalibrationCollector::active() const { return active_; }
 bool MagCalibrationCollector::hasData() const { return hasData_; }
 uint32_t MagCalibrationCollector::samples() const { return samples_; }
+uint16_t MagCalibrationCollector::storedSamples() const { return storedSamples_; }
+uint32_t MagCalibrationCollector::reservoirReplacements() const { return reservoirReplacements_; }
+uint32_t MagCalibrationCollector::reservoirSkipped() const { return reservoirSkipped_; }
+
+MagCalibrationFitSetDiagnostics MagCalibrationCollector::fitSetDiagnostics() const {
+    MagCalibrationFitSetDiagnostics out;
+    if (storedSamples_ == 0u) return out;
+
+    double normSum = 0.0;
+    for (uint16_t i = 0; i < storedSamples_; ++i) {
+        const Vec3 v = storedToVec3(stored_[i]);
+        const float norm = v.norm();
+        if (!v.isFinite() || !tracker::isFinite(norm)) continue;
+        if (!out.valid) {
+            out.valid = true;
+            out.min = out.max = v;
+            out.normMin = out.normMax = norm;
+        } else {
+            if (v.x < out.min.x) out.min.x = v.x;
+            if (v.y < out.min.y) out.min.y = v.y;
+            if (v.z < out.min.z) out.min.z = v.z;
+            if (v.x > out.max.x) out.max.x = v.x;
+            if (v.y > out.max.y) out.max.y = v.y;
+            if (v.z > out.max.z) out.max.z = v.z;
+            if (norm < out.normMin) out.normMin = norm;
+            if (norm > out.normMax) out.normMax = norm;
+        }
+        normSum += static_cast<double>(norm);
+        out.samples++;
+    }
+    if (out.samples != 0u) {
+        out.normMean = static_cast<float>(normSum / static_cast<double>(out.samples));
+    }
+    return out;
+}
+
 uint32_t MagCalibrationCollector::rejected() const { return rejected_; }
 uint32_t MagCalibrationCollector::saturated() const { return saturated_; }
 uint32_t MagCalibrationCollector::startMs() const { return startMs_; }
@@ -697,5 +1050,7 @@ float MagCalibrationCollector::meanZ() const { return samples_ > 0 ? static_cast
 float MagCalibrationCollector::normMean() const { return samples_ > 0 ? static_cast<float>(normSum_ / static_cast<double>(samples_)) : 0.0f; }
 
 const MagCalibrationResult& MagCalibrationCollector::lastResult() const { return lastResult_; }
+
+#undef TRACKER_MAG_FIT_NOINLINE
 
 } // namespace tracker

@@ -127,6 +127,24 @@ public:
                                  TrackerConfig& outActive);
     void abortPreparedPromotion(TrackerPreparedConfigPromotion& prepared);
 
+    // Atomically restore an already committed authoritative slot/generation.
+    // Used only by autonomous probation rollback so the exact previous quality,
+    // provenance and payload are restored without creating a new generation.
+    bool restoreAuthoritativeGeneration(TrackerConfigSlot slot,
+                                        uint32_t generation,
+                                        TrackerConfig& outActive);
+
+    // During autonomous probation the previous authoritative generation is
+    // the rollback anchor. Non-noop ordinary saves are blocked until accept or
+    // rollback releases the barrier; calibration autonomy performs its own
+    // serialized rollback after explicitly releasing it.
+    void setAutonomyProbationWriteBarrier(bool enabled) {
+        autonomyProbationWriteBarrier_ = enabled;
+    }
+    bool autonomyProbationWriteBarrier() const {
+        return autonomyProbationWriteBarrier_;
+    }
+
 private:
     const char* ns_ = nullptr;
     char legacyKey_[16] = {};
@@ -167,6 +185,7 @@ private:
     uint32_t commitMarkerRepairFailures_ = 0;
     uint32_t candidatePromotionStateWrites_ = 0;
     uint32_t candidatePromotionStateWriteFailures_ = 0;
+    bool autonomyProbationWriteBarrier_ = false;
 
     const char* slotKey(TrackerConfigSlot slot) const;
     const char* commitKey(TrackerConfigSlot slot) const;

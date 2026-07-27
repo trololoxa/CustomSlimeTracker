@@ -109,21 +109,45 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
     }
 #endif
     const bool hasCoherentAccel = quality.shouldUseAccelCorrection && quality.accelNormValid;
-#if TRACKER_HAS_STATIC_TEST || TRACKER_HAS_CALIBRATION_UI
-    // Temperature models are stored in native sensor frame. Keep calibration
-    // captures in that frame even when normal AHRS/output operates in device
-    // frame, otherwise a configured board rotation would be learned as bias.
-    const Lsm6dsv::Sample sensorFrameCalibrated =
-        imuPipelineMakeSensorFrameCalibratedSample(deps, scaled);
-#endif
-#if TRACKER_HAS_STATIC_TEST
-    if (deps.staticTestRunner != nullptr && hasCoherentAccel) {
-        deps.staticTestRunner->updateSample(sensorFrameCalibrated, quality, deps.out);
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    if (deps.calibrationAutonomy != nullptr &&
+        deps.calibrationAutonomy->imuObservationRequired()) {
+        // Feed native sensor-frame physical samples to the RAM-only learner.
+        // The controller owns no NVS operation on this hot path.
+        deps.calibrationAutonomy->observeImuSample(
+            scaled, quality, raw.t_us,
+            static_cast<uint32_t>(raw.t_us / 1000ULL));
     }
 #endif
+#if TRACKER_HAS_STATIC_TEST
+    const bool staticTestCaptureActive =
+        deps.staticTestRunner != nullptr && deps.staticTestRunner->active();
+#else
+    constexpr bool staticTestCaptureActive = false;
+#endif
 #if TRACKER_HAS_CALIBRATION_UI
-    if (deps.gyroTempCapture != nullptr && hasCoherentAccel) {
-        deps.gyroTempCapture->updateSample(sensorFrameCalibrated, quality, millis());
+    const bool gyroTempCaptureActive =
+        deps.gyroTempCapture != nullptr && deps.gyroTempCapture->active();
+#else
+    constexpr bool gyroTempCaptureActive = false;
+#endif
+#if TRACKER_HAS_STATIC_TEST || TRACKER_HAS_CALIBRATION_UI
+    if (hasCoherentAccel && (staticTestCaptureActive || gyroTempCaptureActive)) {
+        // Temperature models are stored in native sensor frame. Construct this
+        // additional sample only while a real capture is active; normal
+        // tracking must not pay the calibration transform/millis cost.
+        const Lsm6dsv::Sample sensorFrameCalibrated =
+            imuPipelineMakeSensorFrameCalibratedSample(deps, scaled);
+#if TRACKER_HAS_STATIC_TEST
+        if (staticTestCaptureActive) {
+            deps.staticTestRunner->updateSample(sensorFrameCalibrated, quality, deps.out);
+        }
+#endif
+#if TRACKER_HAS_CALIBRATION_UI
+        if (gyroTempCaptureActive) {
+            deps.gyroTempCapture->updateSample(sensorFrameCalibrated, quality, millis());
+        }
+#endif
     }
 #endif
     if (hasCoherentAccel) {

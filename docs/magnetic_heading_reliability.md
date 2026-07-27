@@ -191,7 +191,7 @@ with older logs.
 ## Hardware acceptance
 
 1. Build and flash every required PlatformIO profile, then verify the feature
-   identity is `c3-6dsv-mag-promotion-stack-safe`.
+   identity is `c3-6dsv-safe-calibration-autonomy-hardened`.
 2. With valid hard/soft and axis calibration, keep the tracker still for at least
    three seconds. Require `field_state=trusted` and `field_trusted=yes`.
 3. Introduce and remove nearby same-norm directional disturbances of 5, 9, 12,

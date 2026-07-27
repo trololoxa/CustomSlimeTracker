@@ -42,6 +42,10 @@
 #include "runtime/tracking_state_controller.hpp"
 #include "runtime/output_runtime.hpp"
 #include "runtime/mag_runtime_controller.hpp"
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+#include "runtime/calibration_autonomy_controller.hpp"
+#include "runtime/calibration_autonomy_store.hpp"
+#endif
 #include "app/tracker_app.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
@@ -76,6 +80,10 @@ using namespace tracker;
 
 static TrackerConfig g_config;
 static TrackerConfigStore g_configStore;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+static CalibrationAutonomyStore g_calibrationAutonomyStore;
+static CalibrationAutonomyController g_calibrationAutonomy;
+#endif
 
 static TrackerNetworkConfig g_networkConfig;
 static TrackerNetworkConfigStore g_networkConfigStore;

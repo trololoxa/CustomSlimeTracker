@@ -193,13 +193,20 @@ Current setup coverage:
 - `setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]` runs the guided production flow: rest/gyro, Wi-Fi heat warm-up, validated stationary-window temperature capture, accel 6-position calibration, sensor-to-device case-frame alignment, optional magnetometer hard/soft and mag-axis stages, and production feature enable/save. Full mode reuses the first two accel captures as top/+Z and forward/+Y frame observations, so it still requires only six accel positions. Resume mode captures only those two positions when frame data alone is missing. Failed/aborted stages restore the previous RAM calibration/config and do not overwrite the last saved NVS state.
 - SlimeVR `SensorInfo.hasCompletedRestCalibration` follows local gyro/rest validity instead of being hardcoded true.
 
-The guided calibration command services FIFO, magnetometer runtime, Wi-Fi and SlimeVR internally while blocking the CLI. Temperature fitting now uses a dedicated setup temperature capture instead of the developer `test static` runner, while reusing the same fit quality gates. Mag hard/soft apply now uses robust full-ellipsoid quality gates: bounded sample reservoir, raw-norm prefilter, geometric outlier rejection, inlier ratio, box coverage, directional coverage, algebraic residual and corrected-norm residual checks. The final setup save captures runtime calibration/config to NVS after production features are enabled. Magnetic axis inference now prefers gyro-assisted motion scoring from the mag motion stage, cross-checks against static accel-face/mag inclination samples when available, and keeps explicit `axis ...` tokens as an override/fallback.
+The guided calibration command services FIFO, magnetometer runtime, Wi-Fi and SlimeVR internally while blocking the CLI. Temperature fitting now uses a dedicated setup temperature capture instead of the developer `test static` runner. Short contiguous windows use hard vibration/accel/FIFO gates, standard-error-of-the-mean quality, bounded thermal consistency and a robust leave-one-bin-out final fit; no-progress diagnostics stop an impossible capture instead of silently rejecting samples for the full timeout. Mag hard/soft apply uses robust full-ellipsoid quality gates: a deterministic Algorithm-R reservoir over the complete accepted capture, raw-norm prefilter, geometric outlier rejection, inlier ratio, fit-set box coverage, directional coverage, algebraic residual and corrected-norm residual checks. Full-capture and actual fit-set diagnostics are reported separately so discarded extrema cannot falsely satisfy a coverage gate. Magnetic axis inference prefers gyro-assisted motion scoring, cross-checks static accel-face/mag inclination samples when available, and keeps explicit `axis ...` tokens as an override/fallback.
+
+`0023g_magnetometer_coverage_reservoir_hardening` repairs the failed guided magnetic run in which the first 160 dynamic intervals froze the axis dataset and more than ten thousand later intervals were discarded. The guided-axis collector now uses a fixed-memory reservoir stratified by dominant gyro axis and train/validation window parity, with deterministic replacement and a 75 ms admission cadence. Late rotations around a missing axis remain eligible without heap allocation, FIFO reconfiguration, or unbounded work. Independent-window and excitation metrics are maintained incrementally rather than rescanned in the blocking setup loop. The same patch fixes guided-flow ownership defects found during the audit: temperature-model readiness is re-evaluated after a new rest/gyro checkpoint, inconclusive static mag-face samples no longer suppress dynamic-axis collection, hard/soft collection and static axis-face observation have separate ownership so an already-valid hard/soft model is not needlessly reset or collected during accel faces, contradictory `nomag` plus axis options and trailing manual-axis tokens are rejected, and failure prompts point to the exact magnetic reason/fit metrics. Config schema 2 and candidate format 3 are unchanged.
 
 
 ## Calibration implementation notes
 
 - Magnetometer calibration now uses a full ellipsoid fit and stores hard-iron plus a full 3x3 soft-iron matrix when coverage/residual quality gates pass.
 - `setup calibration` remains transaction-safe: failed late calibration stages must not overwrite the last saved NVS calibration.
+- `0023a` hardens setup/autonomy ownership: setup and all mutating calibration commands synchronously resolve provisional promotions, invalidate background evidence, and keep manual/setup candidates authoritative.
+- `0023b` removes the cross-ABI accel-proposal stack regression, aggregates all quality-gate failures, and adds reboot coverage for accept/rollback cleanup boundaries.
+- Initial rest-gyro uses a continuous train window plus held-out validation; each of the same six accel faces gets an automatic held-out tail; temperature capture validates statistically precise independent windows and temperature fitting uses copy-free leave-one-bin-out validation. The final verifier also checks that the calibrated input itself was stationary, not only that the output looked smooth.
+- `setup verify` and the final setup stage validate the actual coherent quaternion/linear-acceleration output on any stable ordinary face. No diagonal or precise-angle pose was added.
+- `cal erase_all confirm` completely removes saved calibration slots/candidate/autonomy journal/rejection state while preserving ordinary product policy.
 
 ### RC1 serial provisioning compatibility
 
@@ -262,6 +269,9 @@ automatically:
 
 The next planned main stage is 0023 safe background calibration autonomy.
 
+`0023ga_axis_alignment_stack_hardening` fixes the concrete Windows/MSYS2 stack-policy regression reported after `0023g`: `setupRunAxisAlignment()` used 1056 bytes against a 1024-byte ceiling. The orchestration function no longer exposes dynamic/static solver results and the manual parsing buffer to one compiler frame. Explicit no-inline phase boundaries keep the dynamic solver, static cross-check/fallback, matrix application and manual prompt separate; Linux `-O2 -fstack-usage` drops the orchestrator from 880 to 144 bytes while preserving the exact `0023g` reservoir, train/validation and setup behavior. Config schema 2, candidate format 3, ODR, FIFO and network policy remain unchanged.
+
+
 ## Hotfix 0022a magnetic candidate, reacquisition and realtime hardening
 
 The post-0022 integration review found that measured axis quality was not
@@ -321,3 +331,35 @@ policy even though Linux/GCC measured 1008 bytes. The cause was an ABI-dependent
 workspace and adds a source policy plus a 768-byte promotion-specific ceiling.
 Persistent schemas, candidate semantics, magnetic behavior, FIFO, network, and
 tracking math are unchanged.
+
+`0023gb_magnetometer_fit_metric_normalization` fixes the hardware-reproduced hard/soft rejection that remained after reservoir coverage succeeded: `algebraic_residual_too_high` was computed from the raw equation `x^T A x + b^T x = 1`, so its magnitude changed with hard-iron translation through `k = 1 + c^T A c`. The residual is now divided by `abs(k)` and describes the centered dimensionless ellipsoid equation. The existing threshold is not relaxed. Finite rejected fits retain and report algebraic/geometric residuals, limits, coverage and inlier metrics. Translation-invariance, mild-disturbance acceptance and strong non-ellipsoidal rejection regressions preserve physical quality gates. Config schema 2, candidate format 3, FIFO, ODR, AHRS and networking are unchanged.
+
+`0023gc_mag_fit_stack_and_profile_build_hardening` fixes two concrete regressions reported by Windows/MSYS2 and mandatory PlatformIO builds after `0023gb`. `MagCalibrationCollector::compute()` kept two 9x9-double `FitAccumulator` objects live at once and measured 2240 bytes against the 2048-byte policy ceiling on MSYS2. The raw and inlier passes now reuse one accumulator workspace while preserving the same initial fit, robust inlier selection, optional refit and quality gates; Linux `-O2 -fstack-usage` drops the function from 2016 to 1296 bytes and a stricter 1792-byte ceiling preserves cross-ABI margin. Compact Production/Production-Diag/Slim hooks also called `magStatusPrintCalibrationFitQuality` while its definition was only included under `TRACKER_ENABLE_DETAILED_MAG_STATUS`, causing mandatory profile compilation to fail. The helper now lives in a minimal always-available header shared by compact hooks and the detailed reporter, without restoring the excluded `mag_status_reporter.cpp` source. Calibration math, normalized residual thresholds, config schema 2, candidate format 3, FIFO, ODR, AHRS and networking are unchanged.
+
+## 0023gd magnetometer math and alignment hardening
+
+`0023gd_magnetometer_math_and_alignment_hardening` performs the full mathematical audit requested after hardware retained complete three-axis reservoir coverage but hard/soft calibration still stopped at `ellipsoid_fit_failed`. The ellipsoid solver now uses affine-centered and per-axis-scaled coordinates, equilibrated normal equations, explicit conditioning/stage diagnostics, translation-independent filtering and double-precision mapping back to raw coordinates. The physical inlier, geometric residual, directional coverage, axis-ratio and algebraic gates remain fail-closed.
+
+The same audit removes independent `magToImu` non-convergence defects: exact unique-window accounting, dataset-owned axis/partition coverage, bounded runtime reservoir replacement, hard/soft-corrected direction admission, raw-origin acceptance after calibration, shared trapezoidal endpoint interval construction, exact gyro endpoint retention at each magnetic callback, chronological FIFO raw/mag dispatch, QMC6309 near-rail saturation detection, a right-handed driver contract and a fail-closed static/dynamic coarse-mapping cross-check. Exhaustive tests cover all 24 proper signed-permutation mountings; reflections remain forbidden persistent mappings.
+
+Config schema 2, candidate format 3, SlimeVR protocol 22, IMU ODR, FIFO configuration, AHRS product policy, networking and NVS migration remain unchanged.
+
+## 0023ge magnetometer post-audit realtime hardening
+
+The acceptance audit of 0023gd found that an already-due sensor-hub backlog could
+record a chronological deferral and still advance the raw timeline, and that up
+to eight mag callbacks could bypass the cooperative callback-time budget.
+0023ge gates raw advancement on complete due-mag dispatch, applies the same
+slice budget to magnetic callbacks, reports count-vs-time deferrals, reuses the
+single sensor-to-device validation decision for the gyro endpoint, and preserves
+normalization diagnostics for early physical fit rejection. Calibration math,
+thresholds, schema 2, candidate format 3, protocol 22, ODR and hardware FIFO
+configuration remain unchanged.
+
+## 0023gf magnetometer callback cross-ABI hardening
+
+Windows/MSYS2 measured `MagRuntimeController::processRawSample()` at 1040 bytes against the 1024-byte ceiling although Linux measured 944 bytes. `0023gf` separates endpoint, heading, field-reliability and yaw phases behind explicit no-inline boundaries; the orchestrator drops to 336 bytes on Linux `-O2` with independent conservative ceilings for every phase. One coherent `millis()` value and one runtime config are now used per mag sample. The unchecked inverse helper added to the common frame header by 0023ge is removed and kept controller-local. Calibration math, FIFO scheduling, schemas, ODR, AHRS, networking and NVS semantics are unchanged.
+
+## 0023gg magnetic timestamp and setup acceptance hardening
+
+The first complete hardware guided-calibration run after 0023gf accepted hard/soft iron but exposed 4255 gyro/mag skew rejections and a final verification false negative at 207 healthy input samples. 0023gg anchors every sensor-hub magnetic frame to the current IMU/FIFO time domain instead of free-running forever at nominal 60 Hz. If independent partitions recover the same proper coarse axis/sign mapping but disagree only on small continuous refinement, the disputed refinement is discarded and the unchanged physical quality gates evaluate the shared coarse rotation. Final setup verification keeps its 256-input-sample requirement but extends its capture from a minimum four seconds to a bounded maximum eight seconds and reports every stationarity sub-gate separately.

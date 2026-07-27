@@ -58,6 +58,14 @@ struct FifoRuntimeQueueStats {
     uint32_t magProcessed = 0;
     uint32_t rawQueueOverflow = 0;
     uint32_t magQueueOverflow = 0;
+    // A due mag callback was intentionally deferred because the bounded mag
+    // callback allowance was exhausted. Raw processing stops at the same
+    // timestamp so the next app pass preserves endpoint coherence.
+    uint32_t magChronologicalDeferrals = 0;
+    // Split the reason so perf diagnostics can distinguish normal count
+    // slicing from a callback that consumed the cooperative time budget.
+    uint32_t magCallbackCountDeferrals = 0;
+    uint32_t magCallbackBudgetDeferrals = 0;
     size_t rawQueueHighWater = 0;
     size_t magQueueHighWater = 0;
 };
@@ -102,6 +110,11 @@ private:
     bool enqueueMag(const Lsm6dsvFifoReader::MagRawSample& mag);
     bool dequeueRaw(Lsm6dsv::RawSample& raw, bool& checkStats);
     bool dequeueMag(Lsm6dsvFifoReader::MagRawSample& mag);
+    bool peekMagTimestamp(uint64_t& timestampUs) const;
+    bool dispatchDueMagCallbacks(uint64_t rawTimestampUs,
+                                 uint32_t callbackSliceStartUs,
+                                 uint8_t& magCallbacks,
+                                 bool& worked);
     void clearQueues();
     void recordElapsed(uint32_t startUs);
 
@@ -129,6 +142,7 @@ private:
     size_t magQueueCount_ = 0;
     bool drainActive_ = false;
     uint8_t drainRoundsRemaining_ = 0;
+    uint64_t lastDispatchedRawTimestampUs_ = 0;
     FifoRuntimeQueueStats queueStats_;
 };
 

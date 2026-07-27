@@ -19,6 +19,14 @@ class Qmc6309 {
 public:
     static constexpr uint8_t DEFAULT_ADDR7 = 0x7C;
     static constexpr uint8_t EXPECTED_CHIP_ID = 0x90;
+    // QMC6309 output registers are consumed in datasheet package X,Y,Z order.
+    // That package frame is right-handed; any future board-specific remap must
+    // preserve det=+1 or explicitly repair handedness here before calibration.
+    static constexpr bool RAW_REGISTER_AXES_RIGHT_HANDED = true;
+    // All three QMC6309 range selections use approximately 32000 counts
+    // at nominal full-scale. Keep margin for sensitivity tolerance and reject
+    // near-clipped vectors before they can contaminate ellipsoid calibration.
+    static constexpr int16_t RAW_SATURATION_ABS_COUNTS = 31900;
 
     static constexpr uint8_t REG_CHIP_ID = 0x00;
     static constexpr uint8_t REG_DATA_X_L = 0x01;

@@ -1,7 +1,9 @@
 #include "test_common.hpp"
 
 #include <initializer_list>
+#include <limits>
 
+#include "sensor/frame_transform.hpp"
 #include "sensor/mag_axis_alignment.hpp"
 #include "sensor/mag_field_reliability.hpp"
 #include "sensor/mag_yaw_correction.hpp"
@@ -287,6 +289,126 @@ static void testFilteredHeadingRateAllowsNoisySixtyHertzReacquisition(TestContex
     CHECK(ctx, yaw.stats().reacquireGateOpenCount >= 1u);
 }
 
+
+static void testIntervalBuilderUsesTimestampCoherentGyroEndpoints(TestContext& ctx) {
+    MagAxisAlignmentInterval interval;
+    MagAxisIntervalBuildFailure failure = MagAxisIntervalBuildFailure::InvalidInput;
+    const Vec3 gyro0(1.0f, 0.0f, 0.0f);
+    const Vec3 gyro1(0.0f, 1.0f, 0.0f);
+    CHECK(ctx, buildMagAxisAlignmentInterval(
+        gyro0, gyro1,
+        Vec3(1.0f, 0.0f, 0.0f), Vec3(0.99f, -0.01f, 0.0f),
+        0.02f, 7u, interval, &failure));
+    CHECK(ctx, failure == MagAxisIntervalBuildFailure::None);
+    CHECK_NEAR(ctx, interval.gyroSensorRadS.x, 0.5f, 1.0e-6f);
+    CHECK_NEAR(ctx, interval.gyroSensorRadS.y, 0.5f, 1.0e-6f);
+    CHECK_NEAR(ctx, interval.gyroSensorRadS.z, 0.0f, 1.0e-6f);
+    CHECK_NEAR(ctx, interval.dtS, 0.02f, 1.0e-7f);
+    CHECK(ctx, interval.windowId == 7u);
+
+    CHECK(ctx, !buildMagAxisAlignmentInterval(
+        gyro0, gyro1, Vec3(1,0,0), Vec3(0,1,0),
+        0.001f, 0u, interval, &failure));
+    CHECK(ctx, failure == MagAxisIntervalBuildFailure::InvalidTiming);
+
+    CHECK(ctx, !buildMagAxisAlignmentInterval(
+        Vec3::zero(), Vec3::zero(), Vec3(1,0,0), Vec3(0,1,0),
+        0.02f, 0u, interval, &failure));
+    CHECK(ctx, failure == MagAxisIntervalBuildFailure::MotionOutOfRange);
+
+    CHECK(ctx, !buildMagAxisAlignmentInterval(
+        Vec3(std::numeric_limits<float>::quiet_NaN(), 0, 0), gyro1,
+        Vec3(1,0,0), Vec3(0,1,0), 0.02f, 0u, interval, &failure));
+    CHECK(ctx, failure == MagAxisIntervalBuildFailure::InvalidInput);
+}
+
+static void makeAlignmentDatasetForTransform(
+    const Mat3& magToImu,
+    MagAxisAlignmentInterval (&intervals)[64]) {
+    const Mat3 magFromImu = magToImu.transposed();
+    Vec3 mImu = Vec3(0.45f, 0.20f, 0.87f).normalized();
+    for (uint16_t i = 0; i < 64u; ++i) {
+        const Vec3 axis = (i % 6u == 0u) ? Vec3(1.0f, 0.20f, 0.10f).normalized()
+                        : (i % 6u == 1u) ? Vec3(0.10f, 1.0f, 0.30f).normalized()
+                        : (i % 6u == 2u) ? Vec3(0.25f, -0.10f, 1.0f).normalized()
+                        : (i % 6u == 3u) ? Vec3(-0.70f, 0.50f, 0.50f).normalized()
+                        : (i % 6u == 4u) ? Vec3(0.55f, 0.70f, -0.35f).normalized()
+                                         : Vec3(-0.40f, -0.25f, 0.88f).normalized();
+        const Vec3 gyro = axis * ((70.0f + static_cast<float>(i % 5u) * 8.0f) * MATH_DEG_TO_RAD);
+        const float dt = 0.025f;
+        const Vec3 nextImu = Quat::fromRotationVector(gyro * (-dt)).rotate(mImu).normalized();
+        intervals[i] = MagAxisAlignmentInterval{
+            gyro,
+            magFromImu * mImu,
+            magFromImu * nextImu,
+            dt,
+            static_cast<uint16_t>(i / 8u)};
+        mImu = nextImu;
+    }
+}
+
+static void testAllProperSignedPermutationMountingsConverge(TestContext& ctx) {
+    static constexpr uint8_t permutations[6][3] = {
+        {0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}
+    };
+    const Mat3 residual = Quat::fromEulerXYZ(
+        1.3f * MATH_DEG_TO_RAD,
+       -0.9f * MATH_DEG_TO_RAD,
+        1.7f * MATH_DEG_TO_RAD).toRotationMatrix();
+    uint32_t solved = 0u;
+    for (const auto& axes : permutations) {
+        for (int sx = -1; sx <= 1; sx += 2) {
+            for (int sy = -1; sy <= 1; sy += 2) {
+                for (int sz = -1; sz <= 1; sz += 2) {
+                    const Mat3 coarse = MagAxisAlignmentCollector::signedPermutation(
+                        axes[0], static_cast<float>(sx),
+                        axes[1], static_cast<float>(sy),
+                        axes[2], static_cast<float>(sz));
+                    if (!MagAxisAlignmentCollector::properRotation(coarse)) continue;
+                    const Mat3 expected = residual * coarse;
+                    MagAxisAlignmentInterval intervals[64];
+                    makeAlignmentDatasetForTransform(expected, intervals);
+                    MagAxisAlignmentSolvePolicy policy;
+                    MagAxisAlignmentResult result;
+                    CHECK(ctx, solveMagAxisAlignmentDataset(
+                        intervals, 64u, Vec3::zero(), Mat3::identity(),
+                        nullptr, policy, result));
+                    CHECK(ctx, result.valid);
+                    CHECK(ctx, result.validationPassed);
+                    CHECK(ctx, result.validationWinnerMatchesTraining);
+                    CHECK(ctx, MagAxisAlignmentCollector::properRotation(result.magToImu));
+                    CHECK(ctx, magAxisRotationDifferenceDeg(result.magToImu, expected) < 1.0f);
+                    solved++;
+                }
+            }
+        }
+    }
+    CHECK(ctx, solved == 24u);
+}
+
+static void testReflectionAmbiguityRequiresRightHandedDriverContract(TestContext& ctx) {
+    const Mat3 reflected(-1,0,0, 0,1,0, 0,0,1);
+    MagAxisAlignmentInterval intervals[64];
+    makeAlignmentDatasetForTransform(reflected, intervals);
+    MagAxisAlignmentSolvePolicy policy;
+    MagAxisAlignmentResult result;
+    CHECK(ctx, solveMagAxisAlignmentDataset(
+        intervals, 64u, Vec3::zero(), Mat3::identity(),
+        nullptr, policy, result));
+    CHECK(ctx, result.valid);
+    CHECK(ctx, !MagAxisAlignmentCollector::properRotation(reflected));
+
+    // Dynamic vector kinematics cannot distinguish F from -F because both m
+    // and -m obey the same dm/dt equation. If a driver silently emits a
+    // left-handed frame F, the SO(3)-only solver finds -F, a proper rotation
+    // with globally inverted magnetic polarity. Therefore reflections must be
+    // corrected in the driver; calibration must never persist det=-1.
+    const Mat3 polarityEquivalent = reflected * -1.0f;
+    CHECK(ctx, MagAxisAlignmentCollector::properRotation(polarityEquivalent));
+    CHECK(ctx, magAxisRotationDifferenceDeg(result.magToImu, polarityEquivalent) < 1.0f);
+    CHECK(ctx, MagAxisAlignmentCollector::properRotation(result.magToImu));
+}
+
 static void testOnlyProperSignedPermutationsAreAccepted(TestContext& ctx) {
     static constexpr uint8_t perms[6][3] = {
         {0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}
@@ -309,7 +431,9 @@ static void testAxisCollectorRejectsStaleGyroPair(TestContext& ctx) {
     MagProcessedSample mag;
     mag.valid = mag.trusted = true;
     mag.raw = Vec3(1.0f, 0.0f, 0.0f);
+    mag.calibratedMagFrame = mag.raw;
     mag.rawNorm = 1.0f;
+    mag.calibratedNorm = 1.0f;
     mag.seq = 1u;
     mag.t_us = 100000u;
     mag.receivedMs = 100u;
@@ -328,15 +452,17 @@ static void testSixtyHertzCollectionSpansIndependentWindows(TestContext& ctx) {
     MagProcessedSample first;
     first.valid = first.trusted = true;
     first.raw = m;
+    first.calibratedMagFrame = m;
     first.rawNorm = 1.0f;
+    first.calibratedNorm = 1.0f;
     first.seq = 1u;
     first.t_us = tUs;
     first.receivedMs = ms;
     collector.observe(Vec3::zero(), tUs, first, true);
 
-    for (uint32_t i = 0; i < 240u; ++i) {
-        const Vec3 gyro = (i % 2u == 0u) ? Vec3(0.8f, 0.1f, 0.0f)
-                                            : Vec3(0.0f, 0.9f, 0.1f);
+    for (uint32_t i = 0; i < 480u; ++i) {
+        const Vec3 gyro = ((i / 60u) & 1u) == 0u ? Vec3(0.8f, 0.1f, 0.0f)
+                                                  : Vec3(0.0f, 0.9f, 0.1f);
         const float dt = 0.017f;
         m = (m - cross(gyro, m) * dt).normalized();
         tUs += 17000u;
@@ -344,7 +470,9 @@ static void testSixtyHertzCollectionSpansIndependentWindows(TestContext& ctx) {
         MagProcessedSample mag;
         mag.valid = mag.trusted = true;
         mag.raw = m;
+        mag.calibratedMagFrame = m;
         mag.rawNorm = 1.0f;
+        mag.calibratedNorm = 1.0f;
         mag.seq = i + 2u;
         mag.t_us = tUs;
         mag.receivedMs = ms;
@@ -356,6 +484,50 @@ static void testSixtyHertzCollectionSpansIndependentWindows(TestContext& ctx) {
     CHECK(ctx, collector.readyToSolve());
     CHECK(ctx, collector.stats().intervalsSkippedCadence > 0u);
     CHECK(ctx, collector.stats().intervalsRejectedCapacity == 0u);
+}
+
+static void testRuntimeCollectorUsesSensorTimeAcrossProcessingBacklog(TestContext& ctx) {
+    MagAxisAlignmentCollector collector;
+    Vec3 m = Vec3(0.45f, 0.2f, 0.87f).normalized();
+    uint64_t tUs = 100000u;
+    constexpr uint32_t kCollapsedProcessingMs = 500u;
+
+    MagProcessedSample first;
+    first.valid = first.trusted = true;
+    first.raw = m;
+    first.calibratedMagFrame = m;
+    first.rawNorm = 1.0f;
+    first.calibratedNorm = 1.0f;
+    first.seq = 1u;
+    first.t_us = tUs;
+    first.receivedMs = kCollapsedProcessingMs;
+    collector.observe(Vec3::zero(), tUs, first, true);
+
+    for (uint32_t i = 0; i < 480u; ++i) {
+        const Vec3 gyro = ((i / 60u) & 1u) == 0u ? Vec3(0.8f, 0.1f, 0.0f)
+                                                  : Vec3(0.0f, 0.9f, 0.1f);
+        constexpr float dt = 0.017f;
+        m = Quat::fromRotationVector(gyro * (-dt)).rotate(m).normalized();
+        tUs += 17000u;
+        MagProcessedSample mag;
+        mag.valid = mag.trusted = true;
+        mag.raw = m;
+        mag.calibratedMagFrame = m;
+        mag.rawNorm = 1.0f;
+        mag.calibratedNorm = 1.0f;
+        mag.seq = i + 2u;
+        mag.t_us = tUs;
+        // Model a queued FIFO burst drained inside one millisecond. Runtime
+        // cadence/window evidence must remain tied to sensor time, not this
+        // collapsed processing-time stamp.
+        mag.receivedMs = kCollapsedProcessingMs;
+        collector.observe(gyro, tUs, mag, true);
+    }
+
+    CHECK(ctx, collector.intervalCount() >= MagAxisAlignmentCollector::kTargetIntervals);
+    CHECK(ctx, collector.independentWindows() >= 4u);
+    CHECK(ctx, collector.readyToSolve());
+    CHECK(ctx, collector.stats().intervalsSkippedCadence > 0u);
 }
 
 static void testDynamicAxisSolverRefinesMechanicalMisalignment(TestContext& ctx) {
@@ -397,11 +569,12 @@ static void testDynamicAxisSolverRefinesMechanicalMisalignment(TestContext& ctx)
     policy.minTrainingIntervals = 12u;
     policy.minValidationIntervals = 12u;
     policy.minIndependentWindows = 4u;
+    policy.minExcitedAxes = 2u;
     policy.minTrainingWindows = 2u;
     policy.minValidationWindows = 2u;
     MagAxisAlignmentResult result;
     CHECK(ctx, solveMagAxisAlignmentDataset(
-        intervals, 64u, Vec3::zero(), Mat3::identity(), 3u, 5u,
+        intervals, 64u, Vec3::zero(), Mat3::identity(),
         &coarse, policy, result));
     CHECK(ctx, result.valid);
     CHECK(ctx, result.refined);
@@ -457,7 +630,7 @@ static void testSolverConfidenceIsRateNormalized(TestContext& ctx) {
         MagAxisAlignmentSolvePolicy policy;
         MagAxisAlignmentResult result;
         CHECK(ctx, solveMagAxisAlignmentDataset(
-            intervals, 64u, Vec3::zero(), Mat3::identity(), 3u, 8u,
+            intervals, 64u, Vec3::zero(), Mat3::identity(),
             &coarse, policy, result));
         CHECK(ctx, result.valid);
         CHECK(ctx, result.validationPassed);
@@ -469,6 +642,52 @@ static void testSolverConfidenceIsRateNormalized(TestContext& ctx) {
         CHECK(ctx, magAxisRotationDifferenceDeg(result.magToImu, expected) < 1.5f);
         if (rateDegS >= 60.0f) CHECK(ctx, result.improvesActive);
     }
+}
+
+
+static void testSameCoarseWinnerFallsBackWhenRefinementsDisagree(TestContext& ctx) {
+    const Mat3 coarse(0,-1,0, 1,0,0, 0,0,1);
+    const Mat3 inverse = coarse.transposed();
+    const Mat3 validationFrameBias = Quat::fromEulerXYZ(
+        2.2f * MATH_DEG_TO_RAD, 0.0f, 0.0f).toRotationMatrix();
+    const Mat3 validationRawBias = validationFrameBias.transposed();
+
+    MagAxisAlignmentInterval intervals[64];
+    Vec3 m = Vec3(0.45f, 0.20f, 0.87f).normalized();
+    for (uint16_t i = 0; i < 64u; ++i) {
+        const Vec3 axis = (i % 4u == 0u) ? Vec3(1.0f, 0.2f, 0.1f).normalized()
+                        : (i % 4u == 1u) ? Vec3(0.1f, 1.0f, 0.3f).normalized()
+                        : (i % 4u == 2u) ? Vec3(0.25f, -0.1f, 1.0f).normalized()
+                                         : Vec3(-0.7f, 0.5f, 0.5f).normalized();
+        const Vec3 gyro = axis * (90.0f * MATH_DEG_TO_RAD);
+        const float dt = 0.025f;
+        const Vec3 next = Quat::fromRotationVector(gyro * (-dt)).rotate(m).normalized();
+        Vec3 raw0 = inverse * m;
+        Vec3 raw1 = inverse * next;
+        const uint16_t windowId = static_cast<uint16_t>(i / 8u);
+        if ((windowId & 1u) != 0u) {
+            raw0 = validationRawBias * raw0;
+            raw1 = validationRawBias * raw1;
+        }
+        intervals[i] = MagAxisAlignmentInterval{gyro, raw0, raw1, dt, windowId};
+        m = next;
+    }
+
+    MagAxisAlignmentSolvePolicy policy;
+    MagAxisAlignmentResult result;
+    CHECK(ctx, solveMagAxisAlignmentDataset(
+        intervals, 64u, Vec3::zero(), Mat3::identity(),
+        nullptr, policy, result));
+    CHECK(ctx, result.valid);
+    CHECK(ctx, result.coarseWinnerMatchesTraining);
+    CHECK(ctx, !result.continuousRefinementAgreement);
+    CHECK(ctx, result.coarseConsensusFallbackUsed);
+    CHECK(ctx, result.validationWinnerMatchesTraining);
+    CHECK(ctx, result.validationPassed);
+    CHECK(ctx, !result.refined);
+    CHECK(ctx, result.trainingValidationRotationDifferenceDeg >
+               policy.maxTrainingValidationRotationDifferenceDeg);
+    CHECK(ctx, magAxisRotationDifferenceDeg(result.magToImu, coarse) < 0.1f);
 }
 
 static void testHoldoutRejectsTrainingOnlyFit(TestContext& ctx) {
@@ -491,11 +710,261 @@ static void testHoldoutRejectsTrainingOnlyFit(TestContext& ctx) {
     MagAxisAlignmentSolvePolicy policy;
     MagAxisAlignmentResult result;
     CHECK(ctx, !solveMagAxisAlignmentDataset(
-        intervals, 64u, Vec3::zero(), Mat3::identity(), 3u, 8u,
+        intervals, 64u, Vec3::zero(), Mat3::identity(),
         &coarse, policy, result));
     CHECK(ctx, !result.valid);
     CHECK(ctx, !result.validationPassed || !result.validationWinnerMatchesTraining ||
                result.validationScore - result.trainingScore > policy.maxValidationGeneralizationGap);
+}
+
+static void testGuidedAxisReservoirPreservesLateAxesAndPartitions(TestContext& ctx) {
+    MagAxisIntervalReservoir<60> reservoir;
+    uint16_t window = 0u;
+
+    auto feedAxis = [&](uint8_t axis, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            Vec3 gyro = Vec3::zero();
+            if (axis == 0u) gyro.x = 1.0f;
+            else if (axis == 1u) gyro.y = 1.0f;
+            else gyro.z = 1.0f;
+            const float phase = static_cast<float>(i % 360u) * MATH_DEG_TO_RAD;
+            const Vec3 m0(std::cos(phase), std::sin(phase), 0.25f);
+            const Vec3 m1(std::cos(phase + 0.02f), std::sin(phase + 0.02f), 0.25f);
+            reservoir.consider(MagAxisAlignmentInterval{
+                gyro, m0, m1, 0.02f, window});
+            if ((i % 8u) == 7u) window++;
+        }
+    };
+
+    // A first-N collector would freeze in the X segment and discard all later
+    // Y/Z evidence. The stratified reservoir must retain every observed axis
+    // and both train/validation window parities despite a very long final tail.
+    feedAxis(0u, 600u);
+    feedAxis(1u, 600u);
+    feedAxis(2u, 6000u);
+
+    CHECK(ctx, reservoir.size() == 60u);
+    CHECK(ctx, reservoir.seen() == 7200u);
+    CHECK(ctx, reservoir.replacements() > 0u);
+    CHECK(ctx, reservoir.skipped() > 0u);
+    CHECK(ctx, reservoir.excitedAxes() == 3u);
+    CHECK(ctx, reservoir.partitionConfirmedAxes() == 3u);
+    CHECK(ctx, reservoir.independentWindows() >= 6u);
+    uint32_t bruteForceWindows = 0u;
+    for (uint16_t i = 0; i < reservoir.size(); ++i) {
+        bool first = true;
+        for (uint16_t j = 0; j < i; ++j) {
+            if (reservoir.data()[j].windowId == reservoir.data()[i].windowId) {
+                first = false;
+                break;
+            }
+        }
+        if (first) bruteForceWindows++;
+    }
+    CHECK(ctx, reservoir.independentWindows() == bruteForceWindows);
+    for (uint8_t bucket = 0; bucket < 6u; ++bucket) {
+        CHECK(ctx, reservoir.bucketCount(bucket) == 10u);
+        CHECK(ctx, reservoir.bucketSeen(bucket) > reservoir.bucketCount(bucket));
+    }
+
+    reservoir.reset();
+    CHECK(ctx, reservoir.size() == 0u);
+    CHECK(ctx, reservoir.seen() == 0u);
+    CHECK(ctx, reservoir.replacements() == 0u);
+    CHECK(ctx, reservoir.skipped() == 0u);
+    CHECK(ctx, reservoir.independentWindows() == 0u);
+    CHECK(ctx, reservoir.excitedAxes() == 0u);
+    CHECK(ctx, reservoir.partitionConfirmedAxes() == 0u);
+
+    auto addPartitionEvidence = [&](uint8_t axis, uint16_t windowId) {
+        for (uint8_t i = 0u; i < 8u; ++i) {
+            Vec3 gyro = Vec3::zero();
+            if (axis == 0u) gyro.x = 1.0f;
+            else gyro.y = 1.0f;
+            reservoir.consider(MagAxisAlignmentInterval{
+                gyro, Vec3(1.0f, 0.0f, 0.2f), Vec3(0.99f, 0.02f, 0.2f), 0.02f, windowId});
+        }
+    };
+    addPartitionEvidence(0u, 0u);
+    addPartitionEvidence(1u, 2u);
+    CHECK(ctx, reservoir.excitedAxes() == 2u);
+    CHECK(ctx, reservoir.partitionConfirmedAxes() == 0u);
+    addPartitionEvidence(0u, 1u);
+    addPartitionEvidence(1u, 3u);
+    CHECK(ctx, reservoir.partitionConfirmedAxes() == 2u);
+}
+
+static void testDynamicAxisSolverWithHardSoftAndNearOriginRawData(TestContext& ctx) {
+    const Mat3 coarse(0,-1,0, 1,0,0, 0,0,1);
+    const Mat3 residual = Quat::fromEulerXYZ(
+        1.1f * MATH_DEG_TO_RAD,
+       -0.8f * MATH_DEG_TO_RAD,
+        1.4f * MATH_DEG_TO_RAD).toRotationMatrix();
+    const Mat3 expected = residual * coarse;
+    const Mat3 magFromImu = expected.transposed();
+    const Vec3 hardIron(500.0f, 0.0f, 0.0f);
+    const Mat3 softIron = Quat::fromEulerXYZ(0.15f, -0.21f, 0.27f).toRotationMatrix() *
+        Mat3::diagonal(0.21f, 0.19f, 0.20f) *
+        Quat::fromEulerXYZ(0.15f, -0.21f, 0.27f).toRotationMatrix().transposed();
+    Mat3 softIronInv;
+    CHECK(ctx, softIron.inverse(softIronInv));
+
+    MagAxisAlignmentInterval intervals[64];
+    Vec3 mImu = Vec3(0.45f, 0.20f, 0.87f).normalized() * 100.0f;
+    for (uint16_t i = 0; i < 64u; ++i) {
+        const Vec3 axis = (i % 4u == 0u) ? Vec3(1.0f, 0.2f, 0.1f).normalized()
+                        : (i % 4u == 1u) ? Vec3(0.1f, 1.0f, 0.3f).normalized()
+                        : (i % 4u == 2u) ? Vec3(0.25f, -0.1f, 1.0f).normalized()
+                                         : Vec3(-0.7f, 0.5f, 0.5f).normalized();
+        const Vec3 gyro = axis * (90.0f * MATH_DEG_TO_RAD);
+        const float dt = 0.025f;
+        const Vec3 nextImu = Quat::fromRotationVector(gyro * (-dt)).rotate(mImu);
+        const Vec3 mag0Cal = magFromImu * mImu;
+        const Vec3 mag1Cal = magFromImu * nextImu;
+        intervals[i] = MagAxisAlignmentInterval{
+            gyro,
+            hardIron + softIronInv * mag0Cal,
+            hardIron + softIronInv * mag1Cal,
+            dt, static_cast<uint16_t>(i / 8u)};
+        mImu = nextImu;
+    }
+
+    MagAxisAlignmentSolvePolicy policy;
+    MagAxisAlignmentResult result;
+    CHECK(ctx, solveMagAxisAlignmentDataset(
+        intervals, 64u, hardIron, softIron,
+        &coarse, policy, result));
+    CHECK(ctx, result.valid);
+    CHECK(ctx, result.failureReason == MagAxisAlignmentFailureReason::None);
+    CHECK(ctx, result.excitedAxes == 3u);
+    CHECK(ctx, result.partitionConfirmedAxes >= 2u);
+    CHECK(ctx, result.independentWindows == 8u);
+    CHECK(ctx, magAxisRotationDifferenceDeg(result.magToImu, expected) < 1.0f);
+}
+
+static void testSolverCountsUniqueReservoirWindows(TestContext& ctx) {
+    MagAxisAlignmentInterval intervals[64];
+    Mat3 coarse;
+    Mat3 expected;
+    makeRateDataset(90.0f, intervals, coarse, expected);
+    for (uint16_t i = 0; i < 64u; ++i) intervals[i].windowId = static_cast<uint16_t>(i & 1u);
+    MagAxisAlignmentSolvePolicy policy;
+    policy.minIndependentWindows = 4u;
+    policy.minExcitedAxes = 1u;
+    policy.minTrainingWindows = 2u;
+    policy.minValidationWindows = 2u;
+    MagAxisAlignmentResult result;
+    CHECK(ctx, !solveMagAxisAlignmentDataset(
+        intervals, 64u, Vec3::zero(), Mat3::identity(),
+        &coarse, policy, result));
+    CHECK(ctx, result.independentWindows == 2u);
+    CHECK(ctx, result.failureReason == MagAxisAlignmentFailureReason::InsufficientWindows);
+}
+
+static void testSolverRejectsInvalidHardSoftTransform(TestContext& ctx) {
+    MagAxisAlignmentInterval intervals[64];
+    Mat3 coarse;
+    Mat3 expected;
+    makeRateDataset(90.0f, intervals, coarse, expected);
+    MagAxisAlignmentSolvePolicy policy;
+    MagAxisAlignmentResult result;
+    const Mat3 reflection(-1,0,0, 0,1,0, 0,0,1);
+    CHECK(ctx, !solveMagAxisAlignmentDataset(
+        intervals, 64u, Vec3::zero(), reflection,
+        &coarse, policy, result));
+    CHECK(ctx, result.failureReason == MagAxisAlignmentFailureReason::InvalidCalibration);
+}
+
+static void testRuntimeCollectorUsesCalibratedDirectionAndReservoir(TestContext& ctx) {
+    MagAxisAlignmentCollector collector;
+    Vec3 calibrated = Vec3(0.45f, 0.2f, 0.87f).normalized();
+    uint64_t tUs = 100000u;
+    uint32_t ms = 100u;
+    for (uint32_t i = 0; i < 900u; ++i) {
+        const Vec3 gyro = (i < 300u) ? Vec3(0.9f, 0.05f, 0.0f)
+                         : (i < 600u) ? Vec3(0.0f, 0.95f, 0.05f)
+                                      : Vec3(0.05f, 0.0f, 1.0f);
+        const float dt = 0.017f;
+        calibrated = Quat::fromRotationVector(gyro * (-dt)).rotate(calibrated).normalized();
+        tUs += 17000u;
+        ms += 17u;
+        MagProcessedSample mag;
+        mag.valid = mag.trusted = true;
+        mag.raw = calibrated * 500.0f + Vec3(500.0f, 0.0f, 0.0f);
+        mag.calibratedMagFrame = calibrated;
+        mag.rawNorm = mag.raw.norm();
+        mag.calibratedNorm = 1.0f;
+        mag.seq = i + 1u;
+        mag.t_us = tUs;
+        mag.receivedMs = ms;
+        collector.observe(gyro, tUs, mag, true);
+    }
+    CHECK(ctx, collector.intervalCount() == MagAxisAlignmentCollector::kMaxIntervals);
+    CHECK(ctx, collector.excitedAxes() == 3u);
+    CHECK(ctx, collector.partitionConfirmedAxes() == 3u);
+    CHECK(ctx, collector.independentWindows() >= 4u);
+    CHECK(ctx, collector.stats().intervalsReservoirReplaced > 0u);
+    CHECK(ctx, collector.stats().intervalsReservoirSkipped > 0u);
+    CHECK(ctx, collector.stats().intervalsRejectedCapacity == 0u);
+}
+
+static void testCalibratedRawOriginRemainsUsable(TestContext& ctx) {
+    MagRuntimeProcessor processor;
+    MagRuntimeConfig config;
+    config.enabled = true;
+    config.calibrationValid = true;
+    config.axisAlignmentValid = true;
+    config.hardIron = Vec3(500.0f, 0.0f, 0.0f);
+    config.softIron = Mat3::identity();
+    config.magToImu = Mat3::identity();
+    config.expectedFieldNorm = 500.0f;
+    config.minTrustNorm = 400.0f;
+    config.maxTrustNorm = 600.0f;
+
+    Lsm6dsvFifoReader::MagRawSample raw;
+    raw.x = raw.y = raw.z = 0;
+    raw.seq = 1u;
+    raw.t_us = 1000u;
+    MagProcessedSample processed;
+    CHECK(ctx, processor.process(raw, config, 1u, processed));
+    CHECK(ctx, processed.rawNorm == 0.0f);
+    CHECK_NEAR(ctx, processed.calibratedNorm, 500.0f, 1.0e-5f);
+    CHECK(ctx, (processed.rejectFlags & MAG_REJECT_ZERO_NORM) == 0u);
+    CHECK(ctx, processed.trusted);
+}
+
+static void testMagRuntimeRetainsValidatedDeviceFrameDecision(TestContext& ctx) {
+    MagRuntimeProcessor processor;
+    MagRuntimeConfig config;
+    config.enabled = true;
+    config.calibrationValid = true;
+    config.axisAlignmentValid = true;
+    config.minTrustNorm = 0.1f;
+    config.maxTrustNorm = 1000.0f;
+    config.sensorToDeviceValid = true;
+    config.sensorToDevice = Quat::fromEulerXYZ(0.0f, 0.0f, 0.5f * MATH_PI).toRotationMatrix();
+
+    Lsm6dsvFifoReader::MagRawSample raw;
+    raw.x = 100;
+    raw.seq = 1u;
+    raw.t_us = 1000u;
+    MagProcessedSample processed;
+    CHECK(ctx, processor.process(raw, config, 1u, processed));
+    CHECK(ctx, processed.sensorToDeviceApplied);
+    CHECK_NEAR(ctx, processed.body.x, 0.0f, 1.0e-4f);
+    CHECK_NEAR(ctx, processed.body.y, 100.0f, 1.0e-4f);
+    const SensorToDeviceFrame acceptedFrame = makeSensorToDeviceFrame(
+        config.sensorToDeviceValid, config.sensorToDevice);
+    CHECK(ctx, acceptedFrame.enabled);
+    const Vec3 recovered = acceptedFrame.inverseApply(processed.body);
+    CHECK_NEAR(ctx, recovered.x, 100.0f, 1.0e-4f);
+    CHECK_NEAR(ctx, recovered.y, 0.0f, 1.0e-4f);
+
+    config.sensorToDevice = Mat3::diagonal(2.0f, 1.0f, 1.0f);
+    CHECK(ctx, processor.process(raw, config, 2u, processed));
+    CHECK(ctx, !processed.sensorToDeviceApplied);
+    CHECK_NEAR(ctx, processed.body.x, 100.0f, 1.0e-4f);
+    CHECK_NEAR(ctx, processed.body.y, 0.0f, 1.0e-4f);
 }
 
 static void testDynamicAxisSolverKeepsPureRotationConstraint(TestContext& ctx) {
@@ -522,12 +991,24 @@ int main() {
     testRealRotationDoesNotTriggerStationaryJumpLatch(ctx);
     testVerySlowPhysicalRotationDoesNotTriggerJumpLatch(ctx);
     testFilteredHeadingRateAllowsNoisySixtyHertzReacquisition(ctx);
+    testIntervalBuilderUsesTimestampCoherentGyroEndpoints(ctx);
+    testAllProperSignedPermutationMountingsConverge(ctx);
+    testReflectionAmbiguityRequiresRightHandedDriverContract(ctx);
     testOnlyProperSignedPermutationsAreAccepted(ctx);
     testAxisCollectorRejectsStaleGyroPair(ctx);
     testSixtyHertzCollectionSpansIndependentWindows(ctx);
+    testRuntimeCollectorUsesSensorTimeAcrossProcessingBacklog(ctx);
     testDynamicAxisSolverRefinesMechanicalMisalignment(ctx);
     testSolverConfidenceIsRateNormalized(ctx);
+    testSameCoarseWinnerFallsBackWhenRefinementsDisagree(ctx);
     testHoldoutRejectsTrainingOnlyFit(ctx);
+    testGuidedAxisReservoirPreservesLateAxesAndPartitions(ctx);
+    testDynamicAxisSolverWithHardSoftAndNearOriginRawData(ctx);
+    testSolverCountsUniqueReservoirWindows(ctx);
+    testSolverRejectsInvalidHardSoftTransform(ctx);
+    testRuntimeCollectorUsesCalibratedDirectionAndReservoir(ctx);
+    testCalibratedRawOriginRemainsUsable(ctx);
+    testMagRuntimeRetainsValidatedDeviceFrameDecision(ctx);
     testDynamicAxisSolverKeepsPureRotationConstraint(ctx);
     return ctx.finish("test_mag_heading_reliability");
 }

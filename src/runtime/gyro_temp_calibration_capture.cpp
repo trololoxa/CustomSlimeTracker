@@ -12,6 +12,16 @@ bool allAxesWithin(const Vec3& v, float limit) {
         std::fabs(v.z) <= limit;
 }
 
+float maxAbsComponent(const Vec3& v) {
+    return std::fmax(std::fabs(v.x), std::fmax(std::fabs(v.y), std::fabs(v.z)));
+}
+
+Vec3 standardError(const Vec3& stddev, uint32_t samples) {
+    if (samples == 0u) return Vec3::zero();
+    const float invSqrtN = 1.0f / std::sqrt(static_cast<float>(samples));
+    return stddev * invSqrtN;
+}
+
 } // namespace
 
 GyroTempCalibrationCapture::GyroTempCalibrationCapture(
@@ -54,6 +64,11 @@ void GyroTempCalibrationCapture::start(uint32_t nowMs, uint32_t maxDurationMs) {
     capture_.lastProgressMs = nowMs;
     diagnostics_ = GyroTempCalibrationCaptureDiagnostics{};
     resetPendingWindow();
+    haveAcceptedGyroReference_ = false;
+    acceptedReferenceTempC_ = 0.0f;
+    acceptedReferenceGyroMeanDps_ = Vec3::zero();
+    lastAcceptedTempC_ = 0.0f;
+    lastAcceptedGyroMeanDps_ = Vec3::zero();
     completed_ = false;
 }
 
@@ -70,6 +85,11 @@ void GyroTempCalibrationCapture::reset() {
     capture_.reset();
     diagnostics_ = GyroTempCalibrationCaptureDiagnostics{};
     resetPendingWindow();
+    haveAcceptedGyroReference_ = false;
+    acceptedReferenceTempC_ = 0.0f;
+    acceptedReferenceGyroMeanDps_ = Vec3::zero();
+    lastAcceptedTempC_ = 0.0f;
+    lastAcceptedGyroMeanDps_ = Vec3::zero();
     completed_ = false;
 }
 
@@ -168,25 +188,52 @@ void GyroTempCalibrationCapture::finalizePendingWindow(bool allowShortWindow) {
         return;
     }
 
+    const float tempMeanC = pending_.tempC.mean();
     const Vec3 gyroMeanDps = pending_.gyroRadS.mean() * MATH_RAD_TO_DEG;
     const Vec3 gyroStdDps = pending_.gyroRadS.stddev() * MATH_RAD_TO_DEG;
+    const Vec3 gyroMeanStdErrorDps = standardError(gyroStdDps, count);
     const float accelMeanG = pending_.accelNormG.mean();
     const float accelStdG = pending_.accelNormG.stddev();
     const float accelConfidenceMean = pending_.accelConfidence.mean();
     const float tempSpanC = pending_.tempC.maxValue - pending_.tempC.minValue;
 
+    Vec3 anchorResidualDps = Vec3::zero();
+    Vec3 adjacentResidualDps = Vec3::zero();
+    bool initialMeanGood = true;
+    bool thermalConsistencyGood = true;
+    if (!haveAcceptedGyroReference_) {
+        initialMeanGood = gyroMeanDps.norm() <= cfg_.maxInitialGyroMeanNormDps;
+    } else {
+        anchorResidualDps = gyroMeanDps - acceptedReferenceGyroMeanDps_;
+        adjacentResidualDps = gyroMeanDps - lastAcceptedGyroMeanDps_;
+        const float anchorAllowance = cfg_.gyroAnchorSlackDps +
+            cfg_.maxThermalSlopeDpsPerC * std::fabs(tempMeanC - acceptedReferenceTempC_);
+        const float adjacentAllowance = cfg_.gyroAdjacentSlackDps +
+            cfg_.maxThermalSlopeDpsPerC * std::fabs(tempMeanC - lastAcceptedTempC_);
+        thermalConsistencyGood =
+            maxAbsComponent(anchorResidualDps) <= anchorAllowance &&
+            maxAbsComponent(adjacentResidualDps) <= adjacentAllowance;
+    }
+
     diagnostics_.lastGyroMeanDps = gyroMeanDps;
     diagnostics_.lastGyroStdDps = gyroStdDps;
+    diagnostics_.lastGyroMeanStdErrorDps = gyroMeanStdErrorDps;
+    diagnostics_.lastGyroAnchorResidualDps = anchorResidualDps;
+    diagnostics_.lastGyroAdjacentResidualDps = adjacentResidualDps;
     diagnostics_.lastAccelNormMeanG = accelMeanG;
     diagnostics_.lastAccelNormStdG = accelStdG;
     diagnostics_.lastAccelConfidenceMean = accelConfidenceMean;
     diagnostics_.lastTempSpanC = tempSpanC;
 
-    const bool gyroGood = gyroMeanDps.isFinite() &&
-        gyroStdDps.isFinite() &&
-        gyroMeanDps.norm() <= cfg_.maxGyroMeanNormDps &&
+    const bool hardNoiseGood = gyroStdDps.isFinite() &&
         gyroStdDps.norm() <= cfg_.maxGyroStdNormDps &&
         allAxesWithin(gyroStdDps, cfg_.maxGyroStdAxisDps);
+    const bool meanPrecisionGood = gyroMeanStdErrorDps.isFinite() &&
+        gyroMeanStdErrorDps.norm() <= cfg_.maxGyroMeanStdErrorNormDps &&
+        allAxesWithin(gyroMeanStdErrorDps, cfg_.maxGyroMeanStdErrorAxisDps);
+    const bool gyroGood = gyroMeanDps.isFinite() &&
+        std::isfinite(tempMeanC) &&
+        hardNoiseGood && meanPrecisionGood && initialMeanGood && thermalConsistencyGood;
     const bool accelGood = std::isfinite(accelMeanG) &&
         std::isfinite(accelStdG) &&
         std::isfinite(accelConfidenceMean) &&
@@ -199,7 +246,13 @@ void GyroTempCalibrationCapture::finalizePendingWindow(bool allowShortWindow) {
     if (!gyroGood || !accelGood || !temperatureGood) {
         diagnostics_.rejectedWindows++;
         diagnostics_.rejectedSamples += count;
-        if (!gyroGood) diagnostics_.gyroRejectedWindows++;
+        if (!gyroGood) {
+            diagnostics_.gyroRejectedWindows++;
+            if (!hardNoiseGood) diagnostics_.gyroHardNoiseRejectedWindows++;
+            if (!meanPrecisionGood) diagnostics_.gyroMeanPrecisionRejectedWindows++;
+            if (!initialMeanGood) diagnostics_.gyroInitialMeanRejectedWindows++;
+            if (!thermalConsistencyGood) diagnostics_.gyroThermalConsistencyRejectedWindows++;
+        }
         if (!accelGood) diagnostics_.accelRejectedWindows++;
         if (!temperatureGood) diagnostics_.temperatureRejectedWindows++;
         capture_.tempBins[pending_.binIndex].badQualitySamples += count;
@@ -211,6 +264,14 @@ void GyroTempCalibrationCapture::finalizePendingWindow(bool allowShortWindow) {
     bin.tempC.merge(pending_.tempC);
     bin.accelNormG.merge(pending_.accelNormG);
     bin.gyroAfterRadS.merge(pending_.gyroRadS);
+
+    if (!haveAcceptedGyroReference_) {
+        haveAcceptedGyroReference_ = true;
+        acceptedReferenceTempC_ = tempMeanC;
+        acceptedReferenceGyroMeanDps_ = gyroMeanDps;
+    }
+    lastAcceptedTempC_ = tempMeanC;
+    lastAcceptedGyroMeanDps_ = gyroMeanDps;
 
     diagnostics_.acceptedWindows++;
     diagnostics_.acceptedSamples += count;

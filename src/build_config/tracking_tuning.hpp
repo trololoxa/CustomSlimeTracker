@@ -26,7 +26,11 @@ static constexpr uint8_t FIFO_MAX_DRAIN_ROUNDS_PER_EVENT = 6;
 // must make guaranteed forward progress or the hardware FIFO can overflow.
 static constexpr uint8_t FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE = 12;
 static constexpr uint8_t FIFO_RUNTIME_MAX_RAW_CALLBACKS_PER_SLICE = 64;
-static constexpr uint8_t FIFO_RUNTIME_MAX_MAG_CALLBACKS_PER_SLICE = 2;
+// At 960 Hz raw IMU and 60 Hz sensor-hub ODR, one 64-sample raw slice
+// spans about four magnetometer periods. Keep enough bounded budget to
+// dispatch every due mag sample chronologically, with headroom for one
+// delayed hardware burst, without letting mag work consume raw progress.
+static constexpr uint8_t FIFO_RUNTIME_MAX_MAG_CALLBACKS_PER_SLICE = 8;
 static constexpr uint32_t FIFO_RUNTIME_SLICE_BUDGET_US = 3500;
 static constexpr uint32_t FIFO_RUNTIME_APP_BUDGET_US = 9000;
 #if TRACKER_BUILD_IS_SLIM

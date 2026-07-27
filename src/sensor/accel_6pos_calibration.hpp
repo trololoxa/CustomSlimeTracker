@@ -22,6 +22,7 @@ static constexpr uint32_t AXIS_RESIDUAL_HIGH    = 1u << 9;
 static constexpr uint32_t PAIR_CENTER_RESIDUAL_HIGH = 1u << 10;
 static constexpr uint32_t MATRIX_SINGULAR       = 1u << 11;
 static constexpr uint32_t AUTO_FACE_AMBIGUOUS    = 1u << 12;
+static constexpr uint32_t INDEPENDENT_VALIDATION_FAILED = 1u << 13;
 }
 
 class Accel6PosCalibration {
@@ -105,6 +106,7 @@ public:
     bool hasAllFaces() const;
     const FaceData& faceData(Face face) const;
     const Result& result() const;
+    void addQualityFlag(uint32_t flag);
 
     bool compute();
     bool compute(const ValidationParams& params);

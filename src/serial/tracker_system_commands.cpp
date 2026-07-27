@@ -63,7 +63,7 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("  motion status | on | off | reset");
 #endif
 #if TRACKER_ENABLE_SETUP_COMMANDS
-    out.println("  setup guide | setup status | setup calibration [nomag|6dof]");
+    out.println("  setup guide | setup status | setup verify | setup calibration [nomag|6dof]");
 #endif
 
 #if TRACKER_ENABLE_CONFIG_COMMANDS
@@ -92,18 +92,25 @@ void trackerSerialPrintHelp(Stream& out) {
     out.println("[guided setup]");
     out.println("  setup guide | status");
     out.println("  setup wifi                         (interactive scan/select/password/connect/save/server check)");
+    out.println("  setup verify");
     out.println("  setup calibration [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
 #endif
 
 #if TRACKER_ENABLE_CALIBRATION_COMMANDS
     out.println();
     out.println("[calibration low-level]");
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    out.println("  cal status");
+    out.println("  cal autonomy status | 0022 on|off [save] | 0023 on|off [save]");
+    out.println("  cal autonomy rollback | reset | clear_rejections");
+#endif
     out.println("  cal gyro | cal gyro save | cal gyro clear");
     out.println("  cal accel face XP|XN|YP|YN|ZP|ZN");
     out.println("  cal accel compute | dump | save | clear");
     out.println("  cal temp print | enable [save] | disable [save]");
     out.println("  cal temp set_slope X Y Z [save] | fit_static [save] | clear [save]");
     out.println("  cal save | clear_all");
+    out.println("  cal erase_all confirm");
     out.println("  cal candidate status | stage [manual|setup|background] [flush|force]");
     out.println("  cal candidate flush [force] | compare | discard | promote [force]");
 #endif

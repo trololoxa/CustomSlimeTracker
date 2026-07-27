@@ -72,6 +72,11 @@ absent from `help` when `TRACKER_ENABLE_MOTION_LIGHT_SLEEP=0`.
   this firmware can only turn off the GPIO-controlled status LED.
 - The timeout is paused while command-driven static/runtime tests are active,
   so test runs cannot unexpectedly put the tracker to sleep.
+- Active calibration work blocks sleep: setup/manual ownership, candidate
+  persistence, promotion, probation, accept cleanup and rollback. A passive
+  fail-closed `suspended_storage` state without a valid transaction journal does
+  **not** block sleep; autonomous writes remain disabled and the record is kept
+  for explicit recovery after wake.
 - The optional `sleep` serial command is compiled only when
   `TRACKER_ENABLE_MOTION_LIGHT_SLEEP=1`. It queues the same light-sleep path
   and never enters sleep from inside the serial parser callback.

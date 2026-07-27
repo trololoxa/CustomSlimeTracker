@@ -129,6 +129,7 @@ void FifoRuntimeProcessor::resetWork() {
     clearQueues();
     drainActive_ = false;
     drainRoundsRemaining_ = 0;
+    lastDispatchedRawTimestampUs_ = 0;
 }
 
 bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
@@ -157,9 +158,22 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
 
     const uint32_t callbackSliceStartUs = micros();
     uint8_t rawCallbacks = 0;
+    uint8_t magCallbacks = 0;
+
+    // A previous pass may have stopped exactly when its bounded mag allowance
+    // was exhausted. Drain only mag samples that are already due relative to
+    // the last dispatched raw endpoint before advancing the raw timeline.
+    bool chronologicalReady = true;
+    if (lastDispatchedRawTimestampUs_ != 0u &&
+        !dispatchDueMagCallbacks(lastDispatchedRawTimestampUs_, callbackSliceStartUs,
+                                 magCallbacks, worked)) {
+        queueStats_.magChronologicalDeferrals++;
+        chronologicalReady = false;
+    }
+
     Lsm6dsv::RawSample raw;
     bool checkStats = false;
-    while (dequeueRaw(raw, checkStats)) {
+    while (chronologicalReady && dequeueRaw(raw, checkStats)) {
         worked = true;
         if (sampleCallback_(raw, checkStats, callbackUser_) ==
             FifoRuntimeSampleResult::FifoRecovered) {
@@ -170,6 +184,18 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
         }
         queueStats_.rawProcessed++;
         ++rawCallbacks;
+        lastDispatchedRawTimestampUs_ = raw.t_us;
+
+        // Sensor-hub samples share the FIFO time domain but live in a separate
+        // queue. Dispatch each one as soon as raw processing reaches/passes its
+        // timestamp. The mag callback therefore observes the nearest coherent
+        // gyro endpoint instead of the end of a 64-sample IMU burst.
+        if (!dispatchDueMagCallbacks(lastDispatchedRawTimestampUs_, callbackSliceStartUs,
+                                     magCallbacks, worked)) {
+            queueStats_.magChronologicalDeferrals++;
+            break;
+        }
+
         if (rawCallbacks >= cfg::FIFO_RUNTIME_MAX_RAW_CALLBACKS_PER_SLICE) break;
         if (rawCallbacks >= cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE &&
             cfg::FIFO_RUNTIME_SLICE_BUDGET_US != 0u &&
@@ -177,17 +203,6 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
                 cfg::FIFO_RUNTIME_SLICE_BUDGET_US) {
             break;
         }
-    }
-
-    // Magnetometer callbacks use a separate small budget so a 60 Hz sensor-hub
-    // burst can never consume the raw-IMU forward-progress allowance.
-    uint8_t magCallbacks = 0;
-    Lsm6dsvFifoReader::MagRawSample mag;
-    while (magCallbacks < cfg::FIFO_RUNTIME_MAX_MAG_CALLBACKS_PER_SLICE && dequeueMag(mag)) {
-        magCallback_(mag, callbackUser_);
-        queueStats_.magProcessed++;
-        ++magCallbacks;
-        worked = true;
     }
 
     if (drainActive_ && drainRoundsRemaining_ == 0u) {
@@ -290,6 +305,45 @@ bool FifoRuntimeProcessor::dequeueMag(Lsm6dsvFifoReader::MagRawSample& mag) {
     mag = magQueueBuffer_[magQueueHead_];
     magQueueHead_ = (magQueueHead_ + 1u) % magQueueCapacity_;
     --magQueueCount_;
+    return true;
+}
+
+bool FifoRuntimeProcessor::peekMagTimestamp(uint64_t& timestampUs) const {
+    if (magQueueCount_ == 0u) return false;
+    timestampUs = magQueueBuffer_[magQueueHead_].t_us;
+    return true;
+}
+
+bool FifoRuntimeProcessor::dispatchDueMagCallbacks(uint64_t rawTimestampUs,
+                                                     uint32_t callbackSliceStartUs,
+                                                     uint8_t& magCallbacks,
+                                                     bool& worked) {
+    if (rawTimestampUs == 0u) return true;
+
+    uint64_t magTimestampUs = 0u;
+    while (peekMagTimestamp(magTimestampUs) && magTimestampUs <= rawTimestampUs) {
+        if (magCallbacks >= cfg::FIFO_RUNTIME_MAX_MAG_CALLBACKS_PER_SLICE) {
+            queueStats_.magCallbackCountDeferrals++;
+            return false;
+        }
+        // Hardware drain time is deliberately excluded because
+        // callbackSliceStartUs is captured after the drain. Mag callbacks,
+        // however, are cooperative app work just like raw/AHRS callbacks and
+        // must not bypass the same output-latency budget.
+        if (cfg::FIFO_RUNTIME_SLICE_BUDGET_US != 0u &&
+            static_cast<uint32_t>(micros() - callbackSliceStartUs) >=
+                cfg::FIFO_RUNTIME_SLICE_BUDGET_US) {
+            queueStats_.magCallbackBudgetDeferrals++;
+            return false;
+        }
+
+        Lsm6dsvFifoReader::MagRawSample mag;
+        (void)dequeueMag(mag);
+        magCallback_(mag, callbackUser_);
+        queueStats_.magProcessed++;
+        ++magCallbacks;
+        worked = true;
+    }
     return true;
 }
 

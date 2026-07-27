@@ -16,6 +16,8 @@ public:
         Fifo,
         Battery,
         Network,
+        Calibration0022,
+        Calibration0023,
         Tap,
         Led,
         Heartbeat,

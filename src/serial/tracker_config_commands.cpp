@@ -4,6 +4,9 @@
 
 #include "config/tracker_config.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+#include "runtime/calibration_autonomy_controller.hpp"
+#endif
 #include "runtime/slimevr_output_runtime.hpp"
 #include "sensor/fifo_calibrations.hpp"
 #include "serial/tracker_fifo_config_control.hpp"
@@ -11,6 +14,48 @@
 #include "serial/tracker_calibration_commands.hpp"
 
 namespace tracker {
+
+namespace {
+
+class ConfigCalibrationOwnershipScope {
+public:
+    explicit ConfigCalibrationOwnershipScope(TrackerSerialCommandContext& ctx)
+        : ctx_(ctx) {
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        acquired_ = !ctx_.calibrationAutonomy ||
+            ctx_.calibrationAutonomy->beginManualCalibration(millis());
+#else
+        acquired_ = true;
+#endif
+    }
+
+    ~ConfigCalibrationOwnershipScope() {
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        if (acquired_ && ctx_.calibrationAutonomy) {
+            // Config mutations can replace calibration, sensor frame or IMU
+            // acquisition contract. Conservatively invalidate all evidence.
+            ctx_.calibrationAutonomy->endManualCalibration(true, millis());
+        }
+#endif
+    }
+
+    bool acquired() const { return acquired_; }
+
+private:
+    TrackerSerialCommandContext& ctx_;
+    bool acquired_ = false;
+};
+
+bool requireConfigCalibrationOwnership(TrackerSerialCommandContext& ctx,
+                                       Stream& out,
+                                       ConfigCalibrationOwnershipScope& scope) {
+    if (scope.acquired()) return true;
+    tracker_serial_detail::printErr(
+        out, "config mutation blocked: autonomous transaction could not be resolved");
+    return false;
+}
+
+} // namespace
 
 Stream& trackerSerialConfigStream(TrackerSerialCommandContext& ctx) {
     return ctx.io ? *ctx.io : Serial;
@@ -58,6 +103,11 @@ void trackerSerialApplyConfigToRuntime(TrackerSerialCommandContext& ctx) {
     // config replacement may change either, so resynchronize the acknowledged
     // server view after the runtime has accepted the config.
     if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    if (ctx.calibrationAutonomy) {
+        ctx.calibrationAutonomy->notifyCalibrationContractChanged();
+    }
+#endif
 }
 
 void trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx, TrackerConfig& target) {
@@ -209,6 +259,8 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
             tracker_serial_detail::printErr(out, "usage: config spi <hz> [save]");
             return;
         }
+        ConfigCalibrationOwnershipScope ownership(ctx);
+        if (!requireConfigCalibrationOwnership(ctx, out, ownership)) return;
         if (!trackerSerialCommitSpiFrequency(ctx, out, hz, save)) return;
 
         tracker_serial_detail::printOk(out, save ? "SPI clock set and saved" : "SPI clock set");
@@ -222,6 +274,8 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
             return;
         }
 
+        ConfigCalibrationOwnershipScope ownership(ctx);
+        if (!requireConfigCalibrationOwnership(ctx, out, ownership)) return;
         char* fifoArgv[8] = {};
         fifoArgv[0] = const_cast<char*>("fifo");
         int fifoArgc = 1;
@@ -233,6 +287,8 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
     }
 
     if (trackerSerialConfigIs(argv[1], "defaults")) {
+        ConfigCalibrationOwnershipScope ownership(ctx);
+        if (!requireConfigCalibrationOwnership(ctx, out, ownership)) return;
         TrackerConfig candidate;
         candidate.resetDefaults();
         if (!trackerSerialCommitFullHardwareConfig(ctx, out, candidate)) {
@@ -262,6 +318,8 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
     }
 
     if (trackerSerialConfigIs(argv[1], "migrate")) {
+        ConfigCalibrationOwnershipScope ownership(ctx);
+        if (!requireConfigCalibrationOwnership(ctx, out, ownership)) return;
         TrackerConfigStorageInfo storage;
         if (!ctx.configStore->inspectStorage(storage)) {
             out.print("# ERR config storage inspect failed: ");
@@ -282,6 +340,8 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
     }
 
     if (trackerSerialConfigIs(argv[1], "load")) {
+        ConfigCalibrationOwnershipScope ownership(ctx);
+        if (!requireConfigCalibrationOwnership(ctx, out, ownership)) return;
         TrackerConfig candidate;
         if (!ctx.configStore->load(candidate)) {
             out.print("# ERR config load failed: ");
@@ -300,6 +360,8 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
     }
 
     if (trackerSerialConfigIs(argv[1], "save")) {
+        ConfigCalibrationOwnershipScope ownership(ctx);
+        if (!requireConfigCalibrationOwnership(ctx, out, ownership)) return;
         ctx.config->sanitize();
         ctx.config->updateCrc();
         if (ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Manual)) {
@@ -312,6 +374,8 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
     }
 
     if (trackerSerialConfigIs(argv[1], "erase")) {
+        ConfigCalibrationOwnershipScope ownership(ctx);
+        if (!requireConfigCalibrationOwnership(ctx, out, ownership)) return;
         if (ctx.configStore->erase()) {
             tracker_serial_detail::printOk(out, "config erased from NVS");
         } else {

@@ -94,7 +94,7 @@ void testSlowRotationAndVibrationAreRejected(TestContext& ctx) {
     ImuQualityResult q = goodQuality();
     uint32_t nowMs = 0;
 
-    // Slow yaw rotation passes the instantaneous 1.5 dps gate but must fail
+    // Slow yaw rotation passes the instantaneous 3.0 dps gate but must fail
     // the window mean gate so it cannot become a false temperature bias.
     for (uint32_t i = 0; i < 256; ++i) {
         capture.updateSample(sample(26.2f, Vec3(0.55f, 0.0f, 0.0f)), q, nowMs++);
@@ -102,10 +102,10 @@ void testSlowRotationAndVibrationAreRejected(TestContext& ctx) {
     CHECK(ctx, capture.diagnostics().gyroRejectedWindows == 1);
     CHECK(ctx, capture.diagnostics().acceptedSamples == 0);
 
-    // Zero-mean vibration also passes the instantaneous gate, but its window
-    // standard deviation is too high.
+    // Extreme zero-mean vibration still passes the instantaneous norm gate,
+    // but exceeds the hard per-axis noise ceiling.
     for (uint32_t i = 0; i < 256; ++i) {
-        const float x = (i & 1u) ? 0.45f : -0.45f;
+        const float x = (i & 1u) ? 0.95f : -0.95f;
         capture.updateSample(sample(26.2f, Vec3(x, 0.0f, 0.0f)), q, nowMs++);
     }
     CHECK(ctx, capture.diagnostics().gyroRejectedWindows == 2);
@@ -114,6 +114,58 @@ void testSlowRotationAndVibrationAreRejected(TestContext& ctx) {
     capture.stop(nowMs);
     CHECK(ctx, capture.diagnostics().acceptedSamples == 700);
     CHECK(ctx, capture.usableTempBins() == 1);
+}
+
+void testReportedTrackerNoiseAndThermalDriftAreAccepted(TestContext& ctx) {
+    GyroTempCalibrationCapture capture;
+    capture.start(0, 100000);
+    ImuQualityResult q = goodQuality();
+    uint32_t nowMs = 0;
+
+    // Reproduce the real tracker noise reported during setup: roughly
+    // 0.58/0.30/0.067 dps per axis at 960 Hz. The individual samples are noisy,
+    // but each 256-sample mean is precise and independent windows move only
+    // with a plausible thermal slope.
+    for (uint32_t bin = 0; bin < 4; ++bin) {
+        const float tempC = 29.2f + static_cast<float>(bin);
+        const float thermalX = 0.045f * static_cast<float>(bin);
+        const float thermalY = -0.020f * static_cast<float>(bin);
+        for (uint32_t i = 0; i < 512; ++i) {
+            const float nx = (i & 1u) ? 0.58189f : -0.58189f;
+            const float ny = (i & 2u) ? 0.298635f : -0.298635f;
+            const float nz = (i & 4u) ? 0.067053f : -0.067053f;
+            capture.updateSample(
+                sample(tempC, Vec3(thermalX + nx, thermalY + ny, nz)),
+                q,
+                nowMs++);
+        }
+    }
+    capture.stop(nowMs);
+
+    CHECK(ctx, capture.diagnostics().acceptedWindows == 8u);
+    CHECK(ctx, capture.diagnostics().acceptedSamples == 2048u);
+    CHECK(ctx, capture.diagnostics().gyroHardNoiseRejectedWindows == 0u);
+    CHECK(ctx, capture.diagnostics().gyroMeanPrecisionRejectedWindows == 0u);
+    CHECK(ctx, capture.diagnostics().gyroThermalConsistencyRejectedWindows == 0u);
+    CHECK(ctx, capture.usableTempBins() == 4u);
+}
+
+void testLateSlowRotationCannotMasqueradeAsThermalDrift(TestContext& ctx) {
+    GyroTempCalibrationCapture capture;
+    capture.start(0, 100000);
+    ImuQualityResult q = goodQuality();
+    uint32_t nowMs = 0;
+
+    feedStable(capture, q, nowMs, 512, 30.2f);
+    CHECK(ctx, capture.diagnostics().acceptedSamples == 512u);
+
+    // A later constant yaw rotation is precise but inconsistent with both the
+    // anchor and adjacent accepted means at essentially the same temperature.
+    for (uint32_t i = 0; i < 256; ++i) {
+        capture.updateSample(sample(30.3f, Vec3(0.55f, 0.0f, 0.0f)), q, nowMs++);
+    }
+    CHECK(ctx, capture.diagnostics().gyroThermalConsistencyRejectedWindows == 1u);
+    CHECK(ctx, capture.diagnostics().acceptedSamples == 512u);
 }
 
 void testAccelAndTemperatureWindowGates(TestContext& ctx) {
@@ -192,6 +244,8 @@ int main() {
     testStableCaptureAndShortFinalWindow(ctx);
     testMovementOnlyDropsCurrentWindow(ctx);
     testSlowRotationAndVibrationAreRejected(ctx);
+    testReportedTrackerNoiseAndThermalDriftAreAccepted(ctx);
+    testLateSlowRotationCannotMasqueradeAsThermalDrift(ctx);
     testAccelAndTemperatureWindowGates(ctx);
     testQualityFaultPausesWithoutEndingCapture(ctx);
     testDurationAutoStopFlushesValidWindow(ctx);

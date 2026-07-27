@@ -13,6 +13,10 @@ enum class MagCalibrationFailureReason : uint8_t {
     AxisRadiusTooSmall,
     BoxCoverageTooLow,
     RawNormFilterFailed,
+    FitNormalizationFailed,
+    LinearSolveFailed,
+    QuadraticCenterFailed,
+    NonPositiveDefiniteShape,
     EllipsoidFitFailed,
     InlierRatioTooLow,
     GeometricResidualTooHigh,
@@ -20,7 +24,18 @@ enum class MagCalibrationFailureReason : uint8_t {
     AlgebraicResidualTooHigh,
 };
 
+enum class MagCalibrationSolverStage : uint8_t {
+    None = 0,
+    Normalized,
+    LinearSolved,
+    CenterSolved,
+    ShapeSolved,
+    EigenSolved,
+    CandidateBuilt,
+};
+
 const char* magCalibrationFailureReasonName(MagCalibrationFailureReason reason);
+const char* magCalibrationSolverStageName(MagCalibrationSolverStage stage);
 
 struct MagCalibrationParams {
     uint32_t minSamples = 300;
@@ -28,6 +43,7 @@ struct MagCalibrationParams {
     float minCoverageScore = 0.35f;
     float minDirectionalCoverageScore = 0.65f;
     float maxAxisRatio = 6.0f;
+    // Centered, dimensionless ellipsoid-equation RMS.
     float maxAlgebraicResidualRms = 0.12f;
     float maxGeometricResidualRmsFactor = 0.10f;
     float outlierSigma = 3.0f;
@@ -37,8 +53,27 @@ struct MagCalibrationParams {
     float trustNormMaxFactor = 1.35f;
 };
 
+inline float magCalibrationEffectiveMinBoxCoverage(const MagCalibrationParams& params) {
+    // Raw axis spans combine motion coverage with the very soft-iron
+    // anisotropy that this calibration is meant to estimate. A fixed 0.35
+    // gate contradicts maxAxisRatio=6 and can reject a fully covered valid
+    // ellipsoid before the solver has a chance to correct it. Keep only a
+    // gross pre-fit observability floor consistent with the permitted shape;
+    // fitted directional coverage and geometric residual remain authoritative.
+    const float shapeCompatible = params.maxAxisRatio > 1.0f
+        ? 0.8f / params.maxAxisRatio
+        : 0.8f;
+    return std::fmin(params.minCoverageScore, shapeCompatible);
+}
+
 struct MagCalibrationResult {
     bool valid = false;
+    bool fitAvailable = false;
+    MagCalibrationSolverStage solverStage = MagCalibrationSolverStage::None;
+    Vec3 fitNormalizationCenter = Vec3::zero();
+    Vec3 fitNormalizationScale = Vec3::zero();
+    float solverPivotRatio = 0.0f;
+    uint32_t solverSamples = 0;
     Vec3 hardIron = Vec3::zero();
     Mat3 softIron = Mat3::identity();
     float expectedNorm = 1.0f;
@@ -63,6 +98,16 @@ struct MagCalibrationStoredSample {
     int16_t z = 0;
 };
 
+struct MagCalibrationFitSetDiagnostics {
+    bool valid = false;
+    uint16_t samples = 0;
+    Vec3 min = Vec3::zero();
+    Vec3 max = Vec3::zero();
+    float normMin = 0.0f;
+    float normMean = 0.0f;
+    float normMax = 0.0f;
+};
+
 class MagCalibrationCollector {
 public:
     explicit MagCalibrationCollector(const MagCalibrationParams& params = MagCalibrationParams{});
@@ -76,11 +121,14 @@ public:
     void push(const Lsm6dsvFifoReader::MagRawSample& m, float normRaw, uint32_t nowMs);
 
     bool compute(MagCalibrationResult& out);
-    MagCalibrationResult compute();
 
     bool active() const;
     bool hasData() const;
     uint32_t samples() const;
+    uint16_t storedSamples() const;
+    uint32_t reservoirReplacements() const;
+    uint32_t reservoirSkipped() const;
+    MagCalibrationFitSetDiagnostics fitSetDiagnostics() const;
     uint32_t rejected() const;
     uint32_t saturated() const;
     uint32_t startMs() const;
@@ -138,6 +186,8 @@ private:
     MagCalibrationStoredSample stored_[kMaxStoredSamples] = {};
     uint16_t storedSamples_ = 0;
     uint32_t storedSequence_ = 0;
+    uint32_t reservoirReplacements_ = 0;
+    uint32_t reservoirSkipped_ = 0;
 
     MagCalibrationResult lastResult_;
     MagCalibrationFailureReason lastFailureReason_ = MagCalibrationFailureReason::None;

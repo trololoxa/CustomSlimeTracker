@@ -807,6 +807,14 @@ bool TrackerConfigStore::saveInternal(TrackerConfig& config,
         return true;
     }
 
+    if (autonomyProbationWriteBarrier_ && !migration && !promotion) {
+        // A non-noop save would overwrite the inactive generation that is the
+        // current autonomous rollback anchor. Fail closed until probation is
+        // accepted or rolled back. The no-op path above remains available.
+        lastError_ = TrackerConfigError::ApplyPending;
+        return false;
+    }
+
     const TrackerConfigSlot target = forcedTarget != TrackerConfigSlot::None
         ? forcedTarget
         : (activeSlot == TrackerConfigSlot::None ? TrackerConfigSlot::A : otherSlot(activeSlot));
@@ -1409,6 +1417,16 @@ bool TrackerConfigStore::candidateQualityComparison(TrackerCalibrationCandidateR
 
     const auto& cq = candidate.metadata.quality;
     TrackerCalibrationQualitySummary effectiveActiveQuality = active->quality;
+    const bool candidateHasMeasuredGyro =
+        (cq.qualityFlags & tracker_calibration_quality_flags::GYRO_MEASURED) != 0u;
+    const bool activeHasMeasuredGyro =
+        (effectiveActiveQuality.qualityFlags &
+         tracker_calibration_quality_flags::GYRO_MEASURED) != 0u;
+    const bool candidateHasMeasuredAccel =
+        (cq.qualityFlags & tracker_calibration_quality_flags::ACCEL_MEASURED) != 0u;
+    const bool activeHasMeasuredAccel =
+        (effectiveActiveQuality.qualityFlags &
+         tracker_calibration_quality_flags::ACCEL_MEASURED) != 0u;
     const bool candidateHasMeasuredAlignment =
         (cq.qualityFlags & tracker_calibration_quality_flags::ALIGNMENT_MEASURED) != 0u;
     const bool activeHasMeasuredAlignment =
@@ -1422,10 +1440,24 @@ bool TrackerConfigStore::candidateQualityComparison(TrackerCalibrationCandidateR
         // Treat the unmeasured-but-valid baseline as neutral; the runtime
         // solver separately proves pairwise improvement on the exact same
         // intervals before it is allowed to stage this candidate.
-        TrackerConfig activeConfig;
-        activeConfig.data = active->payload;
         effectiveActiveQuality.alignmentScore = 0.50f;
-        trackerCalibrationQualityRecomputeOverall(activeConfig, effectiveActiveQuality);
+        trackerCalibrationQualityRecomputeOverall(active->payload, effectiveActiveQuality);
+    }
+    if (candidateHasMeasuredGyro && !activeHasMeasuredGyro &&
+        active->payload.gyroCal.biasValid) {
+        // Legacy active records have a derived 0.70/1.00 score, not a measured
+        // held-out residual. The background learner already proves strict
+        // per-axis and train/validation improvement before staging, so compare
+        // the unmeasured baseline conservatively below the measured candidate.
+        effectiveActiveQuality.gyroScore =
+            std::max(0.0f, cq.gyroScore - 0.05f);
+        trackerCalibrationQualityRecomputeOverall(active->payload, effectiveActiveQuality);
+    }
+    if (candidateHasMeasuredAccel && !activeHasMeasuredAccel &&
+        active->payload.accelCal.valid) {
+        effectiveActiveQuality.accelScore =
+            std::max(0.0f, cq.accelScore - 0.05f);
+        trackerCalibrationQualityRecomputeOverall(active->payload, effectiveActiveQuality);
     }
     const auto& aq = effectiveActiveQuality;
     if (qualityRegressed(cq.gyroScore, aq.gyroScore))
@@ -1526,9 +1558,15 @@ bool TrackerConfigStore::stageCandidate(const TrackerConfig& candidateInput,
     staged.persistedWriteCount = previousWrites;
     staged.signature = trackerMakeSensorSignature(candidate);
     metadata.createdUptimeMs = nowMs;
-    metadata.activeCalibrationRevisionAtCreation = hasActive
+    const uint32_t activeRevision = hasActive
         ? trackerCalibrationPayloadRevision(active.payload)
         : 0u;
+    if (metadata.activeCalibrationRevisionAtCreation != 0u &&
+        metadata.activeCalibrationRevisionAtCreation != activeRevision) {
+        lastError_ = TrackerConfigError::CandidateStale;
+        return false;
+    }
+    metadata.activeCalibrationRevisionAtCreation = activeRevision;
     staged.metadata = metadata;
     staged.payload = candidate.data;
     staged.crc32 = 0;
@@ -2007,6 +2045,70 @@ bool TrackerConfigStore::commitPreparedPromotion(TrackerPreparedConfigPromotion&
     lastError_ = TrackerConfigError::None;
     return true;
 #endif
+}
+
+bool TrackerConfigStore::restoreAuthoritativeGeneration(TrackerConfigSlot slot,
+                                                        uint32_t generation,
+                                                        TrackerConfig& outActive) {
+    if (slot == TrackerConfigSlot::None || generation == 0u) {
+        lastError_ = TrackerConfigError::SelectorInvalid;
+        return false;
+    }
+    // Exact rollback is the recovery operation for an uncertain promotion.
+    // It is allowed to reconcile a latched selector uncertainty, but still
+    // remains blocked by independently degraded storage.
+    if (storageDegradedLatched_) {
+        ++degradedWriteBlocks_;
+        lastError_ = TrackerConfigError::StorageDegraded;
+        return false;
+    }
+
+    TrackerConfigSlotRecord record{};
+    bool exists = false;
+    bool readable = false;
+    if (!readSlot(slot, record, exists, readable) || !exists || !readable ||
+        !trackerValidateConfigSlotRecord(record) || record.generation != generation) {
+        lastError_ = TrackerConfigError::ReadFailed;
+        return false;
+    }
+    TrackerConfigCommitRecord commit{};
+    bool commitExists = false;
+    bool commitReadable = false;
+    if (!readCommit(slot, commit, commitExists, commitReadable) ||
+        !slotHasCommitAuthority(slot, record, commit, commitExists, commitReadable)) {
+        lastError_ = TrackerConfigError::SelectorInvalid;
+        return false;
+    }
+
+    TrackerConfigSelectorRecord current{};
+    bool selectorExists = false;
+    bool selectorReadable = false;
+    if (!readSelector(current, selectorExists, selectorReadable) ||
+        !selectorExists || !selectorReadable || !trackerValidateConfigSelectorRecord(current)) {
+        lastError_ = TrackerConfigError::SelectorInvalid;
+        return false;
+    }
+    TrackerConfigSelectorRecord intended = current;
+    intended.activeSlot = slot;
+    intended.activeGeneration = generation;
+    intended.successfulActiveWrites += 1u;
+    intended.crc32 = 0u;
+    intended.crc32 = trackerConfigSelectorRecordCrc(intended);
+    if (!writeSelectorVerified(intended)) {
+        bool committed = false;
+        const TrackerConfigError initialError = lastError_;
+        if (!reconcileSelectorCommit(intended, current, committed) || !committed) {
+            lastError_ = initialError;
+            return false;
+        }
+    }
+
+    outActive.data = record.payload;
+    outActive.sanitize();
+    outActive.updateCrc();
+    authoritativeApplyPending_ = true;
+    lastError_ = TrackerConfigError::None;
+    return true;
 }
 
 void TrackerConfigStore::abortPreparedPromotion(TrackerPreparedConfigPromotion& prepared) {

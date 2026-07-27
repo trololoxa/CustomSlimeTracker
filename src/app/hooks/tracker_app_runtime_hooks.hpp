@@ -213,6 +213,9 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
 #else
         nullptr,
 #endif
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        &g_calibrationAutonomy,
+#endif
         g_perf,
 #if TRACKER_HAS_RUNTIME_PROFILER
         &g_motionDiagnostics,
@@ -1026,6 +1029,95 @@ static void prepareMotionLightSleepRuntime() {
 }
 #endif
 
+
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+static void calibrationAutonomyApplyConfigCallback(const TrackerConfig& promoted,
+                                                     void* user) {
+    (void)user;
+    trackerApplyCalibrationCandidateToConfig(g_config, promoted);
+    g_config.applyToImuCalibration(g_imuCal);
+    g_config.applyToGyroTempComp(g_gyroTempComp);
+    runtimeBiasReset(g_runtimeBias);
+#if TRACKER_HAS_CALIBRATION_UI
+    g_accelCalRunner.reset();
+    g_gyroTempCapture.reset();
+#endif
+    g_lastSampleTimestampUs = 0;
+    g_lastQualityFlags = 0;
+
+    OrientationRuntimeResetDeps resetDeps;
+    resetDeps.ahrs = &g_ahrs6dof;
+    resetDeps.preparedOutput = &g_preparedOutput;
+    resetDeps.resetDependentState = resetOrientationDependentState;
+    (void)resetOrientationRuntime(
+        resetDeps,
+        "calibration_autonomy_apply",
+        lsmFifo.stats().lastAssignedTimestampUs
+    );
+    g_slimevrRuntime.requestSensorInfoRefresh();
+}
+
+static void calibrationAutonomySet0022EnabledCallback(bool enabled, void* user) {
+    (void)user;
+    g_magRuntime.setAxisAlignmentLearningEnabled(enabled);
+}
+
+static void calibrationAutonomyReset0022EvidenceCallback(void* user) {
+    (void)user;
+    g_magRuntime.resetAxisAlignmentCandidate();
+}
+
+static bool calibrationAutonomyManualTransactionActiveCallback(void* user) {
+    (void)user;
+    if (g_magCalCollector.active()) return true;
+#if TRACKER_HAS_CALIBRATION_UI
+    if (g_gyroTempCapture.active()) return true;
+#endif
+    return false;
+}
+
+static CalibrationAutonomyDeps makeCalibrationAutonomyDeps() {
+    CalibrationAutonomyDeps deps;
+    deps.out = &appConsoleOutput();
+    deps.config = &g_config;
+    deps.configStore = &g_configStore;
+    deps.autonomyStore = &g_calibrationAutonomyStore;
+    deps.imuCal = &g_imuCal;
+    deps.gyroTempComp = &g_gyroTempComp;
+    deps.runtimeBias = &g_runtimeBias;
+    deps.quality = &g_quality;
+    deps.slimevr = &g_slimevrRuntime;
+#if TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    deps.magAxisState = &g_magAxisAlignmentState;
+#endif
+    deps.magReliability = &g_lastMagFieldReliability;
+    deps.callbacks.evaluateRealtimeGate =
+        magControllerEvaluateDeferredServiceGateCallback;
+    deps.callbacks.applyCalibrationConfig =
+        calibrationAutonomyApplyConfigCallback;
+    deps.callbacks.setWave0022RuntimeEnabled =
+        calibrationAutonomySet0022EnabledCallback;
+    deps.callbacks.resetWave0022Evidence =
+        calibrationAutonomyReset0022EvidenceCallback;
+    deps.callbacks.manualCalibrationTransactionActive =
+        calibrationAutonomyManualTransactionActiveCallback;
+    return deps;
+}
+
+static void setupCalibrationAutonomy() {
+    g_calibrationAutonomy.begin(makeCalibrationAutonomyDeps(), millis());
+}
+
+static bool updateCalibrationAutonomyRuntime() {
+    if (!g_calibrationAutonomy.deferredServiceRequired()) return false;
+    return g_calibrationAutonomy.service(millis());
+}
+
+static bool calibrationBlocksMotionLightSleep() {
+    return g_calibrationAutonomy.blocksMotionLightSleep();
+}
+#endif
+
 static TrackerAppDeps makeTrackerAppDeps() {
     TrackerAppDeps deps;
 
@@ -1068,12 +1160,18 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.callbacks.setupCommandInterface = setupCommandInterface;
 #endif
     deps.callbacks.setupNetworkRuntime = setupNetworkRuntime;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    deps.callbacks.setupCalibrationAutonomy = setupCalibrationAutonomy;
+#endif
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     deps.callbacks.resumeNetworkRuntime = resumeNetworkRuntime;
 #endif
     deps.callbacks.publishHealthState = publishTrackerHealthState;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
     deps.callbacks.updateMagDeferredRuntime = updateMagDeferredRuntime;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    deps.callbacks.updateCalibrationAutonomyRuntime = updateCalibrationAutonomyRuntime;
+#endif
 #if TRACKER_HAS_SERIAL_CONSOLE
     deps.callbacks.updateSerialConsoleRuntime = updateSerialConsoleRuntime;
 #endif
@@ -1098,6 +1196,9 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.callbacks.detachFifoInterrupt = appDetachFifoInterruptCallback;
 #if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
     deps.callbacks.serverFoundForMotionSleep = serverFoundForMotionLightSleep;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    deps.callbacks.calibrationBlocksMotionSleep = calibrationBlocksMotionLightSleep;
+#endif
     deps.callbacks.prepareMotionLightSleepRuntime = prepareMotionLightSleepRuntime;
 #endif
     deps.callbacks.resetOrientationState = resetOrientationDependentState;

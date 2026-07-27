@@ -187,6 +187,7 @@ Only one hardware test is required for this patch:
 
 ```text
 perf on
+# perf status now reports calibration_0022 and calibration_0023 separately
 motion on
 tap log on
 # generate several minutes of USB/telnet diagnostic output
@@ -938,3 +939,146 @@ and require zero FIFO overrun/full, no recovery entry and normal packet delivery
 promotion-specific 768-byte host stack ceiling. This provides margin below the
 1 KiB project limit across GCC ABIs; 0022b was 1008 bytes on Linux and 1040 bytes
 on Windows/MSYS2.
+
+
+## 0023a setup/output acceptance
+
+The guided calibration still requires only the six ordinary case faces. Each
+capture automatically includes a short held-out tail; do not move the tracker
+until the command asks for the next face. The final verifier asks for one stable
+ordinary face and checks the already-prepared coherent quaternion/linear
+acceleration pair. No 45-degree or diagonal placement is required.
+
+After setup, run:
+
+```text
+setup verify
+cal autonomy status
+config slots
+perf on
+perf status
+```
+
+`setup verify` must report `setup_output_verified=yes`, zero FIFO/timestamp/
+recovery deltas, a valid linear-acceleration ratio of at least 0.8 and bounded
+stationary residuals. `cal erase_all confirm` is the destructive recovery path
+for completely removing calibration, candidate and autonomy transaction state.
+
+## 0023b aggregate runner and cross-ABI stack gate
+
+`tools/check_all.py` and `tools/run_standalone_tests.py` must attempt every
+independent runnable gate even after an earlier failure. Compile, link, native
+run, Python policy, replay and each PlatformIO environment report their own
+result. The process exits nonzero only after printing one consolidated failure
+list. Replay outputs are removed before regeneration so a failed command cannot
+silently reuse a stale JSON file.
+
+`CalibrationAutonomyController::buildAccelProposal()` keeps only six compact
+best/held-out session indices in its local frame instead of copying six full
+`Session` records. The autonomy stack policy applies a dedicated 640-byte
+cross-ABI ceiling to this function. Linux/GCC measures 304 bytes after the
+change; the extra margin is intentional for Windows/MSYS2 GCC ABI spill space.
+
+Power-loss native coverage explicitly reboots during:
+
+- `AcceptPending` after the autonomy candidate was removed but before journal
+  cleanup;
+- `RollbackPending` after exact selector restore;
+- rollback after candidate cleanup but before rejection persistence;
+- rollback after rejection persistence but before journal cleanup.
+
+Every case must preserve the correct authoritative generation, resume the
+idempotent journal stage, retain the rollback write barrier until cleanup is
+complete and leave no autonomy-owned candidate behind.
+
+
+## 0023e setup and disabled-autonomy regression
+
+For a remote-console setup run, the complete setup header and the first
+`Press Enter` prompt must appear without sending a second newline. Gyro acceptance
+prints raw standard deviation, mean standard error, held-out standard deviation,
+held-out mean standard error and each quality gate. A high-rate capture may pass
+with raw noise above the former 0.20 dps threshold only when the long-window mean
+is precise and the independent validation mean agrees.
+
+For the disabled-autonomy baseline:
+
+```text
+cal autonomy 0022 off save
+cal autonomy 0023 off save
+reboot
+cal autonomy status
+```
+
+Require:
+
+```text
+autonomy_imu_hotpath_enabled=no
+autonomy_deferred_service_required=no
+```
+
+`perf status` may still show the profiler section when profiling is enabled, but
+its work count must remain zero and no periodic 6-7 ms storage/service spike may
+appear from passive `suspended_storage`.
+
+## 0023f full guided-setup regression
+
+`test_gyro_temp_calibration_capture` replays the measured high-rate gyro noise
+from hardware and proves that accurate stationary window means are accepted,
+while excessive vibration and a later constant slow rotation are rejected.
+`test_gyro_temp_static_fit` carries accepted temperature bins through robust
+fit, leave-one-bin-out validation and RAM application, and rejects an
+inconsistent middle bin. `test_setup_output_verifier` additionally proves that
+valid quaternion/linear-acceleration output cannot pass while the calibrated
+input is rotating.
+
+`test_calibration_0023f_policy.py` guards the setup cancellation/diagnostic
+contract, cold admission of the inactive setup capture, unchanged storage
+formats, copy-free temperature validation, and stack ceilings of 768 bytes for
+the main fit, 1024 bytes for the persistence helper and 384 bytes for
+leave-one-bin-out validation.
+
+
+## 0023g guided magnetic coverage regression
+
+`test_calibration_0023g_policy.py` guards the fixed-memory reservoir contracts, fit-set/full-capture diagnostic separation, guided setup ownership fixes, schema compatibility, and stack ceilings. `test_mag_calibration` includes a long-tail hard/soft fixture where early full-sphere coverage is followed by a much longer single-axis sweep; the final bounded fit set must remain calibratable. `test_mag_heading_reliability` feeds long sequential X/Y/Z motion into the guided-axis reservoir and requires all dominant-axis and train/validation strata to remain represented after replacement.
+
+
+## 0023ga cross-ABI guided-axis stack regression
+
+A Windows/MSYS2 `-fstack-usage` build measured `setupRunAxisAlignment()` at 1056 bytes against the 1024-byte per-function ceiling even though Linux measured 880 bytes. The function previously kept dynamic solver output, static fallback output, printing state, and the manual input buffer in one compiler-visible frame. `0023ga` isolates static solve, dynamic solve, dynamic/static reporting, application, and the manual prompt behind explicit GCC/Clang no-inline boundaries. The orchestrator ceiling is now 512 bytes and each isolated phase has its own conservative ceiling. `test_calibration_0023ga_policy.py` also reruns the complete `0023g` reservoir policy so stack hardening cannot silently remove the magnetic coverage fix.
+
+Hardware acceptance must run `setup calibration full` on the real LSM6DSV/QMC6309 tracker. During mag motion, verify that `dynamic_axis_candidates_seen` continues increasing after `dynamic_axis_intervals` reaches its bound, `dynamic_axis_reservoir_active=yes`, replacements/skips increase, at least two `dynamic_axis_excited_axes` and two `dynamic_axis_partition_confirmed_axes` are retained, both window parities have stored data, and hard/soft diagnostics show adequate `mag_cal_fit_span_xyz` rather than relying only on `mag_cal_capture_span_xyz`. FIFO overrun/full, tracking recovery, output-delivery, and UDP failure deltas must remain zero or at the accepted baseline.
+
+## 0023gb magnetometer fit-metric regression
+
+`test_calibration_0023gb_policy.py` guards centered algebraic residual normalization, rejected-fit metric retention and all three status paths. `test_mag_calibration` compares the same quantized ellipsoid at zero and large hard-iron translations and requires equal normalized algebraic/geometric errors. A mildly non-ellipsoidal translated fixture must pass the unchanged physical thresholds, while a strongly non-ellipsoidal fixture must still fail `GeometricResidualTooHigh` and retain its diagnostic fit. The policy reruns `0023ga`, so metric hardening cannot regress the guided-axis reservoir or cross-ABI stack fix.
+
+
+## 0023gc cross-ABI mag-fit stack/profile regression
+
+`test_calibration_0023gc_policy.py` requires the raw and inlier ellipsoid passes to reuse one large `FitAccumulator`, forbids the two simultaneously-live workspaces that exceeded the Windows/MSYS2 stack ceiling, and applies a stricter 1792-byte limit to `MagCalibrationCollector::compute()`. It also compiles the minimal fit-quality reporter under both Production and Slim feature profiles and verifies that the app composition includes it outside the detailed-mag-status gate. The policy reruns `0023gb`, which in turn reruns `0023ga` and `0023g`, so the stack/profile fix cannot weaken residual normalization, rejected-fit diagnostics, guided-axis stack separation or reservoir coverage. Mandatory PlatformIO Production, Production-Diag and Slim builds remain the authoritative ESP32 link gates.
+
+## 0023gd full magnetometer mathematics regression
+
+`tools/test_calibration_0023gd_policy.py` guards affine-centered hard/soft fitting, solver conditioning/stages, exact retained-dataset coverage, shared timestamp-coherent interval construction, right-handed QMC6309 frame ownership, near-rail saturation, chronological FIFO magnetic dispatch and cross-ABI stack ceilings. It compiles and runs `test_mag_calibration`, `test_mag_heading_reliability`, `test_fifo_runtime_processor` and `test_fifo_pair_coherency`.
+
+The hard/soft suite includes the hardware-shaped near-origin case, translated-fit invariance, a deterministic rotation/anisotropy sweep, a valid 4:1 ellipsoid and bad non-ellipsoidal rejection. Alignment coverage includes all 24 proper signed permutations, reflection ambiguity, invalid hard/soft transforms, exact shuffled-window counting, late-axis runtime/guided reservoir replacement, calibrated raw-zero admission and timestamp endpoint construction. FIFO coverage requires each magnetic callback to see a raw endpoint within one IMU period in the synthetic 960/60 Hz stream.
+
+Hardware acceptance must additionally verify `gyro_endpoint_valid=yes`, bounded `gyro_endpoint_skew_us`, finite hard/soft solver stage/normalization/pivot diagnostics, matching alignment training/validation winners, `calibration_valid=yes`, `axis_alignment_valid=yes`, and no new FIFO overrun/full, tracking recovery, output delivery or UDP failure deltas.
+
+## 0023ge magnetometer post-audit realtime regression
+
+Run `python3 tools/test_calibration_0023ge_policy.py`. The policy reruns 0023gd
+and additionally guards expensive due-mag bursts against the cooperative slice
+budget, prevents raw-timeline advancement while an older mag backlog remains,
+checks retained frame-validation reuse, verifies early fit diagnostics, and
+rechecks the affected stack ceilings.
+
+## 0023gf magnetic callback cross-ABI regression
+
+Run `python3 tools/test_calibration_0023gf_policy.py`. The policy checks the no-inline phase boundaries, requires one wall-clock observation and one runtime-config construction per magnetic sample, forbids the unchecked inverse helper from the common frame API, and compiles both `-O2` and `-Os` stack-usage variants. The orchestrator ceiling is 512 bytes; field and yaw phases each have a 640-byte ceiling. The policy reruns the full 0023ge chain.
+
+## 0023gg magnetic timestamp and setup acceptance regression
+
+Run `python3 tools/test_calibration_0023gg_policy.py`. It checks per-frame IMU/FIFO anchoring of sensor-hub magnetic timestamps, nominal fallback ownership, same-coarse conservative alignment fallback, adaptive bounded setup verification, checkpoint-honest rollback wording, and cross-ABI stack ceilings. It compiles and runs FIFO timestamp, magnetic alignment, and setup output-verifier regressions. The aggregate `check_all.py` run owns the complete predecessor policy chain to avoid another layer of recursive recompilation.

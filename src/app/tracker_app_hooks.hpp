@@ -14,10 +14,14 @@
 #include "app/tracker_hardware_context.hpp"
 #include "app/tracker_runtime_context.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+#include "runtime/orientation_runtime_reset.hpp"
+#endif
 #if TRACKER_HAS_MACHINE_LOG
 #include "runtime/machine_log_runtime.hpp"
 #endif
 #include "runtime/imu_sample_pipeline.hpp"
+#include "runtime/mag_calibration_fit_quality_reporter.hpp"
 #if TRACKER_ENABLE_DETAILED_MAG_STATUS
 #include "runtime/mag_status_reporter.hpp"
 #endif

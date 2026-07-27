@@ -361,7 +361,32 @@ static void printMagCalibrationStatus(Stream& out, void* user) {
     out.print("driver_enabled="); out.println(g_config.data.magCal.driverEnabled ? "yes" : "no");
     out.print("calibration_valid="); out.println(g_config.data.magCal.calibrationValid ? "yes" : "no");
     out.print("axis_alignment_valid="); out.println(g_config.data.magCal.axisAlignmentValid ? "yes" : "no");
+    const MagCalibrationFitSetDiagnostics fit = g_magCalCollector.fitSetDiagnostics();
+    out.print("collector_active="); out.println(g_magCalCollector.active() ? "yes" : "no");
     out.print("collected_samples="); out.println(g_magCalCollector.samples());
+    out.print("stored_fit_samples="); out.println(fit.samples);
+    out.print("reservoir_replacements="); out.println(g_magCalCollector.reservoirReplacements());
+    out.print("reservoir_skipped="); out.println(g_magCalCollector.reservoirSkipped());
+    out.print("rejected_samples="); out.println(g_magCalCollector.rejected());
+    out.print("saturated_samples="); out.println(g_magCalCollector.saturated());
+    out.print("capture_span_xyz=");
+    out.print(g_magCalCollector.spanX(), 3); out.print(',');
+    out.print(g_magCalCollector.spanY(), 3); out.print(',');
+    out.println(g_magCalCollector.spanZ(), 3);
+    out.print("fit_span_xyz=");
+    out.print(fit.max.x - fit.min.x, 3); out.print(',');
+    out.print(fit.max.y - fit.min.y, 3); out.print(',');
+    out.println(fit.max.z - fit.min.z, 3);
+    out.print("capture_norm_min_mean_max=");
+    out.print(g_magCalCollector.normMin(), 3); out.print(',');
+    out.print(g_magCalCollector.normMean(), 3); out.print(',');
+    out.println(g_magCalCollector.normMax(), 3);
+    out.print("fit_norm_min_mean_max=");
+    out.print(fit.normMin, 3); out.print(',');
+    out.print(fit.normMean, 3); out.print(',');
+    out.println(fit.normMax, 3);
+    magStatusPrintCalibrationFitQuality(out, g_magCalCollector);
+    out.print("mag_cal_failure_reason="); out.println(g_magCalCollector.lastFailureReasonName());
 }
 #endif
 

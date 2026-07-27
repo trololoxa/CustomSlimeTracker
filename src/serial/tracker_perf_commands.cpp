@@ -95,6 +95,9 @@ void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
     out.print("runtime_mag_queue_depth="); out.println(ctx.fifoRuntime ? ctx.fifoRuntime->magQueueDepth() : 0u);
     out.print("runtime_mag_queue_high_water="); out.println(queue.magQueueHighWater);
     out.print("runtime_mag_queue_overflow_delta="); out.println(deltaU32(queue.magQueueOverflow, g_trackingPerfBaseline.queue.magQueueOverflow));
+    out.print("runtime_mag_chronological_deferrals_delta="); out.println(deltaU32(queue.magChronologicalDeferrals, g_trackingPerfBaseline.queue.magChronologicalDeferrals));
+    out.print("runtime_mag_count_deferrals_delta="); out.println(deltaU32(queue.magCallbackCountDeferrals, g_trackingPerfBaseline.queue.magCallbackCountDeferrals));
+    out.print("runtime_mag_budget_deferrals_delta="); out.println(deltaU32(queue.magCallbackBudgetDeferrals, g_trackingPerfBaseline.queue.magCallbackBudgetDeferrals));
     out.print("tracking_recovery_enter_delta="); out.println(deltaU32(tracking.recoveryEnterCount, g_trackingPerfBaseline.tracking.recoveryEnterCount));
     out.print("tracking_recovery_bootstrap_bypass_delta="); out.println(deltaU32(tracking.recoveryBootstrapBypassCount, g_trackingPerfBaseline.tracking.recoveryBootstrapBypassCount));
     out.print("tracking_soft_recovery_active="); out.println(tracking.softRecoveryActive ? "yes" : "no");

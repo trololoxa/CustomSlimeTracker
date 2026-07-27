@@ -27,6 +27,8 @@ class RuntimeProfiler;
 class RuntimeMotionDiagnostics;
 class FifoRuntimeProcessor;
 class TrackingStateController;
+class PreparedOutputRuntime;
+class CalibrationAutonomyController;
 class Lsm6dsv;
 class Lsm6dsvFifoReader;
 class Lsm6dsvSensorHub;
@@ -149,6 +151,10 @@ struct TrackerSerialCommandContext {
     RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
     FifoRuntimeProcessor* fifoRuntime = nullptr;
     TrackingStateController* trackingState = nullptr;
+    PreparedOutputRuntime* preparedOutput = nullptr;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    CalibrationAutonomyController* calibrationAutonomy = nullptr;
+#endif
 
     // Optional hooks supplied by main.cpp.
     // Clears software FIFO queues/counters only. Recovery is requested
@@ -289,6 +295,13 @@ struct TrackerSerialCommandContext {
     // It remains optional for host-only command dispatch and unit tests.
     bool (*serviceNonCliRuntime)(void* user) = nullptr;
     void* serviceNonCliRuntimeUser = nullptr;
+
+    // TCP remote-console output is intentionally buffered and normally drained
+    // by the outer application loop. Blocking setup/calibration commands own
+    // that loop, so they need a bounded explicit flush path to keep prompts
+    // visible before waiting for input.
+    bool commandOutputNeedsExplicitFlush = false;
+    uint32_t lastCommandOutputFlushMs = 0u;
 
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     // Queues a deferred platform sleep transition. It must not enter sleep

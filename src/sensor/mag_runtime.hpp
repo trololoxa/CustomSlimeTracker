@@ -58,6 +58,20 @@ struct MagProcessedSample {
     float bodyNorm = 0.0f;
 
     uint16_t rawFlags = 0;
+
+    // Gyro endpoint captured at the exact app callback that processed this
+    // magnetic FIFO sample. The FIFO runtime dispatches mag chronologically,
+    // so guided/runtime mag-axis learners can retain timestamp coherence even
+    // if later IMU callbacks run before a polling consumer reads this struct.
+    // True when the runtime processor validated and applied the configured
+    // sensor-to-device proper rotation for this sample. The controller can
+    // reuse the same accepted matrix for the coherent gyro endpoint instead
+    // of repeating the expensive SO(3) validation in the 60 Hz hot path.
+    bool sensorToDeviceApplied = false;
+    bool gyroEndpointValid = false;
+    Vec3 gyroSensorRadS = Vec3::zero();
+    uint64_t gyroTimestampUs = 0;
+    uint32_t gyroEndpointSkewUs = 0;
 };
 
 struct MagRuntimeStats {
@@ -100,7 +114,6 @@ class MagRuntimeProcessor {
 public:
     void reset();
 
-    const MagProcessedSample& last() const;
     const MagRuntimeStats& stats() const;
 
     bool process(const Lsm6dsvFifoReader::MagRawSample& raw,
@@ -108,9 +121,6 @@ public:
                  uint32_t nowMs,
                  MagProcessedSample& out);
 
-    bool process(const Lsm6dsvFifoReader::MagRawSample& raw,
-                 const MagRuntimeConfig& cfg,
-                 uint32_t nowMs);
 
     static uint32_t ageMsForUse(const MagProcessedSample& sample, uint32_t nowMs);
     static uint32_t rejectFlagsForUse(const MagProcessedSample& sample,
@@ -128,7 +138,6 @@ private:
     void pushBodyNorm(float n);
     void pushTrustedBodyNorm(float n);
 
-    MagProcessedSample last_;
     MagRuntimeStats stats_;
 };
 

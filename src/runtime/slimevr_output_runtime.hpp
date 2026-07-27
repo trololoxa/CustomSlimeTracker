@@ -92,6 +92,13 @@ struct SlimeVROutputRuntimeConfig {
     bool hasCompletedRestCalibration = false;
 };
 
+struct SlimeVROutputHealthCounters {
+    uint32_t sendFailures = 0;
+    uint32_t rotationSendFailures = 0;
+    uint32_t serverSilenceResets = 0;
+    uint32_t wifiLostResets = 0;
+};
+
 struct SlimeVROutputRuntimeStatus {
     SlimeVROutputState state = SlimeVROutputState::Disabled;
     bool enabled = false;
@@ -293,6 +300,7 @@ public:
     bool serverFound() const { return serverFound_; }
     SlimeVROutputState state() const { return state_; }
     SlimeVROutputRuntimeStatus status() const;
+    void healthCounters(SlimeVROutputHealthCounters& out) const;
     // Returns true only when a live rotation deadline is armed.  outSlackMs is
     // zero when already due/late and otherwise the wrap-safe time remaining.
     bool rotationDeadlineSlackMs(uint32_t nowMs, uint32_t& outSlackMs) const;

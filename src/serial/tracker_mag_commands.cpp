@@ -13,6 +13,9 @@
 #include "config/tracker_config_store.hpp"
 #include "serial/tracker_serial_context.hpp"
 #include "serial/tracker_config_transaction.hpp"
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+#include "runtime/calibration_autonomy_controller.hpp"
+#endif
 
 namespace tracker {
 
@@ -27,6 +30,52 @@ bool is(const char* a, const char* b) {
 }
 
 } // namespace tracker_serial_mag_detail
+
+
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+class MagCalibrationOwnershipScope {
+public:
+    MagCalibrationOwnershipScope(TrackerSerialCommandContext& ctx, bool required)
+        : ctx_(ctx), required_(required) {
+        acquired_ = !required_ || !ctx_.calibrationAutonomy ||
+            ctx_.calibrationAutonomy->beginManualCalibration(millis());
+    }
+
+    ~MagCalibrationOwnershipScope() {
+        if (required_ && acquired_ && ctx_.calibrationAutonomy) {
+            ctx_.calibrationAutonomy->endManualCalibration(true, millis());
+        }
+    }
+
+    bool acquired() const { return acquired_; }
+
+private:
+    TrackerSerialCommandContext& ctx_;
+    bool required_ = false;
+    bool acquired_ = false;
+};
+#endif
+
+bool magCommandMutatesCalibration(int argc, char** argv) {
+    if (argc < 2) return false;
+    if (tracker_serial_mag_detail::is(argv[1], "enable") ||
+        tracker_serial_mag_detail::is(argv[1], "on") ||
+        tracker_serial_mag_detail::is(argv[1], "disable") ||
+        tracker_serial_mag_detail::is(argv[1], "off")) {
+        return true;
+    }
+    if (tracker_serial_mag_detail::is(argv[1], "cal")) {
+        return argc >= 3 &&
+            !tracker_serial_mag_detail::is(argv[2], "status") &&
+            !tracker_serial_mag_detail::is(argv[2], "print");
+    }
+    if (tracker_serial_mag_detail::is(argv[1], "axis")) {
+        return argc >= 3 &&
+            !tracker_serial_mag_detail::is(argv[2], "status") &&
+            !tracker_serial_mag_detail::is(argv[2], "print");
+    }
+    return false;
+}
 
 bool magSaveConfigIfRequested(TrackerSerialCommandContext& ctx, bool saveRequested) {
         if (!saveRequested) return true;
@@ -209,6 +258,15 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             }
             return;
         }
+
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        MagCalibrationOwnershipScope ownership(ctx, magCommandMutatesCalibration(argc, argv));
+        if (!ownership.acquired()) {
+            tracker_serial_detail::printErr(
+                out, "mag calibration command blocked: autonomous transaction could not be resolved");
+            return;
+        }
+#endif
 
         if (tracker_serial_mag_detail::is(argv[1], "enable") || tracker_serial_mag_detail::is(argv[1], "on")) {
             const bool saveRequested = argc >= 3 && tracker_serial_mag_detail::is(argv[2], "save");
@@ -878,6 +936,11 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             out.print("sensorhub_nack_words="); out.println(fs.sensorHubNackWords);
             out.print("mag_samples_produced="); out.println(fs.magSamplesProduced);
             out.print("mag_queue_overflow="); out.println(fs.magQueueOverflow);
+            out.print("mag_timestamp_imu_anchors="); out.println(fs.magTimestampImuAnchors);
+            out.print("mag_timestamp_nominal_fallbacks="); out.println(fs.magTimestampNominalFallbacks);
+            out.print("mag_timestamp_monotonic_adjustments="); out.println(fs.magTimestampMonotonicAdjustments);
+            out.print("mag_timestamp_last_anchor_correction_us="); out.println(fs.lastMagAnchorCorrectionUs);
+            out.print("mag_timestamp_max_anchor_correction_us="); out.println(fs.maxMagAnchorCorrectionUs);
             out.print("mag_tag_counter_jumps="); out.println(fs.magTagCounterJumps);
             out.print("mag_last_xyz="); out.print(fs.lastMagX); out.print(','); out.print(fs.lastMagY); out.print(','); out.println(fs.lastMagZ);
             out.print("mag_last_norm_raw="); out.println(fs.lastMagRawNorm, 3);

@@ -60,6 +60,31 @@ float correctedNormRms(const std::vector<Vec3>& rawSamples, const MagCalibration
     return static_cast<float>(std::sqrt(sumSq / static_cast<double>(rawSamples.size())));
 }
 
+void pushModulatedEllipsoid(MagCalibrationCollector& collector,
+                            const Vec3& hardIron,
+                            float radialModulation,
+                            uint32_t& seq) {
+    constexpr int thetaSteps = 18;
+    constexpr int phiSteps = 36;
+    for (int ti = 0; ti < thetaSteps; ++ti) {
+        const float theta = MATH_PI * (static_cast<float>(ti) + 0.5f) / static_cast<float>(thetaSteps);
+        const float st = std::sin(theta);
+        const float ct = std::cos(theta);
+        for (int pi = 0; pi < phiSteps; ++pi) {
+            const float phi = MATH_TWO_PI * static_cast<float>(pi) / static_cast<float>(phiSteps);
+            const Vec3 direction(st * std::cos(phi), st * std::sin(phi), ct);
+            const float radial = 1.0f + radialModulation *
+                (0.55f * std::sin(3.0f * phi) + 0.45f * std::cos(2.0f * theta));
+            const Vec3 raw = hardIron + Vec3(
+                direction.x * 520.0f,
+                direction.y * 500.0f,
+                direction.z * 490.0f
+            ) * radial;
+            pushRaw(collector, raw, seq++);
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -157,6 +182,318 @@ int main() {
         CHECK(ctx, result.directionalCoverageScore > 0.80f);
         CHECK(ctx, result.normalizedResidualRms < 0.04f);
         CHECK(ctx, correctedNormRms(rawSamples, result) < 2.0f);
+    }
+
+
+    {
+        // A finite one-axis magnetic spike can expand the full reservoir's
+        // raw extrema enough to fail box coverage even though the centered
+        // robust fit set is healthy. Coverage gates must run on the retained
+        // solver set, not before outlier filtering.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+
+        const Vec3 hard(100.0f, -70.0f, 40.0f);
+        uint32_t seq = 1u;
+        for (const Vec3& dir : makeDirections()) {
+            pushRaw(collector, hard + Vec3(
+                dir.x * 150.0f,
+                dir.y * 100.0f,
+                dir.z * 80.0f), seq++);
+        }
+        pushRaw(collector, Vec3(2500.0f, hard.y, hard.z), seq++);
+        collector.stop();
+
+        const MagCalibrationFitSetDiagnostics rawFitSet = collector.fitSetDiagnostics();
+        CHECK(ctx, rawFitSet.valid);
+        const float rawSpanX = rawFitSet.max.x - rawFitSet.min.x;
+        const float rawSpanY = rawFitSet.max.y - rawFitSet.min.y;
+        const float rawSpanZ = rawFitSet.max.z - rawFitSet.min.z;
+        const float rawMinSpan = std::fmin(rawSpanX, std::fmin(rawSpanY, rawSpanZ));
+        const float rawMaxSpan = std::fmax(rawSpanX, std::fmax(rawSpanY, rawSpanZ));
+        CHECK(ctx, rawMinSpan / rawMaxSpan < magCalibrationEffectiveMinBoxCoverage(params));
+
+        MagCalibrationResult result;
+        CHECK(ctx, collector.compute(result));
+        CHECK(ctx, result.valid);
+        CHECK(ctx, result.coverageScore >= magCalibrationEffectiveMinBoxCoverage(params));
+        CHECK_NEAR(ctx, result.hardIron.x, hard.x, 2.0f);
+        CHECK_NEAR(ctx, result.hardIron.y, hard.y, 2.0f);
+        CHECK_NEAR(ctx, result.hardIron.z, hard.z, 2.0f);
+    }
+
+    {
+        // Regression: a long final sweep around one axis must not erase the
+        // earlier full-sphere coverage from the bounded fit set.  The old
+        // slot-permutation replacement behaved like a recent-sample ring and
+        // made guided setup fail after the user had already completed good 3D
+        // motion.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        params.maxAlgebraicResidualRms = 0.08f;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+
+        const Vec3 hard(150.0f, -80.0f, 55.0f);
+        const float target = 95.0f;
+        const Mat3 rot = makeRotZ(0.29f);
+        const Mat3 diag = Mat3::diagonal(target / 145.0f, target / 88.0f, target / 68.0f);
+        const Mat3 trueSoft = rot * diag * rot.transposed();
+        Mat3 trueSoftInv;
+        CHECK(ctx, trueSoft.inverse(trueSoftInv));
+
+        uint32_t seq = 1;
+        const std::vector<Vec3> dirs = makeDirections();
+        for (int repeat = 0; repeat < 1; ++repeat) {
+            for (const Vec3& dir : dirs) {
+                pushRaw(collector, hard + trueSoftInv * (dir * target), seq++);
+            }
+        }
+        for (uint32_t i = 0; i < 12000; ++i) {
+            const float phi = MATH_TWO_PI * static_cast<float>(i % 720U) / 720.0f;
+            const Vec3 equator(std::cos(phi), std::sin(phi), 0.02f);
+            pushRaw(collector, hard + trueSoftInv * (equator.normalized() * target), seq++);
+        }
+        collector.stop();
+
+        MagCalibrationResult result;
+        CHECK(ctx, collector.storedSamples() == 768u);
+        CHECK(ctx, collector.reservoirReplacements() > 0u);
+        CHECK(ctx, collector.reservoirSkipped() > 0u);
+        const MagCalibrationFitSetDiagnostics fitSet = collector.fitSetDiagnostics();
+        CHECK(ctx, fitSet.valid);
+        CHECK(ctx, fitSet.samples == collector.storedSamples());
+        CHECK(ctx, collector.compute(result));
+        CHECK(ctx, result.valid);
+        const float fitSpanX = fitSet.max.x - fitSet.min.x;
+        const float fitSpanY = fitSet.max.y - fitSet.min.y;
+        const float fitSpanZ = fitSet.max.z - fitSet.min.z;
+        const float fitMinSpan = std::fmin(fitSpanX, std::fmin(fitSpanY, fitSpanZ));
+        const float fitMaxSpan = std::fmax(fitSpanX, std::fmax(fitSpanY, fitSpanZ));
+        CHECK_NEAR(ctx, result.coverageScore, fitMinSpan / fitMaxSpan, 1.0e-6f);
+        CHECK(ctx, result.directionalCoverageScore > 0.65f);
+        CHECK_NEAR(ctx, result.hardIron.x, hard.x, 3.0f);
+        CHECK_NEAR(ctx, result.hardIron.y, hard.y, 3.0f);
+        CHECK_NEAR(ctx, result.hardIron.z, hard.z, 3.0f);
+    }
+
+    {
+        // Pre-fit raw span balance must not reject the strong but still
+        // permitted soft-iron anisotropy that the ellipsoid solver is meant
+        // to estimate. With maxAxisRatio=6, a fully covered 4:1 ellipsoid is
+        // valid even though its raw box ratio is below the legacy 0.35 gate.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+        const Vec3 hard(120.0f, -90.0f, 60.0f);
+        const float target = 100.0f;
+        const Mat3 trueSoft = Mat3::diagonal(
+            target / 600.0f, target / 300.0f, target / 150.0f);
+        Mat3 inverse;
+        CHECK(ctx, trueSoft.inverse(inverse));
+        uint32_t seq = 1u;
+        for (const Vec3& dir : makeDirections()) {
+            pushRaw(collector, hard + inverse * (dir * target), seq++);
+        }
+        collector.stop();
+        MagCalibrationResult result;
+        CHECK(ctx, collector.compute(result));
+        CHECK(ctx, result.valid);
+        CHECK(ctx, result.coverageScore < params.minCoverageScore);
+        CHECK(ctx, result.coverageScore >= magCalibrationEffectiveMinBoxCoverage(params));
+        CHECK(ctx, result.axisRatio > 3.5f && result.axisRatio < 4.5f);
+        CHECK(ctx, result.directionalCoverageScore >= params.minDirectionalCoverageScore);
+    }
+
+    {
+        // Regression: algebraic fit quality must describe the centered
+        // ellipsoid, not its arbitrary translation from the raw origin.  The
+        // pre-0023gb metric multiplied the same physical residual by
+        // k = 1 + c^T A c and could reject a good fit only because hard-iron
+        // bias was large.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector centered(params);
+        MagCalibrationCollector translated(params);
+        centered.start(0);
+        translated.start(0);
+        uint32_t centeredSeq = 1;
+        uint32_t translatedSeq = 1;
+        pushModulatedEllipsoid(centered, Vec3::zero(), 0.0f, centeredSeq);
+        pushModulatedEllipsoid(translated, Vec3(400.0f, -300.0f, 180.0f), 0.0f, translatedSeq);
+        centered.stop();
+        translated.stop();
+
+        MagCalibrationResult centeredResult;
+        MagCalibrationResult translatedResult;
+        CHECK(ctx, centered.compute(centeredResult));
+        CHECK(ctx, translated.compute(translatedResult));
+        CHECK(ctx, centeredResult.valid);
+        CHECK(ctx, translatedResult.valid);
+        CHECK_NEAR(ctx, centeredResult.residualRms, translatedResult.residualRms, 2.0e-6f);
+        CHECK_NEAR(ctx, centeredResult.normalizedResidualRms, translatedResult.normalizedResidualRms, 2.0e-6f);
+        CHECK_NEAR(ctx, translatedResult.hardIron.x, 400.0f, 0.1f);
+        CHECK_NEAR(ctx, translatedResult.hardIron.y, -300.0f, 0.1f);
+        CHECK_NEAR(ctx, translatedResult.hardIron.z, 180.0f, 0.1f);
+    }
+
+    {
+        // Regression for the hardware failure where hard-iron is about one
+        // field radius from the ADC origin. The raw ellipsoid passes through
+        // (or very near) zero, so the uncentered fixed-constant equation is
+        // singular even though physical 3D coverage is excellent.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+
+        const Vec3 hard(500.0f, 0.0f, 0.0f);
+        const float target = 100.0f;
+        const Mat3 rot = Quat::fromEulerXYZ(0.17f, -0.23f, 0.31f).toRotationMatrix();
+        const Mat3 diag = Mat3::diagonal(target / 520.0f, target / 500.0f, target / 490.0f);
+        const Mat3 trueSoft = rot * diag * rot.transposed();
+        Mat3 trueSoftInv;
+        CHECK(ctx, trueSoft.inverse(trueSoftInv));
+        uint32_t seq = 1u;
+        for (const Vec3& dir : makeDirections()) {
+            pushRaw(collector, hard + trueSoftInv * (dir * target), seq++);
+        }
+        collector.stop();
+
+        MagCalibrationResult result;
+        CHECK(ctx, collector.compute(result));
+        CHECK(ctx, result.valid);
+        CHECK(ctx, result.fitAvailable);
+        CHECK(ctx, result.solverStage == MagCalibrationSolverStage::CandidateBuilt);
+        CHECK(ctx, result.solverPivotRatio > 1.0e-5f);
+        CHECK_NEAR(ctx, result.hardIron.x, hard.x, 1.5f);
+        CHECK_NEAR(ctx, result.hardIron.y, hard.y, 1.5f);
+        CHECK_NEAR(ctx, result.hardIron.z, hard.z, 1.5f);
+        CHECK(ctx, result.normalizedResidualRms < 0.02f);
+    }
+
+    {
+        // Deterministic convergence sweep: translation, 3D eigenvector rotation
+        // and permitted anisotropy must not change whether the same physical
+        // ellipsoid can be solved. This guards the complete normalization ->
+        // center -> SPD-shape -> geometric-validation chain rather than one
+        // hand-picked orientation.
+        struct FitCase {
+            Vec3 hard;
+            Vec3 euler;
+            Vec3 radii;
+        };
+        const FitCase cases[] = {
+            {Vec3::zero(), Vec3::zero(), Vec3(500.0f, 500.0f, 500.0f)},
+            {Vec3(500.0f, 0.0f, 0.0f), Vec3(0.2f, -0.3f, 0.4f), Vec3(520.0f, 490.0f, 505.0f)},
+            {Vec3(-620.0f, 310.0f, -180.0f), Vec3(-0.5f, 0.25f, 0.7f), Vec3(650.0f, 340.0f, 180.0f)},
+            {Vec3(820.0f, -730.0f, 610.0f), Vec3(0.65f, -0.45f, -0.35f), Vec3(720.0f, 240.0f, 145.0f)},
+        };
+        for (const FitCase& c : cases) {
+            MagCalibrationParams params;
+            params.minSamples = 300;
+            MagCalibrationCollector collector(params);
+            collector.start(0);
+            const float target = 100.0f;
+            const Mat3 rotation = Quat::fromEulerXYZ(c.euler.x, c.euler.y, c.euler.z).toRotationMatrix();
+            const Mat3 trueSoft = rotation *
+                Mat3::diagonal(target / c.radii.x, target / c.radii.y, target / c.radii.z) *
+                rotation.transposed();
+            Mat3 inverse;
+            CHECK(ctx, trueSoft.inverse(inverse));
+            uint32_t seq = 1u;
+            for (const Vec3& dir : makeDirections()) {
+                const float deterministicNoise = static_cast<float>(static_cast<int>(seq % 5u) - 2) * 0.20f;
+                pushRaw(collector, c.hard + inverse * (dir * (target + deterministicNoise)), seq++);
+            }
+            collector.stop();
+            MagCalibrationResult result;
+            CHECK(ctx, collector.compute(result));
+            CHECK(ctx, result.valid);
+            CHECK(ctx, result.solverStage == MagCalibrationSolverStage::CandidateBuilt);
+            CHECK(ctx, result.solverPivotRatio > 1.0e-7f);
+            CHECK_NEAR(ctx, result.hardIron.x, c.hard.x, 3.0f);
+            CHECK_NEAR(ctx, result.hardIron.y, c.hard.y, 3.0f);
+            CHECK_NEAR(ctx, result.hardIron.z, c.hard.z, 3.0f);
+            CHECK(ctx, result.normalizedResidualRms < 0.035f);
+            CHECK(ctx, result.directionalCoverageScore >= params.minDirectionalCoverageScore);
+        }
+    }
+
+    {
+        // Mild non-ellipsoidal field variation may still be physically useful
+        // after robust geometric validation.  The old origin-dependent
+        // algebraic metric rejected this fixture despite sub-3% normalized
+        // geometric error.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+        uint32_t seq = 1;
+        pushModulatedEllipsoid(collector, Vec3(400.0f, -300.0f, 180.0f), 0.05f, seq);
+        collector.stop();
+
+        MagCalibrationResult result;
+        CHECK(ctx, collector.compute(result));
+        CHECK(ctx, result.valid);
+        CHECK(ctx, result.residualRms < params.maxAlgebraicResidualRms);
+        CHECK(ctx, result.normalizedResidualRms < 0.04f);
+        CHECK(ctx, result.inlierRatio > 0.95f);
+    }
+
+    {
+        // Normalization must not turn the algebraic gate into a blanket pass.
+        // Strongly non-ellipsoidal data still fails the physical geometric
+        // quality gate, and the rejected fit remains available for diagnosis.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+        uint32_t seq = 1;
+        pushModulatedEllipsoid(collector, Vec3(400.0f, -300.0f, 180.0f), 0.30f, seq);
+        collector.stop();
+
+        MagCalibrationResult result;
+        CHECK(ctx, !collector.compute(result));
+        CHECK(ctx, !result.valid);
+        CHECK(ctx, collector.lastFailureReason() == MagCalibrationFailureReason::GeometricResidualTooHigh);
+        const MagCalibrationResult& failed = collector.lastResult();
+        CHECK(ctx, failed.fitAvailable);
+        CHECK(ctx, failed.expectedNorm > 0.0f);
+        CHECK(ctx, failed.softIron.isFinite());
+        CHECK(ctx, failed.normalizedResidualRms > params.maxGeometricResidualRmsFactor);
+    }
+
+
+    {
+        // A physical pre-solve coverage rejection still completed centering and
+        // normalization. Preserve those diagnostics instead of returning an
+        // all-zero solver state that hides whether the data or the algebra failed.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+        uint32_t seq = 1u;
+        for (const Vec3& dir : makeDirections()) {
+            pushRaw(collector, Vec3(240.0f, -130.0f, 75.0f) + Vec3(
+                dir.x * 120.0f, dir.y * 90.0f, dir.z * 10.0f), seq++);
+        }
+        collector.stop();
+
+        MagCalibrationResult result;
+        CHECK(ctx, !collector.compute(result));
+        CHECK(ctx, collector.lastFailureReason() == MagCalibrationFailureReason::AxisRadiusTooSmall);
+        CHECK(ctx, result.solverStage == MagCalibrationSolverStage::Normalized);
+        CHECK(ctx, result.solverSamples >= params.minSamples);
+        CHECK_NEAR(ctx, result.fitNormalizationCenter.x, 240.0f, 1.0f);
+        CHECK_NEAR(ctx, result.fitNormalizationCenter.y, -130.0f, 1.0f);
+        CHECK_NEAR(ctx, result.fitNormalizationCenter.z, 75.0f, 1.0f);
+        CHECK(ctx, result.fitNormalizationScale.x > 10.0f);
+        CHECK(ctx, result.fitNormalizationScale.y > 10.0f);
+        CHECK(ctx, result.fitNormalizationScale.z > 1.0f);
     }
 
     {

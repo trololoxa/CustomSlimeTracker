@@ -48,6 +48,11 @@ const Accel6PosCalibration::Result& Accel6PosCalibration::result() const {
     return result_;
 }
 
+void Accel6PosCalibration::addQualityFlag(uint32_t flag) {
+    result_.qualityFlags |= flag;
+    result_.valid = false;
+}
+
 bool Accel6PosCalibration::compute() {
     return compute(ValidationParams{});
 }
@@ -247,6 +252,8 @@ const char* Accel6PosCalibration::qualityFlagName(uint32_t flag) {
         case accel_cal_quality_flags::PAIR_CENTER_RESIDUAL_HIGH: return "PAIR_CENTER_RESIDUAL_HIGH";
         case accel_cal_quality_flags::MATRIX_SINGULAR:       return "MATRIX_SINGULAR";
         case accel_cal_quality_flags::AUTO_FACE_AMBIGUOUS:   return "AUTO_FACE_AMBIGUOUS";
+        case accel_cal_quality_flags::INDEPENDENT_VALIDATION_FAILED:
+            return "INDEPENDENT_VALIDATION_FAILED";
     }
     return "UNKNOWN";
 }

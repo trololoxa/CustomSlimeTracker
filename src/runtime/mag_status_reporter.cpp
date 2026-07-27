@@ -62,6 +62,9 @@ void magStatusPrintProcessed(Stream& out, const MagStatusReporterDeps& deps) {
     out.print("age_ms="); out.println(ageMs);
     out.print("received_ms="); out.println(m.receivedMs);
     out.print("t_us="); outputPrintU64Dec(out, m.t_us); out.println();
+    out.print("gyro_endpoint_valid="); out.println(m.gyroEndpointValid ? "yes" : "no");
+    out.print("gyro_endpoint_t_us="); outputPrintU64Dec(out, m.gyroTimestampUs); out.println();
+    out.print("gyro_endpoint_skew_us="); out.println(m.gyroEndpointSkewUs);
 
     out.print("raw=");
     out.print(m.raw.x, 3); out.print(',');
@@ -229,10 +232,13 @@ void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {
         out.print("axis_candidate_intervals="); out.println(c.intervalCount());
         out.print("axis_candidate_independent_windows="); out.println(c.independentWindows());
         out.print("axis_candidate_excited_axes="); out.println(c.excitedAxes());
+        out.print("axis_candidate_partition_confirmed_axes="); out.println(c.partitionConfirmedAxes());
         out.print("axis_candidate_ready="); out.println(c.readyToSolve() ? "yes" : "no");
         out.print("axis_candidate_rejected_gyro_skew="); out.println(c.stats().intervalsRejectedGyroSkew);
         out.print("axis_candidate_skipped_cadence="); out.println(c.stats().intervalsSkippedCadence);
         out.print("axis_candidate_rejected_capacity="); out.println(c.stats().intervalsRejectedCapacity);
+        out.print("axis_candidate_reservoir_replaced="); out.println(c.stats().intervalsReservoirReplaced);
+        out.print("axis_candidate_reservoir_skipped="); out.println(c.stats().intervalsReservoirSkipped);
         out.print("axis_candidate_staged="); out.println(a.candidateStaged ? "yes" : "no");
         out.print("axis_active_alignment_confirmed="); out.println(a.activeAlignmentConfirmed ? "yes" : "no");
         out.print("axis_candidate_blocked_existing="); out.println(a.blockedByExistingCandidate ? "yes" : "no");
@@ -240,10 +246,14 @@ void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {
         out.print("axis_stage_pending="); out.println(a.stagePending ? "yes" : "no");
         out.print("axis_deferred_action="); out.println(magAxisDeferredActionName(a.pendingAction));
         out.print("axis_last_solve_valid="); out.println(a.lastSolveValid ? "yes" : "no");
+        out.print("axis_last_failure_reason="); out.println(magAxisAlignmentFailureReasonName(a.lastResult.failureReason));
         out.print("axis_last_refined="); out.println(a.lastResult.refined ? "yes" : "no");
         out.print("axis_last_improves_active="); out.println(a.lastResult.improvesActive ? "yes" : "no");
         out.print("axis_last_validation_passed="); out.println(a.lastResult.validationPassed ? "yes" : "no");
         out.print("axis_last_validation_winner_matches_training="); out.println(a.lastResult.validationWinnerMatchesTraining ? "yes" : "no");
+        out.print("axis_last_coarse_winner_matches_training="); out.println(a.lastResult.coarseWinnerMatchesTraining ? "yes" : "no");
+        out.print("axis_last_continuous_refinement_agreement="); out.println(a.lastResult.continuousRefinementAgreement ? "yes" : "no");
+        out.print("axis_last_coarse_consensus_fallback_used="); out.println(a.lastResult.coarseConsensusFallbackUsed ? "yes" : "no");
         out.print("axis_last_score_deg="); out.println(a.lastResult.score, 6);
         out.print("axis_last_training_score_deg="); out.println(a.lastResult.trainingScore, 6);
         out.print("axis_last_validation_score_deg="); out.println(a.lastResult.validationScore, 6);
@@ -395,7 +405,11 @@ void magStatusPrintCalibration(Stream& out, const MagStatusReporterDeps& deps) {
 
     out.println("# MAG CAL");
     out.print("mag_cal_active="); out.println(collector.active() ? "yes" : "no");
+    const MagCalibrationFitSetDiagnostics fitSet = collector.fitSetDiagnostics();
     out.print("mag_cal_samples="); out.println(collector.samples());
+    out.print("mag_cal_stored_fit_samples="); out.println(fitSet.samples);
+    out.print("mag_cal_reservoir_replacements="); out.println(collector.reservoirReplacements());
+    out.print("mag_cal_reservoir_skipped="); out.println(collector.reservoirSkipped());
     out.print("mag_cal_rejected="); out.println(collector.rejected());
     out.print("mag_cal_saturated="); out.println(collector.saturated());
     out.print("mag_cal_elapsed_s=");
@@ -413,25 +427,36 @@ void magStatusPrintCalibration(Stream& out, const MagStatusReporterDeps& deps) {
     out.print(collector.maxY(), 3); out.print(',');
     out.println(collector.maxZ(), 3);
 
-    out.print("span_xyz=");
+    out.print("capture_span_xyz=");
     out.print(collector.spanX(), 3); out.print(',');
     out.print(collector.spanY(), 3); out.print(',');
     out.println(collector.spanZ(), 3);
+
+    out.print("fit_span_xyz=");
+    out.print(fitSet.max.x - fitSet.min.x, 3); out.print(',');
+    out.print(fitSet.max.y - fitSet.min.y, 3); out.print(',');
+    out.println(fitSet.max.z - fitSet.min.z, 3);
 
     out.print("mean_xyz=");
     out.print(collector.meanX(), 3); out.print(',');
     out.print(collector.meanY(), 3); out.print(',');
     out.println(collector.meanZ(), 3);
 
-    out.print("norm_min_mean_max=");
+    out.print("capture_norm_min_mean_max=");
     out.print(collector.normMin(), 3); out.print(',');
     out.print(collector.normMean(), 3); out.print(',');
     out.println(collector.normMax(), 3);
+
+    out.print("fit_norm_min_mean_max=");
+    out.print(fitSet.normMin, 3); out.print(',');
+    out.print(fitSet.normMean, 3); out.print(',');
+    out.println(fitSet.normMax, 3);
 
     out.print("can_compute="); out.println(canCompute ? "yes" : "no");
     if (!canCompute) {
         out.print("compute_failure_reason=");
         out.println(collector.lastFailureReasonName());
+        magStatusPrintCalibrationFitQuality(out, collector);
     }
 
     if (canCompute) {
@@ -456,7 +481,7 @@ void magStatusPrintCalibration(Stream& out, const MagStatusReporterDeps& deps) {
         out.print("computed_coverage_score="); out.println(result.coverageScore, 6);
         out.print("computed_directional_coverage_score="); out.println(result.directionalCoverageScore, 6);
         out.print("computed_axis_ratio="); out.println(result.axisRatio, 6);
-        out.print("computed_inliers="); out.print(result.inlierSamples); out.print('/'); out.println(collector.samples());
+        out.print("computed_inliers="); out.print(result.inlierSamples); out.print('/'); out.println(fitSet.samples);
         out.print("computed_inlier_ratio="); out.println(result.inlierRatio, 6);
 
         out.print("computed_radius_xyz=");

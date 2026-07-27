@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Run local project quality checks with profile-aware PlatformIO policy.
+"""Run project quality gates and report all failures together.
 
-Production, Production Diagnostic, Slim, Debug and the explicit Debug
-link-check are mandatory. Every ESP32-C3 profile uses the same 4 MiB no-OTA
-partition table with one 3 MiB factory app, so any image-size overflow is a
-real project-contract failure.
+Independent checks are never aborted by an earlier failure. Every runnable
+native, policy, replay and PlatformIO gate is attempted, then a consolidated
+summary is printed at the end.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
@@ -41,26 +40,62 @@ class PioBuildResult:
         return self.returncode == 0
 
 
-def run(cmd: Sequence[str], *, cwd: Path = ROOT) -> None:
+@dataclass
+class CheckSummary:
+    failures: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def fail(self, description: str) -> None:
+        self.failures.append(description)
+
+    def warn(self, description: str) -> None:
+        self.warnings.append(description)
+
+
+def run_command(cmd: Sequence[str], *, cwd: Path = ROOT) -> int:
     printable = " ".join(cmd)
     print(f"\n$ {printable}", flush=True)
-    subprocess.run(cmd, cwd=str(cwd), check=True)
+    try:
+        proc = subprocess.run(cmd, cwd=str(cwd), check=False)
+        return proc.returncode
+    except OSError as exc:
+        print(f"# command launch failed: {exc}", file=sys.stderr, flush=True)
+        return 127
 
 
-def run_native_tests(clean: bool) -> None:
+def run_checked(
+    summary: CheckSummary,
+    cmd: Sequence[str],
+    description: str,
+    *,
+    cwd: Path = ROOT,
+) -> bool:
+    returncode = run_command(cmd, cwd=cwd)
+    if returncode == 0:
+        print(f"# PASS {description}", flush=True)
+        return True
+    summary.fail(f"{description} (exit={returncode})")
+    print(f"# FAIL {description} (exit={returncode})", flush=True)
+    return False
+
+
+def run_native_tests(summary: CheckSummary, clean: bool) -> None:
     cmd = [sys.executable, "tools/run_standalone_tests.py"]
     if clean:
         cmd.append("--clean")
-    run(cmd)
+    run_checked(summary, cmd, "standalone native test suite")
 
 
 def run_replay_gate(
+    summary: CheckSummary,
     fixture: Path,
     output: Path,
     *,
+    description: str,
     min_duration_s: str,
     max_yaw_drift_deg_min: str | None = None,
-) -> None:
+) -> bool:
+    output.unlink(missing_ok=True)
     cmd = [
         sys.executable,
         "tools/replay/replay_machine_log.py",
@@ -78,62 +113,113 @@ def run_replay_gate(
     ]
     if max_yaw_drift_deg_min is not None:
         cmd.extend(["--max-yaw-drift-deg-min", max_yaw_drift_deg_min])
-    run(cmd)
+    return run_checked(summary, cmd, description)
 
 
-def run_project_contract_checks() -> None:
-    run([sys.executable, "tools/validate_source_filters.py"])
-    run([sys.executable, "tools/validate_profile_matrix.py"])
-    run([sys.executable, "tools/validate_documentation.py"])
+def run_project_contract_checks(summary: CheckSummary) -> None:
+    checks = (
+        ("tools/validate_source_filters.py", "source-filter validation"),
+        ("tools/validate_profile_matrix.py", "profile-matrix validation"),
+        ("tools/validate_documentation.py", "documentation validation"),
+    )
+    for script, description in checks:
+        run_checked(summary, [sys.executable, script], description)
 
 
-def run_tool_smokes() -> None:
+def run_tool_smokes(summary: CheckSummary) -> None:
     out_dir = ROOT / "build" / "tool_smoke"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    run([sys.executable, "tools/test_build_identity.py"])
-    run([sys.executable, "tools/test_check_all_policy.py"])
-    run([sys.executable, "tools/test_run_standalone_tests_policy.py"])
-    run([sys.executable, "tools/test_slimevr_session_contract_policy.py"])
-    run([sys.executable, "tools/test_calibration_storage_contract_policy.py"])
-    run([sys.executable, "tools/test_calibration_storage_stack_policy.py"])
-    run([sys.executable, "tools/test_calibration_integration_policy.py"])
-    run([sys.executable, "tools/test_mag_heading_reliability_policy.py"])
+    checks = (
+        ("tools/test_build_identity.py", "build identity policy"),
+        ("tools/test_check_all_policy.py", "check_all policy"),
+        ("tools/test_check_all_aggregation_policy.py", "check_all aggregation policy"),
+        ("tools/test_run_standalone_tests_policy.py", "standalone runner policy"),
+        ("tools/test_slimevr_session_contract_policy.py", "SlimeVR session contract"),
+        ("tools/test_calibration_storage_contract_policy.py", "calibration storage contract"),
+        ("tools/test_calibration_storage_stack_policy.py", "calibration storage stack budget"),
+        ("tools/test_calibration_autonomy_policy.py", "calibration autonomy policy"),
+        ("tools/test_calibration_0023a_policy.py", "0023a calibration policy"),
+        ("tools/test_calibration_0023b_policy.py", "0023b hardening policy"),
+        ("tools/test_calibration_0023c_policy.py", "0023c recovery policy"),
+        ("tools/test_calibration_0023d_policy.py", "0023d sleep recovery policy"),
+        ("tools/test_calibration_0023e_policy.py", "0023e setup/hotpath policy"),
+        ("tools/test_calibration_0023f_policy.py", "0023f full setup calibration policy"),
+        ("tools/test_calibration_0023g_policy.py", "0023g magnetic coverage reservoir policy"),
+        ("tools/test_calibration_0023ga_policy.py", "0023ga axis alignment stack hardening policy"),
+        ("tools/test_calibration_0023gb_policy.py", "0023gb magnetometer fit metric policy"),
+        ("tools/test_calibration_0023gc_policy.py", "0023gc mag fit stack/profile build policy"),
+        ("tools/test_calibration_0023gd_policy.py", "0023gd magnetometer math/alignment policy"),
+        ("tools/test_calibration_0023ge_policy.py", "0023ge magnetometer audit hardening policy"),
+        ("tools/test_calibration_0023gf_policy.py", "0023gf mag callback cross-ABI policy"),
+        ("tools/test_calibration_0023gg_policy.py", "0023gg magnetic timestamp/setup acceptance policy"),
+        ("tools/test_calibration_integration_policy.py", "calibration integration policy"),
+        ("tools/test_mag_heading_reliability_policy.py", "mag heading reliability policy"),
+    )
+    for script, description in checks:
+        run_checked(summary, [sys.executable, script], description)
 
     fixture = ROOT / "tests" / "fixtures" / "e0_static_smoke.log"
     if fixture.exists():
         before = out_dir / "e0_static_smoke_before.json"
         after = out_dir / "e0_static_smoke_after.json"
-        run_replay_gate(fixture, before, min_duration_s="60")
-        run([
-            sys.executable,
-            "tools/replay/replay_machine_log.py",
-            str(fixture),
-            "--output",
-            str(after),
-        ])
-        run([
-            sys.executable,
-            "tools/replay/replay_machine_log.py",
-            str(fixture),
-            "--output",
-            str(out_dir / "e0_static_smoke_magr.json"),
-            "--require-magr",
-            "--min-magr-rows",
-            "1",
-        ])
-        run([
-            sys.executable,
-            "tools/replay/compare_replay_metrics.py",
-            str(before),
-            str(after),
-        ])
+        magr = out_dir / "e0_static_smoke_magr.json"
+        before_ok = run_replay_gate(
+            summary,
+            fixture,
+            before,
+            description="60-second replay gate",
+            min_duration_s="60",
+        )
+        after.unlink(missing_ok=True)
+        after_ok = run_checked(
+            summary,
+            [
+                sys.executable,
+                "tools/replay/replay_machine_log.py",
+                str(fixture),
+                "--output",
+                str(after),
+            ],
+            "replay metrics generation",
+        )
+        magr.unlink(missing_ok=True)
+        run_checked(
+            summary,
+            [
+                sys.executable,
+                "tools/replay/replay_machine_log.py",
+                str(fixture),
+                "--output",
+                str(magr),
+                "--require-magr",
+                "--min-magr-rows",
+                "1",
+            ],
+            "MAGR replay gate",
+        )
+        if before_ok and after_ok and before.exists() and after.exists():
+            run_checked(
+                summary,
+                [
+                    sys.executable,
+                    "tools/replay/compare_replay_metrics.py",
+                    str(before),
+                    str(after),
+                ],
+                "replay metric comparison",
+            )
+        else:
+            summary.fail("replay metric comparison blocked by failed prerequisite")
+            print("# FAIL replay metric comparison blocked by failed prerequisite", flush=True)
 
     baseline = ROOT / "tests" / "fixtures" / "replay" / "baseline_replay_001.log"
     if baseline.exists():
         run_replay_gate(
+            summary,
             baseline,
             out_dir / "baseline_replay_001.json",
+            description="600-second baseline replay gate",
             min_duration_s="600",
             max_yaw_drift_deg_min="2.0",
         )
@@ -151,18 +237,24 @@ def pio_executable(explicit: str | None = None) -> str | None:
 def run_pio_build(pio: str, environment: str, out_dir: Path) -> PioBuildResult:
     cmd = [pio, "run", "-e", environment]
     print(f"\n$ {' '.join(cmd)}", flush=True)
-    proc = subprocess.run(
-        cmd,
-        cwd=str(ROOT),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        output = proc.stdout or ""
+        returncode = proc.returncode
+    except OSError as exc:
+        output = f"command launch failed: {exc}\n"
+        returncode = 127
+    print(output, end="" if output.endswith("\n") else "\n")
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f"{environment}.log").write_text(proc.stdout, encoding="utf-8", errors="replace")
-    return PioBuildResult(environment, proc.returncode, proc.stdout)
+    (out_dir / f"{environment}.log").write_text(output, encoding="utf-8", errors="replace")
+    return PioBuildResult(environment, returncode, output)
 
 
 def print_size_summary(result: PioBuildResult) -> None:
@@ -181,35 +273,16 @@ def run_default_pio_policy(pio: str) -> tuple[list[str], list[str]]:
     failures: list[str] = []
     warnings: list[str] = []
 
-    for environment in REQUIRED_PIO_ENVS:
+    environments = (*REQUIRED_PIO_ENVS, DEBUG_LINKCHECK_ENV, DEBUG_ENV)
+    for environment in environments:
         result = run_pio_build(pio, environment, out_dir)
         print_size_summary(result)
         if result.ok:
-            print(f"# PASS {environment}")
+            suffix = " (compile/type/link-symbol validation)" if environment == DEBUG_LINKCHECK_ENV else ""
+            print(f"# PASS {environment}{suffix}")
         else:
             failures.append(f"{environment}: mandatory PlatformIO build failed")
             print(f"# FAIL {environment}")
-
-    # Explicitly compile the complete Debug source set in its dedicated gate.
-    # Every environment now shares the same 3 MiB no-OTA app partition, so a
-    # size overflow is a real project-contract failure rather than an accepted
-    # wearable-layout warning.
-    linkcheck = run_pio_build(pio, DEBUG_LINKCHECK_ENV, out_dir)
-    print_size_summary(linkcheck)
-    if linkcheck.ok:
-        print(f"# PASS {DEBUG_LINKCHECK_ENV} (compile/type/link-symbol validation)")
-    else:
-        failures.append(f"{DEBUG_LINKCHECK_ENV}: Debug compile/type/link-symbol validation failed")
-        print(f"# FAIL {DEBUG_LINKCHECK_ENV}")
-
-    debug = run_pio_build(pio, DEBUG_ENV, out_dir)
-    print_size_summary(debug)
-    if debug.ok:
-        print(f"# PASS {DEBUG_ENV}")
-    else:
-        failures.append(f"{DEBUG_ENV}: mandatory Debug build failed")
-        print(f"# FAIL {DEBUG_ENV}")
-
     return failures, warnings
 
 
@@ -235,11 +308,14 @@ def run_pio_builds(
     pio = pio_executable(pio_bin)
     if not pio:
         msg = "PlatformIO executable not found; skipping ESP32 builds."
+        failures: list[str] = []
         if require_pio:
-            raise SystemExit(msg + " Install PlatformIO, set PIO=path-to-pio, or pass --pio-bin path-to-pio.")
+            failures.append(
+                msg + " Install PlatformIO, set PIO=path-to-pio, or pass --pio-bin path-to-pio."
+            )
         print("\n# " + msg)
         print("# Re-run with --require-pio on a machine where ESP32 compilation is expected.")
-        return [], [], True
+        return failures, [], True
 
     if explicit_envs:
         failures, warnings = run_explicit_pio_envs(pio, explicit_envs)
@@ -264,29 +340,37 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not args.skip_native:
-        run_native_tests(args.clean)
+    summary = CheckSummary()
 
-    run_project_contract_checks()
+    if not args.skip_native:
+        run_native_tests(summary, args.clean)
+
+    run_project_contract_checks(summary)
 
     if not args.skip_tool_smoke:
-        run_tool_smokes()
+        run_tool_smokes(summary)
 
-    failures: list[str] = []
-    warnings: list[str] = []
     pio_skipped = False
     if not args.skip_pio:
-        failures, warnings, pio_skipped = run_pio_builds(args.pio_envs, args.require_pio, args.pio_bin)
+        failures, warnings, pio_skipped = run_pio_builds(
+            args.pio_envs,
+            args.require_pio,
+            args.pio_bin,
+        )
+        summary.failures.extend(failures)
+        summary.warnings.extend(warnings)
 
-    if failures:
-        print("\n# check_all: FAIL")
-        for failure in failures:
+    if summary.failures:
+        print(f"\n# check_all: FAIL ({len(summary.failures)} failure(s))")
+        for failure in summary.failures:
             print(f"# FAIL {failure}")
+        for warning in summary.warnings:
+            print(f"# WARN {warning}")
         return 1
 
-    if warnings:
+    if summary.warnings:
         print("\n# check_all: PASS WITH WARNINGS")
-        for warning in warnings:
+        for warning in summary.warnings:
             print(f"# WARN {warning}")
         return 0
 

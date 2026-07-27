@@ -7,6 +7,67 @@
 
 namespace tracker {
 
+const char* magAxisAlignmentFailureReasonName(MagAxisAlignmentFailureReason reason) {
+    switch (reason) {
+        case MagAxisAlignmentFailureReason::None: return "none";
+        case MagAxisAlignmentFailureReason::InvalidCalibration: return "invalid_calibration";
+        case MagAxisAlignmentFailureReason::InsufficientIntervals: return "insufficient_intervals";
+        case MagAxisAlignmentFailureReason::InsufficientAxes: return "insufficient_axes";
+        case MagAxisAlignmentFailureReason::InsufficientWindows: return "insufficient_windows";
+        case MagAxisAlignmentFailureReason::InsufficientPartitionWindows: return "insufficient_partition_windows";
+        case MagAxisAlignmentFailureReason::CandidateBuildFailed: return "candidate_build_failed";
+        case MagAxisAlignmentFailureReason::TrainingValidationDisagreement: return "training_validation_disagreement";
+        case MagAxisAlignmentFailureReason::InsufficientUsableIntervals: return "insufficient_usable_intervals";
+        case MagAxisAlignmentFailureReason::ValidationGeneralizationGap: return "validation_generalization_gap";
+        case MagAxisAlignmentFailureReason::ScoreTooHigh: return "score_too_high";
+        case MagAxisAlignmentFailureReason::DirectionErrorTooHigh: return "direction_error_too_high";
+        case MagAxisAlignmentFailureReason::SeparationTooLow: return "separation_too_low";
+        case MagAxisAlignmentFailureReason::ObservableStepTooLow: return "observable_step_too_low";
+        case MagAxisAlignmentFailureReason::TotalRotationTooLow: return "total_rotation_too_low";
+        case MagAxisAlignmentFailureReason::InvalidRotation: return "invalid_rotation";
+    }
+    return "unknown";
+}
+bool buildMagAxisAlignmentInterval(const Vec3& gyro0SensorRadS,
+                                   const Vec3& gyro1SensorRadS,
+                                   const Vec3& mag0Raw,
+                                   const Vec3& mag1Raw,
+                                   float dtS,
+                                   uint16_t windowId,
+                                   MagAxisAlignmentInterval& out,
+                                   MagAxisIntervalBuildFailure* failure) {
+    out = MagAxisAlignmentInterval{};
+    if (failure) *failure = MagAxisIntervalBuildFailure::InvalidInput;
+    if (!gyro0SensorRadS.isFinite() || !gyro1SensorRadS.isFinite() ||
+        !mag0Raw.isFinite() || !mag1Raw.isFinite() || !tracker::isFinite(dtS)) {
+        return false;
+    }
+    if (dtS < MAG_AXIS_MIN_INTERVAL_S || dtS > MAG_AXIS_MAX_INTERVAL_S) {
+        if (failure) *failure = MagAxisIntervalBuildFailure::InvalidTiming;
+        return false;
+    }
+
+    const Vec3 intervalGyroSensorRadS =
+        (gyro0SensorRadS + gyro1SensorRadS) * 0.5f;
+    const float gyroNorm = intervalGyroSensorRadS.norm();
+    const float predictedStep = gyroNorm * dtS;
+    if (!intervalGyroSensorRadS.isFinite() || !tracker::isFinite(gyroNorm) ||
+        !tracker::isFinite(predictedStep) ||
+        gyroNorm < MAG_AXIS_MIN_GYRO_RATE_RAD_S ||
+        gyroNorm > MAG_AXIS_MAX_GYRO_RATE_RAD_S ||
+        predictedStep < MAG_AXIS_MIN_OBSERVABLE_STEP_RAD ||
+        predictedStep > MAG_AXIS_MAX_OBSERVABLE_STEP_RAD) {
+        if (failure) *failure = MagAxisIntervalBuildFailure::MotionOutOfRange;
+        return false;
+    }
+
+    out = MagAxisAlignmentInterval{
+        intervalGyroSensorRadS, mag0Raw, mag1Raw, dtS, windowId};
+    if (failure) *failure = MagAxisIntervalBuildFailure::None;
+    return true;
+}
+
+
 namespace {
 
 struct CandidateScore {
@@ -47,19 +108,67 @@ uint32_t countSubsetWindows(const MagAxisAlignmentInterval* intervals,
                             uint16_t intervalCount,
                             DatasetSubset subset) {
     if (!intervals || intervalCount == 0u) return 0u;
-    uint16_t lastId = 0u;
-    bool haveLast = false;
     uint32_t count = 0u;
     for (uint16_t i = 0; i < intervalCount; ++i) {
         if (!intervalInSubset(intervals[i], subset)) continue;
-        const uint16_t id = intervals[i].windowId;
-        if (!haveLast || id != lastId) {
-            count++;
-            lastId = id;
-            haveLast = true;
+        bool seen = false;
+        for (uint16_t j = 0; j < i; ++j) {
+            if (intervalInSubset(intervals[j], subset) &&
+                intervals[j].windowId == intervals[i].windowId) {
+                seen = true;
+                break;
+            }
         }
+        if (!seen) count++;
     }
     return count;
+}
+
+uint8_t countExcitedAxes(const MagAxisAlignmentInterval* intervals,
+                         uint16_t intervalCount,
+                         float minimumExcitationRad = 0.12f) {
+    float excitation[3] = {};
+    for (uint16_t i = 0; intervals && i < intervalCount; ++i) {
+        const auto& in = intervals[i];
+        if (!in.gyroSensorRadS.isFinite() || !tracker::isFinite(in.dtS) || in.dtS <= 0.0f) continue;
+        excitation[0] += std::fabs(in.gyroSensorRadS.x) * in.dtS;
+        excitation[1] += std::fabs(in.gyroSensorRadS.y) * in.dtS;
+        excitation[2] += std::fabs(in.gyroSensorRadS.z) * in.dtS;
+    }
+    uint8_t count = 0u;
+    for (float value : excitation) if (value >= minimumExcitationRad) count++;
+    return count;
+}
+
+uint8_t countPartitionConfirmedAxes(const MagAxisAlignmentInterval* intervals,
+                                    uint16_t intervalCount,
+                                    float minimumExcitationRad = 0.06f) {
+    float excitation[3][2] = {};
+    for (uint16_t i = 0; intervals && i < intervalCount; ++i) {
+        const auto& in = intervals[i];
+        if (!in.gyroSensorRadS.isFinite() || !tracker::isFinite(in.dtS) || in.dtS <= 0.0f) continue;
+        const float values[3] = {
+            std::fabs(in.gyroSensorRadS.x),
+            std::fabs(in.gyroSensorRadS.y),
+            std::fabs(in.gyroSensorRadS.z),
+        };
+        uint8_t axis = 0u;
+        if (values[1] > values[axis]) axis = 1u;
+        if (values[2] > values[axis]) axis = 2u;
+        excitation[axis][in.windowId & 1u] += values[axis] * in.dtS;
+    }
+    uint8_t count = 0u;
+    for (uint8_t axis = 0u; axis < 3u; ++axis) {
+        if (excitation[axis][0] >= minimumExcitationRad &&
+            excitation[axis][1] >= minimumExcitationRad) count++;
+    }
+    return count;
+}
+
+bool usableSoftIronCalibration(const Vec3& hardIron, const Mat3& softIron) {
+    if (!hardIron.isFinite() || !softIron.isFinite() || softIron.determinant() <= 0.0f) return false;
+    Mat3 inverse;
+    return softIron.inverse(inverse, 1.0e-12f) && inverse.isFinite();
 }
 
 DatasetMetrics scoreCandidate(const MagAxisAlignmentInterval* intervals,
@@ -111,6 +220,8 @@ DatasetMetrics scoreCandidate(const MagAxisAlignmentInterval* intervals,
             !tracker::isFinite(observedStep) || !tracker::isFinite(predictedStep)) {
             continue;
         }
+        if (observedStep > MAG_AXIS_MAX_OBSERVABLE_STEP_RAD ||
+            predictedStep > MAG_AXIS_MAX_OBSERVABLE_STEP_RAD) continue;
         const float magErr = std::fabs(observedStep - predictedStep) * MATH_RAD_TO_DEG;
         const float predictedRate = predictedStep / in.dtS;
         const float weight = clampf(predictedRate, 0.05f, 4.0f);
@@ -290,26 +401,40 @@ float clamp01Local(float v) {
 } // namespace
 
 void MagAxisAlignmentCollector::reset() {
-    *this = MagAxisAlignmentCollector{};
+    intervalReservoir_.reset();
+    havePreviousMag_ = false;
+    previousMagRaw_ = Vec3::zero();
+    previousMagCalibrated_ = Vec3::zero();
+    previousMagUs_ = 0u;
+    havePreviousGyro_ = false;
+    previousGyroSensorRadS_ = Vec3::zero();
+    windowsSeen_ = 0u;
+    currentWindowId_ = 0u;
+    lastWindowUs_ = 0u;
+    lastAcceptedUs_ = 0u;
+    stats_ = MagAxisAlignmentCollectorStats{};
 }
 
 uint8_t MagAxisAlignmentCollector::excitedAxes() const {
-    uint8_t count = 0;
-    for (float v : axisExcitationRad_) {
-        if (v >= 0.12f) count++;
-    }
-    return count;
+    return intervalReservoir_.excitedAxes();
 }
 
 bool MagAxisAlignmentCollector::readyToSolve() const {
-    return intervalCount_ >= kTargetIntervals && excitedAxes() >= 2 && independentWindows_ >= 4;
+    return intervalCount() >= kTargetIntervals &&
+           excitedAxes() >= 2u &&
+           partitionConfirmedAxes() >= 2u &&
+           independentWindows() >= 4u;
 }
 
 bool MagAxisAlignmentCollector::observe(const Vec3& gyroSensorRadS,
                                         uint64_t gyroTimestampUs,
                                         const MagProcessedSample& mag,
                                         bool fieldReliable) {
-    if (mag.seq == 0u || !mag.raw.isFinite() || mag.rawNorm <= MATH_EPSILON) return false;
+    if (mag.seq == 0u || !mag.raw.isFinite() || !mag.calibratedMagFrame.isFinite() ||
+        mag.calibratedNorm <= MATH_EPSILON ||
+        (mag.rawFlags & Lsm6dsvFifoReader::MAG_FLAG_RAW_SATURATED) != 0u) {
+        return false;
+    }
     stats_.magSamplesSeen++;
 
     if (!fieldReliable) {
@@ -320,7 +445,7 @@ bool MagAxisAlignmentCollector::observe(const Vec3& gyroSensorRadS,
     }
 
     if (gyroTimestampUs == 0u || mag.t_us == 0u ||
-        (gyroTimestampUs > mag.t_us ? gyroTimestampUs - mag.t_us : mag.t_us - gyroTimestampUs) > 5000u) {
+        (gyroTimestampUs > mag.t_us ? gyroTimestampUs - mag.t_us : mag.t_us - gyroTimestampUs) > MAG_AXIS_MAX_GYRO_MAG_SKEW_US) {
         stats_.intervalsRejectedGyroSkew++;
         havePreviousMag_ = false;
         havePreviousGyro_ = false;
@@ -329,49 +454,67 @@ bool MagAxisAlignmentCollector::observe(const Vec3& gyroSensorRadS,
 
     bool accepted = false;
     if (havePreviousMag_ && havePreviousGyro_ && gyroSensorRadS.isFinite()) {
-        // The two coherent endpoint gyros provide a bounded trapezoidal
-        // estimate of interval angular velocity without adding a 960 Hz
-        // learner hook to the IMU hot path.
-        const Vec3 intervalGyroSensorRadS =
-            (previousGyroSensorRadS_ + gyroSensorRadS) * 0.5f;
         float dtS = 0.0f;
         if (mag.t_us > previousMagUs_ && previousMagUs_ != 0u) {
             dtS = static_cast<float>(mag.t_us - previousMagUs_) * 1.0e-6f;
         }
-        if (dtS < 0.004f || dtS > 0.200f || !tracker::isFinite(dtS)) {
-            stats_.intervalsRejectedTiming++;
-        } else {
-            const float gyroNormDps = intervalGyroSensorRadS.norm() * MATH_RAD_TO_DEG;
-            const Vec3 m0 = previousMagRaw_.normalized();
-            const Vec3 m1 = mag.raw.normalized();
-            const float angle = std::acos(clampf(dot(m0, m1), -1.0f, 1.0f));
-            if (angle < 0.0015f || gyroNormDps < 3.0f || gyroNormDps > 540.0f) {
-                stats_.intervalsRejectedMotion++;
-            } else if (lastAcceptedMs_ != 0u &&
-                       mag.receivedMs - lastAcceptedMs_ < kMinAcceptedSpacingMs) {
-                stats_.intervalsSkippedCadence++;
-            } else if (intervalCount_ >= kMaxIntervals) {
-                stats_.intervalsRejectedCapacity++;
+        MagAxisAlignmentInterval interval;
+        MagAxisIntervalBuildFailure buildFailure = MagAxisIntervalBuildFailure::InvalidInput;
+        if (!buildMagAxisAlignmentInterval(
+                previousGyroSensorRadS_, gyroSensorRadS,
+                previousMagRaw_, mag.raw, dtS, currentWindowId_,
+                interval, &buildFailure)) {
+            if (buildFailure == MagAxisIntervalBuildFailure::InvalidTiming) {
+                stats_.intervalsRejectedTiming++;
             } else {
-                if (lastWindowMs_ == 0u || mag.receivedMs - lastWindowMs_ >= 750u) {
-                    currentWindowId_ = static_cast<uint16_t>(independentWindows_ & 0xFFFFu);
-                    independentWindows_++;
-                    lastWindowMs_ = mag.receivedMs;
+                stats_.intervalsRejectedMotion++;
+            }
+        } else {
+            Vec3 m0 = previousMagCalibrated_;
+            Vec3 m1 = mag.calibratedMagFrame;
+            const bool directionsValid = m0.normalizeInPlace() && m1.normalizeInPlace();
+            const float observedAngle = directionsValid
+                ? std::acos(clampf(dot(m0, m1), -1.0f, 1.0f))
+                : 0.0f;
+            if (!directionsValid ||
+                observedAngle < MAG_AXIS_MIN_OBSERVABLE_STEP_RAD ||
+                observedAngle > MAG_AXIS_MAX_OBSERVABLE_STEP_RAD) {
+                stats_.intervalsRejectedMotion++;
+            } else if (lastAcceptedUs_ != 0u &&
+                       mag.t_us > lastAcceptedUs_ &&
+                       mag.t_us - lastAcceptedUs_ < kMinAcceptedSpacingUs) {
+                stats_.intervalsSkippedCadence++;
+            } else {
+                // Window independence and cadence belong to the sensor/FIFO
+                // timestamp domain. Processing-time millis() can collapse a
+                // drained backlog into one apparent instant and permanently
+                // prevent runtime learning from proving independent sessions.
+                if (lastWindowUs_ == 0u || mag.t_us <= lastWindowUs_ ||
+                    mag.t_us - lastWindowUs_ >= 750000u) {
+                    currentWindowId_ = static_cast<uint16_t>(windowsSeen_ & 0xFFFFu);
+                    windowsSeen_++;
+                    lastWindowUs_ = mag.t_us;
+                    interval.windowId = currentWindowId_;
                 }
-                intervals_[intervalCount_++] = MagAxisAlignmentInterval{
-                    intervalGyroSensorRadS, previousMagRaw_, mag.raw, dtS,
-                    currentWindowId_};
-                stats_.intervalsAccepted++;
-                lastAcceptedMs_ = mag.receivedMs;
-                accepted = true;
-                axisExcitationRad_[0] += std::fabs(intervalGyroSensorRadS.x) * dtS;
-                axisExcitationRad_[1] += std::fabs(intervalGyroSensorRadS.y) * dtS;
-                axisExcitationRad_[2] += std::fabs(intervalGyroSensorRadS.z) * dtS;
+                const MagAxisIntervalReservoirAction action =
+                    intervalReservoir_.consider(interval);
+                lastAcceptedUs_ = mag.t_us;
+                if (action == MagAxisIntervalReservoirAction::Added) {
+                    stats_.intervalsAccepted++;
+                    accepted = true;
+                } else if (action == MagAxisIntervalReservoirAction::Replaced) {
+                    stats_.intervalsAccepted++;
+                    stats_.intervalsReservoirReplaced++;
+                    accepted = true;
+                } else {
+                    stats_.intervalsReservoirSkipped++;
+                }
             }
         }
     }
 
     previousMagRaw_ = mag.raw;
+    previousMagCalibrated_ = mag.calibratedMagFrame;
     previousMagUs_ = mag.t_us;
     havePreviousMag_ = true;
     previousGyroSensorRadS_ = gyroSensorRadS;
@@ -397,18 +540,28 @@ bool solveMagAxisAlignmentDataset(const MagAxisAlignmentInterval* intervals,
                                   uint16_t intervalCount,
                                   const Vec3& hardIron,
                                   const Mat3& softIron,
-                                  uint8_t excitedAxes,
-                                  uint32_t independentWindows,
                                   const Mat3* activeAlignment,
                                   const MagAxisAlignmentSolvePolicy& policy,
                                   MagAxisAlignmentResult& out) {
     out = MagAxisAlignmentResult{};
-    out.excitedAxes = excitedAxes;
-    out.independentWindows = independentWindows;
-    if (!intervals || intervalCount < policy.minIntervals ||
-        excitedAxes < policy.minExcitedAxes ||
-        independentWindows < policy.minIndependentWindows ||
-        !hardIron.isFinite() || !softIron.isFinite()) {
+    if (!usableSoftIronCalibration(hardIron, softIron)) {
+        out.failureReason = MagAxisAlignmentFailureReason::InvalidCalibration;
+        return false;
+    }
+    if (!intervals || intervalCount < policy.minIntervals) {
+        out.failureReason = MagAxisAlignmentFailureReason::InsufficientIntervals;
+        return false;
+    }
+    out.excitedAxes = countExcitedAxes(intervals, intervalCount);
+    out.partitionConfirmedAxes = countPartitionConfirmedAxes(intervals, intervalCount);
+    out.independentWindows = countSubsetWindows(intervals, intervalCount, DatasetSubset::All);
+    if (out.excitedAxes < policy.minExcitedAxes ||
+        out.partitionConfirmedAxes < policy.minExcitedAxes) {
+        out.failureReason = MagAxisAlignmentFailureReason::InsufficientAxes;
+        return false;
+    }
+    if (out.independentWindows < policy.minIndependentWindows) {
+        out.failureReason = MagAxisAlignmentFailureReason::InsufficientWindows;
         return false;
     }
 
@@ -418,6 +571,7 @@ bool solveMagAxisAlignmentDataset(const MagAxisAlignmentInterval* intervals,
         intervals, intervalCount, DatasetSubset::Validation);
     if (out.trainingWindows < policy.minTrainingWindows ||
         out.validationWindows < policy.minValidationWindows) {
+        out.failureReason = MagAxisAlignmentFailureReason::InsufficientPartitionWindows;
         return false;
     }
 
@@ -435,6 +589,7 @@ bool solveMagAxisAlignmentDataset(const MagAxisAlignmentInterval* intervals,
             intervals, intervalCount, hardIron, softIron,
             policy.minValidationIntervals, policy.maxRefinementDeg,
             DatasetSubset::Validation, validation)) {
+        out.failureReason = MagAxisAlignmentFailureReason::CandidateBuildFailed;
         return false;
     }
 
@@ -442,16 +597,30 @@ bool solveMagAxisAlignmentDataset(const MagAxisAlignmentInterval* intervals,
     const CandidateScore& validationBest = validation[0];
     const bool coarseWinnerMatches = magAxisMatricesEquivalent(
         trainingBest.coarse, validationBest.coarse, 0.10f);
+    out.coarseWinnerMatchesTraining = coarseWinnerMatches;
     out.trainingValidationRotationDifferenceDeg = relativeRotationAngleDeg(
         trainingBest.matrix, validationBest.matrix);
     const bool continuousWinnerMatches =
         out.trainingValidationRotationDifferenceDeg <=
         policy.maxTrainingValidationRotationDifferenceDeg;
-    out.validationWinnerMatchesTraining = coarseWinnerMatches && continuousWinnerMatches;
+    out.continuousRefinementAgreement = continuousWinnerMatches;
 
-    const Mat3 consensus = out.validationWinnerMatchesTraining
+    // The discrete signed-permutation mounting is the safety-critical part of
+    // axis alignment. If both independent partitions recover the same proper
+    // coarse rotation but their small continuous refinements disagree, do not
+    // throw away the proven axis/sign mapping or ask the user to guess it.
+    // Fall back to the shared coarse rotation and let the ordinary score,
+    // direction, separation and generalization gates decide whether that
+    // conservative model is good enough. A true coarse winner disagreement
+    // remains fail-closed.
+    out.coarseConsensusFallbackUsed =
+        coarseWinnerMatches && !continuousWinnerMatches;
+    out.validationWinnerMatchesTraining = coarseWinnerMatches;
+
+    const Mat3 consensus = continuousWinnerMatches && coarseWinnerMatches
         ? rotationMidpoint(trainingBest.matrix, validationBest.matrix)
-        : trainingBest.matrix;
+        : (out.coarseConsensusFallbackUsed ? trainingBest.coarse
+                                           : trainingBest.matrix);
     const DatasetMetrics trainingMetrics = scoreCandidate(
         intervals, intervalCount, hardIron, softIron,
         consensus, policy.minTrainingIntervals, DatasetSubset::Training);
@@ -556,16 +725,30 @@ bool solveMagAxisAlignmentDataset(const MagAxisAlignmentInterval* intervals,
         out.improvesActive = out.validationPassed;
     }
 
-    out.valid = out.usedIntervals >= policy.minIntervals &&
-                out.excitedAxes >= policy.minExcitedAxes &&
-                out.independentWindows >= policy.minIndependentWindows &&
-                out.validationPassed &&
-                out.validationScore < policy.maxScore &&
-                out.validationMeanDirectionError < policy.maxMeanDirectionError &&
-                out.normalizedSeparation >= policy.minNormalizedSeparation &&
-                out.meanObservableStepDeg >= policy.minMeanObservableStepDeg &&
-                out.totalObservableRotationDeg >= policy.minTotalObservableRotationDeg &&
-                MagAxisAlignmentCollector::properRotation(out.magToImu);
+    if (!out.validationWinnerMatchesTraining) {
+        out.failureReason = MagAxisAlignmentFailureReason::TrainingValidationDisagreement;
+    } else if (out.trainingUsedIntervals < policy.minTrainingIntervals ||
+               out.validationUsedIntervals < policy.minValidationIntervals ||
+               out.usedIntervals < policy.minIntervals) {
+        out.failureReason = MagAxisAlignmentFailureReason::InsufficientUsableIntervals;
+    } else if (!out.validationPassed) {
+        out.failureReason = MagAxisAlignmentFailureReason::ValidationGeneralizationGap;
+    } else if (out.validationScore >= policy.maxScore) {
+        out.failureReason = MagAxisAlignmentFailureReason::ScoreTooHigh;
+    } else if (out.validationMeanDirectionError >= policy.maxMeanDirectionError) {
+        out.failureReason = MagAxisAlignmentFailureReason::DirectionErrorTooHigh;
+    } else if (out.normalizedSeparation < policy.minNormalizedSeparation) {
+        out.failureReason = MagAxisAlignmentFailureReason::SeparationTooLow;
+    } else if (out.meanObservableStepDeg < policy.minMeanObservableStepDeg) {
+        out.failureReason = MagAxisAlignmentFailureReason::ObservableStepTooLow;
+    } else if (out.totalObservableRotationDeg < policy.minTotalObservableRotationDeg) {
+        out.failureReason = MagAxisAlignmentFailureReason::TotalRotationTooLow;
+    } else if (!MagAxisAlignmentCollector::properRotation(out.magToImu)) {
+        out.failureReason = MagAxisAlignmentFailureReason::InvalidRotation;
+    } else {
+        out.valid = true;
+        out.failureReason = MagAxisAlignmentFailureReason::None;
+    }
     out.qualityScore = magAxisAlignmentQualityScore(out);
     return out.valid;
 }
@@ -584,8 +767,8 @@ bool MagAxisAlignmentCollector::solve(const Vec3& hardIron,
     policy.minTrainingWindows = 2;
     policy.minValidationWindows = 2;
     const bool ok = solveMagAxisAlignmentDataset(
-        intervals_, intervalCount_, hardIron, softIron,
-        excitedAxes(), independentWindows_, activeAlignment, policy, out);
+        intervalReservoir_.data(), intervalReservoir_.size(), hardIron, softIron,
+        activeAlignment, policy, out);
     if (ok) stats_.solveSuccesses++;
     return ok;
 }

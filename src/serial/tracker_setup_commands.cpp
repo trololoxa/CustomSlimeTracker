@@ -12,7 +12,12 @@
 #include "network/wifi_manager.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
 #include "runtime/gyro_temp_calibration_capture.hpp"
+#include "runtime/output_runtime.hpp"
+#include "runtime/setup_output_verifier.hpp"
 #include "runtime/runtime_bias_types.hpp"
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+#include "runtime/calibration_autonomy_controller.hpp"
+#endif
 #include "runtime/tap_runtime_controller.hpp"
 #include "runtime/tracker_console_suppress.hpp"
 #include "defines.h"
@@ -32,6 +37,12 @@
 
 namespace tracker {
 namespace {
+
+#if defined(__GNUC__) || defined(__clang__)
+#define TRACKER_SETUP_NOINLINE __attribute__((noinline))
+#else
+#define TRACKER_SETUP_NOINLINE
+#endif
 
 Stream& out(TrackerSerialCommandContext& ctx) {
     return ctx.io ? *ctx.io : Serial;
@@ -129,12 +140,15 @@ struct SetupReadiness {
     bool runtimeWired = false;
 
     bool tracking6dof() const { return configValid && gyroReady && accelReady && frameReady; }
-    bool tempQuality() const { return gyroReady && tempReady && !tempHardExtrapolated; }
+    bool tempModelStored() const { return gyroReady && tempReady; }
+    bool tempRuntimeConfident() const { return tempModelStored() && !tempHardExtrapolated; }
     bool runtimeBias() const { return runtimeBiasReady && runtimeBiasEnabled; }
-    bool magYaw() const { return tracking6dof() && magDriver && magCal && magAxis; }
+    bool magYaw() const { return tracking6dof() && magDriver && magCal && magAxis && magYawApply; }
+    bool calibration6dof() const { return tracking6dof() && tempModelStored() && runtimeBias(); }
+    bool calibration9dof() const { return calibration6dof() && magYaw(); }
     bool network() const { return wifiConfigured && wifiEnabled; }
     bool slimevr() const { return tracking6dof() && network() && localOutputReady && runtimeWired; }
-    bool production() const { return slimevr() && tempQuality() && runtimeBias() && magYaw() && tapReady; }
+    bool production() const { return calibration9dof() && slimevr(); }
 };
 
 SetupReadiness readSetupReadiness(TrackerSerialCommandContext& ctx) {
@@ -242,13 +256,15 @@ void printSetupGuide(Stream& s) {
     s.println("# New tracker path:");
     s.println("#   1) setup wifi");
     s.println("#   2) setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
-    s.println("#   3) setup status");
+    s.println("#   3) setup verify");
+    s.println("#   4) setup status");
     s.println();
     s.println("setup wifi");
     s.println("  Interactive Wi-Fi provisioning: scan, choose network, enter password,");
     s.println("  connect, save to NVS, start SlimeVR discovery and enable autostart.");
     s.println();
     s.println("setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
+    s.println("setup verify");
     s.println("  Default/resume mode skips already valid stages and saves each completed");
     s.println("  missing stage to NVS immediately, so a failed mag stage does not force");
     s.println("  another 15-minute temperature calibration on the next run.");
@@ -279,7 +295,10 @@ void printSetupStatus(TrackerSerialCommandContext& ctx) {
     s.print("production_ready="); s.println(yesNo(r.production()));
     s.print("tracking_6dof_ready="); s.println(yesNo(r.tracking6dof()));
     s.print("mag_yaw_ready="); s.println(yesNo(r.magYaw()));
-    s.print("temp_model_ready="); s.println(yesNo(r.tempQuality()));
+    s.print("calibration_6dof_ready="); s.println(yesNo(r.calibration6dof()));
+    s.print("calibration_9dof_ready="); s.println(yesNo(r.calibration9dof()));
+    s.print("temp_model_ready="); s.println(yesNo(r.tempModelStored()));
+    s.print("temp_runtime_confident="); s.println(yesNo(r.tempRuntimeConfident()));
     s.print("slimevr_ready="); s.println(yesNo(r.slimevr()));
     s.println();
 
@@ -298,7 +317,7 @@ void printSetupStatus(TrackerSerialCommandContext& ctx) {
         s.println("mag_hard_soft=disabled");
         s.println("mag_axis=disabled");
     }
-    printStep(s, "temperature_model", r.tempQuality(), "setup calibration");
+    printStep(s, "temperature_model", r.tempModelStored(), "setup calibration");
     printStep(s, "runtime_bias", r.runtimeBias(), "setup calibration");
     s.print("runtime_bias_enabled="); s.println(yesNo(r.runtimeBiasEnabled));
     printStep(s, "tap_input", r.tapReady, "tap status; tap on");
@@ -440,7 +459,7 @@ struct SetupCalibrationTransaction {
             s.println("# Previous RAM calibration/config restored, but the persistent selector result is uncertain.");
             s.println("# Reboot or run config load before any further config writes.");
         } else {
-            s.println("# Previous RAM calibration/config restored; no setup commit was confirmed.");
+            s.println("# Current setup transaction restored to its pre-stage snapshot; earlier committed checkpoints, if any, remain authoritative.");
         }
     }
 
@@ -539,16 +558,22 @@ using SetupMagAxisDynamicInterval = MagAxisAlignmentInterval;
 
 struct SetupMagAxisDynamicResult {
     bool valid = false;
+    MagAxisAlignmentFailureReason failureReason = MagAxisAlignmentFailureReason::None;
     bool refined = false;
     bool validationPassed = false;
     bool validationWinnerMatchesTraining = false;
+    bool coarseWinnerMatchesTraining = false;
+    bool continuousRefinementAgreement = false;
+    bool coarseConsensusFallbackUsed = false;
     Mat3 magToImu = Mat3::identity();
     Mat3 coarseMagToImu = Mat3::identity();
-    float score = 0.0f;
-    float coarseScore = 0.0f;
-    float secondBestScore = 0.0f;
-    float meanDirectionError = 0.0f;
-    float meanMagnitudeError = 0.0f;
+    float score = 999.0f;
+    float trainingScore = 999.0f;
+    float validationScore = 999.0f;
+    float coarseScore = 999.0f;
+    float secondBestScore = 999.0f;
+    float meanDirectionError = 999.0f;
+    float meanMagnitudeError = 999.0f;
     float refinementAngleDeg = 0.0f;
     float qualityScore = 0.0f;
     float normalizedSeparation = 0.0f;
@@ -558,6 +583,9 @@ struct SetupMagAxisDynamicResult {
     uint16_t usedIntervals = 0;
     uint16_t trainingUsedIntervals = 0;
     uint16_t validationUsedIntervals = 0;
+    uint8_t excitedAxes = 0;
+    uint8_t partitionConfirmedAxes = 0;
+    uint32_t independentWindows = 0;
     uint32_t trainingWindows = 0;
     uint32_t validationWindows = 0;
 };
@@ -571,135 +599,206 @@ constexpr uint16_t kSetupMagAxisDynamicTargetIntervals = 32;
 
 struct SetupMagAxisDynamicCollector {
     static constexpr uint16_t kMaxIntervals = 160;
+    static constexpr uint64_t kMinAcceptedSpacingUs = 75000u;
+    MagAxisIntervalReservoir<kMaxIntervals> intervalReservoir;
 
-    SetupMagAxisDynamicInterval intervals[kMaxIntervals];
-    uint16_t intervalCount = 0;
-    uint32_t droppedIntervals = 0;
-
-    uint32_t lastImuSeq = 0;
     uint32_t lastMagSeq = 0;
-    Vec3 gyroSumRadS = Vec3::zero();
-    uint16_t gyroSamples = 0;
 
-    bool havePrevMag = false;
+    bool havePrevEndpoint = false;
     Vec3 prevMagRaw = Vec3::zero();
-    uint64_t prevMagUs = 0;
+    Vec3 prevGyroSensorRadS = Vec3::zero();
+    uint64_t prevMagUs = 0u;
 
     float gyroNormMaxDps = 0.0f;
-    float axisExcitationRad[3] = {};
-    uint32_t independentWindows = 0;
+    uint32_t independentWindowsSeen = 0;
     uint16_t currentWindowId = 0;
     uint64_t lastWindowUs = 0;
-    uint32_t imuSamplesSeen = 0;
+    uint64_t lastAcceptedIntervalUs = 0;
+    uint32_t intervalsSkippedCadence = 0;
+    uint32_t intervalsRejectedGyroSkew = 0;
+    uint32_t intervalsRejectedGyroEndpointMissing = 0;
+    uint32_t intervalsRejectedTiming = 0;
+    uint32_t intervalsRejectedMotion = 0;
+    uint32_t gyroEndpointsSeen = 0;
     uint32_t magSamplesSeen = 0;
 
     void reset() {
-        *this = SetupMagAxisDynamicCollector{};
+        intervalReservoir.reset();
+        lastMagSeq = 0u;
+        havePrevEndpoint = false;
+        prevMagRaw = Vec3::zero();
+        prevGyroSensorRadS = Vec3::zero();
+        prevMagUs = 0u;
+        gyroNormMaxDps = 0.0f;
+        independentWindowsSeen = 0u;
+        currentWindowId = 0u;
+        lastWindowUs = 0u;
+        lastAcceptedIntervalUs = 0u;
+        intervalsSkippedCadence = 0u;
+        intervalsRejectedGyroSkew = 0u;
+        intervalsRejectedGyroEndpointMissing = 0u;
+        intervalsRejectedTiming = 0u;
+        intervalsRejectedMotion = 0u;
+        gyroEndpointsSeen = 0u;
+        magSamplesSeen = 0u;
     }
 
-    void pushInterval(const Vec3& gyroImuRadS,
+    void pushInterval(const Vec3& gyroSensorRadS,
                       const Vec3& mag0Raw,
                       const Vec3& mag1Raw,
                       float dtS,
                       uint64_t timestampUs) {
-        if (intervalCount >= kMaxIntervals) {
-            droppedIntervals++;
+        // The mag stream can provide far more intervals than the solver needs.
+        // Keep a bounded cadence so near-identical consecutive intervals do
+        // not dominate the dataset or fill every stratum in a few seconds.
+        if (lastAcceptedIntervalUs != 0u &&
+            timestampUs > lastAcceptedIntervalUs &&
+            timestampUs - lastAcceptedIntervalUs < kMinAcceptedSpacingUs) {
+            intervalsSkippedCadence++;
             return;
         }
-        if (lastWindowUs == 0u || timestampUs - lastWindowUs >= 750000u) {
-            currentWindowId = static_cast<uint16_t>(independentWindows & 0xFFFFu);
-            independentWindows++;
+        lastAcceptedIntervalUs = timestampUs;
+
+        if (lastWindowUs == 0u ||
+            timestampUs <= lastWindowUs ||
+            timestampUs - lastWindowUs >= 750000u) {
+            currentWindowId = static_cast<uint16_t>(independentWindowsSeen & 0xFFFFu);
+            independentWindowsSeen++;
             lastWindowUs = timestampUs;
         }
-        intervals[intervalCount++] = SetupMagAxisDynamicInterval{
-            gyroImuRadS, mag0Raw, mag1Raw, dtS, currentWindowId};
-        axisExcitationRad[0] += std::fabs(gyroImuRadS.x) * dtS;
-        axisExcitationRad[1] += std::fabs(gyroImuRadS.y) * dtS;
-        axisExcitationRad[2] += std::fabs(gyroImuRadS.z) * dtS;
+
+        (void)intervalReservoir.consider(SetupMagAxisDynamicInterval{
+            gyroSensorRadS, mag0Raw, mag1Raw, dtS, currentWindowId});
     }
 
+    uint16_t intervalCount() const { return intervalReservoir.size(); }
+    uint32_t candidateIntervalsSeen() const { return intervalReservoir.seen(); }
+    uint32_t reservoirReplacements() const { return intervalReservoir.replacements(); }
+    uint32_t reservoirSkipped() const { return intervalReservoir.skipped(); }
+    bool reservoirActive() const { return intervalReservoir.active(); }
+    uint32_t storedIndependentWindows() const { return intervalReservoir.independentWindows(); }
+    const SetupMagAxisDynamicInterval* intervals() const { return intervalReservoir.data(); }
+
     uint8_t excitedAxes() const {
-        uint8_t count = 0;
-        for (float v : axisExcitationRad) {
-            if (v >= 0.12f) count++;
-        }
-        return count;
+        return intervalReservoir.excitedAxes();
+    }
+
+    uint8_t partitionConfirmedAxes() const {
+        return intervalReservoir.partitionConfirmedAxes();
     }
 
     bool readyForSolve() const {
-        return intervalCount >= kSetupMagAxisDynamicSolverMinIntervals &&
-               independentWindows >= 4u &&
-               excitedAxes() >= 2u;
+        return intervalCount() >= kSetupMagAxisDynamicSolverMinIntervals &&
+               storedIndependentWindows() >= 4u &&
+               excitedAxes() >= 2u &&
+               partitionConfirmedAxes() >= 2u;
     }
 
     bool targetCoverageReached() const {
-        return intervalCount >= kSetupMagAxisDynamicTargetIntervals &&
-               independentWindows >= 4u &&
-               excitedAxes() >= 2u;
+        return intervalCount() >= kSetupMagAxisDynamicTargetIntervals &&
+               storedIndependentWindows() >= 4u &&
+               excitedAxes() >= 2u &&
+               partitionConfirmedAxes() >= 2u;
     }
 
     void update(TrackerSerialCommandContext& ctx) {
-        if (!ctx.lastCalibratedSample || !ctx.lastImuSampleSequence || !ctx.lastMagProcessed) return;
-
-        const uint32_t imuSeq = *ctx.lastImuSampleSequence;
-        if (imuSeq != 0u && imuSeq != lastImuSeq) {
-            lastImuSeq = imuSeq;
-            Vec3 gyro = ctx.lastCalibratedSample->gyro_rad_s;
-            if (ctx.config) {
-                const SensorToDeviceFrame frame = makeSensorToDeviceFrame(
-                    ctx.config->data.frame.sensorToDeviceValid,
-                    ctx.config->data.frame.sensorToDevice
-                );
-                gyro = frame.inverseApply(gyro);
-            }
-            const float gyroNormDps = gyro.norm() * MATH_RAD_TO_DEG;
-            if (gyro.isFinite()) {
-                imuSamplesSeen++;
-                if (gyroNormDps > gyroNormMaxDps) gyroNormMaxDps = gyroNormDps;
-                // The setup loop observes the latest pipeline sample, not every
-                // FIFO sample.  Keep low-rate gyro accumulation permissive so a
-                // 60 Hz mag interval can still produce a usable dynamic-axis
-                // interval even when serviceSetupRuntime() is called at 5 ms cadence.
-                if (gyroNormDps >= 2.0f && gyroNormDps <= 720.0f && gyroSamples < 2000u) {
-                    gyroSumRadS += gyro;
-                    gyroSamples++;
-                }
-            }
-        }
+        if (!ctx.lastMagProcessed) return;
 
         const MagProcessedSample& mag = *ctx.lastMagProcessed;
-        if (mag.seq == 0u || mag.seq == lastMagSeq || !mag.raw.isFinite() || mag.rawNorm <= 1.0e-6f) {
+        if (mag.seq == 0u || mag.seq == lastMagSeq || !mag.raw.isFinite() ||
+            (mag.rawFlags & Lsm6dsvFifoReader::MAG_FLAG_RAW_SATURATED) != 0u) {
             return;
         }
         lastMagSeq = mag.seq;
         magSamplesSeen++;
 
-        if (havePrevMag && gyroSamples >= 1u) {
+        if (!mag.gyroEndpointValid || !mag.gyroSensorRadS.isFinite() ||
+            mag.gyroTimestampUs == 0u || mag.t_us == 0u) {
+            if (mag.gyroEndpointSkewUs > MAG_AXIS_MAX_GYRO_MAG_SKEW_US) {
+                intervalsRejectedGyroSkew++;
+            } else {
+                intervalsRejectedGyroEndpointMissing++;
+            }
+            havePrevEndpoint = false;
+            return;
+        }
+        gyroEndpointsSeen++;
+
+        if (havePrevEndpoint) {
             float dtS = 0.0f;
             if (mag.t_us > prevMagUs && prevMagUs != 0u) {
                 dtS = static_cast<float>(mag.t_us - prevMagUs) * 1.0e-6f;
             }
-            if (dtS >= 0.004f && dtS <= 0.200f) {
-                const Vec3 avgGyro = gyroSumRadS / static_cast<float>(gyroSamples);
-                const Vec3 m0 = prevMagRaw.normalized();
-                const Vec3 m1 = mag.raw.normalized();
-                const float angle = std::acos(clampf(dot(m0, m1), -1.0f, 1.0f));
-                const float gyroNormDps = avgGyro.norm() * MATH_RAD_TO_DEG;
-                if (angle >= 0.0015f && gyroNormDps >= 3.0f && gyroNormDps <= 540.0f) {
-                    pushInterval(avgGyro, prevMagRaw, mag.raw, dtS, mag.t_us);
-                }
+            // Both gyro endpoints were captured inside the chronological mag
+            // callback, not sampled later by this polling setup loop. Skipped
+            // intermediate mag frames remain valid longer intervals as long as
+            // the shared finite-rotation admission accepts their dt and step.
+            MagAxisAlignmentInterval interval;
+            MagAxisIntervalBuildFailure buildFailure = MagAxisIntervalBuildFailure::InvalidInput;
+            if (buildMagAxisAlignmentInterval(
+                    prevGyroSensorRadS, mag.gyroSensorRadS,
+                    prevMagRaw, mag.raw, dtS, currentWindowId,
+                    interval, &buildFailure)) {
+                pushInterval(interval.gyroSensorRadS, interval.mag0Raw,
+                             interval.mag1Raw, interval.dtS, mag.t_us);
+            } else if (buildFailure == MagAxisIntervalBuildFailure::InvalidTiming) {
+                intervalsRejectedTiming++;
+            } else {
+                intervalsRejectedMotion++;
             }
         }
 
-        gyroSumRadS = Vec3::zero();
-        gyroSamples = 0;
         prevMagRaw = mag.raw;
+        prevGyroSensorRadS = mag.gyroSensorRadS;
         prevMagUs = mag.t_us;
-        havePrevMag = true;
+        havePrevEndpoint = true;
+        const float gyroNormDps = mag.gyroSensorRadS.norm() * MATH_RAD_TO_DEG;
+        if (tracker::isFinite(gyroNormDps) && gyroNormDps > gyroNormMaxDps) {
+            gyroNormMaxDps = gyroNormDps;
+        }
     }
 };
-
 static SetupMagAxisDynamicCollector g_setupMagAxisDynamicCollector;
+
+void setupPrintMagAxisDynamicDiagnostics(Stream& s,
+                                         const SetupMagAxisDynamicCollector& c) {
+    s.print("# setup mag dynamic_axis_intervals=");
+    s.print(c.intervalCount());
+    s.print('/');
+    s.println(SetupMagAxisDynamicCollector::kMaxIntervals);
+    s.print("# setup mag dynamic_axis_candidates_seen=");
+    s.println(c.candidateIntervalsSeen());
+    s.print("# setup mag dynamic_axis_reservoir_active=");
+    s.println(c.reservoirActive() ? "yes" : "no");
+    s.print("# setup mag dynamic_axis_reservoir_replacements=");
+    s.println(c.reservoirReplacements());
+    s.print("# setup mag dynamic_axis_reservoir_skipped=");
+    s.println(c.reservoirSkipped());
+    s.print("# setup mag dynamic_axis_cadence_skipped=");
+    s.println(c.intervalsSkippedCadence);
+    s.print("# setup mag dynamic_axis_gyro_skew_rejected=");
+    s.println(c.intervalsRejectedGyroSkew);
+    s.print("# setup mag dynamic_axis_gyro_endpoint_missing=");
+    s.println(c.intervalsRejectedGyroEndpointMissing);
+    s.print("# setup mag dynamic_axis_timing_rejected=");
+    s.println(c.intervalsRejectedTiming);
+    s.print("# setup mag dynamic_axis_motion_rejected=");
+    s.println(c.intervalsRejectedMotion);
+    s.print("# setup mag dynamic_axis_windows_stored_seen=");
+    s.print(c.storedIndependentWindows());
+    s.print('/');
+    s.println(c.independentWindowsSeen);
+    s.print("# setup mag dynamic_axis_excited_axes=");
+    s.println(static_cast<unsigned int>(c.excitedAxes()));
+    s.print("# setup mag dynamic_axis_partition_confirmed_axes=");
+    s.println(static_cast<unsigned int>(c.partitionConfirmedAxes()));
+    s.print("# setup mag dynamic_axis_bucket_counts=");
+    for (uint8_t i = 0; i < MagAxisIntervalReservoir<SetupMagAxisDynamicCollector::kMaxIntervals>::kBucketCount; ++i) {
+        if (i != 0u) s.print(',');
+        s.print(c.intervalReservoir.bucketCount(i));
+    }
+    s.println();
+}
 
 Vec3 normalizeSafe(const Vec3& v) {
     const float n = v.norm();
@@ -756,7 +855,7 @@ Mat3 setupPermutationMatrix(uint8_t ax0, float s0, uint8_t ax1, float s1, uint8_
     return m;
 }
 
-bool setupAutoSolveMagAxis(const SetupMagAxisAutoCollector& c,
+TRACKER_SETUP_NOINLINE bool setupAutoSolveMagAxis(const SetupMagAxisAutoCollector& c,
                            const TrackerConfig& config,
                            const ImuCalibration& imuCal,
                            SetupMagAxisAutoResult& result) {
@@ -814,12 +913,19 @@ bool setupAutoSolveMagAxis(const SetupMagAxisAutoCollector& c,
     return result.valid;
 }
 
-bool setupAutoSolveMagAxisDynamic(const SetupMagAxisDynamicCollector& c,
+TRACKER_SETUP_NOINLINE bool setupAutoSolveMagAxisDynamic(const SetupMagAxisDynamicCollector& c,
                                   const TrackerConfig& config,
                                   SetupMagAxisDynamicResult& result) {
     result = SetupMagAxisDynamicResult{};
-    if (c.intervalCount < kSetupMagAxisDynamicSolverMinIntervals ||
-        !config.data.magCal.calibrationValid) {
+    result.excitedAxes = c.excitedAxes();
+    result.partitionConfirmedAxes = c.partitionConfirmedAxes();
+    result.independentWindows = c.storedIndependentWindows();
+    if (!config.data.magCal.calibrationValid) {
+        result.failureReason = MagAxisAlignmentFailureReason::InvalidCalibration;
+        return false;
+    }
+    if (c.intervalCount() < kSetupMagAxisDynamicSolverMinIntervals) {
+        result.failureReason = MagAxisAlignmentFailureReason::InsufficientIntervals;
         return false;
     }
 
@@ -833,26 +939,31 @@ bool setupAutoSolveMagAxisDynamic(const SetupMagAxisDynamicCollector& c,
     policy.minValidationWindows = 2;
 
     MagAxisAlignmentResult solved;
-    if (!solveMagAxisAlignmentDataset(
-            c.intervals,
-            c.intervalCount,
-            config.data.magCal.hardIron,
-            config.data.magCal.softIron,
-            c.excitedAxes(),
-            c.independentWindows > 0u ? c.independentWindows : 1u,
-            nullptr,
-            policy,
-            solved)) {
-        return false;
-    }
+    const bool solveOk = solveMagAxisAlignmentDataset(
+        c.intervals(),
+        c.intervalCount(),
+        config.data.magCal.hardIron,
+        config.data.magCal.softIron,
+        nullptr,
+        policy,
+        solved);
 
+    // Preserve partial solver diagnostics on every failure path. A quality
+    // rejection after candidate construction must not collapse to one enum
+    // while hiding usable intervals, windows, scores and partition agreement.
     result.valid = solved.valid;
+    result.failureReason = solved.failureReason;
     result.refined = solved.refined;
     result.validationPassed = solved.validationPassed;
     result.validationWinnerMatchesTraining = solved.validationWinnerMatchesTraining;
+    result.coarseWinnerMatchesTraining = solved.coarseWinnerMatchesTraining;
+    result.continuousRefinementAgreement = solved.continuousRefinementAgreement;
+    result.coarseConsensusFallbackUsed = solved.coarseConsensusFallbackUsed;
     result.magToImu = solved.magToImu;
     result.coarseMagToImu = solved.coarseMagToImu;
     result.score = solved.score;
+    result.trainingScore = solved.trainingScore;
+    result.validationScore = solved.validationScore;
     result.coarseScore = solved.coarseScore;
     result.secondBestScore = solved.secondBestScore;
     result.meanDirectionError = solved.meanDirectionError;
@@ -867,9 +978,12 @@ bool setupAutoSolveMagAxisDynamic(const SetupMagAxisDynamicCollector& c,
     result.usedIntervals = solved.usedIntervals;
     result.trainingUsedIntervals = solved.trainingUsedIntervals;
     result.validationUsedIntervals = solved.validationUsedIntervals;
+    result.excitedAxes = solved.excitedAxes;
+    result.partitionConfirmedAxes = solved.partitionConfirmedAxes;
+    result.independentWindows = solved.independentWindows;
     result.trainingWindows = solved.trainingWindows;
     result.validationWindows = solved.validationWindows;
-    return result.valid;
+    return solveOk && result.valid;
 }
 
 bool setupAxisMatricesEqual(const Mat3& a, const Mat3& b) {
@@ -932,7 +1046,8 @@ bool setupCaptureMagAxisFaceSample(TrackerSerialCommandContext& ctx,
     while (millis() - startMs < 2500UL) {
         serviceSetupRuntime(ctx);
         const MagProcessedSample& mag = *ctx.lastMagProcessed;
-        if (mag.seq != 0 && mag.seq != lastSeq && mag.raw.isFinite() && mag.rawNorm > 1.0e-6f) {
+        if (mag.seq != 0 && mag.seq != lastSeq && mag.raw.isFinite() &&
+            (mag.rawFlags & Lsm6dsvFifoReader::MAG_FLAG_RAW_SATURATED) == 0u) {
             lastSeq = mag.seq;
             sum += mag.raw;
             count++;
@@ -1145,11 +1260,22 @@ void cmdSetupWifi(TrackerSerialCommandContext& ctx, int argc, char** argv) {
 
 
 bool serviceSetupRuntime(TrackerSerialCommandContext& ctx) {
+    bool worked = true;
     if (ctx.serviceNonCliRuntime) {
-        return ctx.serviceNonCliRuntime(ctx.serviceNonCliRuntimeUser);
+        worked = ctx.serviceNonCliRuntime(ctx.serviceNonCliRuntimeUser);
+    } else {
+        delay(5);
     }
-    delay(5);
-    return true;
+
+    if (ctx.commandOutputNeedsExplicitFlush) {
+        const uint32_t nowMs = millis();
+        if (ctx.lastCommandOutputFlushMs == 0u ||
+            static_cast<uint32_t>(nowMs - ctx.lastCommandOutputFlushMs) >= 25u) {
+            ctx.lastCommandOutputFlushMs = nowMs;
+            out(ctx).flush();
+        }
+    }
+    return worked;
 }
 
 void drainSetupInput(TrackerSerialCommandContext& ctx) {
@@ -1170,7 +1296,13 @@ bool readSetupLine(TrackerSerialCommandContext& ctx,
     buf[0] = '\0';
 
     drainSetupInput(ctx);
-    if (prompt && prompt[0]) s.println(prompt);
+    if (prompt && prompt[0]) {
+        s.println(prompt);
+        // The command is already blocking inside the CLI dispatcher. Ensure a
+        // buffered TCP console sees the prompt before the input wait begins.
+        s.flush();
+        ctx.lastCommandOutputFlushMs = millis();
+    }
 
     const uint32_t startMs = millis();
     size_t n = 0;
@@ -1195,9 +1327,21 @@ bool readSetupLine(TrackerSerialCommandContext& ctx,
     return false;
 }
 
-bool waitSetupEnter(TrackerSerialCommandContext& ctx, const char* prompt, uint32_t timeoutMs) {
-    char line[8];
-    return readSetupLine(ctx, prompt, line, sizeof(line), timeoutMs);
+bool waitSetupEnter(TrackerSerialCommandContext& ctx,
+                    const char* prompt,
+                    uint32_t timeoutMs,
+                    bool* userAborted = nullptr) {
+    if (userAborted) *userAborted = false;
+    char line[8] = {};
+    if (!readSetupLine(ctx, prompt, line, sizeof(line), timeoutMs)) return false;
+    char* p = line;
+    while (*p == ' ' || *p == '\t') ++p;
+    if ((*p == 'q' || *p == 'Q') &&
+        (p[1] == '\0' || p[1] == ' ' || p[1] == '\t')) {
+        if (userAborted) *userAborted = true;
+        return false;
+    }
+    return true;
 }
 
 bool setupPrepareCalibrationRuntime(TrackerSerialCommandContext& ctx) {
@@ -1261,8 +1405,14 @@ bool setupRunRestGyro(TrackerSerialCommandContext& ctx) {
     s.println();
     s.println("# SETUP CALIBRATION STEP 1/7: REST/GYRO");
     s.println("# Put the tracker on a stable surface and do not touch it.");
-    if (!waitSetupEnter(ctx, "# Press Enter when the tracker is completely still.", 120000UL)) {
-        tracker_serial_detail::printErr(s, "setup calibration aborted: rest confirmation timeout");
+    bool userAborted = false;
+    if (!waitSetupEnter(ctx,
+                        "# Press Enter when the tracker is completely still, or type q then Enter to abort.",
+                        120000UL,
+                        &userAborted)) {
+        tracker_serial_detail::printErr(s, userAborted
+            ? "setup calibration aborted by user before rest/gyro capture"
+            : "setup calibration aborted: rest confirmation timeout");
         return false;
     }
 
@@ -1283,6 +1433,7 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     s.println("# Keep the tracker on a normal stable surface. The firmware stops at a relative temperature plateau.");
     s.println("# Brief touches pause collection and discard only the current short stationary window; accepted progress is kept.");
     s.println("# This uses a dedicated setup temperature capture, not the developer test static runner.");
+    s.println("# Type q then Enter to abort this stage safely.");
 
     if (!ctx.gyroTempCapture || !ctx.fitGyroTempFromCaptureRam) {
         tracker_serial_detail::printErr(s, "setup calibration failed: gyro temperature capture RAM-fit hook is not available");
@@ -1294,48 +1445,114 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
     constexpr uint32_t kMinMs = 180000UL;
     constexpr uint32_t kMaxMs = 900000UL;
     constexpr uint32_t kPlateauWindowMs = 60000UL;
-    constexpr float kPlateauDeltaC = 0.15f;
+    constexpr uint32_t kNoInputSamplesMs = 30000UL;
+    constexpr uint32_t kNoAcceptedProgressMs = 120000UL;
+    constexpr float kPlateauRangeC = 0.15f;
     constexpr float kMinTempRangeC = 3.0f;
+    constexpr uint32_t kMinimumAcceptedSamples = 10000u;
+    constexpr uint32_t kMinimumUsableBins = 4u;
 
     ctx.gyroTempCapture->start(millis(), kMaxMs);
     const uint32_t startMs = millis();
     float minTemp = ctx.calibrationIo ? ctx.calibrationIo->latestTempC : 25.0f;
     float maxTemp = minTemp;
-    float windowStartTemp = minTemp;
-    uint32_t windowStartMs = startMs;
+    float plateauMinTemp = minTemp;
+    float plateauMaxTemp = minTemp;
+    float lastPlateauRangeC = 0.0f;
+    uint32_t plateauWindowStartMs = startMs;
     uint32_t lastPrintMs = 0;
     bool plateau = false;
+    bool noInputSamples = false;
+    bool noAcceptedProgress = false;
+    bool userAborted = false;
+    bool abortRequested = false;
 
     while (ctx.gyroTempCapture->active()) {
         serviceSetupRuntime(ctx);
+        while (s.available() > 0) {
+            const int c = s.read();
+            if (c < 0) break;
+            if (c == 'q' || c == 'Q') abortRequested = true;
+            if ((c == '\n' || c == '\r') && abortRequested) {
+                userAborted = true;
+                break;
+            }
+        }
+        if (userAborted) break;
+
         const uint32_t nowMs = millis();
         const float t = ctx.calibrationIo ? ctx.calibrationIo->latestTempC : minTemp;
         if (t < minTemp) minTemp = t;
         if (t > maxTemp) maxTemp = t;
+        if (t < plateauMinTemp) plateauMinTemp = t;
+        if (t > plateauMaxTemp) plateauMaxTemp = t;
 
+        const GyroTempCalibrationCaptureDiagnostics& d = ctx.gyroTempCapture->diagnostics();
         if (nowMs - lastPrintMs >= 5000UL) {
             lastPrintMs = nowMs;
             s.print("# setup temp elapsed_s="); s.print((nowMs - startMs) / 1000UL);
             s.print(" temp_c="); s.print(t, 3);
             s.print(" range_c="); s.print(maxTemp - minTemp, 3);
-            const GyroTempCalibrationCaptureDiagnostics& d = ctx.gyroTempCapture->diagnostics();
+            s.print(" plateau_window_range_c="); s.print(lastPlateauRangeC, 3);
             s.print(" usable_bins="); s.print(ctx.gyroTempCapture->usableTempBins());
             s.print(" samples="); s.print(ctx.gyroTempCapture->capture().samples);
             s.print(" accepted="); s.print(d.acceptedSamples);
             s.print(" rejected="); s.print(d.rejectedSamples);
+            s.print(" accepted_windows="); s.print(d.acceptedWindows);
+            s.print(" rejected_windows="); s.print(d.rejectedWindows);
+            s.print(" gyro_reject="); s.print(d.gyroRejectedWindows);
+            s.print(" accel_reject="); s.print(d.accelRejectedWindows);
+            s.print(" temp_reject="); s.print(d.temperatureRejectedWindows);
             s.print(" window="); s.print(d.currentWindowSamples);
             s.print(" motion_resets="); s.println(d.motionWindowResets);
+
+            if (d.rejectedWindows != 0u && d.acceptedWindows == 0u) {
+                s.print("# setup temp last_gyro_mean_dps=");
+                s.print(d.lastGyroMeanDps.x, 5); s.print(',');
+                s.print(d.lastGyroMeanDps.y, 5); s.print(',');
+                s.println(d.lastGyroMeanDps.z, 5);
+                s.print("# setup temp last_gyro_std_dps=");
+                s.print(d.lastGyroStdDps.x, 5); s.print(',');
+                s.print(d.lastGyroStdDps.y, 5); s.print(',');
+                s.println(d.lastGyroStdDps.z, 5);
+                s.print("# setup temp last_gyro_mean_se_dps=");
+                s.print(d.lastGyroMeanStdErrorDps.x, 5); s.print(',');
+                s.print(d.lastGyroMeanStdErrorDps.y, 5); s.print(',');
+                s.println(d.lastGyroMeanStdErrorDps.z, 5);
+                s.print("# setup temp reject_hard_noise="); s.print(d.gyroHardNoiseRejectedWindows);
+                s.print(" reject_mean_precision="); s.print(d.gyroMeanPrecisionRejectedWindows);
+                s.print(" reject_initial_mean="); s.print(d.gyroInitialMeanRejectedWindows);
+                s.print(" reject_thermal_consistency="); s.println(d.gyroThermalConsistencyRejectedWindows);
+            }
         }
 
-        if (nowMs - windowStartMs >= kPlateauWindowMs) {
-            const float windowDelta = std::fabs(t - windowStartTemp);
+        if (nowMs - startMs >= kNoInputSamplesMs &&
+            ctx.gyroTempCapture->capture().samples == 0u) {
+            noInputSamples = true;
+            break;
+        }
+        if (d.acceptedWindows == 0u &&
+            nowMs - startMs >= kNoAcceptedProgressMs &&
+            (d.rejectedWindows >= 8u || d.rejectedSamples >= 10000u)) {
+            noAcceptedProgress = true;
+            break;
+        }
+
+        if (nowMs - plateauWindowStartMs >= kPlateauWindowMs) {
+            lastPlateauRangeC = plateauMaxTemp - plateauMinTemp;
             const float totalRange = maxTemp - minTemp;
-            if ((nowMs - startMs) >= kMinMs && totalRange >= kMinTempRangeC && windowDelta <= kPlateauDeltaC) {
+            const bool coverageReady =
+                ctx.gyroTempCapture->usableTempBins() >= kMinimumUsableBins &&
+                d.acceptedSamples >= kMinimumAcceptedSamples;
+            if ((nowMs - startMs) >= kMinMs &&
+                totalRange >= kMinTempRangeC &&
+                coverageReady &&
+                lastPlateauRangeC <= kPlateauRangeC) {
                 plateau = true;
                 break;
             }
-            windowStartMs = nowMs;
-            windowStartTemp = t;
+            plateauWindowStartMs = nowMs;
+            plateauMinTemp = plateauMaxTemp = t;
         }
         delay(5);
     }
@@ -1344,15 +1561,42 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
         ctx.gyroTempCapture->stop(millis());
     }
 
-    if (plateau) s.println("# setup temp: relative plateau detected; stopping capture");
-    else s.println("# setup temp: max capture duration reached; trying fit with collected data");
-
     const StaticRuntimeTest& capture = ctx.gyroTempCapture->capture();
     const GyroTempCalibrationCaptureDiagnostics& captureDiag = ctx.gyroTempCapture->diagnostics();
+    if (userAborted) {
+        tracker_serial_detail::printErr(s, "setup calibration aborted by user during gyro temperature capture");
+        return false;
+    }
+    if (noInputSamples) {
+        tracker_serial_detail::printErr(s, "setup calibration failed: gyro temperature capture received no coherent IMU samples");
+        s.println("# TIP: check FIFO/quality status and make sure accelerometer samples are present before retrying.");
+        return false;
+    }
+    if (noAcceptedProgress) {
+        tracker_serial_detail::printErr(s, "setup calibration failed: no acceptable stationary gyro-temperature windows were collected");
+        s.println("# TIP: use a rigid surface, keep the tracker untouched, and move it away from fans, speakers and vibrating equipment.");
+        s.print("# reject_hard_noise="); s.println(captureDiag.gyroHardNoiseRejectedWindows);
+        s.print("# reject_mean_precision="); s.println(captureDiag.gyroMeanPrecisionRejectedWindows);
+        s.print("# reject_initial_mean="); s.println(captureDiag.gyroInitialMeanRejectedWindows);
+        s.print("# reject_thermal_consistency="); s.println(captureDiag.gyroThermalConsistencyRejectedWindows);
+        s.print("# reject_accel="); s.println(captureDiag.accelRejectedWindows);
+        s.print("# reject_temperature="); s.println(captureDiag.temperatureRejectedWindows);
+        return false;
+    }
+
+    if (plateau) s.println("# setup temp: relative plateau detected with sufficient accepted coverage; stopping capture");
+    else s.println("# setup temp: max capture duration reached; trying fit with collected data");
+
     s.print("# setup temp accepted_samples="); s.println(captureDiag.acceptedSamples);
     s.print("# setup temp rejected_samples="); s.println(captureDiag.rejectedSamples);
     s.print("# setup temp accepted_windows="); s.println(captureDiag.acceptedWindows);
     s.print("# setup temp rejected_windows="); s.println(captureDiag.rejectedWindows);
+    s.print("# setup temp gyro_hard_noise_rejected_windows="); s.println(captureDiag.gyroHardNoiseRejectedWindows);
+    s.print("# setup temp gyro_mean_precision_rejected_windows="); s.println(captureDiag.gyroMeanPrecisionRejectedWindows);
+    s.print("# setup temp gyro_initial_mean_rejected_windows="); s.println(captureDiag.gyroInitialMeanRejectedWindows);
+    s.print("# setup temp gyro_thermal_consistency_rejected_windows="); s.println(captureDiag.gyroThermalConsistencyRejectedWindows);
+    s.print("# setup temp accel_rejected_windows="); s.println(captureDiag.accelRejectedWindows);
+    s.print("# setup temp temperature_rejected_windows="); s.println(captureDiag.temperatureRejectedWindows);
     s.print("# setup temp motion_window_resets="); s.println(captureDiag.motionWindowResets);
     if (!ctx.fitGyroTempFromCaptureRam(&capture, s, ctx.fitGyroTempFromCaptureRamUser)) {
         tracker_serial_detail::printErr(s, "setup calibration failed: gyro temperature fit did not pass quality gates");
@@ -1365,11 +1609,13 @@ bool setupRunTemperatureFit(TrackerSerialCommandContext& ctx) {
 bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
                                          SetupMagAxisAutoCollector& axisAuto,
                                          SetupFrameObservations& frameObservations,
-                                         bool collectMagDuringAccel) {
+                                         bool collectHardSoftDuringAccel,
+                                         bool collectAxisFacesDuringAccel) {
     Stream& s = out(ctx);
     s.println();
-    s.println(collectMagDuringAccel
-        ? "# SETUP CALIBRATION STEP 3/7: ACCEL 6-POS + FRAME + MAG COLLECTION"
+    const bool useMagDuringAccel = collectHardSoftDuringAccel || collectAxisFacesDuringAccel;
+    s.println(useMagDuringAccel
+        ? "# SETUP CALIBRATION STEP 3/7: ACCEL 6-POS + FRAME + MAG OBSERVATION"
         : "# SETUP CALIBRATION STEP 3/7: ACCEL 6-POS + FRAME");
     s.println("# Device axes used by firmware: +X right, +Y forward, +Z top/outward.");
     s.println("# Use the same physical +Y edge on every tracker; the USB-connector edge is the recommended default.");
@@ -1380,7 +1626,7 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
     s.println("# Slight IMU solder/board misalignment is handled later by the full 3x3 accel correction matrix.");
 
     bool magCollectionActive = false;
-    if (collectMagDuringAccel) {
+    if (useMagDuringAccel) {
         if (ctx.setMagRuntimeEnabled) {
             (void)ctx.setMagRuntimeEnabled(true, false, ctx.setMagRuntimeEnabledUser);
         }
@@ -1388,6 +1634,8 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
             ctx.config->data.magCal.driverEnabled = true;
             ctx.config->updateCrc();
         }
+    }
+    if (collectHardSoftDuringAccel) {
         if (ctx.resetMagCalibration) ctx.resetMagCalibration(ctx.resetMagCalibrationUser);
         if (!ctx.startMagCalibration || !ctx.startMagCalibration(ctx.startMagCalibrationUser)) {
             tracker_serial_detail::printErr(s, "setup calibration failed: could not start magnetometer calibration");
@@ -1430,17 +1678,20 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
         if (!any) s.print(" none");
         s.println();
 
-        const char* capturePrompt = "# Move to a NEW side, wait until it stops wobbling, then press Enter.";
+        const char* capturePrompt = "# Move to a NEW side, wait until it stops wobbling, then press Enter. Type q then Enter to abort.";
         if (captured == 0) {
             s.println("# FRAME TOP: place the tracker flat with its top/outward face pointing upward (+Z up).");
-            capturePrompt = "# Wait until the tracker stops wobbling, then press Enter for frame top/+Z.";
+            capturePrompt = "# Wait until the tracker stops wobbling, then press Enter for frame top/+Z. Type q then Enter to abort.";
         } else if (captured == 1) {
             s.println("# FRAME FORWARD: stand the tracker so its chosen +Y/forward edge points straight upward.");
-            capturePrompt = "# Wait until the tracker stops wobbling, then press Enter for frame forward/+Y.";
+            capturePrompt = "# Wait until the tracker stops wobbling, then press Enter for frame forward/+Y. Type q then Enter to abort.";
         }
-        if (!waitSetupEnter(ctx, capturePrompt, 300000UL)) {
+        bool userAborted = false;
+        if (!waitSetupEnter(ctx, capturePrompt, 300000UL, &userAborted)) {
             if (magCollectionActive && ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
-            tracker_serial_detail::printErr(s, "setup calibration aborted while waiting for accel face");
+            tracker_serial_detail::printErr(s, userAborted
+                ? "setup calibration aborted by user before accel face capture"
+                : "setup calibration aborted while waiting for accel face");
             return false;
         }
 
@@ -1482,7 +1733,7 @@ bool setupRunAccelFacesWithMagCollection(TrackerSerialCommandContext& ctx,
         s.print(" norm_g="); s.print(faceResult.meanNormG, 5);
         s.print(" dominance_margin_g="); s.println(faceResult.detection.dominanceMarginG, 5);
 
-        if (collectMagDuringAccel) {
+        if (collectAxisFacesDuringAccel) {
             (void)setupCaptureMagAxisFaceSample(ctx, axisAuto, faceResult.detectedFace);
         }
     }
@@ -1586,8 +1837,11 @@ bool setupCaptureSensorFrameObservation(TrackerSerialCommandContext& ctx,
     }
 
     s.println(instruction);
-    if (!waitSetupEnter(ctx, prompt, 300000UL)) {
-        tracker_serial_detail::printErr(s, "setup frame aborted while waiting for position confirmation");
+    bool userAborted = false;
+    if (!waitSetupEnter(ctx, prompt, 300000UL, &userAborted)) {
+        tracker_serial_detail::printErr(s, userAborted
+            ? "setup frame aborted by user before observation capture"
+            : "setup frame aborted while waiting for position confirmation");
         return false;
     }
 
@@ -1699,16 +1953,26 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
         s.print(static_cast<unsigned int>(round));
         s.println("/4");
         s.println("# Rotate in full 3D: figure-eights, roll/pitch/yaw sweeps, and several smooth rotations around different tracker axes.");
-        s.println("# Press Enter after good all-axis coverage, or let this round finish.");
+        s.println("# Press Enter after good all-axis coverage, or let this round finish. Type q then Enter to abort.");
 
         const uint32_t startMs = millis();
         uint32_t lastPrintMs = 0;
+        bool abortRequested = false;
         while (millis() - startMs < 90000UL) {
             serviceSetupRuntime(ctx);
             axisDynamic.update(ctx);
             while (s.available() > 0) {
                 const int c = s.read();
+                if (c == 'q' || c == 'Q') abortRequested = true;
                 if (c == '\n' || c == '\r') {
+                    if (abortRequested) {
+                        if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+                        tracker_serial_detail::printErr(s, "setup calibration aborted by user during mag motion");
+                        return false;
+                    }
+                    // Consume the other byte of a CRLF pair so it cannot
+                    // immediately terminate the next collection round.
+                    drainSetupInput(ctx);
                     goto setup_mag_motion_round_done;
                 }
             }
@@ -1718,13 +1982,21 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
                 s.print("# setup mag motion elapsed_s=");
                 s.print((nowMs - startMs) / 1000UL);
                 s.print(" axis_intervals=");
-                s.print(axisDynamic.intervalCount);
+                s.print(axisDynamic.intervalCount());
+                s.print(" axis_candidates=");
+                s.print(axisDynamic.candidateIntervalsSeen());
+                s.print(" axis_windows=");
+                s.print(axisDynamic.storedIndependentWindows());
+                s.print(" excited_axes=");
+                s.print(static_cast<unsigned int>(axisDynamic.excitedAxes()));
+                s.print(" partition_axes=");
+                s.print(static_cast<unsigned int>(axisDynamic.partitionConfirmedAxes()));
                 s.print(" target_intervals=");
                 s.print(kSetupMagAxisDynamicTargetIntervals);
                 s.print(" mag_samples=");
                 s.print(axisDynamic.magSamplesSeen);
-                s.print(" imu_samples=");
-                s.print(axisDynamic.imuSamplesSeen);
+                s.print(" gyro_endpoints_seen=");
+                s.print(axisDynamic.gyroEndpointsSeen);
                 s.print(" gyro_max_dps=");
                 s.println(axisDynamic.gyroNormMaxDps, 1);
             }
@@ -1732,8 +2004,7 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
         }
 
     setup_mag_motion_round_done:
-        s.print("# setup mag dynamic_axis_intervals="); s.println(axisDynamic.intervalCount);
-        s.print("# setup mag dynamic_axis_dropped="); s.println(axisDynamic.droppedIntervals);
+        setupPrintMagAxisDynamicDiagnostics(s, axisDynamic);
 
         if (!magCalibrationApplied) {
             if (ctx.applyMagCalibration && ctx.applyMagCalibration(false, ctx.applyMagCalibrationUser)) {
@@ -1749,7 +2020,7 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
 
                 char line[8];
                 if (!readSetupLine(ctx,
-                                   "# Mag calibration still lacks enough valid coverage. Press Enter to continue collecting, or type q then Enter to abort.",
+                                   "# Mag calibration was not accepted. Review mag_cal_failure_reason and metrics above; press Enter to collect more, or type q then Enter to abort.",
                                    line,
                                    sizeof(line),
                                    300000UL)) {
@@ -1772,7 +2043,7 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
 
         if (round < 4) {
             s.print("# setup mag hard/soft is ready; continuing automatically for gyro-assisted axis intervals ");
-            s.print(axisDynamic.intervalCount);
+            s.print(axisDynamic.intervalCount());
             s.print('/');
             s.println(kSetupMagAxisDynamicTargetIntervals);
             continue;
@@ -1782,9 +2053,9 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
     if (magCalibrationApplied) {
         if (!axisDynamic.readyForSolve()) {
             s.print("# WARN mag hard/soft accepted, but gyro-assisted axis data is sparse: intervals=");
-            s.print(axisDynamic.intervalCount);
+            s.print(axisDynamic.intervalCount());
             s.print(" windows=");
-            s.print(axisDynamic.independentWindows);
+            s.print(axisDynamic.storedIndependentWindows());
             s.print(" excited_axes=");
             s.print(static_cast<unsigned int>(axisDynamic.excitedAxes()));
             s.print(" solver_min_intervals=");
@@ -1799,13 +2070,19 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
     return false;
 }
 
-bool setupRunMagAxisMotionOnly(TrackerSerialCommandContext& ctx,
-                               SetupMagAxisDynamicCollector& axisDynamic) {
+enum class SetupMagAxisMotionOutcome : uint8_t {
+    Ready,
+    Incomplete,
+    Aborted,
+};
+
+SetupMagAxisMotionOutcome setupRunMagAxisMotionOnly(TrackerSerialCommandContext& ctx,
+                                                     SetupMagAxisDynamicCollector& axisDynamic) {
     Stream& s = out(ctx);
     s.println();
     s.println("# SETUP CALIBRATION STEP 5b/7: MAG AXIS MOTION ONLY");
     s.println("# Existing hard/soft mag calibration is valid; rotate in full 3D so gyro+mag can infer axis mapping.");
-    s.println("# Press Enter after several smooth rotations around different tracker axes, or let this finish.");
+    s.println("# Press Enter after several smooth rotations around different tracker axes, or let this finish. Type q then Enter to abort.");
 
     if (ctx.setMagRuntimeEnabled) {
         (void)ctx.setMagRuntimeEnabled(true, false, ctx.setMagRuntimeEnabledUser);
@@ -1815,19 +2092,25 @@ bool setupRunMagAxisMotionOnly(TrackerSerialCommandContext& ctx,
     axisDynamic.reset();
     const uint32_t startMs = millis();
     uint32_t lastPrintMs = 0;
+    bool abortRequested = false;
     while (millis() - startMs < 60000UL) {
         serviceSetupRuntime(ctx);
         axisDynamic.update(ctx);
         while (s.available() > 0) {
             const int c = s.read();
+            if (c == 'q' || c == 'Q') abortRequested = true;
             if (c == '\n' || c == '\r') {
-                s.print("# setup mag axis motion intervals=");
-                s.println(axisDynamic.intervalCount);
+                drainSetupInput(ctx);
+                if (abortRequested) {
+                    tracker_serial_detail::printErr(s, "setup calibration aborted by user during mag axis motion");
+                    return SetupMagAxisMotionOutcome::Aborted;
+                }
+                setupPrintMagAxisDynamicDiagnostics(s, axisDynamic);
                 if (axisDynamic.targetCoverageReached()) {
-                    return true;
+                    return SetupMagAxisMotionOutcome::Ready;
                 }
                 s.print("# WARN mag axis motion needs more gyro+mag intervals before auto-solve: ");
-                s.print(axisDynamic.intervalCount);
+                s.print(axisDynamic.intervalCount());
                 s.print('/');
                 s.println(kSetupMagAxisDynamicTargetIntervals);
             }
@@ -1838,19 +2121,28 @@ bool setupRunMagAxisMotionOnly(TrackerSerialCommandContext& ctx,
             s.print("# setup mag axis motion elapsed_s=");
             s.print((nowMs - startMs) / 1000UL);
             s.print(" intervals=");
-            s.print(axisDynamic.intervalCount);
+            s.print(axisDynamic.intervalCount());
+            s.print(" candidates=");
+            s.print(axisDynamic.candidateIntervalsSeen());
+            s.print(" windows=");
+            s.print(axisDynamic.storedIndependentWindows());
+            s.print(" excited_axes=");
+            s.print(static_cast<unsigned int>(axisDynamic.excitedAxes()));
+            s.print(" partition_axes=");
+            s.print(static_cast<unsigned int>(axisDynamic.partitionConfirmedAxes()));
             s.print(" mag_samples=");
             s.print(axisDynamic.magSamplesSeen);
-            s.print(" imu_samples=");
-            s.print(axisDynamic.imuSamplesSeen);
+            s.print(" gyro_endpoints_seen=");
+            s.print(axisDynamic.gyroEndpointsSeen);
             s.print(" gyro_max_dps=");
             s.println(axisDynamic.gyroNormMaxDps, 1);
         }
         delay(5);
     }
-    s.print("# setup mag axis motion intervals=");
-    s.println(axisDynamic.intervalCount);
-    return axisDynamic.readyForSolve();
+    setupPrintMagAxisDynamicDiagnostics(s, axisDynamic);
+    return axisDynamic.readyForSolve()
+        ? SetupMagAxisMotionOutcome::Ready
+        : SetupMagAxisMotionOutcome::Incomplete;
 }
 
 bool setupSetAxisIdentity(TrackerSerialCommandContext& ctx) {
@@ -1877,7 +2169,145 @@ bool setupApplyAxisMatrix(TrackerSerialCommandContext& ctx, const Mat3& m) {
     return true;
 }
 
-bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
+TRACKER_SETUP_NOINLINE void setupPrintStaticAxisCrossCheck(
+    TrackerSerialCommandContext& ctx,
+    const SetupMagAxisAutoCollector& axisAuto,
+    const Mat3& dynamicCoarseMagToImu) {
+    if (!ctx.config || !ctx.imuCal) return;
+
+    SetupMagAxisAutoResult staticAxis;
+    Stream& s = out(ctx);
+    if (setupAutoSolveMagAxis(axisAuto, *ctx.config, *ctx.imuCal, staticAxis)) {
+        s.print("# static_mag_axis_mapping=");
+        setupPrintMagAxisMapping(s, staticAxis.magToImu);
+        s.println();
+        s.print("# static_mag_axis_score="); s.println(staticAxis.score, 6);
+        // Compare the discrete coarse mounting, not the continuously refined
+        // matrix. Static inclination-only evidence is a weaker and sometimes
+        // ambiguous cross-check: it may warn about a disagreement, but it must
+        // not veto a dynamic result that already passed independent kinematic
+        // training/validation and proper-SO(3) gates.
+        if (!setupAxisMatricesEqual(dynamicCoarseMagToImu, staticAxis.magToImu)) {
+            s.println("# WARN static inclination axis check disagrees with validated gyro-assisted coarse mapping; retaining validated dynamic result");
+        } else {
+            s.println("# static_mag_axis_cross_check=agree");
+        }
+    } else {
+        s.println("# WARN static inclination axis check was inconclusive; retaining validated gyro-assisted result");
+    }
+}
+
+TRACKER_SETUP_NOINLINE bool setupTryApplyDynamicAxisAlignment(
+    TrackerSerialCommandContext& ctx,
+    const SetupMagAxisAutoCollector& axisAuto,
+    const SetupMagAxisDynamicCollector& axisDynamic,
+    bool& solvedOut) {
+    solvedOut = false;
+    if (!ctx.config) return false;
+
+    SetupMagAxisDynamicResult dynamicAxis;
+    const bool dynamicOk = setupAutoSolveMagAxisDynamic(
+        axisDynamic, *ctx.config, dynamicAxis);
+    Stream& s = out(ctx);
+    s.print("# gyro_mag_axis_failure_reason=");
+    s.println(magAxisAlignmentFailureReasonName(dynamicAxis.failureReason));
+    s.print("# gyro_mag_axis_excited_axes="); s.println(static_cast<unsigned int>(dynamicAxis.excitedAxes));
+    s.print("# gyro_mag_axis_partition_confirmed_axes="); s.println(static_cast<unsigned int>(dynamicAxis.partitionConfirmedAxes));
+    s.print("# gyro_mag_axis_independent_windows="); s.println(dynamicAxis.independentWindows);
+    s.print("# gyro_mag_axis_training_score_deg="); s.println(dynamicAxis.trainingScore, 6);
+    s.print("# gyro_mag_axis_validation_score_deg="); s.println(dynamicAxis.validationScore, 6);
+    s.print("# gyro_mag_axis_training_validation_rotation_difference_deg="); s.println(dynamicAxis.trainingValidationRotationDifferenceDeg, 6);
+    s.print("# gyro_mag_axis_coarse_winner_matches_training="); s.println(dynamicAxis.coarseWinnerMatchesTraining ? "yes" : "no");
+    s.print("# gyro_mag_axis_continuous_refinement_agreement="); s.println(dynamicAxis.continuousRefinementAgreement ? "yes" : "no");
+    s.print("# gyro_mag_axis_coarse_consensus_fallback_used="); s.println(dynamicAxis.coarseConsensusFallbackUsed ? "yes" : "no");
+    s.print("# gyro_mag_axis_training_intervals="); s.println(static_cast<unsigned int>(dynamicAxis.trainingUsedIntervals));
+    s.print("# gyro_mag_axis_validation_intervals="); s.println(static_cast<unsigned int>(dynamicAxis.validationUsedIntervals));
+    s.print("# gyro_mag_axis_training_windows="); s.println(dynamicAxis.trainingWindows);
+    s.print("# gyro_mag_axis_validation_windows="); s.println(dynamicAxis.validationWindows);
+    if (!dynamicOk) return false;
+    solvedOut = true;
+
+    s.print("# gyro_mag_axis_mapping_coarse=");
+    setupPrintMagAxisMapping(s, dynamicAxis.coarseMagToImu);
+    s.println();
+    setupPrintMagAxisMatrix(s, dynamicAxis.magToImu);
+    s.print("# gyro_mag_axis_refined="); s.println(dynamicAxis.refined ? "yes" : "no");
+    s.print("# gyro_mag_axis_refinement_deg="); s.println(dynamicAxis.refinementAngleDeg, 6);
+    s.print("# gyro_mag_axis_score_deg="); s.println(dynamicAxis.score, 6);
+    s.print("# gyro_mag_axis_coarse_score_deg="); s.println(dynamicAxis.coarseScore, 6);
+    s.print("# gyro_mag_axis_second_best_deg="); s.println(dynamicAxis.secondBestScore, 6);
+    s.print("# gyro_mag_axis_direction_error_deg="); s.println(dynamicAxis.meanDirectionError, 6);
+    s.print("# gyro_mag_axis_rotation_magnitude_error_deg="); s.println(dynamicAxis.meanMagnitudeError, 6);
+    s.print("# gyro_mag_axis_quality="); s.println(dynamicAxis.qualityScore, 6);
+    s.print("# gyro_mag_axis_normalized_separation="); s.println(dynamicAxis.normalizedSeparation, 6);
+    s.print("# gyro_mag_axis_mean_observable_step_deg="); s.println(dynamicAxis.meanObservableStepDeg, 6);
+    s.print("# gyro_mag_axis_total_observable_rotation_deg="); s.println(dynamicAxis.totalObservableRotationDeg, 6);
+    s.print("# gyro_mag_axis_validation_passed="); s.println(dynamicAxis.validationPassed ? "yes" : "no");
+    s.print("# gyro_mag_axis_validation_winner_matches_training="); s.println(dynamicAxis.validationWinnerMatchesTraining ? "yes" : "no");
+    s.print("# gyro_mag_axis_intervals="); s.println(static_cast<unsigned int>(dynamicAxis.usedIntervals));
+
+    setupPrintStaticAxisCrossCheck(
+        ctx, axisAuto, dynamicAxis.coarseMagToImu);
+    if (!setupApplyAxisMatrix(ctx, dynamicAxis.magToImu)) return false;
+    tracker_serial_detail::printOk(s, "mag axis alignment gyro-assisted auto-detected in RAM");
+    return true;
+}
+
+TRACKER_SETUP_NOINLINE bool setupTryApplyStaticAxisAlignment(
+    TrackerSerialCommandContext& ctx,
+    const SetupMagAxisAutoCollector& axisAuto,
+    bool dynamicSolved) {
+    if (!ctx.config || !ctx.imuCal) return false;
+
+    SetupMagAxisAutoResult staticAxis;
+    if (!setupAutoSolveMagAxis(axisAuto, *ctx.config, *ctx.imuCal, staticAxis)) return false;
+
+    Stream& s = out(ctx);
+    s.print("# static_mag_axis_mapping=");
+    setupPrintMagAxisMapping(s, staticAxis.magToImu);
+    s.println();
+    s.print("# static_mag_axis_score="); s.println(staticAxis.score, 6);
+    s.print("# static_mag_axis_second_best="); s.println(staticAxis.secondBestScore, 6);
+    s.print("# static_mag_axis_inclination_mean="); s.println(staticAxis.inclinationMean, 6);
+    s.print("# static_mag_axis_inclination_stddev="); s.println(staticAxis.inclinationStddev, 6);
+    s.print("# static_mag_axis_samples="); s.println(static_cast<unsigned int>(staticAxis.usedSamples));
+    s.println(dynamicSolved
+        ? "# WARN gyro-assisted axis result could not be applied; falling back to static inclination check"
+        : "# WARN gyro-assisted axis check was inconclusive; falling back to static inclination check");
+    if (!setupApplyAxisMatrix(ctx, staticAxis.magToImu)) return false;
+    tracker_serial_detail::printOk(s, "mag axis alignment auto-detected in RAM");
+    return true;
+}
+
+TRACKER_SETUP_NOINLINE bool setupPromptManualAxisMapping(TrackerSerialCommandContext& ctx) {
+    Stream& s = out(ctx);
+    char line[48] = {};
+    s.println("# Enter mag axis mapping as three tokens for IMU/body X Y Z, for example: +x +y +z");
+    s.println("# Type identity explicitly only if magnetometer axes are known to match IMU axes.");
+    s.println("# A blank line aborts this step instead of silently accepting identity.");
+    if (!readSetupLine(ctx, "# axis mapping> ", line, sizeof(line), 300000UL)) {
+        tracker_serial_detail::printErr(s, "setup calibration aborted: axis mapping timeout");
+        return false;
+    }
+    if (line[0] == '\0') {
+        tracker_serial_detail::printErr(s, "setup calibration aborted: blank mag axis mapping is not accepted");
+        return false;
+    }
+    if (is(line, "identity")) return setupSetAxisIdentity(ctx);
+
+    char* tokens[4] = {};
+    uint8_t count = 0;
+    for (char* p = strtok(line, " \t"); p != nullptr && count < 4; p = strtok(nullptr, " \t")) {
+        tokens[count++] = p;
+    }
+    if (count != 3) {
+        tracker_serial_detail::printErr(s, "setup calibration failed: expected three axis tokens, for example +x +y +z");
+        return false;
+    }
+    return setupSetAxisMapping(ctx, tokens[0], tokens[1], tokens[2]);
+}
+
+TRACKER_SETUP_NOINLINE bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
                            const SetupMagAxisAutoCollector& axisAuto,
                            const SetupMagAxisDynamicCollector& axisDynamic,
                            const char* axisX,
@@ -1893,73 +2323,12 @@ bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
     }
 
     if (ctx.config && ctx.imuCal) {
-        SetupMagAxisAutoResult staticAxis;
-        const bool staticOk = setupAutoSolveMagAxis(axisAuto, *ctx.config, *ctx.imuCal, staticAxis);
-
-        SetupMagAxisDynamicResult dynamicAxis;
-        const bool dynamicOk = setupAutoSolveMagAxisDynamic(axisDynamic, *ctx.config, dynamicAxis);
-
-        if (dynamicOk) {
-            s.print("# gyro_mag_axis_mapping_coarse=");
-            setupPrintMagAxisMapping(s, dynamicAxis.coarseMagToImu);
-            s.println();
-            setupPrintMagAxisMatrix(s, dynamicAxis.magToImu);
-            s.print("# gyro_mag_axis_refined="); s.println(dynamicAxis.refined ? "yes" : "no");
-            s.print("# gyro_mag_axis_refinement_deg="); s.println(dynamicAxis.refinementAngleDeg, 6);
-            s.print("# gyro_mag_axis_score_deg="); s.println(dynamicAxis.score, 6);
-            s.print("# gyro_mag_axis_coarse_score_deg="); s.println(dynamicAxis.coarseScore, 6);
-            s.print("# gyro_mag_axis_second_best_deg="); s.println(dynamicAxis.secondBestScore, 6);
-            s.print("# gyro_mag_axis_direction_error_deg="); s.println(dynamicAxis.meanDirectionError, 6);
-            s.print("# gyro_mag_axis_rotation_magnitude_error_deg="); s.println(dynamicAxis.meanMagnitudeError, 6);
-            s.print("# gyro_mag_axis_quality="); s.println(dynamicAxis.qualityScore, 6);
-            s.print("# gyro_mag_axis_normalized_separation="); s.println(dynamicAxis.normalizedSeparation, 6);
-            s.print("# gyro_mag_axis_mean_observable_step_deg="); s.println(dynamicAxis.meanObservableStepDeg, 6);
-            s.print("# gyro_mag_axis_total_observable_rotation_deg="); s.println(dynamicAxis.totalObservableRotationDeg, 6);
-            s.print("# gyro_mag_axis_training_validation_rotation_difference_deg="); s.println(dynamicAxis.trainingValidationRotationDifferenceDeg, 6);
-            s.print("# gyro_mag_axis_validation_passed="); s.println(dynamicAxis.validationPassed ? "yes" : "no");
-            s.print("# gyro_mag_axis_validation_winner_matches_training="); s.println(dynamicAxis.validationWinnerMatchesTraining ? "yes" : "no");
-            s.print("# gyro_mag_axis_intervals="); s.println(static_cast<unsigned int>(dynamicAxis.usedIntervals));
-            s.print("# gyro_mag_axis_training_intervals="); s.println(static_cast<unsigned int>(dynamicAxis.trainingUsedIntervals));
-            s.print("# gyro_mag_axis_validation_intervals="); s.println(static_cast<unsigned int>(dynamicAxis.validationUsedIntervals));
-            s.print("# gyro_mag_axis_training_windows="); s.println(dynamicAxis.trainingWindows);
-            s.print("# gyro_mag_axis_validation_windows="); s.println(dynamicAxis.validationWindows);
-
-            if (staticOk) {
-                s.print("# static_mag_axis_mapping=");
-                setupPrintMagAxisMapping(s, staticAxis.magToImu);
-                s.println();
-                s.print("# static_mag_axis_score="); s.println(staticAxis.score, 6);
-                if (!setupAxisMatricesEqual(dynamicAxis.magToImu, staticAxis.magToImu)) {
-                    s.println("# WARN static inclination axis check disagrees with gyro-assisted axis check; using gyro-assisted result");
-                }
-            } else {
-                s.println("# WARN static inclination axis check was inconclusive; using gyro-assisted result");
-            }
-
-            if (setupApplyAxisMatrix(ctx, dynamicAxis.magToImu)) {
-                tracker_serial_detail::printOk(s, "mag axis alignment gyro-assisted auto-detected in RAM");
-                return true;
-            }
-        }
-
-        if (staticOk) {
-            s.print("# static_mag_axis_mapping=");
-            setupPrintMagAxisMapping(s, staticAxis.magToImu);
-            s.println();
-            s.print("# static_mag_axis_score="); s.println(staticAxis.score, 6);
-            s.print("# static_mag_axis_second_best="); s.println(staticAxis.secondBestScore, 6);
-            s.print("# static_mag_axis_inclination_mean="); s.println(staticAxis.inclinationMean, 6);
-            s.print("# static_mag_axis_inclination_stddev="); s.println(staticAxis.inclinationStddev, 6);
-            s.print("# static_mag_axis_samples="); s.println(static_cast<unsigned int>(staticAxis.usedSamples));
-            s.println("# WARN gyro-assisted axis check was inconclusive; falling back to static inclination check");
-            if (setupApplyAxisMatrix(ctx, staticAxis.magToImu)) {
-                tracker_serial_detail::printOk(s, "mag axis alignment auto-detected in RAM");
-                return true;
-            }
-        }
+        bool dynamicSolved = false;
+        if (setupTryApplyDynamicAxisAlignment(ctx, axisAuto, axisDynamic, dynamicSolved)) return true;
+        if (setupTryApplyStaticAxisAlignment(ctx, axisAuto, dynamicSolved)) return true;
 
         s.print("# WARN automatic mag axis alignment failed. dynamic_intervals=");
-        s.print(axisDynamic.intervalCount);
+        s.print(axisDynamic.intervalCount());
         s.print(" solver_min=");
         s.print(kSetupMagAxisDynamicSolverMinIntervals);
         s.print(" target=");
@@ -1968,28 +2337,7 @@ bool setupRunAxisAlignment(TrackerSerialCommandContext& ctx,
         s.println(axisAuto.count);
     }
 
-    char line[48] = {};
-    s.println("# Enter mag axis mapping as three tokens for IMU/body X Y Z, for example: +x +y +z");
-    s.println("# Leave blank only if this board's magnetometer axes are already known to match IMU axes.");
-    if (!readSetupLine(ctx, "# axis mapping> ", line, sizeof(line), 300000UL)) {
-        tracker_serial_detail::printErr(s, "setup calibration aborted: axis mapping timeout");
-        return false;
-    }
-    if (line[0] == '\0') {
-        return setupSetAxisIdentity(ctx);
-    }
-
-    char* tokens[3] = {};
-    uint8_t count = 0;
-    for (char* p = strtok(line, " \t"); p != nullptr && count < 3; p = strtok(nullptr, " \t")) {
-        tokens[count++] = p;
-    }
-    if (count != 3) {
-        tracker_serial_detail::printErr(s, "setup calibration failed: expected three axis tokens, for example +x +y +z");
-        return false;
-    }
-
-    return setupSetAxisMapping(ctx, tokens[0], tokens[1], tokens[2]);
+    return setupPromptManualAxisMapping(ctx);
 }
 
 bool setupDisableMagFor6Dof(TrackerSerialCommandContext& ctx) {
@@ -2017,6 +2365,173 @@ bool setupDisableMagFor6Dof(TrackerSerialCommandContext& ctx) {
     ctx.config->updateCrc();
     if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
     s.println("# setup calibration: magnetometer disabled for 6DoF-only tracker");
+    return true;
+}
+
+uint32_t setupCounterDelta(uint32_t before, uint32_t after) {
+    return after >= before ? after - before : after;
+}
+
+bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser) {
+    Stream& s = out(ctx);
+    s.println();
+    s.println("# SETUP OUTPUT VERIFICATION");
+    s.println("# Leave the tracker completely still on any stable ordinary face.");
+    s.println("# No diagonal or precisely measured angle is required.");
+
+    if (!ctx.preparedOutput || !ctx.quality || !ctx.fifo ||
+        !ctx.lastCalibratedSample || !ctx.lastImuSampleSequence) {
+        tracker_serial_detail::printErr(
+            s, "setup verify failed: prepared output/input sample/quality/FIFO runtime is not available");
+        return false;
+    }
+    bool userAborted = false;
+    if (promptUser &&
+        !waitSetupEnter(ctx,
+                        "# Press Enter when the tracker is still, or type q then Enter to abort.",
+                        120000UL,
+                        &userAborted)) {
+        tracker_serial_detail::printErr(s, userAborted
+            ? "setup verify aborted by user"
+            : "setup verify aborted: rest confirmation timeout");
+        return false;
+    }
+
+    // Give AHRS and magnetic re-entry a short settling period after the final
+    // calibration apply. This does not ask the user for another pose.
+    const uint32_t settleStartMs = millis();
+    while (millis() - settleStartMs < 2500UL) {
+        serviceSetupRuntime(ctx);
+        delay(5);
+    }
+
+    const ImuQualityCounters qualityBefore = ctx.quality->counters();
+    const Lsm6dsvFifoReader::DrainStats fifoBefore = ctx.fifo->stats();
+    SetupOutputVerificationConfig verifyConfig;
+    SetupOutputVerificationAccumulator verifier;
+    TrackerPreparedOutputSnapshot snapshot;
+    uint32_t lastInputSequence = *ctx.lastImuSampleSequence;
+
+    // At the normal prepared-output cadence a four-second capture can contain
+    // only about 200 coherent input observations, while the stationarity gate
+    // intentionally requires 256. Keep the quality threshold and extend the
+    // capture only until both evidence counts are satisfied, with a bounded
+    // maximum so a dead runtime cannot block setup indefinitely.
+    constexpr uint32_t kMinimumCaptureMs = 4000UL;
+    constexpr uint32_t kMaximumCaptureMs = 8000UL;
+    const uint32_t captureStartMs = millis();
+    while (true) {
+        serviceSetupRuntime(ctx);
+        if (ctx.preparedOutput->copy(snapshot)) verifier.push(snapshot);
+        const uint32_t inputSequence = *ctx.lastImuSampleSequence;
+        if (inputSequence != 0u && inputSequence != lastInputSequence) {
+            lastInputSequence = inputSequence;
+            verifier.pushInputSample(
+                ctx.lastCalibratedSample->gyro_rad_s,
+                ctx.lastCalibratedSample->accel_g);
+        }
+        const uint32_t elapsedMs = millis() - captureStartMs;
+        if (elapsedMs >= kMinimumCaptureMs &&
+            verifier.uniqueSnapshotCount() >= verifyConfig.minimumSnapshots &&
+            verifier.inputSampleCount() >= verifyConfig.minimumInputSamples) {
+            break;
+        }
+        if (elapsedMs >= kMaximumCaptureMs) break;
+        delay(5);
+    }
+    const uint32_t captureDurationMs = millis() - captureStartMs;
+
+    const ImuQualityCounters qualityAfter = ctx.quality->counters();
+    const Lsm6dsvFifoReader::DrainStats fifoAfter = ctx.fifo->stats();
+
+    const uint32_t fifoOverrunDelta = setupCounterDelta(fifoBefore.overrunEvents, fifoAfter.overrunEvents);
+    const uint32_t fifoFullDelta = setupCounterDelta(fifoBefore.fullEvents, fifoAfter.fullEvents);
+    const uint32_t fallbackTimestampDelta = setupCounterDelta(
+        qualityBefore.fallbackTimestampSamples, qualityAfter.fallbackTimestampSamples);
+    const uint32_t nonMonotonicTimestampDelta = setupCounterDelta(
+        qualityBefore.nonMonotonicTimestampSamples, qualityAfter.nonMonotonicTimestampSamples);
+    const uint32_t largeGapDelta = setupCounterDelta(
+        qualityBefore.largeGapSamples, qualityAfter.largeGapSamples);
+    const uint32_t droppedDelta = setupCounterDelta(
+        qualityBefore.estimatedDroppedSamples, qualityAfter.estimatedDroppedSamples);
+    const uint32_t timestampQueueOverflowDelta = setupCounterDelta(
+        qualityBefore.timestampQueueOverflows, qualityAfter.timestampQueueOverflows);
+    const uint32_t completedQueueOverflowDelta = setupCounterDelta(
+        qualityBefore.completedSampleQueueOverflows, qualityAfter.completedSampleQueueOverflows);
+    const uint32_t timestampBackwardsDelta = setupCounterDelta(
+        qualityBefore.timestampBackwards, qualityAfter.timestampBackwards);
+    const uint32_t recoveryDelta = setupCounterDelta(
+        qualityBefore.fifoRecoveryRequests, qualityAfter.fifoRecoveryRequests);
+    const uint32_t ahrsSkippedDelta = setupCounterDelta(
+        qualityBefore.ahrsSkippedSamples, qualityAfter.ahrsSkippedSamples);
+
+    const bool streamHealthPassed =
+        fifoOverrunDelta == 0u &&
+        fifoFullDelta == 0u &&
+        fallbackTimestampDelta == 0u &&
+        nonMonotonicTimestampDelta == 0u &&
+        largeGapDelta == 0u &&
+        droppedDelta == 0u &&
+        timestampQueueOverflowDelta == 0u &&
+        completedQueueOverflowDelta == 0u &&
+        timestampBackwardsDelta == 0u &&
+        recoveryDelta == 0u &&
+        ahrsSkippedDelta == 0u;
+
+    const SetupOutputVerificationResult result = verifier.finish(verifyConfig, streamHealthPassed);
+
+    s.print("capture_duration_ms="); s.println(captureDurationMs);
+    s.print("snapshots="); s.println(result.snapshots);
+    s.print("unique_snapshots="); s.println(result.uniqueSnapshots);
+    s.print("invalid_snapshots="); s.println(result.invalidSnapshots);
+    s.print("duplicate_snapshots="); s.println(result.duplicateSnapshots);
+    s.print("quaternion_norm_error_max="); s.println(result.maximumQuaternionNormError, 8);
+    s.print("quaternion_step_max_deg="); s.println(result.maximumQuaternionStepDeg, 6);
+    s.print("linear_accel_valid_ratio="); s.println(result.linearAccelerationValidRatio, 6);
+    s.print("linear_accel_mean_g="); s.println(result.linearAccelerationMeanG, 6);
+    s.print("linear_accel_rms_g="); s.println(result.linearAccelerationRmsG, 6);
+    s.print("linear_accel_peak_g="); s.println(result.linearAccelerationPeakG, 6);
+    s.print("input_samples="); s.println(result.inputSamples);
+    s.print("input_gyro_mean_dps=");
+    s.print(result.inputGyroMeanDps.x, 6); s.print(',');
+    s.print(result.inputGyroMeanDps.y, 6); s.print(',');
+    s.println(result.inputGyroMeanDps.z, 6);
+    s.print("input_gyro_mean_se_dps=");
+    s.print(result.inputGyroMeanStdErrorDps.x, 6); s.print(',');
+    s.print(result.inputGyroMeanStdErrorDps.y, 6); s.print(',');
+    s.println(result.inputGyroMeanStdErrorDps.z, 6);
+    s.print("input_accel_norm_mean_g="); s.println(result.inputAccelNormMeanG, 6);
+    s.print("input_accel_norm_std_g="); s.println(result.inputAccelNormStdG, 6);
+    s.print("fifo_overrun_delta="); s.println(fifoOverrunDelta);
+    s.print("fifo_full_delta="); s.println(fifoFullDelta);
+    s.print("fallback_timestamp_delta="); s.println(fallbackTimestampDelta);
+    s.print("non_monotonic_timestamp_delta="); s.println(nonMonotonicTimestampDelta);
+    s.print("large_gap_delta="); s.println(largeGapDelta);
+    s.print("estimated_dropped_delta="); s.println(droppedDelta);
+    s.print("timestamp_queue_overflow_delta="); s.println(timestampQueueOverflowDelta);
+    s.print("completed_queue_overflow_delta="); s.println(completedQueueOverflowDelta);
+    s.print("timestamp_backwards_delta="); s.println(timestampBackwardsDelta);
+    s.print("recovery_delta="); s.println(recoveryDelta);
+    s.print("ahrs_skipped_delta="); s.println(ahrsSkippedDelta);
+    s.print("output_available="); s.println(yesNo(result.outputAvailable));
+    s.print("quaternion_norm_passed="); s.println(yesNo(result.quaternionNormPassed));
+    s.print("quaternion_continuity_passed="); s.println(yesNo(result.quaternionContinuityPassed));
+    s.print("linear_acceleration_passed="); s.println(yesNo(result.linearAccelerationPassed));
+    s.print("stationary_input_sample_count_passed="); s.println(yesNo(result.stationaryInputSampleCountPassed));
+    s.print("stationary_gyro_mean_passed="); s.println(yesNo(result.stationaryGyroMeanPassed));
+    s.print("stationary_gyro_precision_passed="); s.println(yesNo(result.stationaryGyroPrecisionPassed));
+    s.print("stationary_accel_mean_passed="); s.println(yesNo(result.stationaryAccelMeanPassed));
+    s.print("stationary_accel_std_passed="); s.println(yesNo(result.stationaryAccelStdPassed));
+    s.print("stationary_input_passed="); s.println(yesNo(result.stationaryInputPassed));
+    s.print("stream_health_passed="); s.println(yesNo(result.streamHealthPassed));
+    s.print("setup_output_verified="); s.println(yesNo(result.valid));
+
+    if (!result.valid) {
+        tracker_serial_detail::printErr(
+            s, "setup verify rejected final quaternion/acceleration output; previous calibration remains authoritative");
+        return false;
+    }
+    tracker_serial_detail::printOk(s, "final coherent quaternion and linear acceleration output verified");
     return true;
 }
 
@@ -2064,16 +2579,19 @@ bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx, bool noMag)
 
     const SetupReadiness r = readSetupReadiness(ctx);
     const bool ready = noMag
-        ? (r.tracking6dof() && r.tempQuality() && r.runtimeBias())
-        : r.production();
+        ? r.calibration6dof()
+        : r.calibration9dof();
     if (!ready) {
         s.println(noMag
-            ? "# WARN setup calibration finished in RAM, but 6dof_ready is still no; run setup status for missing items"
-            : "# WARN setup calibration finished in RAM, but production_ready is still no; run setup status for missing items");
+            ? "# WARN setup calibration finished in RAM, but calibration_6dof_ready is still no; run setup status for missing items"
+            : "# WARN setup calibration finished in RAM, but calibration_9dof_ready is still no; run setup status for missing items");
     } else {
         tracker_serial_detail::printOk(s, noMag
             ? "6DoF tracking features enabled in RAM"
             : "setup calibration features enabled in RAM");
+        if (!r.slimevr()) {
+            s.println("# WARN sensor calibration is ready, but Wi-Fi/SlimeVR is not ready; run setup wifi separately.");
+        }
     }
     if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
     printSetupStatus(ctx);
@@ -2120,6 +2638,11 @@ bool parseSetupCalibrationOptions(TrackerSerialCommandContext& ctx,
             tracker_serial_detail::printErr(s, "usage: setup calibration [resume|full] [nomag|6dof] [axis <bodyX> <bodyY> <bodyZ>]");
             return false;
         }
+    }
+    if (opt.noMag && opt.axisX) {
+        tracker_serial_detail::printErr(
+            s, "setup calibration: nomag/6dof cannot be combined with an axis mapping");
+        return false;
     }
     return true;
 }
@@ -2175,7 +2698,11 @@ void cmdSetupCalibrationFull(TrackerSerialCommandContext& ctx,
     axisDynamic.reset();
     SetupFrameObservations& frameObservations = g_setupFrameObservations;
     frameObservations.reset();
-    if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto, frameObservations, !noMag)) { fail(noMag ? "accel_6pos" : "accel_mag_faces"); return; }
+    if (!setupRunAccelFacesWithMagCollection(
+            ctx, axisAuto, frameObservations, !noMag, !noMag)) {
+        fail(noMag ? "accel_6pos" : "accel_mag_faces");
+        return;
+    }
     if (!setupRunSensorToDeviceAlignmentFromAccel(ctx, frameObservations)) { fail("sensor_to_device"); return; }
     if (!noMag) {
         if (!setupRunMagMotionAndApply(ctx, axisDynamic, false)) { fail("mag_hard_soft"); return; }
@@ -2185,6 +2712,7 @@ void cmdSetupCalibrationFull(TrackerSerialCommandContext& ctx,
         s.println("# skip mag_axis: nomag/6dof requested");
     }
     if (!setupEnableProductionTracking(ctx, noMag)) { fail("enable_tracking"); return; }
+    if (!setupVerifyOutputRuntime(ctx, true)) { fail("verify_output"); return; }
 
     if (!tx.commit(ctx)) { fail("commit_save"); return; }
 
@@ -2217,7 +2745,6 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
 
     SetupReadiness r = readSetupReadiness(ctx);
     const bool restReadyAtStart = r.gyroReady;
-    const bool tempReadyAtStart = setupStoredTempModelReady(ctx);
     if (restReadyAtStart) {
         s.println("# skip rest_gyro: already valid in RAM/NVS");
     } else {
@@ -2228,8 +2755,11 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
         if (!setupCheckpointCommit(ctx, "rest_gyro")) { tx.rollback(ctx, "rest_gyro_commit"); return; }
     }
 
-    if (tempReadyAtStart) {
-        s.println("# skip gyro_temperature: temperature model already valid");
+    // Rest calibration can invalidate an older temperature model epoch.
+    // Re-evaluate after the rest checkpoint instead of trusting pre-rest state.
+    const bool tempReadyAfterRest = setupStoredTempModelReady(ctx);
+    if (tempReadyAfterRest) {
+        s.println("# skip gyro_temperature: temperature model already valid for the current gyro model");
     } else {
         SetupCalibrationTransaction& tx = g_setupCalibrationTx;
         tx.begin(ctx);
@@ -2240,8 +2770,9 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
 
     // Re-read readiness after rest/temp commits because they may update runtime/config state.
     r = readSetupReadiness(ctx);
+    const bool manualAxisRequested = axisX && axisY && axisZ;
     const bool needMagCollection = !noMag && !r.magCal;
-    const bool needAxisAssist = !noMag && (!r.magAxis || (axisX && axisY && axisZ));
+    const bool needAxisAssist = !noMag && !r.magAxis && !manualAxisRequested;
     bool magCollectionStartedDuringAccel = false;
 
     if (r.accelReady) {
@@ -2257,9 +2788,9 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
     } else {
         SetupCalibrationTransaction& tx = g_setupCalibrationTx;
         tx.begin(ctx);
-        const bool collectMagDuringAccel = needMagCollection || needAxisAssist;
-        magCollectionStartedDuringAccel = collectMagDuringAccel;
-        if (!setupRunAccelFacesWithMagCollection(ctx, axisAuto, frameObservations, collectMagDuringAccel)) {
+        magCollectionStartedDuringAccel = needMagCollection;
+        if (!setupRunAccelFacesWithMagCollection(
+                ctx, axisAuto, frameObservations, needMagCollection, needAxisAssist)) {
             tx.rollback(ctx, "accel_6pos");
             return;
         }
@@ -2277,6 +2808,10 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
         r = readSetupReadiness(ctx);
         if (r.magCal) {
             s.println("# skip mag_hard_soft: already valid in RAM/NVS");
+            if (magCollectionStartedDuringAccel && ctx.stopMagCalibration) {
+                ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
+                s.println("# setup mag: stopped temporary face-sample hard/soft collector");
+            }
         } else {
             SetupCalibrationTransaction& tx = g_setupCalibrationTx;
             tx.begin(ctx);
@@ -2292,8 +2827,12 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
         } else {
             SetupCalibrationTransaction& tx = g_setupCalibrationTx;
             tx.begin(ctx);
-            if (!axisDynamic.readyForSolve() && !axisAuto.count && !(axisX && axisY && axisZ)) {
-                (void)setupRunMagAxisMotionOnly(ctx, axisDynamic);
+            if (!axisDynamic.readyForSolve() && !(axisX && axisY && axisZ)) {
+                const SetupMagAxisMotionOutcome motion = setupRunMagAxisMotionOnly(ctx, axisDynamic);
+                if (motion == SetupMagAxisMotionOutcome::Aborted) {
+                    tx.rollback(ctx, "mag_axis_motion_aborted");
+                    return;
+                }
             }
             if (!setupRunAxisAlignment(ctx, axisAuto, axisDynamic, axisX, axisY, axisZ)) { tx.rollback(ctx, "mag_axis"); return; }
             if (!setupCheckpointCommit(ctx, "mag_axis")) { tx.rollback(ctx, "mag_axis_commit"); return; }
@@ -2306,6 +2845,7 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
         SetupCalibrationTransaction& tx = g_setupCalibrationTx;
         tx.begin(ctx);
         if (!setupEnableProductionTracking(ctx, noMag)) { tx.rollback(ctx, "enable_tracking"); return; }
+        if (!setupVerifyOutputRuntime(ctx, true)) { tx.rollback(ctx, "verify_output"); return; }
         if (!setupCheckpointCommit(ctx, "enable_tracking")) { tx.rollback(ctx, "enable_tracking_commit"); return; }
     }
 
@@ -2350,29 +2890,79 @@ void cmdSetupFrame(TrackerSerialCommandContext& ctx, int argc, char** argv) {
         return;
     }
 
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    if (ctx.calibrationAutonomy &&
+        !ctx.calibrationAutonomy->beginManualCalibration(millis())) {
+        tracker_serial_detail::printErr(
+            s, "setup frame blocked: autonomous calibration transaction could not be resolved");
+        return;
+    }
+#endif
     SetupCalibrationTransaction& tx = g_setupCalibrationTx;
     tx.begin(ctx);
     if (!setupRunSensorToDeviceAlignmentStandalone(ctx)) {
         tx.rollback(ctx, "sensor_to_device");
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        if (ctx.calibrationAutonomy) ctx.calibrationAutonomy->endManualCalibration(true, millis());
+#endif
         return;
     }
     if (!tx.commit(ctx)) {
         tx.rollback(ctx, "sensor_to_device_commit");
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        if (ctx.calibrationAutonomy) ctx.calibrationAutonomy->endManualCalibration(true, millis());
+#endif
         return;
     }
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    if (ctx.calibrationAutonomy) ctx.calibrationAutonomy->endManualCalibration(true, millis());
+#endif
     tracker_serial_detail::printOk(s, "sensor-to-device frame calibration saved to NVS");
     printSetupFrameStatus(ctx);
+}
+
+void cmdSetupVerify(TrackerSerialCommandContext& ctx) {
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    if (ctx.calibrationAutonomy &&
+        !ctx.calibrationAutonomy->beginManualCalibration(millis())) {
+        tracker_serial_detail::printErr(
+            out(ctx), "setup verify blocked: autonomous calibration transaction could not be resolved");
+        return;
+    }
+#endif
+    const bool ok = setupVerifyOutputRuntime(ctx, true);
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    if (ctx.calibrationAutonomy) {
+        ctx.calibrationAutonomy->endManualCalibration(false, millis());
+    }
+#endif
+    if (!ok) return;
+    printSetupStatus(ctx);
 }
 
 void cmdSetupCalibration(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     SetupCalibrationOptions opt;
     if (!parseSetupCalibrationOptions(ctx, argc, argv, opt)) return;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    if (ctx.calibrationAutonomy &&
+        !ctx.calibrationAutonomy->beginManualCalibration(millis())) {
+        tracker_serial_detail::printErr(
+            out(ctx),
+            "setup calibration blocked: autonomous calibration transaction could not be resolved");
+        return;
+    }
+#endif
 
     if (opt.full) {
         cmdSetupCalibrationFull(ctx, opt.noMag, opt.axisX, opt.axisY, opt.axisZ);
     } else {
         cmdSetupCalibrationResume(ctx, opt.noMag, opt.axisX, opt.axisY, opt.axisZ);
     }
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    if (ctx.calibrationAutonomy) {
+        ctx.calibrationAutonomy->endManualCalibration(true, millis());
+    }
+#endif
 }
 
 } // namespace
@@ -2387,6 +2977,11 @@ void trackerSerialDispatchSetupCommand(TrackerSerialCommandContext& ctx, int arg
 
     if (is(argv[1], "status")) {
         printSetupStatus(ctx);
+        return;
+    }
+
+    if (is(argv[1], "verify")) {
+        cmdSetupVerify(ctx);
         return;
     }
 
@@ -2405,7 +3000,7 @@ void trackerSerialDispatchSetupCommand(TrackerSerialCommandContext& ctx, int arg
         return;
     }
 
-    tracker_serial_detail::printErr(s, "usage: setup guide|status|wifi|frame status|frame calibrate|calibration [resume|full] [axis <bodyX> <bodyY> <bodyZ>]");
+    tracker_serial_detail::printErr(s, "usage: setup guide|status|verify|wifi|frame status|frame calibrate|calibration [resume|full] [axis <bodyX> <bodyY> <bodyZ>]");
 }
 
 } // namespace tracker

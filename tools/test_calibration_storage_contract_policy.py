@@ -115,7 +115,7 @@ def main() -> int:
     require(mag_hooks, "advertisedBefore != g_config.data.magCal.driverEnabled", "mag driver SensorInfo refresh only on advertised change")
     require(mag_hooks, "requestSensorInfoRefresh", "mag driver SensorInfo refresh")
     require((ROOT / "src/runtime/gyro_temp_static_fit.cpp").read_text(encoding="utf-8"),
-            "captureFromGyroTempCompUpdate(candidateTempComp, millis(), inlierSamples)",
+            "captureFromGyroTempCompUpdate(model, millis(), inlierSamples)",
             "temperature fit records accepted sample count")
 
     require(scenarios, "emptyNvs", "empty NVS scenario")
@@ -124,7 +124,7 @@ def main() -> int:
     require(scenarios, "firstSavePowerLossWindow", "first-save interruption scenario")
     require(scenarios, "noOpAndCandidate", "no-op/candidate scenario")
 
-    require(version, '"c3-6dsv-mag-promotion-stack-safe"', "0022c feature identity")
+    require(version, '"c3-6dsv-safe-calibration-autonomy-hardened"', "0023 feature identity")
     require(features, "TRACKER_ENABLE_CALIBRATION_CANDIDATES", "candidate profile gate")
     require(store_header, "#if TRACKER_ENABLE_CALIBRATION_CANDIDATES", "Slim RAM candidate removal")
 

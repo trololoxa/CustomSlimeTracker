@@ -1196,7 +1196,7 @@ void testSolverMeasuredAxisCandidateUsesNormalStorePromotionPath(TestContext& ct
     MagAxisAlignmentSolvePolicy policy;
     MagAxisAlignmentResult solved;
     CHECK(ctx, solveMagAxisAlignmentDataset(
-        intervals, 64u, Vec3::zero(), Mat3::identity(), 3u, 8u,
+        intervals, 64u, Vec3::zero(), Mat3::identity(),
         &coarse, policy, solved));
     CHECK(ctx, solved.valid);
     CHECK(ctx, solved.validationPassed);

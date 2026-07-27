@@ -2,6 +2,7 @@
 
 #include "sensor/calibration.hpp"
 #include "sensor/accel_6pos_calibration.hpp"
+#include "sensor/fifo_calibrations.hpp"
 
 using namespace tracker;
 
@@ -169,6 +170,34 @@ static void testOnlineGyroBiasEstimator(TestContext& ctx) {
     CHECK_NEAR(ctx, estimator.biasRadS().x, 2.0f, 1.0e-6f);
 }
 
+static void testFifoGyroQualityUsesMeanPrecisionAndHoldout(TestContext& ctx) {
+    FifoGyroStartupCalibrationParams params;
+    GyroStartupCalibrationResult result;
+    result.stationarySamples = params.requiredStationarySamples + params.validationSamples;
+    result.validationSamples = params.validationSamples;
+
+    // Hardware log from the first 0023d setup attempt: raw X-axis sample
+    // noise is above the old 0.20 dps threshold, but 1536 samples give a
+    // precise mean and the independent 384-sample holdout agrees closely.
+    result.gyroStdDps = Vec3(0.581890f, 0.298635f, 0.067053f);
+    result.gyroMeanStdErrorDps = Vec3(0.014847f, 0.007620f, 0.001711f);
+    result.accelStdG = Vec3(0.002893f, 0.009130f, 0.005567f);
+    result.validationResidualDps = Vec3(0.002848f, 0.003053f, -0.001800f);
+    result.validationGyroStdDps = result.gyroStdDps;
+    result.validationGyroMeanStdErrorDps = Vec3(0.029694f, 0.015239f, 0.003422f);
+    result.validationAccelStdG = result.accelStdG;
+    result.validationAccelNormMeanG = 0.997327f;
+    result.validationAccelMeanDeltaG = 0.000117f;
+    result.temperatureSpanC = 0.1016f;
+    CHECK(ctx, fifoGyroStartupCalibrationEvaluateQuality(result, params));
+
+    result.gyroMeanStdErrorDps.x = 0.10f;
+    CHECK(ctx, !fifoGyroStartupCalibrationEvaluateQuality(result, params));
+    result.gyroMeanStdErrorDps.x = 0.014847f;
+    result.validationResidualDps.x = 0.20f;
+    CHECK(ctx, !fifoGyroStartupCalibrationEvaluateQuality(result, params));
+}
+
 int main() {
     TestContext ctx;
     testImuCalibrationApply(ctx);
@@ -178,5 +207,6 @@ int main() {
     testStationaryStats(ctx);
     testStationaryDetectorAndGyroStartup(ctx);
     testOnlineGyroBiasEstimator(ctx);
+    testFifoGyroQualityUsesMeanPrecisionAndHoldout(ctx);
     return ctx.finish("test_sensor_calibration");
 }

@@ -88,7 +88,7 @@ protocol_version=22
 board_type=10       LOLIN_C3_MINI
 imu_type=13         LSM6DSV
 mcu_type=6          ESP32_C3
-firmware_version    c3-6dsv-mag-promotion-stack-safe
+firmware_version    c3-6dsv-safe-calibration-autonomy-hardened
 ```
 
 The feature version names the currently completed firmware capability and is

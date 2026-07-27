@@ -2,6 +2,9 @@
 
 namespace tracker {
 
+static_assert(Qmc6309::RAW_REGISTER_AXES_RIGHT_HANDED,
+              "mag axis calibration requires a right-handed QMC6309 driver frame");
+
 Qmc6309::Qmc6309(Lsm6dsvSensorHub& hub) : hub_(hub) {}
 
 Qmc6309::Error Qmc6309::lastError() const { return lastError_; }
@@ -216,7 +219,9 @@ int16_t Qmc6309::le16(const uint8_t* p) {
     }
 
 bool Qmc6309::saturated(int16_t v) {
-        return v >= 32767 || v <= -32768;
+        const int32_t wide = static_cast<int32_t>(v);
+        const int32_t magnitude = wide < 0 ? -wide : wide;
+        return magnitude >= static_cast<int32_t>(RAW_SATURATION_ABS_COUNTS);
     }
 
 void Qmc6309::delayMs(uint32_t ms) {

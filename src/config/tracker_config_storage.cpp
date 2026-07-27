@@ -228,27 +228,32 @@ TrackerCalibrationQualitySummary trackerCalibrationQualityFromConfig(const Track
     return quality;
 }
 
-void trackerCalibrationQualityRecomputeOverall(const TrackerConfig& config,
+void trackerCalibrationQualityRecomputeOverall(const TrackerConfigBlob& payload,
                                                TrackerCalibrationQualitySummary& quality) {
     float weighted = 0.0f;
     float weight = 0.0f;
-    if (config.data.gyroCal.biasValid) {
+    if (payload.gyroCal.biasValid) {
         weighted += clamp01(quality.gyroScore) * 0.35f;
         weight += 0.35f;
     }
-    if (config.data.accelCal.valid) {
+    if (payload.accelCal.valid) {
         weighted += clamp01(quality.accelScore) * 0.35f;
         weight += 0.35f;
     }
-    if (config.data.magCal.calibrationValid) {
+    if (payload.magCal.calibrationValid) {
         weighted += clamp01(quality.magScore) * 0.20f;
         weight += 0.20f;
     }
-    if (config.data.magCal.axisAlignmentValid) {
+    if (payload.magCal.axisAlignmentValid) {
         weighted += clamp01(quality.alignmentScore) * 0.10f;
         weight += 0.10f;
     }
     quality.overallScore = weight > 0.0f ? clamp01(weighted / weight) : 0.0f;
+}
+
+void trackerCalibrationQualityRecomputeOverall(const TrackerConfig& config,
+                                               TrackerCalibrationQualitySummary& quality) {
+    trackerCalibrationQualityRecomputeOverall(config.data, quality);
 }
 
 void trackerApplyCalibrationCandidateToConfig(TrackerConfig& active,

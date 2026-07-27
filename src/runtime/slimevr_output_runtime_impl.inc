@@ -492,6 +492,13 @@ bool SlimeVROutputRuntime::update(uint32_t nowMs) {
     return activityChanged(stateBefore, activityBefore);
 }
 
+void SlimeVROutputRuntime::healthCounters(SlimeVROutputHealthCounters& out) const {
+    out.sendFailures = sendFailures_;
+    out.rotationSendFailures = rotationSendFailures_;
+    out.serverSilenceResets = serverSilenceResets_;
+    out.wifiLostResets = wifiLostResets_;
+}
+
 SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     SlimeVROutputRuntimeStatus s;
     s.state = state_;

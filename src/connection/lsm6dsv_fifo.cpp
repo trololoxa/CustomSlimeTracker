@@ -430,6 +430,11 @@ void Lsm6dsvFifoReader::resetMagTimestampBaseline() {
         stats_.maxMagDtUs = 0;
         stats_.sumMagDtUs = 0.0;
         stats_.magDtCount = 0;
+        stats_.magTimestampImuAnchors = 0;
+        stats_.magTimestampNominalFallbacks = 0;
+        stats_.magTimestampMonotonicAdjustments = 0;
+        stats_.lastMagAnchorCorrectionUs = 0;
+        stats_.maxMagAnchorCorrectionUs = 0;
     }
 
 void Lsm6dsvFifoReader::checkTagCounter(const FifoWord& w) {
@@ -467,7 +472,14 @@ void Lsm6dsvFifoReader::parseSensorHubSlave0Word(const FifoWord& w, uint64_t dra
         m.rawTag = w.rawTag;
         m.tagCounter = w.tagCounter;
         m.flags = MAG_FLAG_FROM_SENSORHUB_SLAVE0;
-        if (isRawSaturated(m.x) || isRawSaturated(m.y) || isRawSaturated(m.z)) {
+        const auto magSaturated = [this](int16_t value) {
+            if (isRawSaturated(value)) return true;
+            if (cfg_.sensorHubSlave0SaturationAbs == 0u) return false;
+            const int32_t wide = static_cast<int32_t>(value);
+            const uint32_t magnitude = static_cast<uint32_t>(wide < 0 ? -wide : wide);
+            return magnitude >= cfg_.sensorHubSlave0SaturationAbs;
+        };
+        if (magSaturated(m.x) || magSaturated(m.y) || magSaturated(m.z)) {
             m.flags |= MAG_FLAG_RAW_SATURATED;
             stats_.magRawSaturationCount++;
         }
@@ -475,20 +487,51 @@ void Lsm6dsvFifoReader::parseSensorHubSlave0Word(const FifoWord& w, uint64_t dra
         const uint64_t periodUs = cfg_.sensorHubSlave0PeriodUs > 0.0f
             ? static_cast<uint64_t>(cfg_.sensorHubSlave0PeriodUs + 0.5f)
             : 0;
+        const uint64_t imuAnchorUs = std::max(
+            stats_.lastAssignedTimestampUs, stats_.lastHwTimestampUs);
+        const uint64_t nominalNextUs =
+            stats_.lastMagTimestampUs != 0 && periodUs > 0
+                ? stats_.lastMagTimestampUs + periodUs
+                : 0;
 
-        if (stats_.lastMagTimestampUs != 0 && periodUs > 0) {
-            m.t_us = stats_.lastMagTimestampUs + periodUs;
-        } else if (stats_.lastAssignedTimestampUs != 0) {
-            m.t_us = stats_.lastAssignedTimestampUs;
+        // A sensor-hub FIFO word has no dedicated timestamp tag. Anchoring
+        // every word to the current IMU/FIFO timeline is therefore more
+        // coherent than free-running forever from one nominal-period seed. A
+        // small ODR or clock error otherwise accumulates until gyro/mag skew
+        // rejects nearly the entire alignment dataset.
+        if (imuAnchorUs != 0) {
+            m.t_us = imuAnchorUs;
+            m.flags |= MAG_FLAG_TIMESTAMP_IMU_ANCHORED;
+            stats_.magTimestampImuAnchors++;
+            if (nominalNextUs != 0) {
+                const uint64_t correction = imuAnchorUs > nominalNextUs
+                    ? imuAnchorUs - nominalNextUs
+                    : nominalNextUs - imuAnchorUs;
+                stats_.lastMagAnchorCorrectionUs = static_cast<uint32_t>(
+                    std::min<uint64_t>(correction, 0xFFFFFFFFULL));
+                stats_.maxMagAnchorCorrectionUs = std::max(
+                    stats_.maxMagAnchorCorrectionUs,
+                    stats_.lastMagAnchorCorrectionUs);
+            }
+        } else if (nominalNextUs != 0) {
+            m.t_us = nominalNextUs;
             m.flags |= MAG_FLAG_TIMESTAMP_FALLBACK;
-        } else if (stats_.lastHwTimestampUs != 0) {
-            m.t_us = stats_.lastHwTimestampUs;
-            m.flags |= MAG_FLAG_TIMESTAMP_FALLBACK;
+            stats_.magTimestampNominalFallbacks++;
         } else {
             m.t_us = drainTimestampUs;
             m.flags |= MAG_FLAG_TIMESTAMP_FALLBACK;
+            stats_.magTimestampNominalFallbacks++;
         }
         if (m.t_us == 0) m.t_us = 1;
+        if (stats_.lastMagTimestampUs != 0 && m.t_us <= stats_.lastMagTimestampUs) {
+            // Do not invent a full nominal period when the FIFO timeline has
+            // not advanced. A one-microsecond monotonic marker is deliberately
+            // rejected by the interval timing gate, then the next real IMU
+            // anchor recovers without phase drift.
+            m.t_us = stats_.lastMagTimestampUs + 1u;
+            m.flags |= MAG_FLAG_TIMESTAMP_FALLBACK;
+            stats_.magTimestampMonotonicAdjustments++;
+        }
 
         if (stats_.lastMagTimestampUs != 0 && m.t_us > stats_.lastMagTimestampUs) {
             const uint32_t dt = static_cast<uint32_t>(m.t_us - stats_.lastMagTimestampUs);

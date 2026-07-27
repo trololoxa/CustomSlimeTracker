@@ -21,7 +21,7 @@ mag = read("src/runtime/mag_runtime_controller.cpp")
 standalone = read("tools/run_standalone_tests.py")
 version = read("src/build_config/firmware_feature_version.hpp")
 
-require(version, '"c3-6dsv-mag-promotion-stack-safe"', "0022c identity")
+require(version, '"c3-6dsv-safe-calibration-autonomy-hardened"', "0023 identity")
 require(runtime, "data.frame.sensorToDeviceValid = false", "full clear invalidates frame")
 require(runtime, "TrackerAccelCalibrationQualityPersisted{}", "invalid accel clears evidence")
 require(runtime, "TrackerGyroTempQualityConfigPersisted{}", "invalid temp model clears evidence")

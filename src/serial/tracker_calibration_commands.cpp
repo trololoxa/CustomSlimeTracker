@@ -11,6 +11,9 @@
 #include "sensor/fifo_calibrations.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+#include "runtime/calibration_autonomy_controller.hpp"
+#endif
 #include "runtime/gyro_temp_calibration_capture.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
 #include "config/tracker_config_runtime.hpp"
@@ -47,15 +50,73 @@ static bool gyroTempRuntimeModelEqual(const GyroTempCompensator& a,
         a.slopeRadSPerC().z == b.slopeRadSPerC().z;
 }
 
+
+class CalibrationManualOwnershipScope {
+public:
+    CalibrationManualOwnershipScope(TrackerSerialCommandContext& ctx, bool required)
+        : ctx_(ctx), required_(required) {
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        if (required_ && ctx_.calibrationAutonomy) {
+            acquired_ = ctx_.calibrationAutonomy->beginManualCalibration(millis());
+        } else {
+            acquired_ = true;
+        }
+#else
+        acquired_ = true;
+#endif
+    }
+
+    ~CalibrationManualOwnershipScope() {
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        if (required_ && acquired_ && ctx_.calibrationAutonomy) {
+            // Conservatively invalidate all background evidence even when a
+            // command exits early: blocking calibration commands may have
+            // already changed RAM or persisted a checkpoint.
+            ctx_.calibrationAutonomy->endManualCalibration(true, millis());
+        }
+#endif
+    }
+
+    bool acquired() const { return acquired_; }
+
+private:
+    TrackerSerialCommandContext& ctx_;
+    bool required_ = false;
+    bool acquired_ = false;
+};
+
 class TrackerCalibrationCommandDispatcher {
 public:
     static void dispatch(TrackerSerialCommandContext& ctx, int argc, char** argv) {
         Stream& out = stream(ctx);
         if (argc < 2) {
-            tracker_serial_detail::printErr(out, "usage: cal gyro|accel|temp|save|clear_all");
+            tracker_serial_detail::printErr(out, "usage: cal status|autonomy|gyro|accel|temp|candidate|save|clear_all|erase_all confirm");
             return;
         }
 
+        if (is(argv[1], "autonomy")) {
+            cmdCalAutonomy(ctx, argc, argv);
+            return;
+        }
+        if (is(argv[1], "status")) {
+            cmdCalStatus(ctx);
+            return;
+        }
+        // Full erase is the recovery command for damaged/obsolete autonomy
+        // state. It must not pass through beginManualCalibration(), because that
+        // path intentionally refuses ambiguous journals.
+        if (is(argv[1], "erase_all")) {
+            cmdCalEraseAll(ctx, argc, argv);
+            return;
+        }
+
+        CalibrationManualOwnershipScope ownership(ctx, commandMutatesCalibration(argc, argv));
+        if (!ownership.acquired()) {
+            tracker_serial_detail::printErr(
+                out,
+                "manual calibration blocked: autonomous transaction could not be resolved");
+            return;
+        }
         if (is(argv[1], "gyro")) {
             cmdCalGyro(ctx, argc, argv);
             return;
@@ -86,33 +147,219 @@ public:
             return;
         }
         if (is(argv[1], "clear_all")) {
-            if (ctx.imuCal) {
-                ctx.imuCal->gyroBiasValid = false;
-                ctx.imuCal->gyroBiasRadS = Vec3::zero();
-                ctx.imuCal->accelCalValid = false;
-                ctx.imuCal->accelBiasG = Vec3::zero();
-                ctx.imuCal->accelScale = Mat3::identity();
-            }
-            if (ctx.gyroTempComp) ctx.gyroTempComp->clearAll();
-            if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
-            trackerSerialResetCalibrationWorkspaces(ctx);
-            if (ctx.config) ctx.config->clearAllCalibrationPreservingPolicy();
-            if (ctx.clearMagHeadingReference) {
-                ctx.clearMagHeadingReference(ctx.clearMagHeadingReferenceUser);
-            }
-            if (ctx.resetMagYawCorrection) {
-                ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
-            }
-            if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
-            if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
+            clearCalibrationRuntime(ctx);
             tracker_serial_detail::printOk(out, "all calibration cleared in RAM");
             return;
         }
+
 
         tracker_serial_detail::printErr(out, "unknown cal command");
     }
 
 private:
+    static void cmdCalStatus(TrackerSerialCommandContext& ctx) {
+        Stream& out = stream(ctx);
+        out.println("# CALIBRATION STATUS");
+        if (ctx.config) {
+            out.print("gyro_bias_valid=");
+            out.println(ctx.config->data.gyroCal.biasValid ? "yes" : "no");
+            out.print("gyro_temp_valid=");
+            out.println(ctx.config->data.gyroCal.tempCompValid ? "yes" : "no");
+            out.print("gyro_temp_enabled=");
+            out.println(ctx.config->data.gyroCal.tempCompEnabled ? "yes" : "no");
+            out.print("accel_cal_valid=");
+            out.println(ctx.config->data.accelCal.valid ? "yes" : "no");
+            out.print("sensor_to_device_valid=");
+            out.println(ctx.config->data.frame.sensorToDeviceValid ? "yes" : "no");
+            out.print("mag_cal_valid=");
+            out.println(ctx.config->data.magCal.calibrationValid ? "yes" : "no");
+            out.print("mag_to_imu_valid=");
+            out.println(ctx.config->data.magCal.axisAlignmentValid ? "yes" : "no");
+        } else {
+            out.println("config_available=no");
+        }
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        if (ctx.calibrationAutonomy) {
+            ctx.calibrationAutonomy->printStatus(out, millis());
+        }
+#endif
+    }
+
+    static void cmdCalEraseAll(TrackerSerialCommandContext& ctx,
+                               int argc,
+                               char** argv) {
+        Stream& out = stream(ctx);
+        if (argc != 3 || !is(argv[2], "confirm")) {
+            tracker_serial_detail::printErr(out, "usage: cal erase_all confirm");
+            return;
+        }
+        if (!ctx.config || !ctx.configStore) {
+            tracker_serial_detail::printErr(out, "config/configStore not available");
+            return;
+        }
+
+        TrackerConfig clean = *ctx.config;
+        clean.clearAllCalibrationPreservingPolicy();
+        clean.sanitize();
+        clean.updateCrc();
+
+        // Write a verified recovery marker before touching config slots. It
+        // contains the calibrationless payload and current autonomy preferences,
+        // so a power cut at any later step is completed idempotently at boot.
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        if (ctx.calibrationAutonomy &&
+            !ctx.calibrationAutonomy->preparePersistentCalibrationErase(clean)) {
+            tracker_serial_detail::printErr(
+                out, "failed to persist calibration erase recovery marker");
+            return;
+        }
+#endif
+        if (!ctx.configStore->erase()) {
+            out.print("# ERR calibration storage erase failed: ");
+            out.println(ctx.configStore->lastErrorName());
+            return;
+        }
+        if (!ctx.configStore->save(clean, TrackerCalibrationProvenance::Manual)) {
+            out.print("# ERR clean policy config save failed after erase: ");
+            out.println(ctx.configStore->lastErrorName());
+            return;
+        }
+        *ctx.config = clean;
+        clearCalibrationRuntime(ctx);
+
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        if (ctx.calibrationAutonomy &&
+            !ctx.calibrationAutonomy->forceClearPersistentCalibrationStateForErase(millis())) {
+            tracker_serial_detail::printErr(
+                out,
+                "calibration erased, but autonomy metadata cleanup failed; retry erase_all");
+            return;
+        }
+#endif
+        tracker_serial_detail::printOk(
+            out,
+            "all saved calibration, candidates, rollback journal and rejection memory erased");
+    }
+
+    static bool commandMutatesCalibration(int argc, char** argv) {
+        if (argc < 2) return false;
+        if (is(argv[1], "candidate")) {
+            return !(argc >= 3 && (is(argv[2], "status") || is(argv[2], "compare")));
+        }
+        if (is(argv[1], "accel")) {
+            return !(argc >= 3 && is(argv[2], "dump"));
+        }
+        if (is(argv[1], "temp")) {
+            return !(argc < 3 || is(argv[2], "print"));
+        }
+        return is(argv[1], "gyro") || is(argv[1], "save") ||
+            is(argv[1], "clear_all");
+    }
+
+    static void clearCalibrationRuntime(TrackerSerialCommandContext& ctx) {
+        if (ctx.imuCal) {
+            ctx.imuCal->gyroBiasValid = false;
+            ctx.imuCal->gyroBiasRadS = Vec3::zero();
+            ctx.imuCal->accelCalValid = false;
+            ctx.imuCal->accelBiasG = Vec3::zero();
+            ctx.imuCal->accelScale = Mat3::identity();
+        }
+        if (ctx.gyroTempComp) ctx.gyroTempComp->clearAll();
+        if (ctx.runtimeBias) runtimeBiasReset(*ctx.runtimeBias);
+        trackerSerialResetCalibrationWorkspaces(ctx);
+        if (ctx.config) ctx.config->clearAllCalibrationPreservingPolicy();
+        if (ctx.clearMagHeadingReference) {
+            ctx.clearMagHeadingReference(ctx.clearMagHeadingReferenceUser);
+        }
+        if (ctx.resetMagYawCorrection) {
+            ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
+        }
+        if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
+        if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
+    }
+
+    static void cmdCalAutonomy(TrackerSerialCommandContext& ctx,
+                               int argc,
+                               char** argv) {
+        Stream& out = stream(ctx);
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+        if (!ctx.calibrationAutonomy) {
+            tracker_serial_detail::printErr(out, "calibration autonomy not available");
+            return;
+        }
+        if (argc == 2 || is(argv[2], "status")) {
+            ctx.calibrationAutonomy->printStatus(out, millis());
+            return;
+        }
+        if (is(argv[2], "rollback")) {
+            if (argc != 3) {
+                tracker_serial_detail::printErr(out, "usage: cal autonomy rollback");
+                return;
+            }
+            if (!ctx.calibrationAutonomy->requestRollback(millis())) {
+                tracker_serial_detail::printErr(out, "no autonomy probation to roll back");
+                return;
+            }
+            tracker_serial_detail::printOk(out, "calibration autonomy rollback complete");
+            return;
+        }
+        if (is(argv[2], "reset")) {
+            if (argc != 3) {
+                tracker_serial_detail::printErr(out, "usage: cal autonomy reset");
+                return;
+            }
+            ctx.calibrationAutonomy->resetRuntimeEvidence();
+            tracker_serial_detail::printOk(out, "calibration autonomy runtime evidence reset");
+            return;
+        }
+        if (is(argv[2], "clear_rejections")) {
+            if (argc != 3) {
+                tracker_serial_detail::printErr(out, "usage: cal autonomy clear_rejections");
+                return;
+            }
+            if (!ctx.calibrationAutonomy->clearRejectionMemory()) {
+                tracker_serial_detail::printErr(out, "failed to clear autonomy rejection memory");
+                return;
+            }
+            tracker_serial_detail::printOk(out, "calibration autonomy rejection memory cleared");
+            return;
+        }
+        if (!is(argv[2], "0022") && !is(argv[2], "0023")) {
+            tracker_serial_detail::printErr(
+                out,
+                "usage: cal autonomy 0022|0023 on|off [save]");
+            return;
+        }
+        if (argc < 4 || argc > 5 ||
+            (!is(argv[3], "on") && !is(argv[3], "off")) ||
+            (argc == 5 && !is(argv[4], "save"))) {
+            tracker_serial_detail::printErr(
+                out,
+                "usage: cal autonomy 0022|0023 on|off [save]");
+            return;
+        }
+        const bool enabled = is(argv[3], "on");
+        const bool persist = argc == 5;
+        const bool ok = is(argv[2], "0022")
+            ? ctx.calibrationAutonomy->setWave0022Enabled(enabled, persist, millis())
+            : ctx.calibrationAutonomy->setWave0023Enabled(enabled, persist, millis());
+        if (!ok) {
+            tracker_serial_detail::printErr(out, "calibration autonomy state change failed");
+            return;
+        }
+        out.print("# OK calibration autonomy ");
+        out.print(argv[2]);
+        out.print(' ');
+        out.print(enabled ? "enabled" : "disabled");
+        out.println(persist ? " and saved" : " until reboot");
+#else
+        (void)ctx;
+        (void)argc;
+        (void)argv;
+        tracker_serial_detail::printErr(out, "calibration autonomy not compiled");
+#endif
+    }
+
     static TrackerCalibrationProvenance parseCandidateProvenance(const char* value) {
         if (is(value, "manual")) return TrackerCalibrationProvenance::Manual;
         if (is(value, "setup")) return TrackerCalibrationProvenance::Setup;
@@ -780,6 +1027,7 @@ private:
         pp->out->print(p.rejectedSamples);
         pp->out->print(" temp_c=");
         pp->out->println(p.latestTempC, 3);
+        pp->out->flush();
     }
 
     static void printGyroResult(Stream& out, const GyroStartupCalibrationResult& r, float tempC) {
@@ -793,7 +1041,23 @@ private:
         out.print(" norm="); out.println(r.accelNormMeanG, 6);
         out.print("gyro_noise_norm_rad_s2="); out.println(r.gyroNoiseNormRadS2, 10);
         out.print("accel_noise_norm_g2="); out.println(r.accelNoiseNormG2, 10);
+        tracker_serial_detail::printVec3Line(out, "gyro_std_dps", r.gyroStdDps, 6);
+        tracker_serial_detail::printVec3Line(out, "gyro_mean_std_error_dps", r.gyroMeanStdErrorDps, 6);
+        tracker_serial_detail::printVec3Line(out, "accel_std_g", r.accelStdG, 6);
+        tracker_serial_detail::printVec3Line(out, "validation_residual_dps", r.validationResidualDps, 6);
+        tracker_serial_detail::printVec3Line(out, "validation_gyro_std_dps", r.validationGyroStdDps, 6);
+        tracker_serial_detail::printVec3Line(out, "validation_gyro_mean_std_error_dps", r.validationGyroMeanStdErrorDps, 6);
+        tracker_serial_detail::printVec3Line(out, "validation_accel_std_g", r.validationAccelStdG, 6);
+        out.print("validation_accel_norm_mean_g="); out.println(r.validationAccelNormMeanG, 6);
+        out.print("validation_accel_mean_delta_g="); out.println(r.validationAccelMeanDeltaG, 6);
+        out.print("validation_samples="); out.println(r.validationSamples);
+        out.print("temperature_span_c="); out.println(r.temperatureSpanC, 4);
+        out.print("train_noise_gate="); out.println(r.trainNoiseGatePassed ? "pass" : "fail");
+        out.print("train_mean_precision_gate="); out.println(r.trainMeanPrecisionGatePassed ? "pass" : "fail");
+        out.print("validation_gate="); out.println(r.validationGatePassed ? "pass" : "fail");
+        out.print("temperature_gate="); out.println(r.temperatureGatePassed ? "pass" : "fail");
         out.print("reference_temp_c="); out.println(tempC, 3);
+        out.flush();
     }
 
     struct AccelProgressPrinter {
@@ -822,6 +1086,7 @@ private:
         pp->out->print(p.meanG.z, 5);
         pp->out->print(" norm=");
         pp->out->println(p.meanNormG, 6);
+        pp->out->flush();
     }
 
     static void printAccelCal(Stream& out, const Accel6PosCalibration& cal) {
@@ -882,6 +1147,7 @@ private:
             accel_cal_quality_flags::AXIS_RESIDUAL_HIGH,
             accel_cal_quality_flags::PAIR_CENTER_RESIDUAL_HIGH,
             accel_cal_quality_flags::MATRIX_SINGULAR,
+            accel_cal_quality_flags::INDEPENDENT_VALIDATION_FAILED,
         };
         for (uint8_t i = 0; i < sizeof(known) / sizeof(known[0]); ++i) {
             if ((flags & known[i]) == 0) continue;

@@ -125,6 +125,11 @@ public:
         // attached to FIFO timing, not directly to the external sensor word.
         // For SHUB_ODR=60 Hz use 16666.666f. If 0, drainTimestampUs is used.
         float sensorHubSlave0PeriodUs = 0.0f;
+
+        // Optional external-sensor full-scale guard in raw counts. QMC6309
+        // nominally maps every configured range to about +/-32000 counts, so
+        // INT16_MIN/MAX alone is too late to identify clipped calibration data.
+        uint16_t sensorHubSlave0SaturationAbs = 0u;
     };
 
     struct Status {
@@ -164,6 +169,9 @@ public:
         MAG_FLAG_TIMESTAMP_FALLBACK = 1u << 1,
         MAG_FLAG_QUEUE_OVERFLOW = 1u << 2,
         MAG_FLAG_RAW_SATURATED = 1u << 3,
+        // Timestamp was anchored to the current IMU/FIFO time domain rather
+        // than free-running from a nominal sensor-hub period.
+        MAG_FLAG_TIMESTAMP_IMU_ANCHORED = 1u << 4,
     };
 
     struct DrainStats {
@@ -194,6 +202,11 @@ public:
         uint32_t magQueueOverflow = 0;
         uint32_t magTagCounterJumps = 0;
         uint32_t magRawSaturationCount = 0;
+        uint32_t magTimestampImuAnchors = 0;
+        uint32_t magTimestampNominalFallbacks = 0;
+        uint32_t magTimestampMonotonicAdjustments = 0;
+        uint32_t lastMagAnchorCorrectionUs = 0;
+        uint32_t maxMagAnchorCorrectionUs = 0;
         uint64_t lastMagTimestampUs = 0;
         uint32_t lastMagDtUs = 0;
         uint32_t minMagDtUs = 0;

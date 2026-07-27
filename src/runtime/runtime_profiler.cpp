@@ -54,6 +54,8 @@ const char* RuntimeProfiler::sectionName(Section section) {
         case Section::Fifo:          return "fifo";
         case Section::Battery:       return "battery";
         case Section::Network:       return "network";
+        case Section::Calibration0022:return "calibration_0022";
+        case Section::Calibration0023:return "calibration_0023";
         case Section::Tap:           return "tap";
         case Section::Led:           return "led";
         case Section::Heartbeat:     return "heartbeat";
@@ -71,6 +73,8 @@ uint32_t RuntimeProfiler::slowThresholdUs(Section section) {
         case Section::Fifo:          return TRACKER_RUNTIME_PROFILER_SLOW_FIFO_US;
         case Section::Battery:       return TRACKER_RUNTIME_PROFILER_SLOW_BATTERY_US;
         case Section::Network:       return TRACKER_RUNTIME_PROFILER_SLOW_NETWORK_US;
+        case Section::Calibration0022:return TRACKER_RUNTIME_PROFILER_SLOW_CALIBRATION_0022_US;
+        case Section::Calibration0023:return TRACKER_RUNTIME_PROFILER_SLOW_CALIBRATION_0023_US;
         case Section::Tap:           return TRACKER_RUNTIME_PROFILER_SLOW_TAP_US;
         case Section::Led:           return TRACKER_RUNTIME_PROFILER_SLOW_LED_US;
         case Section::Heartbeat:     return TRACKER_RUNTIME_PROFILER_SLOW_HEARTBEAT_US;

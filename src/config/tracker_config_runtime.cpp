@@ -461,6 +461,7 @@ Lsm6dsvFifoReader::Config TrackerConfig::makeFifoConfig() const {
     cfg.sensorHubSlave0PeriodUs = data.magCal.driverEnabled
         ? (1000000.0f / 60.0f)
         : 0.0f;
+    cfg.sensorHubSlave0SaturationAbs = data.magCal.driverEnabled ? 31900u : 0u;
     return cfg;
 }
 

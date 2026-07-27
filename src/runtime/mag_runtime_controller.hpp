@@ -132,6 +132,8 @@ public:
 
     void resetYawCorrectionRuntime();
     void resetAxisAlignmentCandidate();
+    void setAxisAlignmentLearningEnabled(bool enabled);
+    bool axisAlignmentLearningEnabled() const { return axisAlignmentLearningEnabled_; }
     void resetOrientationState(const char* reason, uint64_t timestampUs, bool rebaseAhrsTimebase);
 
     bool setEnabled(bool enabled, bool persist);
@@ -156,6 +158,7 @@ public:
 
 private:
     MagRuntimeControllerDeps deps_;
+    bool axisAlignmentLearningEnabled_ = true;
 
     Stream& stream() const;
     bool accelReady() const;
@@ -170,11 +173,25 @@ private:
     static float magRawNorm(const Lsm6dsvFifoReader::MagRawSample& m);
     static float rampUp(float x, float bad, float good);
 
+    void captureGyroEndpoint(MagProcessedSample& processed) const;
+    void updateHeadingSnapshot(uint32_t nowMs);
+    void updateFieldReliabilitySnapshot(uint32_t nowMs,
+                                        float gyroNormDps,
+                                        float accelTrust,
+                                        bool processorTrustedForUse,
+                                        MagFieldReliabilityOutput& reliability);
+    void updateYawCorrectionSnapshot(uint32_t nowMs,
+                                     float gyroNormDps,
+                                     float accelTrust,
+                                     bool magTrustedForUse,
+                                     uint32_t magRejectFlagsForUse,
+                                     const MagFieldReliabilityOutput& reliability);
+
     void updateAutoReference(uint32_t nowMs,
                              float gyroNormDps,
                              float accelTrust,
                              bool magTrustedForUse);
-    void updateAxisAlignmentCandidate(const MagFieldReliabilityOutput& reliability, uint32_t nowMs);
+    void updateAxisAlignmentCandidate(uint32_t nowMs);
     bool stageAxisAlignmentCandidate(const MagAxisAlignmentResult& result, uint32_t nowMs);
     bool deferredServiceAllowed(MagDeferredServiceGate& gate) const;
     bool applyYawCorrectionToAhrs(const MagYawCorrectionOutput& yaw);

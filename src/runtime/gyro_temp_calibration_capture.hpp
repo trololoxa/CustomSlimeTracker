@@ -20,13 +20,24 @@ struct GyroTempCalibrationCaptureConfig {
     // Immediate gates stop obviously moving/faulty samples from entering a
     // candidate window. Window-level statistics below reject slow motion and
     // vibration that can pass an instantaneous norm check.
-    float maxInstantGyroNormDps = 1.5f;
+    float maxInstantGyroNormDps = 3.0f;
     float maxInstantAccelNormErrorG = 0.12f;
     float minInstantAccelConfidence = 0.60f;
 
-    float maxGyroMeanNormDps = 0.35f;
-    float maxGyroStdNormDps = 0.24f;
-    float maxGyroStdAxisDps = 0.18f;
+    // The temperature fit needs an accurate window mean, not unrealistically
+    // quiet individual 960 Hz samples. Keep a hard vibration ceiling, then
+    // gate the standard error of the mean and consistency between independent
+    // windows. The first accepted window must remain close to the just-fitted
+    // rest bias; later windows may move only along a physically plausible
+    // temperature-drift envelope.
+    float maxInitialGyroMeanNormDps = 0.35f;
+    float maxGyroStdNormDps = 1.20f;
+    float maxGyroStdAxisDps = 0.80f;
+    float maxGyroMeanStdErrorNormDps = 0.10f;
+    float maxGyroMeanStdErrorAxisDps = 0.060f;
+    float gyroAnchorSlackDps = 0.12f;
+    float gyroAdjacentSlackDps = 0.10f;
+    float maxThermalSlopeDpsPerC = 0.12f;
     float maxAccelNormMeanErrorG = 0.08f;
     float maxAccelNormStdG = 0.020f;
     float minAccelConfidenceMean = 0.75f;
@@ -42,6 +53,10 @@ struct GyroTempCalibrationCaptureDiagnostics {
     uint32_t motionRejectedSamples = 0;
     uint32_t motionWindowResets = 0;
     uint32_t gyroRejectedWindows = 0;
+    uint32_t gyroHardNoiseRejectedWindows = 0;
+    uint32_t gyroMeanPrecisionRejectedWindows = 0;
+    uint32_t gyroInitialMeanRejectedWindows = 0;
+    uint32_t gyroThermalConsistencyRejectedWindows = 0;
     uint32_t accelRejectedWindows = 0;
     uint32_t temperatureRejectedWindows = 0;
     uint32_t discardedPartialSamples = 0;
@@ -49,6 +64,9 @@ struct GyroTempCalibrationCaptureDiagnostics {
 
     Vec3 lastGyroMeanDps = Vec3::zero();
     Vec3 lastGyroStdDps = Vec3::zero();
+    Vec3 lastGyroMeanStdErrorDps = Vec3::zero();
+    Vec3 lastGyroAnchorResidualDps = Vec3::zero();
+    Vec3 lastGyroAdjacentResidualDps = Vec3::zero();
     float lastAccelNormMeanG = 0.0f;
     float lastAccelNormStdG = 0.0f;
     float lastAccelConfidenceMean = 0.0f;
@@ -116,6 +134,11 @@ private:
     GyroTempCalibrationCaptureDiagnostics diagnostics_;
     StaticRuntimeTest capture_;
     PendingWindow pending_;
+    bool haveAcceptedGyroReference_ = false;
+    float acceptedReferenceTempC_ = 0.0f;
+    Vec3 acceptedReferenceGyroMeanDps_ = Vec3::zero();
+    float lastAcceptedTempC_ = 0.0f;
+    Vec3 lastAcceptedGyroMeanDps_ = Vec3::zero();
     bool completed_ = false;
 };
 

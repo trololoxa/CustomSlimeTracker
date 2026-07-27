@@ -56,9 +56,17 @@ struct TempFitPoint {
     Vec3 residualDps = Vec3::zero();
     float weight = 0.0f;
     uint32_t goodSamples = 0;
-    uint32_t badSamples = 0;
     float residualAfterNormDps = 0.0f;
 };
+
+// Setup temperature fitting is synchronous and single-owner. Keep its bounded
+// 48-bin workspace out of loopTask's stack: the previous implementation used
+// more than 3 KiB and leave-one-out validation added another full copy.
+struct TempFitWorkspace {
+    TempFitPoint points[STATIC_TEMP_BIN_COUNT];
+};
+
+TempFitWorkspace g_tempFitWorkspace;
 
 struct TempFitResult {
     bool valid = false;
@@ -74,10 +82,11 @@ struct TempFitResult {
     uint32_t samples = 0;
 };
 
-float weightedMeanTemp(const TempFitPoint* points, uint8_t count) {
+float weightedMeanTemp(const TempFitPoint* points, uint8_t count, int heldOut = -1) {
     double sw = 0.0;
     double st = 0.0;
     for (uint8_t i = 0; i < count; ++i) {
+        if (static_cast<int>(i) == heldOut) continue;
         const TempFitPoint& p = points[i];
         if (!p.active || p.weight <= 0.0f || !std::isfinite(p.tempC)) continue;
         sw += static_cast<double>(p.weight);
@@ -86,12 +95,18 @@ float weightedMeanTemp(const TempFitPoint* points, uint8_t count) {
     return sw > 0.0 ? static_cast<float>(st / sw) : 0.0f;
 }
 
-bool solveTempFit(TempFitPoint* points, uint8_t count, float refTempC, TempFitResult& out) {
+bool solveTempFit(TempFitPoint* points,
+                  uint8_t count,
+                  float refTempC,
+                  TempFitResult& out,
+                  int heldOut = -1,
+                  bool updateResiduals = true) {
     WeightedFit1D fitX, fitY, fitZ;
     out = TempFitResult{};
     bool haveTemp = false;
 
     for (uint8_t i = 0; i < count; ++i) {
+        if (static_cast<int>(i) == heldOut) continue;
         const TempFitPoint& p = points[i];
         if (!p.active || p.weight <= 0.0f || !std::isfinite(p.tempC) || !p.residualDps.isFinite()) continue;
 
@@ -130,12 +145,13 @@ bool solveTempFit(TempFitPoint* points, uint8_t count, float refTempC, TempFitRe
     float maxAfter = 0.0f;
 
     for (uint8_t i = 0; i < count; ++i) {
+        if (static_cast<int>(i) == heldOut) continue;
         TempFitPoint& p = points[i];
         if (!p.active || p.weight <= 0.0f) continue;
         const Vec3 pred = out.residualAtRefDps + out.residualSlopeDpsPerC * (p.tempC - refTempC);
         const Vec3 after = p.residualDps - pred;
         const float afterNorm = after.norm();
-        p.residualAfterNormDps = afterNorm;
+        if (updateResiduals) p.residualAfterNormDps = afterNorm;
         if (afterNorm > maxAfter) maxAfter = afterNorm;
 
         const double w = static_cast<double>(p.weight);
@@ -151,6 +167,40 @@ bool solveTempFit(TempFitPoint* points, uint8_t count, float refTempC, TempFitRe
     out.valid = out.residualAtRefDps.isFinite() && out.residualSlopeDpsPerC.isFinite() &&
         std::isfinite(out.residualBeforeDps) && std::isfinite(out.residualAfterDps);
     return out.valid;
+}
+
+bool leaveOneBinOutValidation(TempFitPoint* points,
+                                  uint8_t count,
+                                  float& rmsDps,
+                                  float& maxDps,
+                                  uint8_t& validatedBins) {
+    double weightedSq = 0.0;
+    double weightSum = 0.0;
+    maxDps = 0.0f;
+    validatedBins = 0;
+    for (uint8_t held = 0; held < count; ++held) {
+        if (!points[held].active || points[held].weight <= 0.0f) continue;
+        const float trainRef = weightedMeanTemp(points, count, held);
+        TempFitResult fold;
+        if (!std::isfinite(trainRef) ||
+            !solveTempFit(points, count, trainRef, fold, held, false) ||
+            fold.bins < 3u || fold.tempRangeC < 2.0f) {
+            return false;
+        }
+        const Vec3 predicted = fold.residualAtRefDps +
+            fold.residualSlopeDpsPerC * (points[held].tempC - trainRef);
+        const Vec3 residual = points[held].residualDps - predicted;
+        const float norm = residual.norm();
+        if (!std::isfinite(norm)) return false;
+        const double w = static_cast<double>(points[held].weight);
+        weightedSq += w * static_cast<double>(norm * norm);
+        weightSum += w;
+        if (norm > maxDps) maxDps = norm;
+        validatedBins++;
+    }
+    if (validatedBins < 4u || weightSum <= 0.0) return false;
+    rmsDps = static_cast<float>(std::sqrt(weightedSq / weightSum));
+    return std::isfinite(rmsDps);
 }
 
 uint8_t collectTempFitPoints(const StaticRuntimeTest& test,
@@ -176,7 +226,6 @@ uint8_t collectTempFitPoints(const StaticRuntimeTest& test,
         p.tempC = tempMean;
         p.residualDps = gyroMeanDps;
         p.goodSamples = b.gyroAfterRadS.count;
-        p.badSamples = b.badQualitySamples;
         // Weight by sqrt(N), not N, so one very dense temperature bin cannot
         // dominate the whole slope.  This is important during warm-up where the
         // tracker may sit for a long time near the final plateau.
@@ -185,6 +234,24 @@ uint8_t collectTempFitPoints(const StaticRuntimeTest& test,
         goodSamples += p.goodSamples;
     }
     return count;
+}
+
+bool persistTempModelCandidate(TrackerConfigStore& store,
+                               TrackerConfig& activeConfig,
+                               const GyroTempCompensator& model,
+                               uint32_t sampleCount,
+                               Stream& out) {
+    TrackerConfig candidate = activeConfig;
+    candidate.captureFromGyroTempCompUpdate(model, millis(), sampleCount);
+    candidate.sanitize();
+    candidate.updateCrc();
+    if (!store.save(candidate, TrackerCalibrationProvenance::Manual)) {
+        out.print("# ERR gyro temp fit save failed: ");
+        out.println(store.lastErrorName());
+        return false;
+    }
+    activeConfig = candidate;
+    return true;
 }
 
 } // namespace gyro_temp_static_fit_detail
@@ -215,7 +282,8 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
     }
 
     using namespace gyro_temp_static_fit_detail;
-    TempFitPoint points[STATIC_TEMP_BIN_COUNT];
+    TempFitPoint* const points = g_tempFitWorkspace.points;
+    for (uint8_t i = 0; i < STATIC_TEMP_BIN_COUNT; ++i) points[i] = TempFitPoint{};
     uint32_t usableSamples = 0;
     uint32_t badBinSamples = 0;
     constexpr uint32_t kMinSamplesPerBin = 512;
@@ -271,6 +339,12 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
         for (uint8_t i = 0; i < usableBins; ++i) points[i].active = true;
     }
 
+    float validationRmsDps = 0.0f;
+    float validationMaxDps = 0.0f;
+    uint8_t validationBins = 0;
+    const bool validationOk = leaveOneBinOutValidation(
+        points, usableBins, validationRmsDps, validationMaxDps, validationBins);
+
     const float tempRangeC = fit.tempRangeC;
     const float inlierRatio = usableSamples > 0
         ? static_cast<float>(inlierSamples) / static_cast<float>(usableSamples)
@@ -288,6 +362,9 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
     out.print("inlier_samples="); out.println(inlierSamples);
     out.print("inlier_ratio="); out.println(inlierRatio, 6);
     out.print("bad_sample_ratio="); out.println(badSampleRatio, 6);
+    out.print("validation_bins="); out.println(validationBins);
+    out.print("validation_rms_dps="); out.println(validationRmsDps, 8);
+    out.print("validation_max_dps="); out.println(validationMaxDps, 8);
 
     const GyroTempCompConfig& cfg = gyroTempComp.config();
     if (!gyroTempComp.acceptsSlopeDpsPerC(fit.residualSlopeDpsPerC)) {
@@ -306,11 +383,15 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
     const float binScore = clampf(static_cast<float>(inlierBins) / 10.0f, 0.0f, 1.0f);
     const float residualScore = 1.0f - clampf(residualAfterDps / 0.060f, 0.0f, 1.0f);
     const float inlierScore = clampf((inlierRatio - 0.70f) / 0.30f, 0.0f, 1.0f);
-    const float fitQuality = clampf((0.25f * improvement +
-                                     0.25f * residualScore +
-                                     0.25f * coverageScore +
-                                     0.15f * binScore +
-                                     0.10f * inlierScore) * (1.0f - badSampleRatio),
+    const float validationScore = validationOk
+        ? 1.0f - clampf(validationRmsDps / 0.080f, 0.0f, 1.0f)
+        : 0.0f;
+    const float fitQuality = clampf((0.20f * improvement +
+                                     0.20f * residualScore +
+                                     0.20f * coverageScore +
+                                     0.12f * binScore +
+                                     0.08f * inlierScore +
+                                     0.20f * validationScore) * (1.0f - badSampleRatio),
                                     0.0f, 1.0f);
 
     const Vec3 oldSlopeRadSPerC = gyroTempComp.slopeRadSPerC();
@@ -341,7 +422,10 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
 
     const bool residualLowEnough = residualAfterDps <= 0.035f;
     const bool improvesEnough = residualAfterDps < residualBeforeDps * 0.98f || residualLowEnough || residualBeforeDps <= 0.020f;
-    const bool goodEnoughToApply = fitQuality >= 0.45f &&
+    const bool goodEnoughToApply = validationOk &&
+        validationRmsDps <= 0.080f &&
+        validationMaxDps <= 0.140f &&
+        fitQuality >= 0.45f &&
         inlierRatio >= 0.75f &&
         residualAfterDps <= 0.060f &&
         improvesEnough;
@@ -358,42 +442,38 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
         return true;
     }
 
-    // Build the complete replacement state off to the side.  ApplyAndSave must
-    // never leave RAM using a model that failed to persist, and a failed save
-    // must not clear the runtime trim learned against the active model.
-    GyroTempCompensator candidateTempComp = gyroTempComp;
-    ImuCalibration candidateImuCal = imuCal;
-    RuntimeGyroBiasEstimator candidateRuntimeBias = runtimeBias;
-    TrackerConfig candidateConfig = config;
+    // ApplyAndSave persists a candidate config before touching live runtime
+    // state. Only TrackerConfig + the small temp model are copied; the previous
+    // implementation also copied IMU/runtime-bias objects and pushed the setup
+    // call frame well above a safe loopTask budget.
+    GyroTempCompensator model = gyroTempComp;
+    model.setModel(newReferenceBiasRadS, refTempC, newSlopeRadSPerC);
+    model.setEnabled(true);
+    model.setQualityMetadata(fit.tempMinC, fit.tempMaxC, fitQuality, residualBeforeDps, residualAfterDps);
 
-    candidateTempComp.setModel(newReferenceBiasRadS, refTempC, newSlopeRadSPerC);
-    candidateTempComp.setEnabled(true);
-    candidateTempComp.setQualityMetadata(fit.tempMinC, fit.tempMaxC, fitQuality, residualBeforeDps, residualAfterDps);
-    candidateImuCal.gyroBiasValid = true;
-    candidateImuCal.gyroBiasRadS = candidateTempComp.referenceBiasRadS();
-
-    // A new base temperature model invalidates any runtime trim learned against the
-    // previous model.  Runtime bias is intentionally RAM-only and must restart clean.
-    const bool runtimeBiasWasEnabled = candidateRuntimeBias.enabled;
-    candidateRuntimeBias.runtimeTrimRadS = Vec3::zero();
-    candidateRuntimeBias.resetCounters();
-    candidateRuntimeBias.enabled = runtimeBiasWasEnabled;
-
-    candidateConfig.captureFromGyroTempCompUpdate(candidateTempComp, millis(), inlierSamples);
-    candidateConfig.sanitize();
-    candidateConfig.updateCrc();
-
-    if (mode == GyroTempStaticFitMode::ApplyAndSave && !configStore.save(candidateConfig, TrackerCalibrationProvenance::Manual)) {
-        out.print("# ERR gyro temp fit save failed: ");
-        out.println(configStore.lastErrorName());
-        return false;
+    if (mode == GyroTempStaticFitMode::ApplyAndSave) {
+        if (!gyro_temp_static_fit_detail::persistTempModelCandidate(
+                configStore, config, model, inlierSamples, out)) {
+            return false;
+        }
+    } else {
+        config.captureFromGyroTempCompUpdate(model, millis(), inlierSamples);
+        config.sanitize();
+        config.updateCrc();
     }
 
-    const bool biasValidityChanged = gyroTempComp.valid() != candidateTempComp.valid();
-    gyroTempComp = candidateTempComp;
-    imuCal = candidateImuCal;
-    runtimeBias = candidateRuntimeBias;
-    config = candidateConfig;
+    const bool biasValidityChanged = gyroTempComp.valid() != model.valid();
+    gyroTempComp = model;
+    imuCal.gyroBiasValid = true;
+    imuCal.gyroBiasRadS = gyroTempComp.referenceBiasRadS();
+
+    // A new base temperature model invalidates any runtime trim learned against
+    // the previous model. Runtime bias is RAM-only and restarts clean.
+    const bool runtimeBiasWasEnabled = runtimeBias.enabled;
+    runtimeBias.runtimeTrimRadS = Vec3::zero();
+    runtimeBias.resetCounters();
+    runtimeBias.enabled = runtimeBiasWasEnabled;
+
     if (deps.onModelApplied) {
         deps.onModelApplied(biasValidityChanged, deps.onModelAppliedUser);
     }

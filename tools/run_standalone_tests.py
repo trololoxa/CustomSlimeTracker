@@ -3,6 +3,9 @@
 
 The tests intentionally compile only host-safe headers. They do not link the
 Arduino framework, do not talk to ESP32 hardware, and do not flash firmware.
+
+All independent compile/link/run stages are attempted. Failures are collected
+and printed together at the end instead of aborting at the first error.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from typing import Iterable
 
 
@@ -36,10 +40,14 @@ PROJECT_SOURCES = [
     pathlib.Path("src/sensor/mag_calibration.cpp"),
     pathlib.Path("src/sensor/sensor_to_device_alignment.cpp"),
     pathlib.Path("src/runtime/runtime_gyro_bias_controller.cpp"),
+    pathlib.Path("src/runtime/calibration_autonomy_store.cpp"),
+    pathlib.Path("src/runtime/calibration_autonomy_controller.cpp"),
     pathlib.Path("src/runtime/machine_log_runtime.cpp"),
     pathlib.Path("src/runtime/output_runtime.cpp"),
+    pathlib.Path("src/runtime/setup_output_verifier.cpp"),
     pathlib.Path("src/runtime/orientation_runtime_reset.cpp"),
     pathlib.Path("src/runtime/gyro_temp_calibration_capture.cpp"),
+    pathlib.Path("src/runtime/gyro_temp_static_fit.cpp"),
     pathlib.Path("src/runtime/tracker_console_suppress.cpp"),
     pathlib.Path("src/runtime/tracking_state_controller.cpp"),
     pathlib.Path("src/runtime/motion_light_sleep_controller.cpp"),
@@ -67,7 +75,7 @@ PROJECT_SOURCES = [
 # implementations at link time. Compiling them here catches interface drift in
 # production-only paths before PlatformIO.
 COMPILE_ONLY_SOURCES = [
-    pathlib.Path("src/runtime/gyro_temp_static_fit.cpp"),
+    pathlib.Path("src/sensor/fifo_calibrations.cpp"),
     pathlib.Path("src/runtime/imu_sample_pipeline.cpp"),
     pathlib.Path("src/runtime/runtime_status_reporter.cpp"),
     pathlib.Path("src/runtime/mag_runtime_controller.cpp"),
@@ -111,6 +119,13 @@ BASE_FLAGS = [
 ]
 
 
+@dataclass
+class NativeFailure:
+    stage: str
+    item: str
+    returncode: int
+
+
 def executable_suffix() -> str:
     return ".exe" if os.name == "nt" else ""
 
@@ -130,7 +145,7 @@ def find_compiler(explicit: str | None) -> str:
     for candidate in candidates:
         if shutil.which(candidate):
             return candidate
-    raise RuntimeError("No C++ compiler found. Set CXX or install g++/clang++." )
+    raise RuntimeError("No C++ compiler found. Set CXX or install g++/clang++.")
 
 
 def test_sources() -> list[pathlib.Path]:
@@ -138,12 +153,7 @@ def test_sources() -> list[pathlib.Path]:
 
 
 def object_id_for(source: pathlib.Path) -> pathlib.Path:
-    """Return a stable project-relative id for an object file name.
-
-    pathlib treats joining OBJ_DIR with an absolute source-derived path as an
-    absolute path again.  On POSIX that escaped to /__mnt__... .o; on Windows
-    the same pattern can escape to the drive root as .obj files.
-    """
+    """Return a stable project-relative id for an object file name."""
     try:
         return source.resolve().relative_to(ROOT)
     except ValueError:
@@ -156,8 +166,20 @@ def object_path_for(source: pathlib.Path) -> pathlib.Path:
     return OBJ_DIR / safe_name
 
 
-def compile_object(cxx: str, source: pathlib.Path, out: pathlib.Path, extra: Iterable[str]) -> None:
+def _run_command(cmd: list[str]) -> int:
+    try:
+        subprocess.run(cmd, cwd=ROOT, check=True)
+        return 0
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode if exc.returncode else 1
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr, flush=True)
+        return 1
+
+
+def compile_object(cxx: str, source: pathlib.Path, out: pathlib.Path, extra: Iterable[str]) -> bool:
     out.parent.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
     cmd = [
         cxx,
         *BASE_FLAGS,
@@ -168,22 +190,36 @@ def compile_object(cxx: str, source: pathlib.Path, out: pathlib.Path, extra: Ite
         *extra,
     ]
     print("[obj]", source, flush=True)
-    subprocess.run(cmd, cwd=ROOT, check=True)
+    return _run_command(cmd) == 0
 
 
-def compile_project_objects(cxx: str, extra: Iterable[str]) -> list[pathlib.Path]:
+def compile_project_objects(
+    cxx: str,
+    extra: Iterable[str],
+) -> tuple[list[pathlib.Path], list[NativeFailure]]:
     objects: list[pathlib.Path] = []
+    failures: list[NativeFailure] = []
     for source in PROJECT_SOURCES:
         obj = object_path_for(source)
-        compile_object(cxx, source, obj, extra)
-        objects.append(obj)
-    return objects
+        if compile_object(cxx, source, obj, extra):
+            objects.append(obj)
+        else:
+            failures.append(NativeFailure("project-compile", str(source), 1))
+    return objects, failures
 
 
-def compile_one(cxx: str, source: pathlib.Path, out: pathlib.Path, project_objects: list[pathlib.Path], extra: Iterable[str]) -> None:
+def compile_one(
+    cxx: str,
+    source: pathlib.Path,
+    out: pathlib.Path,
+    project_objects: list[pathlib.Path],
+    extra: Iterable[str],
+) -> bool:
     test_obj = object_path_for(source)
-    compile_object(cxx, source, test_obj, extra)
+    if not compile_object(cxx, source, test_obj, extra):
+        return False
 
+    out.unlink(missing_ok=True)
     cmd = [
         cxx,
         str(test_obj),
@@ -193,12 +229,22 @@ def compile_one(cxx: str, source: pathlib.Path, out: pathlib.Path, project_objec
         *extra,
     ]
     print("[link]", source.name, flush=True)
-    subprocess.run(cmd, cwd=ROOT, check=True)
+    return _run_command(cmd) == 0
 
 
-def run_one(exe: pathlib.Path) -> None:
+def run_one(exe: pathlib.Path) -> bool:
     print("[run]", exe.name, flush=True)
-    subprocess.run([str(exe)], cwd=ROOT, check=True)
+    return _run_command([str(exe)]) == 0
+
+
+def print_failure_summary(failures: list[NativeFailure]) -> None:
+    print("\n# standalone tests: FAIL", flush=True)
+    print(f"# failures={len(failures)}", flush=True)
+    for failure in failures:
+        print(
+            f"# FAIL [{failure.stage}] {failure.item} (exit={failure.returncode})",
+            flush=True,
+        )
 
 
 def main() -> int:
@@ -209,7 +255,11 @@ def main() -> int:
     parser.add_argument("--extra-cxxflag", action="append", default=[], help="Extra compiler flag; may be repeated")
     args = parser.parse_args()
 
-    cxx = find_compiler(args.cxx)
+    try:
+        cxx = find_compiler(args.cxx)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     if args.clean and BUILD_DIR.exists():
         shutil.rmtree(BUILD_DIR)
@@ -221,28 +271,63 @@ def main() -> int:
         print("No native tests found", file=sys.stderr)
         return 1
 
+    failures: list[NativeFailure] = []
     executables: list[pathlib.Path] = []
-    try:
-        project_objects = compile_project_objects(cxx, args.extra_cxxflag)
-        for source in COMPILE_ONLY_SOURCES:
-            compile_object(cxx, source, object_path_for(source), args.extra_cxxflag)
-        for source in ARDUINO_COMPILE_ONLY_SOURCES:
-            compile_object(cxx, source, object_path_for(source), [*args.extra_cxxflag, "-DARDUINO"])
+
+    project_objects, project_failures = compile_project_objects(cxx, args.extra_cxxflag)
+    failures.extend(project_failures)
+
+    for source in COMPILE_ONLY_SOURCES:
+        if not compile_object(cxx, source, object_path_for(source), args.extra_cxxflag):
+            failures.append(NativeFailure("compile-only", str(source), 1))
+
+    for source in ARDUINO_COMPILE_ONLY_SOURCES:
+        flags = [*args.extra_cxxflag, "-DARDUINO"]
+        if not compile_object(cxx, source, object_path_for(source), flags):
+            failures.append(NativeFailure("arduino-compile-only", str(source), 1))
+
+    project_linkable = len(project_objects) == len(PROJECT_SOURCES)
+    if project_linkable:
         for source in sources:
             exe = BUILD_DIR / (source.stem + executable_suffix())
-            compile_one(cxx, source, exe, project_objects, args.extra_cxxflag)
-            executables.append(exe)
+            if compile_one(cxx, source, exe, project_objects, args.extra_cxxflag):
+                executables.append(exe)
+            else:
+                failures.append(NativeFailure("test-compile-or-link", source.name, 1))
+    else:
+        # Test translation units are still compiled so syntax/interface errors in
+        # every test are reported even when one shared project source failed.
+        for source in sources:
+            if not compile_object(cxx, source, object_path_for(source), args.extra_cxxflag):
+                failures.append(NativeFailure("test-compile", source.name, 1))
+        failures.append(
+            NativeFailure(
+                "test-link",
+                "all test links blocked by failed shared project object(s)",
+                1,
+            )
+        )
 
-        if not args.build_only:
-            for exe in executables:
-                run_one(exe)
-    except subprocess.CalledProcessError as exc:
-        return exc.returncode if exc.returncode else 1
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    passed_runs = 0
+    if not args.build_only:
+        for exe in executables:
+            if run_one(exe):
+                passed_runs += 1
+            else:
+                failures.append(NativeFailure("test-run", exe.name, 1))
+
+    if failures:
+        print_failure_summary(failures)
+        print(
+            f"# built_executables={len(executables)} passed_runs={passed_runs}",
+            flush=True,
+        )
         return 1
 
-    print(f"OK {len(executables)} standalone test executable(s)", flush=True)
+    if args.build_only:
+        print(f"OK {len(executables)} standalone test executable(s) built", flush=True)
+    else:
+        print(f"OK {passed_runs}/{len(executables)} standalone test executable(s)", flush=True)
     return 0
 
 

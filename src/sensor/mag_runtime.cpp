@@ -17,11 +17,9 @@ float MagRuntimeStats::trustedBodyNormMean() const {
 }
 
 void MagRuntimeProcessor::reset() {
-    last_ = MagProcessedSample{};
     stats_ = MagRuntimeStats{};
 }
 
-const MagProcessedSample& MagRuntimeProcessor::last() const { return last_; }
 const MagRuntimeStats& MagRuntimeProcessor::stats() const { return stats_; }
 
 bool MagRuntimeProcessor::process(const Lsm6dsvFifoReader::MagRawSample& raw,
@@ -59,7 +57,10 @@ bool MagRuntimeProcessor::process(const Lsm6dsvFifoReader::MagRawSample& raw,
         addReject(out, MAG_REJECT_RAW_NONFINITE);
     }
 
-    if (out.rawNorm <= cfg.minUsableNorm) {
+    // Raw zero is not intrinsically invalid: with a large hard-iron
+    // offset the physical ellipsoid can legitimately pass through the ADC
+    // origin. Validate the corrected/body norm below instead.
+    if (!cfg.calibrationValid && out.rawNorm <= cfg.minUsableNorm) {
         addReject(out, MAG_REJECT_ZERO_NORM);
     }
 
@@ -84,6 +85,7 @@ bool MagRuntimeProcessor::process(const Lsm6dsvFifoReader::MagRawSample& raw,
         cfg.sensorToDeviceValid,
         cfg.sensorToDevice
     );
+    out.sensorToDeviceApplied = frame.enabled;
     out.body = frame.apply(out.body);
 
     out.calibratedNorm = out.calibratedMagFrame.norm();
@@ -123,15 +125,7 @@ bool MagRuntimeProcessor::process(const Lsm6dsvFifoReader::MagRawSample& raw,
         countRejects(out.rejectFlags);
     }
 
-    last_ = out;
     return out.valid;
-}
-
-bool MagRuntimeProcessor::process(const Lsm6dsvFifoReader::MagRawSample& raw,
-                                  const MagRuntimeConfig& cfg,
-                                  uint32_t nowMs) {
-    MagProcessedSample out;
-    return process(raw, cfg, nowMs, out);
 }
 
 uint32_t MagRuntimeProcessor::ageMsForUse(const MagProcessedSample& sample, uint32_t nowMs) {

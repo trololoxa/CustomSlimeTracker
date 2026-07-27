@@ -49,6 +49,9 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
         out.print("fifo_runtime_mag_queue_high_water="); out.println(qs.magQueueHighWater);
         out.print("fifo_runtime_raw_queue_overflow="); out.println(qs.rawQueueOverflow);
         out.print("fifo_runtime_mag_queue_overflow="); out.println(qs.magQueueOverflow);
+        out.print("fifo_runtime_mag_chronological_deferrals="); out.println(qs.magChronologicalDeferrals);
+        out.print("fifo_runtime_mag_count_deferrals="); out.println(qs.magCallbackCountDeferrals);
+        out.print("fifo_runtime_mag_budget_deferrals="); out.println(qs.magCallbackBudgetDeferrals);
     }
     out.print("latest_temp_c="); out.println(deps.latestTempC, 3);
 
@@ -166,6 +169,11 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
     out.print("sensorhub_nack_words="); out.println(fs.sensorHubNackWords);
     out.print("mag_samples_produced="); out.println(fs.magSamplesProduced);
     out.print("mag_queue_overflow="); out.println(fs.magQueueOverflow);
+    out.print("mag_timestamp_imu_anchors="); out.println(fs.magTimestampImuAnchors);
+    out.print("mag_timestamp_nominal_fallbacks="); out.println(fs.magTimestampNominalFallbacks);
+    out.print("mag_timestamp_monotonic_adjustments="); out.println(fs.magTimestampMonotonicAdjustments);
+    out.print("mag_timestamp_last_anchor_correction_us="); out.println(fs.lastMagAnchorCorrectionUs);
+    out.print("mag_timestamp_max_anchor_correction_us="); out.println(fs.maxMagAnchorCorrectionUs);
     serviceNonCliRuntime(deps);
 
     const auto& ms = deps.magProcessor->stats();

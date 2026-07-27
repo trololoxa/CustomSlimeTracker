@@ -354,6 +354,10 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
 #endif
     objects.fifoRuntime = &g_fifoRuntime;
     objects.trackingState = &g_trackingState;
+    objects.preparedOutput = &g_preparedOutput;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    objects.calibrationAutonomy = &g_calibrationAutonomy;
+#endif
 #if TRACKER_ENABLE_CALIBRATION_COMMANDS
     objects.calibrationIo = &g_calIo;
     objects.accelCalRunner = &g_accelCalRunner;

@@ -7,6 +7,9 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "runtime/fifo_runtime_processor.hpp"
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+#include "runtime/calibration_autonomy_controller.hpp"
+#endif
 #include "runtime/output_runtime.hpp"
 #include "runtime/runtime_bias_types.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
@@ -68,6 +71,9 @@ struct ImuSamplePipelineDeps {
     MachineLogCounters* logCounters = nullptr;
     StaticTestRunner* staticTestRunner = nullptr;
     GyroTempCalibrationCapture* gyroTempCapture = nullptr;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    CalibrationAutonomyController* calibrationAutonomy = nullptr;
+#endif
     TrackerPerfCounters& perf;
 #if TRACKER_HAS_RUNTIME_PROFILER
     RuntimeMotionDiagnostics* motionDiagnostics = nullptr;

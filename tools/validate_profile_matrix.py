@@ -86,6 +86,8 @@ SLIM_REQUIRED_EXCLUDES = PRODUCTION_REQUIRED_EXCLUDES | {
     "runtime/tracker_console_suppress.cpp",
     "runtime/gyro_temp_calibration_capture.cpp",
     "runtime/gyro_temp_static_fit.cpp",
+    "runtime/calibration_autonomy_controller.cpp",
+    "runtime/calibration_autonomy_store.cpp",
     "sensor/accel_6pos_calibration.cpp",
     "sensor/fifo_calibrations.cpp",
     "serial/tracker_battery_commands.cpp",

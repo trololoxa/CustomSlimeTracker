@@ -32,6 +32,10 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.motionDiagnostics = objects.motionDiagnostics;
     ctx.fifoRuntime = objects.fifoRuntime;
     ctx.trackingState = objects.trackingState;
+    ctx.preparedOutput = objects.preparedOutput;
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    ctx.calibrationAutonomy = objects.calibrationAutonomy;
+#endif
     ctx.calibrationIo = objects.calibrationIo;
     ctx.accelCalRunner = objects.accelCalRunner;
     ctx.gyroTempCapture = objects.gyroTempCapture;

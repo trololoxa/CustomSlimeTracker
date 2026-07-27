@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 
 #include "core/math.hpp"
 #include "connection/lsm6dsv_driver.hpp"
@@ -74,14 +75,64 @@ bool fifoCalibrationDrainBounded(FifoCalibrationIo& io,
 
 struct FifoGyroStartupCalibrationParams {
     uint32_t requiredStationarySamples = 1536;
+    uint32_t validationSamples = 384;
     uint32_t maxTotalSamples = 9600;
     uint32_t warmupSamples = 64;
+    uint32_t resetAfterConsecutiveRejected = 16;
 
     float maxGyroNormRadS = 3.0f * MATH_DEG_TO_RAD;
     float maxAccelNormErrorG = 0.08f;
+    // Raw 960 Hz sample noise is allowed to be higher than the final bias
+    // uncertainty. Bias quality is primarily proven by standard error of the
+    // long mean and a separate held-out mean, while this remains a hard guard
+    // against obvious motion/vibration.
+    float maxGyroStdDps = 0.80f;
+    float maxGyroMeanStdErrorDps = 0.035f;
+    float maxValidationGyroMeanStdErrorDps = 0.050f;
+    float maxAccelStdG = 0.025f;
+    float maxTemperatureSpanC = 0.50f;
+    float maxValidationBiasErrorDps = 0.08f;
+    float maxValidationAccelMeanDeltaG = 0.05f;
 
     uint32_t fifoWaitTimeoutMs = 1000;
 };
+
+inline bool fifoGyroVecAbsAtMost(const Vec3& value, float limit) {
+    return std::fabs(value.x) <= limit &&
+           std::fabs(value.y) <= limit &&
+           std::fabs(value.z) <= limit;
+}
+
+inline bool fifoGyroStartupCalibrationEvaluateQuality(
+    GyroStartupCalibrationResult& result,
+    const FifoGyroStartupCalibrationParams& params) {
+    result.trainNoiseGatePassed =
+        fifoGyroVecAbsAtMost(result.gyroStdDps, params.maxGyroStdDps) &&
+        fifoGyroVecAbsAtMost(result.accelStdG, params.maxAccelStdG);
+    result.trainMeanPrecisionGatePassed =
+        fifoGyroVecAbsAtMost(result.gyroMeanStdErrorDps,
+                             params.maxGyroMeanStdErrorDps);
+    result.validationGatePassed = result.validationSamples >= params.validationSamples &&
+        result.validationResidualDps.norm() <= params.maxValidationBiasErrorDps &&
+        fifoGyroVecAbsAtMost(result.validationGyroStdDps, params.maxGyroStdDps) &&
+        fifoGyroVecAbsAtMost(result.validationGyroMeanStdErrorDps,
+                             params.maxValidationGyroMeanStdErrorDps) &&
+        fifoGyroVecAbsAtMost(result.validationAccelStdG, params.maxAccelStdG) &&
+        std::fabs(result.validationAccelNormMeanG - 1.0f) <=
+            params.maxAccelNormErrorG &&
+        result.validationAccelMeanDeltaG <= params.maxValidationAccelMeanDeltaG;
+    result.temperatureGatePassed =
+        result.temperatureSpanC <= params.maxTemperatureSpanC;
+
+    result.success = result.stationarySamples >=
+            params.requiredStationarySamples + params.validationSamples &&
+        result.validationSamples >= params.validationSamples &&
+        result.trainNoiseGatePassed &&
+        result.trainMeanPrecisionGatePassed &&
+        result.validationGatePassed &&
+        result.temperatureGatePassed;
+    return result.success;
+}
 
 struct FifoGyroStartupCalibrationProgress {
     uint32_t stationarySamples = 0;
@@ -136,6 +187,9 @@ private:
 
 struct FifoAccel6PosCaptureParams {
     uint32_t requiredSamples = 1024;
+    uint32_t validationSamples = 256;
+    float maxValidationNormErrorG = 0.080f;
+    float maxValidationAxisResidualG = 0.220f;
     float maxGyroNormDps = 2.0f;
     float minAccelNormG = 0.75f;
     float maxAccelNormG = 1.25f;
@@ -212,6 +266,13 @@ private:
     FifoAccel6PosCaptureParams params_;
     Accel6PosCalibration cal_;
     Accel6PosCapture capture_;
+    Accel6PosCalibration::FaceData validationFaces_[6] = {};
+
+    bool captureValidationFace(FifoCalibrationIo& io,
+                               Accel6PosCalibration::Face face,
+                               Accel6PosCalibration::FaceData& out,
+                               FifoAccelCaptureProgressCallback progressCb,
+                               void* progressUser);
 };
 
 } // namespace tracker

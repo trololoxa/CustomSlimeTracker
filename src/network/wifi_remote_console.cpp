@@ -252,6 +252,8 @@ void WifiRemoteConsoleRuntime::acceptClient(WiFiClient& candidate) {
     lastOutputDrainMs_ = 0u;
     clientContext_ = baseContext_;
     clientContext_.io = &clientStream_;
+    clientContext_.commandOutputNeedsExplicitFlush = true;
+    clientContext_.lastCommandOutputFlushMs = 0u;
     cli_.begin(clientContext_);
     clientConnected_ = true;
     ++acceptedClients_;
