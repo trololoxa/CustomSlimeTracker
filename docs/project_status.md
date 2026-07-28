@@ -363,3 +363,26 @@ Windows/MSYS2 measured `MagRuntimeController::processRawSample()` at 1040 bytes 
 ## 0023gg magnetic timestamp and setup acceptance hardening
 
 The first complete hardware guided-calibration run after 0023gf accepted hard/soft iron but exposed 4255 gyro/mag skew rejections and a final verification false negative at 207 healthy input samples. 0023gg anchors every sensor-hub magnetic frame to the current IMU/FIFO time domain instead of free-running forever at nominal 60 Hz. If independent partitions recover the same proper coarse axis/sign mapping but disagree only on small continuous refinement, the disputed refinement is discarded and the unchanged physical quality gates evaluate the shared coarse rotation. Final setup verification keeps its 256-input-sample requirement but extends its capture from a minimum four seconds to a bounded maximum eight seconds and reports every stationarity sub-gate separately.
+
+## 0023gh SlimeVR Wi-Fi provisioning compatibility hardening
+
+`0023gh_slimevr_wifi_provisioning_compat_hardening` corrects the serial compatibility contract used by SlimeVR Server's setup wizard. The reported field is upstream `WiFiReconnectionStatus`, not Arduino `WiFi.status()`: ordinary saved-credential `Connecting` reports `SavedAttempt=1`, a successful serial credential submission latches `ServerCredAttempt=3` for its reconnect, `Backoff` reports `Failed=4`, and `Connected` remains `Success=5`. `SET WIFI` and `SET BWIFI` emit the exact upstream-compatible success strings. Credential persistence, immediate non-blocking reconnect, normal Wi-Fi state-machine behavior, UDP tracking, schemas and queues are unchanged.
+
+## 0023gi SlimeVR Connect Trackers handshake and build-date hardening
+
+`0023gi_slimevr_connect_trackers_handshake_and_build_date_hardening` completes the compatibility audit after 0023gh allowed the setup wizard to observe `Success=5` but the tracker still timed out before appearing in the server. Healthy serial tracker status is now `0` and no longer changes to `1/2` for Wi-Fi/server stages. Every discovery handshake uses the official fixed packet number `0` and does not consume the established-session packet sequence, so a lost first broadcast cannot make every later retry protocol-incompatible. The UDP handshake and serial compatibility output now report `<feature-version>+build.YYYYMMDD`; UTC build date and actual Git/worktree identity are exposed through `GET INFO`/`version`. `SOURCE_DATE_EPOCH` preserves reproducible builds. Wi-Fi credential persistence, UDP port/broadcast address, discovery cadence, tracking packets, schemas and queues are unchanged.
+
+
+## 0023gj SlimeVR Connect Trackers session-restart hardening
+
+`0023gj_slimevr_connect_trackers_session_restart_hardening` fixes the remaining already-connected onboarding case left by 0023gi. Successful server-style credential provisioning is now transactional and explicitly restarts the SlimeVR UDP session after the committed Wi-Fi config becomes live. This guarantees a fresh packet-number-zero discovery and `SensorInfo` registration even when identical credentials reconnect too quickly for the runtime to observe Wi-Fi loss. A shared typed helper now owns normal start versus forced restart semantics, removing recursive CLI dispatch and preventing command-path drift. Tracking, FIFO, AHRS, protocol 22, storage schema, calibration and normal `slime start` behavior are unchanged.
+
+
+## 0023gk magnetometer robust-fit acceptance hardening
+
+`0023gk_magnetometer_robust_fit_acceptance_hardening` fixes two hardware-reproduced hard/soft-iron acceptance defects. The centered algebraic residual is approximately twice normalized radial error, so its effective numerical ceiling is now guaranteed not to be stricter than the authoritative geometric gate; the second tracker log (`0.146809` algebraic, `0.074308` geometric) therefore no longer fails a contradictory duplicate threshold. Robust inlier selection now caps contaminated sigma at 1.5 times the geometric limit and performs at most three exact-membership-convergent refits using the existing single accumulator workspace. A 15% moderate-disturbance fixture is recovered, while 20% exceeds the unchanged 82% inlier requirement and remains fail-closed. New diagnostics expose robust refit passes and threshold factor. Config schema 2, candidate format 3, ODR, FIFO, AHRS, magToImu, networking and calibration ownership are unchanged.
+
+
+## 0023gl SlimeVR UDP TX recovery hardening
+
+`0023gl_slimevr_udp_tx_recovery_hardening` fixes the long-lived low-TPS cascade reproduced on two ESP32-C3 trackers with strong RSSI and an otherwise live server session. ESP-IDF/lwIP TX-buffer pressure is now reported through errno-aware transport results, stale motion traffic enters a bounded 20-160 ms backoff, and recovery triggers on either four consecutive failures or eight failures in the exact last 32 physical attempts. Recent heartbeat/ping now selects a session-preserving local UDP rebind rather than suppressing recovery; a failed rebind, stale RX, or a second burst within two seconds escalates to the existing full discovery lifecycle. New counters expose backoff, TX-pressure classification, local rebind and escalation. FIFO, ODR, AHRS, packet formats, protocol 22, calibration, persistent schema and candidate format are unchanged.

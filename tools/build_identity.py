@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Deterministic Git/worktree identity generation for firmware builds.
 
-The identity intentionally has no timestamp. Two builds of the same repository
-state therefore produce the same generated header and do not force pointless
-recompilation. Ignored files and .git internals are excluded; tracked and
-non-ignored untracked files are hashed by relative path and content.
+The Git/worktree identity intentionally has no timestamp. Ignored files and
+.git internals are excluded; tracked and non-ignored untracked files are hashed
+by relative path and content. The generated PlatformIO header additionally
+contains an explicit UTC build date; SOURCE_DATE_EPOCH makes that date
+reproducible when required.
 """
 
 from __future__ import annotations
@@ -14,8 +15,9 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 
 @dataclass(frozen=True)
@@ -119,8 +121,42 @@ def load_firmware_feature_version() -> str:
 FIRMWARE_FEATURE_VERSION = load_firmware_feature_version()
 
 
-def render_generated_header(identity: BuildIdentity, pio_environment: str) -> str:
+def resolve_build_date_utc(
+    environment: Mapping[str, str] | None = None,
+    now: datetime | None = None,
+) -> str:
+    env = os.environ if environment is None else environment
+    source_date_epoch = env.get("SOURCE_DATE_EPOCH", "").strip()
+    if source_date_epoch:
+        try:
+            instant = datetime.fromtimestamp(int(source_date_epoch, 10), tz=timezone.utc)
+        except (ValueError, OverflowError, OSError) as exc:
+            raise ValueError("SOURCE_DATE_EPOCH must be a representable integer timestamp") from exc
+    else:
+        instant = now if now is not None else datetime.now(timezone.utc)
+        if instant.tzinfo is None:
+            instant = instant.replace(tzinfo=timezone.utc)
+        else:
+            instant = instant.astimezone(timezone.utc)
+    return instant.strftime("%Y-%m-%d")
+
+
+def slimevr_firmware_version(build_date_utc: str) -> str:
+    compact = build_date_utc.replace("-", "")
+    if not re.fullmatch(r"[0-9]{8}", compact):
+        raise ValueError("build date must use YYYY-MM-DD")
+    return f"{FIRMWARE_FEATURE_VERSION}+build.{compact}"
+
+
+def render_generated_header(
+    identity: BuildIdentity,
+    pio_environment: str,
+    build_date_utc: str | None = None,
+) -> str:
     firmware_version = FIRMWARE_FEATURE_VERSION
+    resolved_build_date = build_date_utc or resolve_build_date_utc()
+    compact_build_date = resolved_build_date.replace("-", "")
+    server_firmware_version = slimevr_firmware_version(resolved_build_date)
     return """#pragma once
 
 // Generated automatically by tools/generate_build_identity.py.
@@ -132,6 +168,9 @@ def render_generated_header(identity: BuildIdentity, pio_environment: str) -> st
 #define TRACKER_BUILD_IDENTITY_STRING \"{identity}\"
 #define TRACKER_BUILD_PIO_ENVIRONMENT \"{pio_environment}\"
 #define TRACKER_BUILD_FIRMWARE_VERSION \"{firmware_version}\"
+#define TRACKER_BUILD_DATE_UTC \"{build_date_utc}\"
+#define TRACKER_BUILD_DATE_COMPACT \"{build_date_compact}\"
+#define TRACKER_BUILD_SLIMEVR_FIRMWARE_VERSION \"{slimevr_firmware_version}\"
 """.format(
         available=1 if identity.available else 0,
         head=_cpp_string(identity.head),
@@ -140,6 +179,9 @@ def render_generated_header(identity: BuildIdentity, pio_environment: str) -> st
         identity=_cpp_string(identity.identity),
         pio_environment=_cpp_string(pio_environment),
         firmware_version=_cpp_string(firmware_version),
+        build_date_utc=_cpp_string(resolved_build_date),
+        build_date_compact=_cpp_string(compact_build_date),
+        slimevr_firmware_version=_cpp_string(server_firmware_version),
     )
 
 

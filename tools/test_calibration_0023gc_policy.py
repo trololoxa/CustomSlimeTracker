@@ -98,7 +98,7 @@ def main() -> int:
 
     require(mag, "FitAccumulator fitAccumulator;", "single mag-fit accumulator workspace")
     require(mag, "const uint32_t rawFitSamples = fitAccumulator.count;", "raw-fit count retained before workspace reuse")
-    require(mag, "accumulateInliers(stored_, storedSamples_, finalFit, initialThreshold, fitNormalization, fitAccumulator)", "inlier pass workspace reuse")
+    require(mag, "fitNormalization, fitAccumulator, membership)", "inlier pass workspace reuse")
     forbid(mag, "FitAccumulator all;", "first simultaneously-live accumulator")
     forbid(mag, "FitAccumulator inlierAcc;", "second simultaneously-live accumulator")
     require(mag, "safe cross-ABI stack margin", "stack rationale")

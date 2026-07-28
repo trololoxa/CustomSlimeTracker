@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include <cerrno>
+
 namespace tracker {
 
 namespace {
@@ -65,11 +67,34 @@ bool Esp32UdpTransport::resolveHost(const char* host, uint32_t& outIpv4) {
 }
 
 bool Esp32UdpTransport::send(const UdpEndpoint& endpoint, const uint8_t* data, size_t len) {
-    if (!active_ || !endpoint.valid() || !data || len == 0) return false;
-    if (!udp_.beginPacket(ipFromU32(endpoint.ipv4), endpoint.port)) return false;
+    lastSendError_ = 0;
+    if (!active_ || !endpoint.valid() || !data || len == 0) {
+        lastSendError_ = EINVAL;
+        return false;
+    }
+
+    errno = 0;
+    if (!udp_.beginPacket(ipFromU32(endpoint.ipv4), endpoint.port)) {
+        lastSendError_ = errno != 0 ? errno : EIO;
+        return false;
+    }
+
     const size_t written = udp_.write(data, len);
+    errno = 0;
     const int result = udp_.endPacket();
-    return result > 0 && written == len;
+    if (result <= 0) {
+        lastSendError_ = errno != 0 ? errno : EIO;
+        return false;
+    }
+    if (written != len) {
+        lastSendError_ = EMSGSIZE;
+        return false;
+    }
+    return true;
+}
+
+int Esp32UdpTransport::lastSendError() const {
+    return lastSendError_;
 }
 
 int Esp32UdpTransport::parsePacket() {

@@ -153,6 +153,11 @@ def run_tool_smokes(summary: CheckSummary) -> None:
         ("tools/test_calibration_0023ge_policy.py", "0023ge magnetometer audit hardening policy"),
         ("tools/test_calibration_0023gf_policy.py", "0023gf mag callback cross-ABI policy"),
         ("tools/test_calibration_0023gg_policy.py", "0023gg magnetic timestamp/setup acceptance policy"),
+        ("tools/test_slimevr_wifi_provisioning_0023gh_policy.py", "0023gh SlimeVR Wi-Fi provisioning compatibility"),
+        ("tools/test_slimevr_connect_trackers_0023gi_policy.py", "0023gi SlimeVR Connect Trackers handshake/build date"),
+        ("tools/test_slimevr_connect_trackers_0023gj_policy.py", "0023gj already-connected Connect Trackers session restart"),
+        ("tools/test_calibration_0023gk_policy.py", "0023gk magnetometer robust-fit acceptance policy"),
+        ("tools/test_slimevr_udp_tx_recovery_0023gl_policy.py", "0023gl SlimeVR UDP TX recovery policy"),
         ("tools/test_calibration_integration_policy.py", "calibration integration policy"),
         ("tools/test_mag_heading_reliability_policy.py", "mag heading reliability policy"),
     )

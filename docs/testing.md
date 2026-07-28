@@ -737,9 +737,11 @@ During movement on a bundle-capable server, `bundled_motion_sent`,
 zero. A server that does not answer FeatureFlags must report
 `rotation_17_plus_accel_4_fallback`; rotation remains at the configured rate,
 while `acceleration_rate_limited_delta` confirms the 50 Hz packet-4 fallback.
-Under an intentionally weak link,
-`udp_reopen_suppressed_recent_rx_delta` may rise, but `udp_reopen_requests` must
-not rise while ping/heartbeat reception continues. `foreign_endpoint_packets_dropped`,
+Under intentional UDP TX pressure, `tx_pressure_failures_delta` and
+`tx_backoff_drops_delta` may rise. Recent valid ping/heartbeat reception should
+select `udp_transport_rebind_successes_delta`; a failed rebind, stale RX or a
+second burst may instead increment `udp_full_reopen_escalations_delta` and
+`udp_reopen_requests`. `foreign_endpoint_packets_dropped`,
 `pre_session_packets_dropped` and all `malformed_*` counters should remain zero on
 a normal single-server LAN. `tap_user_action=off` is the default unless a mapping
 was explicitly saved. The definitive directional acceptance is a successful
@@ -1082,3 +1084,26 @@ Run `python3 tools/test_calibration_0023gf_policy.py`. The policy checks the no-
 ## 0023gg magnetic timestamp and setup acceptance regression
 
 Run `python3 tools/test_calibration_0023gg_policy.py`. It checks per-frame IMU/FIFO anchoring of sensor-hub magnetic timestamps, nominal fallback ownership, same-coarse conservative alignment fallback, adaptive bounded setup verification, checkpoint-honest rollback wording, and cross-ABI stack ceilings. It compiles and runs FIFO timestamp, magnetic alignment, and setup output-verifier regressions. The aggregate `check_all.py` run owns the complete predecessor policy chain to avoid another layer of recursive recompilation.
+
+## 0023gh SlimeVR Wi-Fi provisioning compatibility regression
+
+Run `python3 tools/test_slimevr_wifi_provisioning_0023gh_policy.py`. The policy locks all six upstream `WiFiReconnectionStatus` numeric values, the saved-attempt/server-attempt distinction plus `Backoff -> Failed` and `Connected -> Success` mappings, exact `SET WIFI`/`SET BWIFI` acknowledgement strings, and the non-blocking persistence/reconnect path. It also host-compiles the serial compatibility translation unit in native and Production-profile compositions. The aggregate `check_all.py` run owns predecessor policies.
+
+## 0023gi SlimeVR Connect Trackers handshake/build-date regression
+
+Run `python3 tools/test_slimevr_connect_trackers_0023gi_policy.py`. The policy locks healthy serial `status: 0`, keeps Wi-Fi progress exclusively in `WiFiReconnectionStatus`, requires every discovery retry to serialize packet number zero without consuming the session sequence, verifies the build-dated firmware string used by serial and UDP handshakes, and tests UTC/`SOURCE_DATE_EPOCH` build-date generation. It compiles the serial compatibility and output-runtime translation units and runs the focused packet-writer/build-identity regressions. The aggregate `check_all.py` owns predecessor policies.
+
+
+## 0023gj already-connected Connect Trackers session-restart regression
+
+Run `python3 tools/test_slimevr_connect_trackers_0023gj_policy.py`. The policy requires one typed shared SlimeVR runtime-apply path, maps ordinary `slime start` to session preservation and CLI reconnect plus successful `SET WIFI`/`SET BWIFI` to an explicit session restart, forbids recursive CLI dispatch, and enforces commit-before-live credential activation. Its native runtime test establishes and acknowledges an initial session while Wi-Fi remains connected, restarts only the SlimeVR session, verifies endpoint/feature/`SensorInfo` invalidation, emits a new packet-number-zero discovery, accepts the same server again, and completes a fresh `SensorInfo` acknowledgement. Affected serial units are compiled natively and in the Production profile.
+
+
+## 0023gk magnetometer robust-fit acceptance regression
+
+Run `python3 tools/test_calibration_0023gk_policy.py`. The policy requires an effective algebraic backstop compatible with the geometric gate, a bounded sigma cap tied to the physical residual limit, at most three no-heap refit passes, exact inlier-membership convergence, the single reused `FitAccumulator`, and a no-inline candidate helper that preserves the 1792-byte cross-ABI `compute()` ceiling. Native regressions reproduce the second hardware log where geometric quality passes but the old algebraic limit failed, recover a 15% moderately disturbed population, reject 20% through the unchanged inlier budget, and preserve a direct strong non-ellipsoidal geometric rejection. The policy compiles and runs the hard/soft suite; the aggregate `check_all.py` run owns the complete predecessor policy chain without recursive recompilation.
+
+
+## 0023gl SlimeVR UDP TX pressure/recovery regression
+
+Run `python3 tools/test_slimevr_udp_tx_recovery_0023gl_policy.py`. The policy requires errno-aware physical sends, bounded 20-160 ms stale-pose backoff, four-consecutive and exact 8-of-32 recovery gates, session-preserving local socket rebind, bounded full-reopen escalation, and the replacement diagnostics. Native tests reproduce consecutive and intermittent TX pressure, prove that backoff avoids an extra physical send, preserve FeatureFlags/bundle mode across rebind, cover stale-RX direct reopen and failed-rebind escalation, and run with ASan/UBSan. The source policy also locks that `perf on` only enables/resets the profiler and has no Wi-Fi, UDP or SlimeVR recovery side effect.

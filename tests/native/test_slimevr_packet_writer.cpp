@@ -163,10 +163,13 @@ int main() {
     handshakeInfo.updateName = "n";
     handshakeInfo.mac[0] = 0xaa;
     handshakeInfo.mac[5] = 0x55;
+    const uint64_t sequenceBeforeHandshake = writer.packetNumber();
     const SlimeVRPacketWriteResult handshake = writer.writeHandshake(packet, sizeof(packet), handshakeInfo);
     CHECK(ctx, handshake.ok);
     CHECK(ctx, handshake.size == SLIMEVR_PACKET_HEADER_SIZE + 24u + 4u + 1u + 2u + 6u + 1u + 5u * 2u);
     CHECK(ctx, readU32Be(packet) == static_cast<uint32_t>(SlimeVRSendPacketType::Handshake));
+    CHECK(ctx, readU64Be(packet + 4) == 0u);
+    CHECK(ctx, writer.packetNumber() == sequenceBeforeHandshake);
     CHECK(ctx, readU32Be(packet + 12) == 10u); // boardType: LOLIN_C3_MINI
     CHECK(ctx, readU32Be(packet + 16) == 13u); // imuType: LSM6DSV
     CHECK(ctx, readU32Be(packet + 20) == 6u);  // mcuType: ESP32_C3
@@ -176,6 +179,11 @@ int main() {
     CHECK(ctx, packet[42] == 'w');
     CHECK(ctx, packet[43] == 0xaa);
     CHECK(ctx, packet[48] == 0x55);
+
+    const SlimeVRPacketWriteResult handshakeRetry = writer.writeHandshake(packet, sizeof(packet), handshakeInfo);
+    CHECK(ctx, handshakeRetry.ok);
+    CHECK(ctx, readU64Be(packet + 4) == 0u);
+    CHECK(ctx, writer.packetNumber() == sequenceBeforeHandshake);
 
 
     CHECK(ctx, std::strcmp(slimevrUserActionName(SlimeVRUserAction::None), "off") == 0);

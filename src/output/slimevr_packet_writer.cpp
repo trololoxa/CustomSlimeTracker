@@ -185,7 +185,11 @@ SlimeVRPacketWriteResult SlimeVRPacketWriter::writePingPong(uint8_t* out, size_t
 SlimeVRPacketWriteResult SlimeVRPacketWriter::writeHandshake(uint8_t* out, size_t capacity,
                                                              const SlimeVRHandshakeInfo& info) {
     BufferCursor cursor{out, out, capacity};
-    if (writePacketHeader(cursor, SlimeVRSendPacketType::Handshake)) {
+    // Upstream SlimeVR discovery always uses packet number zero. A discovery
+    // retry is not part of the established session sequence and must neither
+    // inherit nor advance nextPacketNumber_.
+    if (cursor.writeU32Be(static_cast<uint32_t>(SlimeVRSendPacketType::Handshake)) &&
+        cursor.writeU64Be(0)) {
         cursor.writeU32Be(info.boardType);
         cursor.writeU32Be(info.imuType);
         cursor.writeU32Be(info.mcuType);

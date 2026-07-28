@@ -7,9 +7,17 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
-from build_identity import FIRMWARE_FEATURE_VERSION, collect_build_identity, render_generated_header, write_if_changed
+from build_identity import (
+    FIRMWARE_FEATURE_VERSION,
+    collect_build_identity,
+    render_generated_header,
+    resolve_build_date_utc,
+    slimevr_firmware_version,
+    write_if_changed,
+)
 
 
 @unittest.skipUnless(shutil.which("git"), "git executable is required")
@@ -59,13 +67,29 @@ class BuildIdentityTests(unittest.TestCase):
 
     def test_generated_header_is_stable(self) -> None:
         identity = collect_build_identity(self.root)
-        content = render_generated_header(identity, "TEST_ENV")
+        content = render_generated_header(identity, "TEST_ENV", "2026-07-27")
         path = self.root / "out" / "tracker_build_identity_generated.hpp"
         self.assertTrue(write_if_changed(path, content))
         self.assertFalse(write_if_changed(path, content))
         self.assertIn(identity.head, path.read_text(encoding="utf-8"))
         self.assertIn("TEST_ENV", path.read_text(encoding="utf-8"))
-        self.assertIn(FIRMWARE_FEATURE_VERSION, path.read_text(encoding="utf-8"))
+        generated = path.read_text(encoding="utf-8")
+        self.assertIn(FIRMWARE_FEATURE_VERSION, generated)
+        self.assertIn('TRACKER_BUILD_DATE_UTC "2026-07-27"', generated)
+        self.assertIn('TRACKER_BUILD_DATE_COMPACT "20260727"', generated)
+        self.assertIn(f"{FIRMWARE_FEATURE_VERSION}+build.20260727", generated)
+
+
+    def test_build_date_is_utc_and_reproducible(self) -> None:
+        self.assertEqual(resolve_build_date_utc({"SOURCE_DATE_EPOCH": "0"}), "1970-01-01")
+        instant = datetime(2026, 7, 27, 23, 59, tzinfo=timezone.utc)
+        self.assertEqual(resolve_build_date_utc({}, now=instant), "2026-07-27")
+        self.assertEqual(
+            slimevr_firmware_version("2026-07-27"),
+            f"{FIRMWARE_FEATURE_VERSION}+build.20260727",
+        )
+        with self.assertRaises(ValueError):
+            resolve_build_date_utc({"SOURCE_DATE_EPOCH": "not-a-number"})
 
     def test_platformio_hook_generates_header_and_include_path(self) -> None:
         script = Path(__file__).with_name("generate_build_identity.py")

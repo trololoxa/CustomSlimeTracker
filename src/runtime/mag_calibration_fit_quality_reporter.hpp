@@ -45,10 +45,13 @@ TRACKER_MAG_CAL_FIT_REPORT_NOINLINE inline void magStatusPrintCalibrationFitQual
     out.print(fit.inlierRatio, 6); out.print(',');
     out.print(fit.axisRatio, 6); out.print(',');
     out.println(fit.coverageScore, 6);
+    out.print(prefix); out.print("last_fit_robust_refit_passes="); out.println(fit.robustRefitPasses);
+    out.print(prefix); out.print("last_fit_robust_threshold_factor=");
+    out.println(fit.robustInlierThresholdFactor, 6);
 
     const MagCalibrationParams& params = collector.params();
     out.print(prefix); out.print("last_fit_quality_limits=");
-    out.print(params.maxAlgebraicResidualRms, 6); out.print(',');
+    out.print(magCalibrationEffectiveMaxAlgebraicResidualRms(params), 6); out.print(',');
     out.print(params.maxGeometricResidualRmsFactor, 6); out.print(',');
     out.print(params.minDirectionalCoverageScore, 6); out.print(',');
     out.print(params.minInlierRatio, 6); out.print(',');

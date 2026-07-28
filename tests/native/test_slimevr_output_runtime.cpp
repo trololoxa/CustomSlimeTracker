@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include <cerrno>
 #include <cstring>
 #include <initializer_list>
 #include <vector>
@@ -38,6 +39,9 @@ public:
     UdpEndpoint incomingRemote;
     bool incomingPending = false;
     int failPacketType = -1;
+    int failSendError = ENOMEM;
+    int lastError = 0;
+    uint32_t sendCalls = 0;
     bool resolveResult = true;
     uint32_t resolvedIpv4 = 0xC0A8002AUL;
     uint32_t resolveCalls = 0;
@@ -63,14 +67,23 @@ public:
     }
 
     bool send(const UdpEndpoint& endpoint, const uint8_t* data, size_t len) override {
-        if (!isActive || !data || len == 0) return false;
-        if (failPacketType >= 0 && len >= 4u && data[3] == static_cast<uint8_t>(failPacketType)) return false;
+        ++sendCalls;
+        lastError = 0;
+        if (!isActive || !data || len == 0) {
+            lastError = EINVAL;
+            return false;
+        }
+        if (failPacketType >= 0 && len >= 4u && data[3] == static_cast<uint8_t>(failPacketType)) {
+            lastError = failSendError;
+            return false;
+        }
         SentPacket p;
         p.endpoint = endpoint;
         p.data.assign(data, data + len);
         sent.push_back(p);
         return true;
     }
+    int lastSendError() const override { return lastError; }
 
     int parsePacket() override { return incomingPending ? static_cast<int>(incoming.size()) : 0; }
     int read(uint8_t* data, size_t maxLen) override {
@@ -100,6 +113,14 @@ static uint32_t readU32BeLocal(const uint8_t* p) {
            (static_cast<uint32_t>(p[1]) << 16) |
            (static_cast<uint32_t>(p[2]) << 8) |
            static_cast<uint32_t>(p[3]);
+}
+
+static uint64_t readU64BeLocal(const uint8_t* p) {
+    uint64_t value = 0;
+    for (int i = 0; i < 8; ++i) {
+        value = (value << 8) | static_cast<uint64_t>(p[i]);
+    }
+    return value;
 }
 
 static float readF32BeLocal(const uint8_t* p) {
@@ -215,6 +236,82 @@ int main() {
     cfg.latestBatteryPercentage = 55.0f;
     cfg.setConfigFlag = FakeConfigFlagSink::apply;
     cfg.setConfigFlagUser = &configFlagSink;
+
+    // 0023gj regression: Connect Trackers can provision an already-connected
+    // tracker with unchanged credentials. Wi-Fi stays connected here, so only
+    // an explicit SlimeVR session restart can force a new discovery and fresh
+    // SensorInfo registration lifecycle.
+    {
+        FakeUdp reconnectUdp;
+        SlimeVROutputRuntime reconnectRt;
+        reconnectRt.begin(reconnectUdp, wifi, FakeSnapshotSource::copy, &snapshots);
+        reconnectRt.configure(cfg);
+        reconnectRt.update(1u);
+        CHECK(ctx, reconnectUdp.sent.size() == 1u);
+
+        reconnectUdp.incoming = {
+            static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
+            'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
+        };
+        reconnectUdp.incomingRemote = UdpEndpoint{0xC0A80011UL, 6969};
+        reconnectUdp.incomingPending = true;
+        reconnectRt.update(100u);
+        reconnectRt.update(201u);
+        CHECK(ctx, reconnectRt.status().sensorInfoSent == 1u);
+
+        reconnectUdp.incoming = makeSensorInfoAck(
+            cfg.sensorId, static_cast<uint8_t>(SlimeVRSensorState::Online)
+        );
+        reconnectUdp.incomingPending = true;
+        reconnectRt.update(206u);
+        CHECK(ctx, reconnectRt.status().serverFound);
+        CHECK(ctx, reconnectRt.status().sensorInfoSyncState ==
+                   SlimeVRSensorInfoSyncState::Acknowledged);
+
+        const size_t packetsBeforeProvisioningRestart = reconnectUdp.sent.size();
+        const uint32_t stopCallsBeforeProvisioningRestart = reconnectUdp.stopCalls;
+        reconnectRt.restart();
+        SlimeVROutputRuntimeStatus reconnectStatus = reconnectRt.status();
+        CHECK(ctx, wifi.connected());
+        CHECK(ctx, !reconnectUdp.active());
+        CHECK(ctx, reconnectUdp.stopCalls == stopCallsBeforeProvisioningRestart + 1u);
+        CHECK(ctx, !reconnectStatus.serverFound);
+        CHECK(ctx, reconnectStatus.state == SlimeVROutputState::WaitingForWifi);
+        CHECK(ctx, reconnectStatus.serverIpv4 == 0u);
+        CHECK(ctx, reconnectStatus.sensorInfoDirty);
+        CHECK(ctx, reconnectStatus.sensorInfoSyncState ==
+                   SlimeVRSensorInfoSyncState::Dirty);
+        CHECK(ctx, reconnectStatus.featureNegotiationState ==
+                   SlimeVRFeatureNegotiationState::NotStarted);
+
+        reconnectRt.update(300u);
+        CHECK(ctx, reconnectUdp.active());
+        CHECK(ctx, reconnectUdp.sent.size() == packetsBeforeProvisioningRestart + 1u);
+        CHECK(ctx, reconnectUdp.sent.back().data[3] ==
+                   static_cast<uint8_t>(SlimeVRSendPacketType::Handshake));
+        CHECK(ctx, readU64BeLocal(reconnectUdp.sent.back().data.data() + 4) == 0u);
+
+        reconnectUdp.incoming = {
+            static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
+            'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
+        };
+        reconnectUdp.incomingPending = true;
+        reconnectRt.update(310u);
+        CHECK(ctx, reconnectRt.status().serverFound);
+
+        reconnectRt.update(411u);
+        CHECK(ctx, reconnectRt.status().sensorInfoSent == 2u);
+        CHECK(ctx, reconnectRt.status().sensorInfoSyncState ==
+                   SlimeVRSensorInfoSyncState::WaitingForAck);
+        reconnectUdp.incoming = makeSensorInfoAck(
+            cfg.sensorId, static_cast<uint8_t>(SlimeVRSensorState::Online)
+        );
+        reconnectUdp.incomingPending = true;
+        reconnectRt.update(416u);
+        CHECK(ctx, reconnectRt.status().sensorInfoSyncState ==
+                   SlimeVRSensorInfoSyncState::Acknowledged);
+    }
+
     rt.configure(cfg);
 
     rt.update(1000);
@@ -225,14 +322,15 @@ int main() {
     CHECK(ctx, udp.sent[0].endpoint.port == 6969);
     CHECK(ctx, udp.sent[0].data.size() >= SLIMEVR_PACKET_HEADER_SIZE);
     CHECK(ctx, udp.sent[0].data[3] == static_cast<uint8_t>(SlimeVRSendPacketType::Handshake));
+    CHECK(ctx, readU64BeLocal(udp.sent[0].data.data() + 4) == 0u);
     constexpr size_t handshakeFirmwareLengthOffset = SLIMEVR_PACKET_HEADER_SIZE + 7u * sizeof(uint32_t);
     CHECK(ctx, udp.sent[0].data.size() > handshakeFirmwareLengthOffset);
     const size_t firmwareLength = udp.sent[0].data[handshakeFirmwareLengthOffset];
-    CHECK(ctx, firmwareLength == std::strlen(trackerBuildFirmwareVersion()));
+    CHECK(ctx, firmwareLength == std::strlen(trackerBuildSlimeVRFirmwareVersion()));
     CHECK(ctx, udp.sent[0].data.size() >= handshakeFirmwareLengthOffset + 1u + firmwareLength);
     CHECK(ctx, std::memcmp(
         udp.sent[0].data.data() + handshakeFirmwareLengthOffset + 1u,
-        trackerBuildFirmwareVersion(),
+        trackerBuildSlimeVRFirmwareVersion(),
         firmwareLength
     ) == 0);
     CHECK(ctx, rt.status().handshakesSent == 1);
@@ -836,9 +934,9 @@ int main() {
     CHECK(ctx, fallbackRt.status().motionPacketMode ==
                SlimeVRMotionPacketMode::SeparateRotation17Accel4);
 
-    // A recent inbound heartbeat/ping proves the server session is alive.
-    // Sustained transient TX pressure must not reopen the UDP socket and add
-    // a discovery/grace gap; stale pose datagrams are simply dropped.
+    // Recent inbound traffic proves only that the server association/RX path
+    // is alive. Four physical TX failures must enter bounded backoff and then
+    // rebind the local UDP socket without discarding feature negotiation.
     FakeUdp pressureUdp;
     FakeSnapshotSource pressureSnapshots;
     pressureSnapshots.snapshot.valid = true;
@@ -868,40 +966,183 @@ int main() {
                SlimeVRMotionPacketMode::Bundle100Rotation17Accel4);
 
     pressureUdp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Bundle);
-    for (uint32_t i = 0; i < TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD; ++i) {
-        pressureSnapshots.snapshot.sequence = i + 2u;
-        pressureRt.update(201u + i * 10u);
-    }
+    pressureUdp.failSendError = ENOMEM;
+    pressureSnapshots.snapshot.sequence = 2u;
+    pressureRt.update(201u); // physical failure, 20 ms backoff
+    const uint32_t sendCallsAfterFirstFailure = pressureUdp.sendCalls;
+    pressureSnapshots.snapshot.sequence = 3u;
+    pressureRt.update(211u); // suppressed without another sendto()
+    CHECK(ctx, pressureUdp.sendCalls == sendCallsAfterFirstFailure);
+    CHECK(ctx, pressureRt.status().sendFailures == 1u);
+    CHECK(ctx, pressureRt.status().txBackoffDrops == 1u);
+    CHECK(ctx, pressureRt.status().txPressureFailures == 1u);
+    CHECK(ctx, pressureRt.status().lastUdpSendError == ENOMEM);
+
+    pressureSnapshots.snapshot.sequence = 4u;
+    pressureRt.update(231u); // physical failure, 40 ms backoff
+    pressureSnapshots.snapshot.sequence = 5u;
+    pressureRt.update(281u); // physical failure, 80 ms backoff
+    pressureSnapshots.snapshot.sequence = 6u;
+    pressureRt.update(371u); // fourth failure requests rebind
+    pressureRt.update(372u); // performs session-preserving rebind
+
     SlimeVROutputRuntimeStatus pressureStatus = pressureRt.status();
-    CHECK(ctx, pressureStatus.bundledMotionSendFailures ==
-               TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD);
-    CHECK(ctx, pressureStatus.compactMotionSendFailures == 0u);
+    CHECK(ctx, pressureStatus.bundledMotionSendFailures == 4u);
+    CHECK(ctx, pressureStatus.udpTransportRebindRequests == 1u);
+    CHECK(ctx, pressureStatus.udpTransportRebindSuccesses == 1u);
+    CHECK(ctx, pressureStatus.udpTransportRebindFailures == 0u);
     CHECK(ctx, pressureStatus.udpReopenRequests == 0u);
-    CHECK(ctx, pressureStatus.udpReopenSuppressedRecentRx == 1u);
+    CHECK(ctx, pressureStatus.serverFound);
+    CHECK(ctx, pressureStatus.serverFeatureFlagsAvailable);
+    CHECK(ctx, pressureStatus.motionPacketMode ==
+               SlimeVRMotionPacketMode::Bundle100Rotation17Accel4);
     CHECK(ctx, pressureUdp.active());
-    CHECK(ctx, pressureUdp.stopCalls == 0u);
+    CHECK(ctx, pressureUdp.stopCalls == 1u);
+    CHECK(ctx, pressureUdp.beginCalls == 2u);
 
     pressureUdp.failPacketType = -1;
-    pressureSnapshots.snapshot.sequence += 1u;
+    pressureSnapshots.snapshot.sequence = 7u;
     pressureRt.update(401u);
     CHECK(ctx, pressureRt.status().bundledMotionSent == 1u);
     CHECK(ctx, pressureRt.status().rotationSent == 1u);
     CHECK(ctx, pressureRt.status().accelerationSent == 1u);
 
-    // Once inbound server activity is genuinely stale, the same sustained
-    // transport failure must still request a socket reopen.
-    pressureUdp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Bundle);
-    for (uint32_t i = 0; i < TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD; ++i) {
-        pressureSnapshots.snapshot.sequence += 1u;
-        pressureRt.update(3000u + i * 10u);
+    // Intermittent failures never reach the consecutive threshold. Eight
+    // failures in the exact last-32-attempt bitmap must still recover the
+    // socket, matching the hardware log with a persistent ~25-30% loss rate.
+    FakeUdp densityUdp;
+    FakeSnapshotSource densitySnapshots;
+    densitySnapshots.snapshot = pressureSnapshots.snapshot;
+    densitySnapshots.snapshot.sequence = 1u;
+    SlimeVROutputRuntime densityRt;
+    densityRt.begin(densityUdp, wifi, FakeSnapshotSource::copy, &densitySnapshots);
+    densityRt.configure(phaseCfg);
+    densityRt.update(1u);
+    densityUdp.incoming = {
+        static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
+        'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
+    };
+    densityUdp.incomingRemote = UdpEndpoint{0xC0A80003UL, 6969};
+    densityUdp.incomingPending = true;
+    densityRt.update(1000u);
+    densityUdp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags), {0x01}
+    );
+    densityUdp.incomingPending = true;
+    densityRt.update(1010u);
+    for (uint32_t attempt = 0; attempt < 36u; ++attempt) {
+        densityUdp.failPacketType = (attempt % 4u) == 0u
+            ? static_cast<int>(SlimeVRSendPacketType::Bundle)
+            : -1;
+        densitySnapshots.snapshot.sequence += 1u;
+        densityRt.update(1050u + attempt * 50u);
     }
-    pressureRt.update(3210u);
+    densityRt.update(2820u);
+    CHECK(ctx, densityRt.status().consecutiveSendFailures <= 1u);
+    CHECK(ctx, densityRt.status().txFailureWindowTrips == 1u);
+    CHECK(ctx, densityRt.status().udpTransportRebindSuccesses == 1u);
+    CHECK(ctx, densityRt.status().serverFound);
+
+    // A second burst shortly after a successful rebind escalates to the full
+    // discovery lifecycle instead of rebind-looping forever.
+    pressureUdp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::HeartBeat0), {}
+    );
+    pressureUdp.incomingPending = true;
+    pressureRt.update(500u);
+    pressureUdp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Bundle);
+    pressureSnapshots.snapshot.sequence = 8u;
+    pressureRt.update(511u);
+    pressureSnapshots.snapshot.sequence = 9u;
+    pressureRt.update(541u);
+    pressureSnapshots.snapshot.sequence = 10u;
+    pressureRt.update(591u);
+    pressureSnapshots.snapshot.sequence = 11u;
+    pressureRt.update(681u);
+    pressureRt.update(682u);
+    CHECK(ctx, pressureRt.status().udpFullReopenEscalations == 1u);
     CHECK(ctx, pressureRt.status().udpReopenRequests == 1u);
     CHECK(ctx, !pressureRt.status().serverFound);
     CHECK(ctx, !pressureRt.status().serverFeatureFlagsAvailable);
     CHECK(ctx, pressureRt.status().motionPacketMode ==
                SlimeVRMotionPacketMode::SeparateRotation17Accel4);
-    CHECK(ctx, pressureUdp.stopCalls == 1u);
+
+
+    // Without recent inbound server traffic, the same bounded failure burst
+    // goes directly to the full discovery lifecycle.
+    FakeUdp staleUdp;
+    FakeSnapshotSource staleSnapshots;
+    staleSnapshots.snapshot = pressureSnapshots.snapshot;
+    staleSnapshots.snapshot.sequence = 1u;
+    SlimeVROutputRuntime staleRt;
+    staleRt.begin(staleUdp, wifi, FakeSnapshotSource::copy, &staleSnapshots);
+    staleRt.configure(phaseCfg);
+    staleRt.update(1u);
+    staleUdp.incoming = {
+        static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
+        'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
+    };
+    staleUdp.incomingRemote = UdpEndpoint{0xC0A80003UL, 6969};
+    staleUdp.incomingPending = true;
+    staleRt.update(100u);
+    staleUdp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags), {0x01}
+    );
+    staleUdp.incomingPending = true;
+    staleRt.update(110u);
+    staleUdp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Bundle);
+    staleSnapshots.snapshot.sequence = 2u;
+    staleRt.update(3000u);
+    staleSnapshots.snapshot.sequence = 3u;
+    staleRt.update(3030u);
+    staleSnapshots.snapshot.sequence = 4u;
+    staleRt.update(3080u);
+    staleSnapshots.snapshot.sequence = 5u;
+    staleRt.update(3170u);
+    staleRt.update(3171u);
+    CHECK(ctx, staleRt.status().udpTransportRebindRequests == 0u);
+    CHECK(ctx, staleRt.status().udpReopenRequests == 1u);
+    CHECK(ctx, !staleRt.status().serverFound);
+
+    // A failed local rebind is not treated as recovery success. It escalates
+    // in the same update and clears the session fail-closed.
+    FakeUdp rebindFailUdp;
+    FakeSnapshotSource rebindFailSnapshots;
+    rebindFailSnapshots.snapshot = pressureSnapshots.snapshot;
+    rebindFailSnapshots.snapshot.sequence = 1u;
+    SlimeVROutputRuntime rebindFailRt;
+    rebindFailRt.begin(
+        rebindFailUdp, wifi, FakeSnapshotSource::copy, &rebindFailSnapshots
+    );
+    rebindFailRt.configure(phaseCfg);
+    rebindFailRt.update(1u);
+    rebindFailUdp.incoming = {
+        static_cast<uint8_t>(SlimeVRReceivePacketType::Handshake),
+        'H', 'e', 'y', ' ', 'O', 'V', 'R', ' ', '=', 'D', ' ', '5'
+    };
+    rebindFailUdp.incomingRemote = UdpEndpoint{0xC0A80003UL, 6969};
+    rebindFailUdp.incomingPending = true;
+    rebindFailRt.update(5000u);
+    rebindFailUdp.incoming = makeServerPacket(
+        static_cast<uint8_t>(SlimeVRReceivePacketType::FeatureFlags), {0x01}
+    );
+    rebindFailUdp.incomingPending = true;
+    rebindFailRt.update(5010u);
+    rebindFailUdp.failPacketType = static_cast<int>(SlimeVRSendPacketType::Bundle);
+    rebindFailSnapshots.snapshot.sequence = 2u;
+    rebindFailRt.update(5101u);
+    rebindFailSnapshots.snapshot.sequence = 3u;
+    rebindFailRt.update(5131u);
+    rebindFailSnapshots.snapshot.sequence = 4u;
+    rebindFailRt.update(5181u);
+    rebindFailSnapshots.snapshot.sequence = 5u;
+    rebindFailRt.update(5271u);
+    rebindFailUdp.beginResult = false;
+    rebindFailRt.update(5272u);
+    CHECK(ctx, rebindFailRt.status().udpTransportRebindRequests == 1u);
+    CHECK(ctx, rebindFailRt.status().udpTransportRebindFailures == 1u);
+    CHECK(ctx, rebindFailRt.status().udpReopenRequests == 1u);
+    CHECK(ctx, !rebindFailRt.status().serverFound);
 
 
     // Manual server mode resolves the configured hostname at a bounded rate,

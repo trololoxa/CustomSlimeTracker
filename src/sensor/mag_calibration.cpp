@@ -3,6 +3,7 @@
 #include "core/deterministic_reservoir.hpp"
 
 #include <cmath>
+#include <cstring>
 
 namespace tracker {
 
@@ -42,6 +43,8 @@ const char* magCalibrationSolverStageName(MagCalibrationSolverStage stage) {
 namespace {
 
 constexpr int kMagFitTerms = 9;
+constexpr uint16_t kInlierMembershipWords =
+    static_cast<uint16_t>((MAG_CALIBRATION_MAX_STORED_SAMPLES + 31u) / 32u);
 
 #if defined(__GNUC__) || defined(__clang__)
 #define TRACKER_MAG_FIT_NOINLINE __attribute__((noinline))
@@ -460,15 +463,17 @@ TRACKER_MAG_FIT_NOINLINE bool fitFromAccumulator(
     return true;
 }
 
-TRACKER_MAG_FIT_NOINLINE void tryReplaceFitFromAccumulator(
+TRACKER_MAG_FIT_NOINLINE bool replaceFitFromAccumulator(
     const FitAccumulator& acc,
     const FitNormalization& normalization,
     const MagCalibrationParams& params,
     FitCandidate& inOut) {
     FitCandidate replacement;
-    if (fitFromAccumulator(acc, normalization, params, replacement)) {
-        inOut = replacement;
+    if (!fitFromAccumulator(acc, normalization, params, replacement)) {
+        return false;
     }
+    inOut = replacement;
+    return true;
 }
 
 float residualAbs(const FitCandidate& fit, const MagCalibrationStoredSample& s) {
@@ -542,7 +547,9 @@ float robustThreshold(const MagCalibrationParams& params, const FitCandidate& fi
     const float minFactor = params.outlierMinResidualFactor > 0.0f ? params.outlierMinResidualFactor : 0.08f;
     const float bySigma = tracker::isFinite(m.rms) ? sigma * m.rms : 0.0f;
     const float byFloor = minFactor * fit.expectedNorm;
-    return bySigma > byFloor ? bySigma : byFloor;
+    const float byQualityCap = magCalibrationRobustResidualCapFactor(params) * fit.expectedNorm;
+    const float boundedSigma = bySigma < byQualityCap ? bySigma : byQualityCap;
+    return boundedSigma > byFloor ? boundedSigma : byFloor;
 }
 
 bool accumulateInliers(const MagCalibrationStoredSample* samples,
@@ -550,11 +557,14 @@ bool accumulateInliers(const MagCalibrationStoredSample* samples,
                        const FitCandidate& reference,
                        float threshold,
                        const FitNormalization& normalization,
-                       FitAccumulator& out) {
+                       FitAccumulator& out,
+                       uint32_t membershipOut[kInlierMembershipWords]) {
     resetAccumulator(out);
+    std::memset(membershipOut, 0, sizeof(uint32_t) * kInlierMembershipWords);
     for (uint16_t i = 0; i < count; ++i) {
         if (residualAbs(reference, samples[i]) <= threshold) {
             accumulateSample(out, storedToVec3(samples[i]), normalization);
+            membershipOut[i / 32u] |= 1u << (i % 32u);
         }
     }
     return out.count > 0;
@@ -913,16 +923,37 @@ bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
         return false;
     }
 
-    GeometricMetrics metrics = computeGeometricMetrics(
-        finalFit, stored_, storedSamples_, 999999.0f);
-    const float initialThreshold = robustThreshold(params_, finalFit, metrics);
-
-    if (accumulateInliers(stored_, storedSamples_, finalFit, initialThreshold, fitNormalization, fitAccumulator) &&
-        fitAccumulator.count >= minSamples &&
-        static_cast<float>(fitAccumulator.count) / static_cast<float>(storedSamples_) >= params_.minInlierRatio &&
-        fitAccumulator.count < rawFitSamples) {
-        tryReplaceFitFromAccumulator(
-            fitAccumulator, fitNormalization, params_, finalFit);
+    GeometricMetrics metrics;
+    uint8_t robustRefitPasses = 0u;
+    uint32_t previousMembership[kInlierMembershipWords] = {};
+    uint32_t membership[kInlierMembershipWords] = {};
+    uint32_t previousInlierCount = 0u;
+    bool havePreviousMembership = false;
+    constexpr uint8_t kMaxRobustRefitPasses = 3u;
+    for (uint8_t pass = 0u; pass < kMaxRobustRefitPasses; ++pass) {
+        metrics = computeGeometricMetrics(finalFit, stored_, storedSamples_, 999999.0f);
+        const float threshold = robustThreshold(params_, finalFit, metrics);
+        if (!accumulateInliers(
+                stored_, storedSamples_, finalFit, threshold,
+                fitNormalization, fitAccumulator, membership) ||
+            fitAccumulator.count < minSamples ||
+            static_cast<float>(fitAccumulator.count) / static_cast<float>(storedSamples_) < params_.minInlierRatio ||
+            fitAccumulator.count >= rawFitSamples) {
+            break;
+        }
+        if (havePreviousMembership &&
+            fitAccumulator.count == previousInlierCount &&
+            std::memcmp(membership, previousMembership, sizeof(membership)) == 0) {
+            break;
+        }
+        if (!replaceFitFromAccumulator(
+                fitAccumulator, fitNormalization, params_, finalFit)) {
+            break;
+        }
+        std::memcpy(previousMembership, membership, sizeof(previousMembership));
+        previousInlierCount = fitAccumulator.count;
+        havePreviousMembership = true;
+        robustRefitPasses++;
     }
 
     metrics = computeGeometricMetrics(finalFit, stored_, storedSamples_, 999999.0f);
@@ -951,6 +982,10 @@ bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
     out.axisRatio = finalFit.axisRatio;
     out.inlierRatio = finalMetrics.inlierRatio;
     out.inlierSamples = finalMetrics.inliers;
+    out.robustRefitPasses = robustRefitPasses;
+    out.robustInlierThresholdFactor = finalFit.expectedNorm > 1.0e-6f
+        ? finalThreshold / finalFit.expectedNorm
+        : 0.0f;
 
     if (finalMetrics.inliers < minSamples || finalMetrics.inlierRatio < params_.minInlierRatio) {
         lastFailureReason_ = MagCalibrationFailureReason::InlierRatioTooLow;
@@ -970,7 +1005,7 @@ bool MagCalibrationCollector::compute(MagCalibrationResult& out) {
         return false;
     }
     if (!tracker::isFinite(finalFit.algebraicResidualRms) ||
-        finalFit.algebraicResidualRms > params_.maxAlgebraicResidualRms) {
+        finalFit.algebraicResidualRms > magCalibrationEffectiveMaxAlgebraicResidualRms(params_)) {
         lastFailureReason_ = MagCalibrationFailureReason::AlgebraicResidualTooHigh;
         lastResult_ = out;
         return false;

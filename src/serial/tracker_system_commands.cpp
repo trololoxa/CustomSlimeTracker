@@ -483,6 +483,8 @@ bool trackerSerialDispatchSystemCommand(TrackerSerialCommandContext& ctx, int ar
         out.print("build_worktree="); out.println(trackerBuildWorktreeFingerprint());
         out.print("build_dirty="); out.println(trackerBuildGitDirty() ? "yes" : "no");
         out.print("firmware_version="); out.println(trackerBuildFirmwareVersion());
+        out.print("slimevr_firmware_version="); out.println(trackerBuildSlimeVRFirmwareVersion());
+        out.print("build_date_utc="); out.println(trackerBuildDateUtc());
         return true;
     }
 

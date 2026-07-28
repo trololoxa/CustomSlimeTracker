@@ -104,7 +104,7 @@ def main() -> int:
     # Every post-normalization physical rejection must retain useful diagnostics.
     require(cal, "Normalization and retained-sample diagnostics are already authoritative", "pre-solve diagnostic preservation")
     require(cal, "out.solverStage = MagCalibrationSolverStage::Normalized", "normalized stage before physical gates")
-    require(cal, "tryReplaceFitFromAccumulator", "isolated refit candidate stack phase")
+    require(cal, "replaceFitFromAccumulator", "isolated refit candidate stack phase")
     forbid((ROOT / "src/sensor/mag_calibration.hpp").read_text(encoding="utf-8"), "MagCalibrationResult compute();", "unused by-value fit result API")
     require(mag_test, "physical pre-solve coverage rejection", "early-failure diagnostics regression")
 
@@ -132,7 +132,7 @@ def main() -> int:
         require_limit(usage, "MagRuntimeController::processRawSample", 1024)
         require_limit(usage, "MagRuntimeProcessor::process", 256)
         require_limit(usage, "MagCalibrationCollector::compute", 1536)
-        require_limit(usage, "tryReplaceFitFromAccumulator", 512)
+        require_limit(usage, "replaceFitFromAccumulator", 512)
 
     subprocess.run([sys.executable, str(ROOT / "tools/test_calibration_0023gd_policy.py")], check=True)
     print("# calibration_0023ge_policy: PASS")

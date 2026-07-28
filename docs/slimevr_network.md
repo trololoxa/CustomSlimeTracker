@@ -197,10 +197,17 @@ bundle increments `bundled_motion_send_failures` and both logical
 `rotation_send_failures` and `acceleration_send_failures`. A failed experimental
 packet 23 uses `compact_motion_send_failures` instead.
 
-Transient TX failure no longer reopens a session while a server heartbeat or
-ping was received within `TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_RX_GRACE_MS`. In
-that case stale pose is dropped and `udp_reopen_suppressed_recent_rx` increments.
-A truly silent session still reopens after the configured failure threshold.
+UDP TX pressure is handled independently from inbound session liveness. An
+ESP-IDF/lwIP `ENOMEM`, `ENOBUFS` or `EAGAIN` result enters a bounded 20–160 ms
+backoff so stale pose packets are discarded instead of repeatedly blocking the
+FIFO loop. Four consecutive physical failures, or eight failures in the exact
+last 32 physical attempts, request recovery. When heartbeat/ping proves that the
+server association is still alive, the runtime rebinds only the local UDP socket
+on the same port and preserves the negotiated session. A second burst within two
+seconds escalates to the normal full discovery lifecycle. Inspect
+`tx_backoff_drops`, `tx_pressure_failures`, `tx_failure_window_trips`,
+`udp_transport_rebind_successes`, `udp_full_reopen_escalations` and
+`last_udp_send_error`.
 
 Manual server mode is functional rather than storage-only. The runtime resolves
 `serverHost` once per bounded discovery interval (dotted IPv4 locally, DNS on

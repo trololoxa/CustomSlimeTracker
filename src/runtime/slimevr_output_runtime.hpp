@@ -222,8 +222,16 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t serverSilenceResets = 0;
     uint32_t wifiLostResets = 0;
     uint32_t udpReopenRequests = 0;
-    uint32_t udpReopenSuppressedRecentRx = 0;
+    uint32_t udpTransportRebindRequests = 0;
+    uint32_t udpTransportRebindSuccesses = 0;
+    uint32_t udpTransportRebindFailures = 0;
+    uint32_t udpFullReopenEscalations = 0;
+    uint32_t txBackoffDrops = 0;
+    uint32_t txPressureFailures = 0;
+    uint32_t txOtherFailures = 0;
+    uint32_t txFailureWindowTrips = 0;
     uint32_t consecutiveSendFailures = 0;
+    int32_t lastUdpSendError = 0;
 
     uint32_t nextPacketNumber = 0;
     uint16_t rotationRateHz = 0;
@@ -347,6 +355,12 @@ private:
     bool serverFeatureEnabled(uint8_t bit) const;
     void sendRotation(const TrackerPreparedOutputSnapshot& snapshot, uint32_t nowMs);
     void makeHandshakeInfo(SlimeVRHandshakeInfo& info) const;
+    enum class PacketSendResult : uint8_t {
+        Sent,
+        BackoffSuppressed,
+        Failed,
+    };
+
     enum class PacketPurpose : uint8_t {
         Discovery,
         Control,
@@ -359,8 +373,20 @@ private:
         ErrorReport,
     };
 
-    bool sendPacket(const SlimeVRPacketWriteResult& packet, const UdpEndpoint& endpoint, PacketPurpose purpose);
+    PacketSendResult sendPacket(const SlimeVRPacketWriteResult& packet,
+                                const UdpEndpoint& endpoint,
+                                PacketPurpose purpose);
     void recordSendFailure(PacketPurpose purpose);
+    void recordSendBackoffDrop(PacketPurpose purpose);
+    void recordPhysicalSendOutcome(bool success);
+    bool txFailureWindowExceeded() const;
+    static bool packetMayBeDroppedDuringTxBackoff(PacketPurpose purpose);
+    void armTxBackoff(uint32_t nowMs);
+    bool txBackoffActive(uint32_t nowMs) const;
+    void resetTxRecoveryState();
+    void requestUdpTxRecovery(uint32_t nowMs);
+    bool rebindUdpPreservingSession(uint32_t nowMs);
+    static bool isUdpTxPressureError(int errorCode);
     uint32_t rotationPeriodMs() const;
     uint16_t sensorConfigFlags() const;
     static uint8_t accuracyFromConfidence(float confidence);
@@ -519,8 +545,23 @@ private:
     uint32_t serverSilenceResets_ = 0;
     uint32_t wifiLostResets_ = 0;
     uint32_t udpReopenRequests_ = 0;
-    uint32_t udpReopenSuppressedRecentRx_ = 0;
+    uint32_t udpTransportRebindRequests_ = 0;
+    uint32_t udpTransportRebindSuccesses_ = 0;
+    uint32_t udpTransportRebindFailures_ = 0;
+    uint32_t udpFullReopenEscalations_ = 0;
+    uint32_t txBackoffDrops_ = 0;
+    uint32_t txPressureFailures_ = 0;
+    uint32_t txOtherFailures_ = 0;
+    uint32_t txFailureWindowTrips_ = 0;
     uint32_t consecutiveSendFailures_ = 0;
+    int32_t lastUdpSendError_ = 0;
+    uint32_t txBackoffUntilMs_ = 0;
+    uint8_t txBackoffLevel_ = 0;
+    uint32_t txOutcomeWindowBits_ = 0;
+    uint8_t txOutcomeWindowCount_ = 0;
+    uint8_t txOutcomeFailureCount_ = 0;
+    uint32_t lastUdpTransportRebindMs_ = 0;
+    bool udpTransportRebindRequested_ = false;
     bool udpReopenRequested_ = false;
 
     uint32_t lastHandshakeMs_ = 0;

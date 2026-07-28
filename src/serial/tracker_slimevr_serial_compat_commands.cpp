@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "build_config/build_identity.hpp"
 #include "config/tracker_config.hpp"
 #include "config/tracker_config_store.hpp"
 #include "config/tracker_network_config.hpp"
@@ -58,23 +59,62 @@ void copyBounded(char* dst, size_t dstSize, const char* src) {
     dst[dstSize - 1] = '\0';
 }
 
-uint8_t statusCode(TrackerSerialCommandContext& ctx) {
-    if (!ctx.lsm || !ctx.lsm->isInitialized()) return 3; // sensor/error-ish
-    if (ctx.slimevrRuntime && ctx.slimevrRuntime->serverFound()) return 2;
-    if (ctx.wifiManager && ctx.wifiManager->connected()) return 1;
-    return 0;
+constexpr uint8_t slimeVrTrackerStatusCode(bool imuInitialized) {
+    // Upstream GET INFO status describes tracker/sensor health. Wi-Fi progress
+    // is reported independently through WiFiReconnectionStatus and must not
+    // turn a healthy connected tracker into status 1/2.
+    return imuInitialized ? 0u : 3u;
 }
 
-uint8_t wifiStateCode(TrackerSerialCommandContext& ctx) {
-    if (!ctx.wifiManager) return 0;
-    switch (ctx.wifiManager->state()) {
-        case TrackerWifiState::Disabled:   return 0;
-        case TrackerWifiState::Idle:       return 1;
-        case TrackerWifiState::Connecting: return 2;
-        case TrackerWifiState::Backoff:    return 3;
-        case TrackerWifiState::Connected:  return 5;
+static_assert(slimeVrTrackerStatusCode(true) == 0);
+static_assert(slimeVrTrackerStatusCode(false) == 3);
+
+uint8_t statusCode(TrackerSerialCommandContext& ctx) {
+    return slimeVrTrackerStatusCode(ctx.lsm && ctx.lsm->isInitialized());
+}
+
+enum class SlimeVrWifiReconnectionStatus : uint8_t {
+    NotSetup = 0,
+    SavedAttempt = 1,
+    HardcodeAttempt = 2,
+    ServerCredAttempt = 3,
+    Failed = 4,
+    Success = 5,
+};
+
+bool g_slimeVrServerCredentialAttempt = false;
+
+constexpr uint8_t slimeVrWifiStateCode(TrackerWifiState state, bool serverCredentialAttempt) {
+    // SlimeVR serial provisioning does not expose Arduino WiFi.status().
+    // It expects the upstream WiFiReconnectionStatus contract. Preserve the
+    // distinction between a normal saved-credential boot attempt and the
+    // credentials most recently submitted through SET WIFI / SET BWIFI.
+    switch (state) {
+        case TrackerWifiState::Disabled:
+            return static_cast<uint8_t>(SlimeVrWifiReconnectionStatus::NotSetup);
+        case TrackerWifiState::Idle:
+        case TrackerWifiState::Connecting:
+            return static_cast<uint8_t>(serverCredentialAttempt
+                ? SlimeVrWifiReconnectionStatus::ServerCredAttempt
+                : SlimeVrWifiReconnectionStatus::SavedAttempt);
+        case TrackerWifiState::Backoff:
+            return static_cast<uint8_t>(SlimeVrWifiReconnectionStatus::Failed);
+        case TrackerWifiState::Connected:
+            return static_cast<uint8_t>(SlimeVrWifiReconnectionStatus::Success);
     }
-    return 0;
+    return static_cast<uint8_t>(SlimeVrWifiReconnectionStatus::NotSetup);
+}
+
+static_assert(slimeVrWifiStateCode(TrackerWifiState::Connecting, false) == 1);
+static_assert(slimeVrWifiStateCode(TrackerWifiState::Connecting, true) == 3);
+static_assert(slimeVrWifiStateCode(TrackerWifiState::Backoff, true) == 4);
+static_assert(slimeVrWifiStateCode(TrackerWifiState::Connected, true) == 5);
+
+uint8_t wifiStateCode(TrackerSerialCommandContext& ctx) {
+    if (!ctx.wifiManager) {
+        return static_cast<uint8_t>(SlimeVrWifiReconnectionStatus::NotSetup);
+    }
+    return slimeVrWifiStateCode(ctx.wifiManager->state(), g_slimeVrServerCredentialAttempt);
 }
 
 void printIp(Stream& out, uint32_t ipv4) {
@@ -158,7 +198,9 @@ void printCompatInfo(TrackerSerialCommandContext& ctx, bool includeGit) {
 
     out.print("[INFO ] [SerialCommands] SlimeVR Tracker, board: 10, hardware: 6, protocol: ");
     out.print(static_cast<unsigned int>(SLIMEVR_PROTOCOL_VERSION));
-    out.print(", firmware: track-fw, address: ");
+    out.print(", firmware: ");
+    out.print(trackerBuildSlimeVRFirmwareVersion());
+    out.print(", address: ");
     printIp(out, wifi.ipv4);
     out.print(", mac: ");
     printMac(out, wifi.mac);
@@ -194,7 +236,10 @@ void printCompatInfo(TrackerSerialCommandContext& ctx, bool includeGit) {
     out.println("%");
 
     if (includeGit) {
-        info(out, "Git commit: custom-esp32c3-lsm6dsv");
+        out.print("[INFO ] [SerialCommands] Git commit: ");
+        out.println(trackerBuildIdentityString());
+        out.print("[INFO ] [SerialCommands] Build date: ");
+        out.println(trackerBuildDateUtc());
     }
 }
 
@@ -207,7 +252,9 @@ void printCompatTest(TrackerSerialCommandContext& ctx) {
 
     out.print("[INFO ] [SerialCommands] [TEST] Board: 10, hardware: 6, protocol: ");
     out.print(static_cast<unsigned int>(SLIMEVR_PROTOCOL_VERSION));
-    out.print(", firmware: track-fw, address: ");
+    out.print(", firmware: ");
+    out.print(trackerBuildSlimeVRFirmwareVersion());
+    out.print(", address: ");
     printIp(out, wifi.ipv4);
     out.print(", mac: ");
     printMac(out, wifi.mac);
@@ -238,14 +285,6 @@ void printCompatTest(TrackerSerialCommandContext& ctx) {
     }
 }
 
-bool saveNetworkConfig(TrackerSerialCommandContext& ctx) {
-    if (!ctx.networkConfig || !ctx.networkConfigStore) return false;
-    ctx.networkConfig->sanitize();
-    if (!ctx.networkConfigStore->save(*ctx.networkConfig)) return false;
-    if (ctx.networkConfigLoadedFromNvs) *ctx.networkConfigLoadedFromNvs = true;
-    return true;
-}
-
 void applyWifiConfig(TrackerSerialCommandContext& ctx) {
     if (!ctx.networkConfig) return;
     ctx.networkConfig->sanitize();
@@ -263,31 +302,36 @@ void applyWifiConfig(TrackerSerialCommandContext& ctx) {
     }
 }
 
-void startSlimeRuntime(TrackerSerialCommandContext& ctx) {
-    if (!ctx.slimevrRuntime || !ctx.networkConfig) return;
-    char* start[] = { const_cast<char*>("slime"), const_cast<char*>("start") };
-    trackerSerialDispatchSlimeVRCommand(ctx, 2, start);
-}
-
 bool setWifiCredentials(TrackerSerialCommandContext& ctx, const char* ssid, const char* password) {
-    if (!ctx.networkConfig) return false;
+    if (!ctx.networkConfig || !ctx.networkConfigStore ||
+        !ctx.wifiManager || !ctx.slimevrRuntime) {
+        return false;
+    }
     if (!ssid || ssid[0] == '\0' || std::strlen(ssid) > 32) return false;
     if (password && std::strlen(password) > 64) return false;
 
-    copyBounded(ctx.networkConfig->data.ssid, sizeof(ctx.networkConfig->data.ssid), ssid);
-    copyBounded(ctx.networkConfig->data.password, sizeof(ctx.networkConfig->data.password), password ? password : "");
-    ctx.networkConfig->data.credentialsValid = true;
-    ctx.networkConfig->data.wifiEnabled = true;
-    ctx.networkConfig->data.discoveryEnabled = true;
-    ctx.networkConfig->sanitize();
+    // Build and persist the replacement before touching live Wi-Fi/session
+    // state. A failed NVS commit leaves the working tracker unchanged.
+    TrackerNetworkConfig candidate = *ctx.networkConfig;
+    copyBounded(candidate.data.ssid, sizeof(candidate.data.ssid), ssid);
+    copyBounded(candidate.data.password, sizeof(candidate.data.password), password ? password : "");
+    candidate.data.credentialsValid = true;
+    candidate.data.wifiEnabled = true;
+    candidate.data.discoveryEnabled = true;
+    candidate.sanitize();
 
-    if (ctx.wifiManager) ctx.wifiManager->reset();
+    const bool saved = ctx.networkConfigStore->save(candidate);
+    g_slimeVrServerCredentialAttempt = saved;
+    if (!saved) return false;
+
+    *ctx.networkConfig = candidate;
+    if (ctx.networkConfigLoadedFromNvs) *ctx.networkConfigLoadedFromNvs = true;
+
+    ctx.wifiManager->reset();
     applyWifiConfig(ctx);
-    const bool saved = saveNetworkConfig(ctx);
-    if (ctx.wifiManager && ctx.slimevrRuntime) {
-        startSlimeRuntime(ctx);
-    }
-    return saved;
+    return trackerSerialApplySlimeVRRuntimeConfig(
+        ctx, TrackerSlimeVRRuntimeApplyMode::RestartSession
+    );
 }
 
 int base64Value(char c) {
@@ -330,7 +374,7 @@ void dispatchSet(TrackerSerialCommandContext& ctx, int argc, char** argv) {
             return;
         }
         if (setWifiCredentials(ctx, argv[2], argv[3])) {
-            info(out, "CMD SET WIFI OK: New wifi credentials saved to NVS, reconnecting");
+            info(out, "CMD SET WIFI OK: New wifi credentials set, reconnecting");
         } else {
             error(out, "CMD SET WIFI ERROR: failed to set or save credentials");
         }
@@ -351,7 +395,7 @@ void dispatchSet(TrackerSerialCommandContext& ctx, int argc, char** argv) {
             return;
         }
         if (setWifiCredentials(ctx, ssid, argc >= 4 ? pass : "")) {
-            info(out, "CMD SET BWIFI OK: New wifi credentials saved to NVS, reconnecting");
+            info(out, "CMD SET BWIFI OK: New wifi credentials set, reconnecting");
         } else {
             error(out, "CMD SET BWIFI ERROR: failed to set or save credentials");
         }

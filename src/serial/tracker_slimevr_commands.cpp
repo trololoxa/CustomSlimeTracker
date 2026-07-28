@@ -184,7 +184,15 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("server_silence_resets="); out.println(s.serverSilenceResets);
     out.print("wifi_lost_resets="); out.println(s.wifiLostResets);
     out.print("udp_reopen_requests="); out.println(s.udpReopenRequests);
-    out.print("udp_reopen_suppressed_recent_rx="); out.println(s.udpReopenSuppressedRecentRx);
+    out.print("udp_transport_rebind_requests="); out.println(s.udpTransportRebindRequests);
+    out.print("udp_transport_rebind_successes="); out.println(s.udpTransportRebindSuccesses);
+    out.print("udp_transport_rebind_failures="); out.println(s.udpTransportRebindFailures);
+    out.print("udp_full_reopen_escalations="); out.println(s.udpFullReopenEscalations);
+    out.print("tx_backoff_drops="); out.println(s.txBackoffDrops);
+    out.print("tx_pressure_failures="); out.println(s.txPressureFailures);
+    out.print("tx_other_failures="); out.println(s.txOtherFailures);
+    out.print("tx_failure_window_trips="); out.println(s.txFailureWindowTrips);
+    out.print("last_udp_send_error="); out.println(s.lastUdpSendError);
     serviceNonCliRuntime(ctx);
     out.print("ping_received="); out.println(s.pingReceived);
     out.print("pong_sent="); out.println(s.pongSent);
@@ -367,7 +375,15 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("server_silence_resets="); out.println(s.serverSilenceResets);
     out.print("wifi_lost_resets="); out.println(s.wifiLostResets);
     out.print("udp_reopen_requests="); out.println(s.udpReopenRequests);
-    out.print("udp_reopen_suppressed_recent_rx="); out.println(s.udpReopenSuppressedRecentRx);
+    out.print("udp_transport_rebind_requests="); out.println(s.udpTransportRebindRequests);
+    out.print("udp_transport_rebind_successes="); out.println(s.udpTransportRebindSuccesses);
+    out.print("udp_transport_rebind_failures="); out.println(s.udpTransportRebindFailures);
+    out.print("udp_full_reopen_escalations="); out.println(s.udpFullReopenEscalations);
+    out.print("tx_backoff_drops="); out.println(s.txBackoffDrops);
+    out.print("tx_pressure_failures="); out.println(s.txPressureFailures);
+    out.print("tx_other_failures="); out.println(s.txOtherFailures);
+    out.print("tx_failure_window_trips="); out.println(s.txFailureWindowTrips);
+    out.print("last_udp_send_error="); out.println(s.lastUdpSendError);
     out.print("consecutive_send_failures="); out.println(s.consecutiveSendFailures);
     serviceNonCliRuntime(ctx);
     out.print("last_handshake_ms="); out.println(s.lastHandshakeMs);
@@ -395,6 +411,26 @@ void printHelp(Stream& out) {
 }
 
 } // namespace
+
+bool trackerSerialApplySlimeVRRuntimeConfig(
+    TrackerSerialCommandContext& ctx,
+    TrackerSlimeVRRuntimeApplyMode mode
+) {
+    if (!ctx.slimevrRuntime || !ctx.networkConfig) return false;
+
+    ctx.networkConfig->sanitize();
+    stopLocalSerialStreamForSlime(ctx);
+    ctx.slimevrRuntime->configure(
+        makeConfigFromNetwork(ctx, *ctx.networkConfig, slimeRotationRateHzFromConfig(ctx))
+    );
+    if (mode == TrackerSlimeVRRuntimeApplyMode::RestartSession) {
+        // Serial provisioning must start a fresh discovery/SensorInfo lifecycle
+        // even when the station reconnects so quickly that no disconnected
+        // state is observed by SlimeVROutputRuntime::update().
+        ctx.slimevrRuntime->restart();
+    }
+    return true;
+}
 
 bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     if (argc <= 0 || !argv || !argv[0]) return false;
@@ -429,9 +465,9 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             tracker_serial_detail::printErr(out, "network config not available");
             return true;
         }
-        ctx.networkConfig->sanitize();
-        stopLocalSerialStreamForSlime(ctx);
-        ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
+        (void)trackerSerialApplySlimeVRRuntimeConfig(
+            ctx, TrackerSlimeVRRuntimeApplyMode::PreserveSession
+        );
         tracker_serial_detail::printOk(out, "SlimeVR output started");
         out.println("# use: slime status");
         return true;
@@ -448,10 +484,9 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             tracker_serial_detail::printErr(out, "network config not available");
             return true;
         }
-        ctx.networkConfig->sanitize();
-        stopLocalSerialStreamForSlime(ctx);
-        ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, slimeRotationRateHzFromConfig(ctx)));
-        ctx.slimevrRuntime->restart();
+        (void)trackerSerialApplySlimeVRRuntimeConfig(
+            ctx, TrackerSlimeVRRuntimeApplyMode::RestartSession
+        );
         tracker_serial_detail::printOk(out, "SlimeVR output restarted");
         return true;
     }

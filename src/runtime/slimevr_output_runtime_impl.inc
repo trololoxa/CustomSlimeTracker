@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include <cmath>
+#include <cerrno>
 
 namespace tracker {
 
@@ -19,6 +20,13 @@ constexpr uint32_t SERVER_SILENCE_TIMEOUT_MS = TRACKER_SLIMEVR_SERVER_SILENCE_TI
 constexpr uint32_t SERVER_FOUND_SEND_GRACE_MS = 100;
 constexpr uint16_t ROTATION_RATE_HZ_DEFAULT = 100;
 constexpr uint16_t ROTATION_RATE_HZ_MAX = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
+static_assert(TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS == 32U,
+              "TX failure outcome window currently uses one uint32_t bitmap");
+static_assert(TRACKER_SLIMEVR_TX_FAILURE_WINDOW_FAILURES > 0U &&
+              TRACKER_SLIMEVR_TX_FAILURE_WINDOW_FAILURES <= TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS,
+              "TX failure window threshold must fit the outcome window");
+static_assert(TRACKER_SLIMEVR_TX_REBIND_CONSECUTIVE_FAILURES > 0U,
+              "TX consecutive-failure threshold must be nonzero");
 
 void copyCString(char* dst, size_t dstSize, const char* src) {
     if (!dst || dstSize == 0) return;
@@ -360,8 +368,18 @@ void SlimeVROutputRuntime::resetCounters() {
     serverSilenceResets_ = 0;
     wifiLostResets_ = 0;
     udpReopenRequests_ = 0;
-    udpReopenSuppressedRecentRx_ = 0;
-    consecutiveSendFailures_ = 0;
+    udpTransportRebindRequests_ = 0;
+    udpTransportRebindSuccesses_ = 0;
+    udpTransportRebindFailures_ = 0;
+    udpFullReopenEscalations_ = 0;
+    txBackoffDrops_ = 0;
+    txPressureFailures_ = 0;
+    txOtherFailures_ = 0;
+    txFailureWindowTrips_ = 0;
+    lastUdpSendError_ = 0;
+    resetTxRecoveryState();
+    lastUdpTransportRebindMs_ = 0;
+    udpTransportRebindRequested_ = false;
     udpReopenRequested_ = false;
 }
 
@@ -402,7 +420,9 @@ bool SlimeVROutputRuntime::update(uint32_t nowMs) {
         acknowledgedSensorInfo_ = SlimeVRSensorInfo{};
         lastSentSensorInfo_ = SlimeVRSensorInfo{};
         markSensorInfoDirty();
-        consecutiveSendFailures_ = 0;
+        resetTxRecoveryState();
+        lastUdpTransportRebindMs_ = 0;
+        udpTransportRebindRequested_ = false;
         udpReopenRequested_ = false;
         transitionTo(SlimeVROutputState::WaitingForWifi, nowMs);
         return activityChanged(stateBefore, activityBefore);
@@ -410,6 +430,15 @@ bool SlimeVROutputRuntime::update(uint32_t nowMs) {
 
     ensureUdp(nowMs);
     if (!udp_->active()) return activityChanged(stateBefore, activityBefore);
+
+    if (udpTransportRebindRequested_) {
+        udpTransportRebindRequested_ = false;
+        if (!rebindUdpPreservingSession(nowMs)) {
+            udpReopenRequested_ = true;
+        } else {
+            return activityChanged(stateBefore, activityBefore);
+        }
+    }
 
     if (udpReopenRequested_) {
         ++udpReopenRequests_;
@@ -422,7 +451,9 @@ bool SlimeVROutputRuntime::update(uint32_t nowMs) {
         acknowledgedSensorInfo_ = SlimeVRSensorInfo{};
         lastSentSensorInfo_ = SlimeVRSensorInfo{};
         markSensorInfoDirty();
-        consecutiveSendFailures_ = 0;
+        resetTxRecoveryState();
+        lastUdpTransportRebindMs_ = 0;
+        udpTransportRebindRequested_ = false;
         udpReopenRequested_ = false;
         lastHeartbeatMs_ = 0;
         lastTelemetryMs_ = 0;
@@ -627,8 +658,16 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.serverSilenceResets = serverSilenceResets_;
     s.wifiLostResets = wifiLostResets_;
     s.udpReopenRequests = udpReopenRequests_;
-    s.udpReopenSuppressedRecentRx = udpReopenSuppressedRecentRx_;
+    s.udpTransportRebindRequests = udpTransportRebindRequests_;
+    s.udpTransportRebindSuccesses = udpTransportRebindSuccesses_;
+    s.udpTransportRebindFailures = udpTransportRebindFailures_;
+    s.udpFullReopenEscalations = udpFullReopenEscalations_;
+    s.txBackoffDrops = txBackoffDrops_;
+    s.txPressureFailures = txPressureFailures_;
+    s.txOtherFailures = txOtherFailures_;
+    s.txFailureWindowTrips = txFailureWindowTrips_;
     s.consecutiveSendFailures = consecutiveSendFailures_;
+    s.lastUdpSendError = lastUdpSendError_;
     s.nextPacketNumber = static_cast<uint32_t>(writer_.packetNumber());
     s.rotationRateHz = rotationRateHz_;
     s.preparedOutputAvailable = copyOutputSnapshot_ != nullptr;
@@ -953,7 +992,7 @@ bool SlimeVROutputRuntime::handlePingPong(const uint8_t* data, size_t len) {
     const SlimeVRPacketWriteResult packet = writer_.writePingPong(packetBuffer_, sizeof(packetBuffer_), pingId);
     ++pingReceived_;
     lastPingId_ = pingId;
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control) == PacketSendResult::Sent) {
         ++pongSent_;
     }
     return true;
@@ -1055,7 +1094,7 @@ bool SlimeVROutputRuntime::sendAckConfigChange(uint8_t targetSensorId, uint16_t 
     const SlimeVRPacketWriteResult packet = writer_.writeAcknowledgeConfigChange(
         packetBuffer_, sizeof(packetBuffer_), targetSensorId, configType
     );
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control) == PacketSendResult::Sent) {
         ++ackConfigSent_;
         return true;
     }
@@ -1099,7 +1138,7 @@ void SlimeVROutputRuntime::sendHandshakeTo(const UdpEndpoint& endpoint, uint32_t
     SlimeVRHandshakeInfo info;
     makeHandshakeInfo(info);
     const SlimeVRPacketWriteResult packet = writer_.writeHandshake(packetBuffer_, sizeof(packetBuffer_), info);
-    if (sendPacket(packet, endpoint, PacketPurpose::Discovery)) {
+    if (sendPacket(packet, endpoint, PacketPurpose::Discovery) == PacketSendResult::Sent) {
         ++handshakesSent_;
         lastHandshakeMs_ = nowMs;
     }
@@ -1114,7 +1153,7 @@ void SlimeVROutputRuntime::sendSensorInfo(uint32_t nowMs) {
         packetBuffer_, sizeof(packetBuffer_), desiredSensorInfo_
     );
     lastSensorInfoMs_ = nowMs;
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control) == PacketSendResult::Sent) {
         ++sensorInfoSent_;
         lastSentSensorInfo_ = desiredSensorInfo_;
         sensorInfoSyncState_ = SlimeVRSensorInfoSyncState::WaitingForAck;
@@ -1125,7 +1164,7 @@ void SlimeVROutputRuntime::sendSensorInfo(uint32_t nowMs) {
 void SlimeVROutputRuntime::sendHeartbeat(uint32_t nowMs) {
     if (!serverEndpoint_.valid()) return;
     const SlimeVRPacketWriteResult packet = writer_.writeHeartbeat(packetBuffer_, sizeof(packetBuffer_));
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control) == PacketSendResult::Sent) {
         ++heartbeatSent_;
         lastHeartbeatMs_ = nowMs;
     }
@@ -1149,7 +1188,7 @@ void SlimeVROutputRuntime::maybeSendFeatureFlags(uint32_t nowMs) {
         packetBuffer_, sizeof(packetBuffer_), flags, sizeof(flags)
     );
     lastFeatureFlagsRequestMs_ = nowMs;
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control) == PacketSendResult::Sent) {
         ++featureFlagsRequestAttempts_;
         ++featureFlagsSent_;
         featureNegotiationState_ = SlimeVRFeatureNegotiationState::Waiting;
@@ -1220,8 +1259,10 @@ uint32_t SlimeVROutputRuntime::activitySignature() const {
            sensorInfoAckMismatch_ + sendFailures_ + rotationSendFailures_ +
            controlSendFailures_ + telemetrySendFailures_ + discoverySendFailures_ +
            tapTransportSendFailures_ + udpBeginFailures_ + serverSilenceResets_ +
-           wifiLostResets_ + udpReopenRequests_ + udpReopenSuppressedRecentRx_ +
-           consecutiveSendFailures_ +
+           wifiLostResets_ + udpReopenRequests_ + udpTransportRebindRequests_ +
+           udpTransportRebindSuccesses_ + udpTransportRebindFailures_ +
+           udpFullReopenEscalations_ + txBackoffDrops_ + txPressureFailures_ +
+           txOtherFailures_ + txFailureWindowTrips_ + consecutiveSendFailures_ +
            serviceUpdates_;
 }
 
@@ -1241,7 +1282,7 @@ bool SlimeVROutputRuntime::sendTap(uint8_t value) {
         sensorId_,
         value
     );
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Tap)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Tap) == PacketSendResult::Sent) {
         ++tapSent_;
         lastTapValue_ = value;
         return true;
@@ -1259,7 +1300,7 @@ bool SlimeVROutputRuntime::sendUserAction(SlimeVRUserAction action) {
     const SlimeVRPacketWriteResult packet = writer_.writeUserAction(
         packetBuffer_, sizeof(packetBuffer_), action
     );
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::UserAction)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::UserAction) == PacketSendResult::Sent) {
         ++userActionSent_;
         return true;
     }
@@ -1278,7 +1319,7 @@ void SlimeVROutputRuntime::sendSignalStrength(uint32_t nowMs) {
         sensorId_,
         signalDbm
     );
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry) == PacketSendResult::Sent) {
         ++signalStrengthSent_;
         lastSignalStrengthDbm_ = signalDbm;
         lastRssiDbm_ = ws.rssiDbm;
@@ -1294,7 +1335,7 @@ void SlimeVROutputRuntime::sendTemperature(uint32_t nowMs) {
         sensorId_,
         latestTemperatureC_
     );
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry) == PacketSendResult::Sent) {
         ++temperatureSent_;
     }
 }
@@ -1315,7 +1356,7 @@ void SlimeVROutputRuntime::sendBatteryLevel(uint32_t nowMs) {
         latestBatteryVoltage_,
         protocolBatteryFraction
     );
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry) == PacketSendResult::Sent) {
         ++batterySent_;
         return;
     }
@@ -1331,7 +1372,7 @@ void SlimeVROutputRuntime::sendMagnetometerAccuracy(uint32_t nowMs) {
         sensorId_,
         0.0f
     );
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Telemetry) == PacketSendResult::Sent) {
         ++magnetometerAccuracySent_;
     }
 }
@@ -1348,7 +1389,7 @@ void SlimeVROutputRuntime::maybeSendTrackerError(uint32_t nowMs) {
         static_cast<uint8_t>(trackerHealth_.faultCode),
         trackerHealth_.message
     );
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::ErrorReport)) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::ErrorReport) == PacketSendResult::Sent) {
         ++trackerErrorSent_;
         lastTrackerErrorMs_ = nowMs;
         return;
@@ -1518,7 +1559,7 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         const SlimeVRPacketWriteResult motionPacket = writer_.writeRotationAndAcceleration(
             packetBuffer_, sizeof(packetBuffer_), sensorId_, snapshot.q, accelerationMps2
         );
-        if (!sendPacket(motionPacket, serverEndpoint_, PacketPurpose::MotionCombined)) return;
+        if (sendPacket(motionPacket, serverEndpoint_, PacketPurpose::MotionCombined) != PacketSendResult::Sent) return;
         recordDeliveredRotation();
         ++accelerationSent_;
         ++compactMotionSent_;
@@ -1531,7 +1572,7 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
             packetBuffer_, sizeof(packetBuffer_), sensorId_, snapshot.q, accuracy,
             accelerationMps2, SlimeVRRotationDataType::Normal
         );
-        if (!sendPacket(bundlePacket, serverEndpoint_, PacketPurpose::MotionCombined)) return;
+        if (sendPacket(bundlePacket, serverEndpoint_, PacketPurpose::MotionCombined) != PacketSendResult::Sent) return;
         recordDeliveredRotation();
         ++accelerationSent_;
         ++bundledMotionSent_;
@@ -1544,7 +1585,7 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         packetBuffer_, sizeof(packetBuffer_), sensorId_, snapshot.q, accuracy,
         SlimeVRRotationDataType::Normal
     );
-    if (!sendPacket(rotationPacket, serverEndpoint_, PacketPurpose::Rotation)) return;
+    if (sendPacket(rotationPacket, serverEndpoint_, PacketPurpose::Rotation) != PacketSendResult::Sent) return;
     recordDeliveredRotation();
 
     if (!snapshot.linearAccelerationValid) {
@@ -1567,13 +1608,13 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
     const SlimeVRPacketWriteResult accelerationPacket = writer_.writeAcceleration(
         packetBuffer_, sizeof(packetBuffer_), sensorId_, accelerationMps2
     );
-    if (sendPacket(accelerationPacket, serverEndpoint_, PacketPurpose::Acceleration)) {
+    if (sendPacket(accelerationPacket, serverEndpoint_, PacketPurpose::Acceleration) == PacketSendResult::Sent) {
         ++accelerationSent_;
     }
 }
 
 void SlimeVROutputRuntime::makeHandshakeInfo(SlimeVRHandshakeInfo& info) const {
-    info.firmwareVersion = trackerBuildFirmwareVersion();
+    info.firmwareVersion = trackerBuildSlimeVRFirmwareVersion();
     info.vendorName = "CustomSlime";
     info.vendorUrl = "https://github.com";
     info.productName = deviceName_;
@@ -1628,35 +1669,181 @@ void SlimeVROutputRuntime::recordSendFailure(PacketPurpose purpose) {
     }
 }
 
-bool SlimeVROutputRuntime::sendPacket(const SlimeVRPacketWriteResult& packet,
-                                      const UdpEndpoint& endpoint,
-                                      PacketPurpose purpose) {
+SlimeVROutputRuntime::PacketSendResult SlimeVROutputRuntime::sendPacket(
+    const SlimeVRPacketWriteResult& packet,
+    const UdpEndpoint& endpoint,
+    PacketPurpose purpose) {
+    const uint32_t nowMs = lastRuntimeNowMs_ != 0u ? lastRuntimeNowMs_ : millis();
+    if (txBackoffActive(nowMs) && packetMayBeDroppedDuringTxBackoff(purpose)) {
+        recordSendBackoffDrop(purpose);
+        return PacketSendResult::BackoffSuppressed;
+    }
+
     if (!udp_ || !packet.ok || packet.size == 0) {
+        lastUdpSendError_ = EINVAL;
         recordSendFailure(purpose);
-        ++consecutiveSendFailures_;
-        return false;
+        ++txOtherFailures_;
+        return PacketSendResult::Failed;
     }
+
     if (!udp_->send(endpoint, packetBuffer_, packet.size)) {
+        lastUdpSendError_ = udp_->lastSendError();
         recordSendFailure(purpose);
-        ++consecutiveSendFailures_;
-        if (consecutiveSendFailures_ >= TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD) {
-            const bool recentServerRx = serverFound_ && lastIncomingPacketMs_ != 0u &&
-                static_cast<uint32_t>(lastRuntimeNowMs_ - lastIncomingPacketMs_) <
-                    TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_RX_GRACE_MS;
-            if (recentServerRx) {
-                // The server is still talking to us. Reopening a live UDP
-                // session turns transient Wi-Fi TX pressure into a visible
-                // discovery/grace gap, so drop stale pose and try fresh data.
-                ++udpReopenSuppressedRecentRx_;
-                consecutiveSendFailures_ = 0u;
-            } else {
-                udpReopenRequested_ = true;
-            }
+        if (isUdpTxPressureError(lastUdpSendError_)) {
+            ++txPressureFailures_;
+        } else {
+            ++txOtherFailures_;
         }
+        ++consecutiveSendFailures_;
+        recordPhysicalSendOutcome(false);
+        armTxBackoff(nowMs);
+
+        const bool denseFailureWindow = txFailureWindowExceeded();
+        if (denseFailureWindow) ++txFailureWindowTrips_;
+        if (denseFailureWindow ||
+            consecutiveSendFailures_ >= TRACKER_SLIMEVR_TX_REBIND_CONSECUTIVE_FAILURES) {
+            requestUdpTxRecovery(nowMs);
+        }
+        return PacketSendResult::Failed;
+    }
+
+    consecutiveSendFailures_ = 0;
+    txBackoffUntilMs_ = 0;
+    txBackoffLevel_ = 0;
+    recordPhysicalSendOutcome(true);
+    if (txFailureWindowExceeded()) {
+        ++txFailureWindowTrips_;
+        requestUdpTxRecovery(nowMs);
+    }
+    return PacketSendResult::Sent;
+}
+
+void SlimeVROutputRuntime::recordSendBackoffDrop(PacketPurpose purpose) {
+    (void)purpose;
+    ++txBackoffDrops_;
+}
+
+void SlimeVROutputRuntime::recordPhysicalSendOutcome(bool success) {
+    constexpr uint32_t oldestBit = 0x80000000UL;
+    if (txOutcomeWindowCount_ >= TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS) {
+        if ((txOutcomeWindowBits_ & oldestBit) != 0u && txOutcomeFailureCount_ > 0u) {
+            --txOutcomeFailureCount_;
+        }
+    } else {
+        ++txOutcomeWindowCount_;
+    }
+
+    txOutcomeWindowBits_ <<= 1u;
+    if (!success) {
+        txOutcomeWindowBits_ |= 1u;
+        ++txOutcomeFailureCount_;
+    }
+}
+
+bool SlimeVROutputRuntime::txFailureWindowExceeded() const {
+    return txOutcomeWindowCount_ >= TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS &&
+           txOutcomeFailureCount_ >= TRACKER_SLIMEVR_TX_FAILURE_WINDOW_FAILURES;
+}
+
+bool SlimeVROutputRuntime::packetMayBeDroppedDuringTxBackoff(PacketPurpose purpose) {
+    switch (purpose) {
+        case PacketPurpose::Rotation:
+        case PacketPurpose::Acceleration:
+        case PacketPurpose::MotionCombined:
+        case PacketPurpose::Telemetry:
+        case PacketPurpose::Tap:
+            return true;
+        case PacketPurpose::Discovery:
+        case PacketPurpose::Control:
+        case PacketPurpose::UserAction:
+        case PacketPurpose::ErrorReport:
+            return false;
+    }
+    return false;
+}
+
+void SlimeVROutputRuntime::armTxBackoff(uint32_t nowMs) {
+    uint32_t delayMs = TRACKER_SLIMEVR_TX_BACKOFF_INITIAL_MS;
+    for (uint8_t i = 0; i < txBackoffLevel_; ++i) {
+        if (delayMs >= TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS / 2u) {
+            delayMs = TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS;
+            break;
+        }
+        delayMs *= 2u;
+    }
+    if (delayMs > TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS) {
+        delayMs = TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS;
+    }
+    txBackoffUntilMs_ = nowMs + delayMs;
+    if (delayMs < TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS && txBackoffLevel_ < 31u) {
+        ++txBackoffLevel_;
+    }
+}
+
+bool SlimeVROutputRuntime::txBackoffActive(uint32_t nowMs) const {
+    return txBackoffUntilMs_ != 0u &&
+           static_cast<int32_t>(nowMs - txBackoffUntilMs_) < 0;
+}
+
+void SlimeVROutputRuntime::resetTxRecoveryState() {
+    consecutiveSendFailures_ = 0;
+    txBackoffUntilMs_ = 0;
+    txBackoffLevel_ = 0;
+    txOutcomeWindowBits_ = 0;
+    txOutcomeWindowCount_ = 0;
+    txOutcomeFailureCount_ = 0;
+}
+
+void SlimeVROutputRuntime::requestUdpTxRecovery(uint32_t nowMs) {
+    txOutcomeWindowBits_ = 0;
+    txOutcomeWindowCount_ = 0;
+    txOutcomeFailureCount_ = 0;
+
+    const bool recentServerRx = serverFound_ && lastIncomingPacketMs_ != 0u &&
+        static_cast<uint32_t>(nowMs - lastIncomingPacketMs_) < TRACKER_SLIMEVR_TX_RECENT_RX_MS;
+    if (recentServerRx) {
+        const bool recentRebind = lastUdpTransportRebindMs_ != 0u &&
+            static_cast<uint32_t>(nowMs - lastUdpTransportRebindMs_) <
+                TRACKER_SLIMEVR_TX_REBIND_ESCALATION_MS;
+        if (recentRebind) {
+            if (!udpReopenRequested_) ++udpFullReopenEscalations_;
+            udpTransportRebindRequested_ = false;
+            udpReopenRequested_ = true;
+        } else if (!udpReopenRequested_) {
+            udpTransportRebindRequested_ = true;
+        }
+        return;
+    }
+
+    udpTransportRebindRequested_ = false;
+    udpReopenRequested_ = true;
+}
+
+bool SlimeVROutputRuntime::rebindUdpPreservingSession(uint32_t nowMs) {
+    if (!udp_) return false;
+    ++udpTransportRebindRequests_;
+    udp_->stop();
+    if (!udp_->begin(localPort_)) {
+        ++udpTransportRebindFailures_;
+        ++udpBeginFailures_;
         return false;
     }
-    consecutiveSendFailures_ = 0;
+
+    ++udpTransportRebindSuccesses_;
+    lastUdpTransportRebindMs_ = nowMs;
+    resetTxRecoveryState();
+    serverFoundSendGraceUntilMs_ = nowMs + TRACKER_SLIMEVR_TX_REBIND_SEND_GRACE_MS;
+    lastServiceUpdateMs_ = 0;
     return true;
+}
+
+bool SlimeVROutputRuntime::isUdpTxPressureError(int errorCode) {
+    return errorCode == ENOMEM || errorCode == ENOBUFS ||
+           errorCode == EAGAIN
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
+           || errorCode == EWOULDBLOCK
+#endif
+           ;
 }
 
 } // namespace tracker

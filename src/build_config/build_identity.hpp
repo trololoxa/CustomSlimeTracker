@@ -15,6 +15,9 @@
 #define TRACKER_BUILD_IDENTITY_STRING "unknown"
 #define TRACKER_BUILD_PIO_ENVIRONMENT "native-or-unknown"
 #define TRACKER_BUILD_FIRMWARE_VERSION TRACKER_FIRMWARE_FEATURE_VERSION
+#define TRACKER_BUILD_DATE_UTC "unknown"
+#define TRACKER_BUILD_DATE_COMPACT "unknown"
+#define TRACKER_BUILD_SLIMEVR_FIRMWARE_VERSION TRACKER_BUILD_FIRMWARE_VERSION
 #endif
 
 namespace tracker {
@@ -45,6 +48,14 @@ static inline const char* trackerBuildPioEnvironment() {
 
 static inline const char* trackerBuildFirmwareVersion() {
     return TRACKER_BUILD_FIRMWARE_VERSION;
+}
+
+static inline const char* trackerBuildDateUtc() {
+    return TRACKER_BUILD_DATE_UTC;
+}
+
+static inline const char* trackerBuildSlimeVRFirmwareVersion() {
+    return TRACKER_BUILD_SLIMEVR_FIRMWARE_VERSION;
 }
 
 } // namespace tracker

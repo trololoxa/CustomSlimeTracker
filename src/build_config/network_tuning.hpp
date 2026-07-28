@@ -288,17 +288,43 @@
 #define TRACKER_SLIMEVR_FALLBACK_ACCEL_RATE_HZ 50U
 #endif
 
-#ifndef TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD
-  #if TRACKER_BUILD_IS_SLIM
-    #define TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD 12UL
-  #else
-    #define TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD 20UL
-  #endif
+// ESP-IDF documents that UDP sendto() can fail with ENOMEM while Wi-Fi TX
+// buffers are full. Never hammer the same failing path at 100 Hz: drop stale
+// pose during a bounded backoff, then recover the socket before FIFO starvation
+// can become self-sustaining.
+#ifndef TRACKER_SLIMEVR_TX_BACKOFF_INITIAL_MS
+#define TRACKER_SLIMEVR_TX_BACKOFF_INITIAL_MS 20UL
 #endif
 
-#ifndef TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_RX_GRACE_MS
-// Server heartbeat/ping arrives about every 500 ms. A recent inbound packet
-// proves the UDP session is alive, so transient TX pressure must drop stale
-// pose datagrams rather than reopen the socket and add a reconnect gap.
-#define TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_RX_GRACE_MS 2000UL
+#ifndef TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS
+#define TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS 160UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_REBIND_CONSECUTIVE_FAILURES
+#define TRACKER_SLIMEVR_TX_REBIND_CONSECUTIVE_FAILURES 4U
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS
+#define TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS 32U
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_FAILURE_WINDOW_FAILURES
+#define TRACKER_SLIMEVR_TX_FAILURE_WINDOW_FAILURES 8U
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_RECENT_RX_MS
+// Heartbeat/ping proves the server association is alive, but not that the
+// local TX path is healthy. In that case rebind the local UDP socket while
+// preserving the negotiated session instead of suppressing recovery.
+#define TRACKER_SLIMEVR_TX_RECENT_RX_MS 2000UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_REBIND_ESCALATION_MS
+// A second failure burst shortly after a session-preserving socket rebind means
+// the recovery was insufficient; escalate to the normal discovery lifecycle.
+#define TRACKER_SLIMEVR_TX_REBIND_ESCALATION_MS 2000UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_REBIND_SEND_GRACE_MS
+#define TRACKER_SLIMEVR_TX_REBIND_SEND_GRACE_MS 20UL
 #endif

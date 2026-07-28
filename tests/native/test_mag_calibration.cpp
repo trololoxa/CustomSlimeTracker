@@ -85,6 +85,36 @@ void pushModulatedEllipsoid(MagCalibrationCollector& collector,
     }
 }
 
+void pushPartiallyDisturbedEllipsoid(MagCalibrationCollector& collector,
+                                     const Vec3& hardIron,
+                                     float disturbedFraction,
+                                     float disturbedScale,
+                                     uint32_t& seq) {
+    constexpr int thetaSteps = 18;
+    constexpr int phiSteps = 36;
+    uint32_t sampleIndex = 0u;
+    const uint32_t disturbedPerHundred = static_cast<uint32_t>(
+        clampf(disturbedFraction, 0.0f, 1.0f) * 100.0f + 0.5f);
+    for (int ti = 0; ti < thetaSteps; ++ti) {
+        const float theta = MATH_PI * (static_cast<float>(ti) + 0.5f) /
+            static_cast<float>(thetaSteps);
+        const float st = std::sin(theta);
+        const float ct = std::cos(theta);
+        for (int pi = 0; pi < phiSteps; ++pi, ++sampleIndex) {
+            const float phi = MATH_TWO_PI * static_cast<float>(pi) /
+                static_cast<float>(phiSteps);
+            const Vec3 direction(st * std::cos(phi), st * std::sin(phi), ct);
+            const bool disturbed = (sampleIndex % 100u) < disturbedPerHundred;
+            const float radial = disturbed ? disturbedScale : 1.0f;
+            pushRaw(collector, hardIron + Vec3(
+                direction.x * 300.0f,
+                direction.y * 280.0f,
+                direction.z * 320.0f
+            ) * radial, seq++);
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -439,9 +469,76 @@ int main() {
         MagCalibrationResult result;
         CHECK(ctx, collector.compute(result));
         CHECK(ctx, result.valid);
-        CHECK(ctx, result.residualRms < params.maxAlgebraicResidualRms);
+        CHECK(ctx, result.residualRms < magCalibrationEffectiveMaxAlgebraicResidualRms(params));
         CHECK(ctx, result.normalizedResidualRms < 0.04f);
         CHECK(ctx, result.inlierRatio > 0.95f);
+    }
+
+    {
+        // The centered algebraic residual is approximately twice radial
+        // geometric error. It is a numerical consistency backstop and must
+        // not reject a model that passes the authoritative geometric gate.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+        uint32_t seq = 1;
+        pushModulatedEllipsoid(collector, Vec3(115.0f, -86.0f, 251.0f), 0.20f, seq);
+        collector.stop();
+
+        MagCalibrationResult result;
+        CHECK(ctx, collector.compute(result));
+        CHECK(ctx, result.valid);
+        CHECK(ctx, result.normalizedResidualRms < params.maxGeometricResidualRmsFactor);
+        CHECK(ctx, result.residualRms > params.maxAlgebraicResidualRms);
+        CHECK(ctx, result.residualRms < magCalibrationEffectiveMaxAlgebraicResidualRms(params));
+    }
+
+    {
+        // Hardware-shaped moderate contamination must not inflate its own
+        // sigma threshold and poison the fit. A bounded iterative refit can
+        // discard up to the configured inlier budget and recover the common
+        // ellipsoid without weakening the final geometric gate.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+        uint32_t seq = 1;
+        const Vec3 hard(115.0f, -86.0f, 251.0f);
+        pushPartiallyDisturbedEllipsoid(collector, hard, 0.15f, 1.35f, seq);
+        collector.stop();
+
+        MagCalibrationResult result;
+        CHECK(ctx, collector.compute(result));
+        CHECK(ctx, result.valid);
+        CHECK(ctx, result.robustRefitPasses > 0u);
+        CHECK_NEAR(ctx, result.robustInlierThresholdFactor,
+                   magCalibrationRobustResidualCapFactor(params), 1.0e-6f);
+        CHECK(ctx, result.inlierRatio >= params.minInlierRatio);
+        CHECK(ctx, result.inlierRatio < 0.90f);
+        CHECK(ctx, result.normalizedResidualRms < 0.01f);
+        CHECK_NEAR(ctx, result.hardIron.x, hard.x, 2.0f);
+        CHECK_NEAR(ctx, result.hardIron.y, hard.y, 2.0f);
+        CHECK_NEAR(ctx, result.hardIron.z, hard.z, 2.0f);
+    }
+
+    {
+        // The bounded refit is not a blanket acceptance path. Once the
+        // disturbed population exceeds the configured 18% outlier budget,
+        // the same fixture remains fail-closed on independent inlier evidence.
+        MagCalibrationParams params;
+        params.minSamples = 300;
+        MagCalibrationCollector collector(params);
+        collector.start(0);
+        uint32_t seq = 1;
+        pushPartiallyDisturbedEllipsoid(
+            collector, Vec3(115.0f, -86.0f, 251.0f), 0.20f, 1.35f, seq);
+        collector.stop();
+
+        MagCalibrationResult result;
+        CHECK(ctx, !collector.compute(result));
+        CHECK(ctx, collector.lastFailureReason() == MagCalibrationFailureReason::InlierRatioTooLow);
+        CHECK(ctx, collector.lastResult().inlierRatio < params.minInlierRatio);
     }
 
     {
@@ -450,6 +547,9 @@ int main() {
         // quality gate, and the rejected fit remains available for diagnosis.
         MagCalibrationParams params;
         params.minSamples = 300;
+        // Keep every point in the quality population so this fixture isolates
+        // the final geometric gate rather than the robust inlier-budget gate.
+        params.outlierMinResidualFactor = 0.50f;
         MagCalibrationCollector collector(params);
         collector.start(0);
         uint32_t seq = 1;

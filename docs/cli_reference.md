@@ -338,6 +338,8 @@ The firmware currently handles the server-to-tracker packets needed for a normal
 
 Use `slime status` or `slime debug` to inspect `sensor_info_sync_state`, `feature_negotiation_state`, `manual_server_*`, `ping_received`, `pong_sent`, `feature_flags_received`, `set_config_flag_*`, `ack_config_*`, `malformed_datagram_length`, the remaining `malformed_*` counters, `user_action_*`, `protocol_change_ignored`, and `unknown_packets_received`. Only complete validated packets from the selected server endpoint refresh session liveness.
 
+UDP TX-pressure diagnosis is exposed as `tx_backoff_drops`, `tx_pressure_failures`, `tx_other_failures`, `tx_failure_window_trips`, `udp_transport_rebind_requests`, `udp_transport_rebind_successes`, `udp_transport_rebind_failures`, `udp_full_reopen_escalations`, and `last_udp_send_error`. A local rebind preserves the selected server and negotiated bundle mode; full escalation restarts discovery. `perf tracking` and `motion status` report window deltas for the same recovery path.
+
 The firmware sends its FeatureFlags after server discovery. When the server
 returns bit 0, valid timestamp-coherent rotation and linear acceleration are
 serialized as packet-100 inner packet 17 followed by packet 4, preserving
@@ -369,6 +371,12 @@ These aliases are for first-run provisioning from SlimeVR Server's Serial Consol
 | `FRST` | Factory reset config/network NVS and reboot | Yes | Clears tracker and network config. |
 | `DELCAL` | Clear saved IMU/mag calibration state | Yes | Keeps Wi-Fi credentials. |
 | `TCAL PRINT|DEBUG|RESET|SAVE` | Compatibility wrappers for temperature-calibration inspection/reset/save | Optional | Temperature-only compatibility path. `SAVE` persists gyro temperature compensation without capturing unrelated runtime output/accel state. `RESET` changes only RAM temperature-comp slope/quality metadata, not the config object saved in NVS. |
+
+SlimeVR provisioning reports the upstream `WiFiReconnectionStatus` values, not Arduino `WL_*`: `SavedAttempt=1` during an ordinary saved-credential boot attempt, `ServerCredAttempt=3` while trying credentials supplied by the server, `Failed=4` after a failed/backoff attempt, and `Success=5` after connection. `SET WIFI` and `SET BWIFI` acknowledge a successful persistent credential update with the exact upstream-compatible `New wifi credentials set, reconnecting` text; the ACK remains immediate and does not block serial handling while waiting for DHCP.
+
+For Connect Trackers compatibility, healthy `GET INFO`/`GET TEST` output keeps `status: 0`; Wi-Fi and server-discovery progress are not encoded in that tracker-health field. Every UDP discovery handshake uses packet number zero, matching the official tracker contract, while established-session packets use the normal monotonic sequence. The `firmware:` field and UDP handshake firmware string use `<feature-version>+build.YYYYMMDD`; `GET INFO` additionally prints `Build date: YYYY-MM-DD`, and the native `version` command prints `slimevr_firmware_version` plus `build_date_utc`. PlatformIO derives the date in UTC and honors `SOURCE_DATE_EPOCH` for reproducible builds.
+
+When `SET WIFI` or `SET BWIFI` succeeds, the tracker now forces a fresh SlimeVR discovery and `SensorInfo` registration even if it was already connected and the same credentials were submitted. The persistent candidate is committed before live Wi-Fi/session state changes; a failed save leaves the working connection unchanged. This intentional session restart lets the server's Connect trackers flow observe an already connected device without requiring a reboot or a physical link drop.
 
 Blocking server/diagnostic commands such as Wi-Fi scans can intentionally pause sensor processing long enough to cause FIFO recovery on the next loop. During the configured grace window (`TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS`, default 3000 ms), human-facing `# WARN FIFO recovery requested` and `# TRACKING ... recovery` lines are muted so the command reply remains parseable. Machine-log events, quality counters, FIFO recovery and orientation resets still happen; only console noise is suppressed. Background magnetometer auto-heading reference events are also silent so they cannot interleave with server provisioning replies; manual `mag heading ref` still prints an explicit result. Treat `net scan`/`GET WIFISCAN` as a tracking interruption: movement during the blocking scan is lost, while movement after recovery should resume normally. Verify recovery with `ahrs status`: after a scan, `last_integrated_t_us` should advance again, `bad_dt_rejects` should not grow continuously, and `post_fifo_recovery_samples` should increase as new samples are integrated.
 
@@ -441,6 +449,8 @@ last_fit_normalization_scale
 last_fit_solver_pivot_ratio
 last_fit_solver_samples
 last_fit_quality
+last_fit_robust_refit_passes
+last_fit_robust_threshold_factor
 last_fit_quality_limits
 gyro_endpoint_valid
 gyro_endpoint_t_us
@@ -458,7 +468,7 @@ dynamic_axis_partition_confirmed_axes
 dynamic_axis_bucket_counts
 ```
 
-A numerical failure should be diagnosed from `mag_cal_failure_reason`, solver stage, normalization and pivot ratio. A finite fit rejected by a physical gate should be diagnosed from `last_fit_quality` against `last_fit_quality_limits`; do not collect indefinitely when the failing value indicates a disturbed/non-ellipsoidal environment rather than missing coverage.
+A numerical failure should be diagnosed from `mag_cal_failure_reason`, solver stage, normalization and pivot ratio. A finite fit rejected by a physical gate should be diagnosed from `last_fit_quality` against `last_fit_quality_limits`; the first limit is the effective algebraic numerical backstop (normally 2.2 times the geometric limit), not a second stricter physical residual gate. `last_fit_robust_refit_passes` reports bounded inlier refits and `last_fit_robust_threshold_factor` reports the actual final normalized radial threshold selected after applying the configured floor, sigma estimate, and quality cap. Do not collect indefinitely when the final `inlier_ratio` or geometric residual indicates a disturbed/non-ellipsoidal environment rather than missing coverage.
 
 ## 0023ge FIFO magnetic callback diagnostics
 

@@ -49,14 +49,14 @@ def main() -> int:
     report = (ROOT / "docs/0023gb_magnetometer_fit_metric_normalization_report.md").read_text(encoding="utf-8")
     platformio = (ROOT / "platformio.ini").read_text(encoding="utf-8")
 
-    require(mag_h, "Centered, dimensionless ellipsoid-equation RMS", "normalized parameter contract")
+    require(mag_h, "Minimum centered, dimensionless ellipsoid-equation sanity ceiling", "normalized parameter contract")
     require(mag, "std::sqrt(residualVar) / std::fabs(k)", "centered algebraic residual normalization")
     require(mag, "translation-invariant and approximately twice", "physical metric rationale")
     forbid(mag, "const double residualRms = std::sqrt(residualVar);", "origin-dependent residual gate")
 
     metrics = mag.index("// Keep the best finite fit diagnostics")
     inlier_gate = mag.index("if (finalMetrics.inliers < minSamples", metrics)
-    algebraic_gate = mag.index("finalFit.algebraicResidualRms > params_.maxAlgebraicResidualRms", metrics)
+    algebraic_gate = mag.index("finalFit.algebraicResidualRms > magCalibrationEffectiveMaxAlgebraicResidualRms(params_)", metrics)
     if not metrics < inlier_gate < algebraic_gate:
         raise SystemExit("0023gb diagnostics must be captured before quality-gate returns")
     require(mag, "lastResult_ = out;", "rejected fit persistence")
@@ -67,6 +67,7 @@ def main() -> int:
     require(fit_report_h, "fit.residualRms", "algebraic quality component")
     require(fit_report_h, "fit.normalizedResidualRms", "geometric quality component")
     require(fit_report_h, "fit.inlierRatio", "inlier quality component")
+    require(fit_report_h, "magCalibrationEffectiveMaxAlgebraicResidualRms(params)", "effective algebraic quality limit")
     require(status_h, '#include "runtime/mag_calibration_fit_quality_reporter.hpp"', "detailed reporter helper include")
     require(app_hooks, '#include "runtime/mag_calibration_fit_quality_reporter.hpp"', "compact-profile helper include")
     forbid(status, "void magStatusPrintCalibrationFitQuality(", "out-of-line helper in excluded source")

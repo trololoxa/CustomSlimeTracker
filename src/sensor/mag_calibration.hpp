@@ -7,6 +7,8 @@
 
 namespace tracker {
 
+inline constexpr uint16_t MAG_CALIBRATION_MAX_STORED_SAMPLES = 768u;
+
 enum class MagCalibrationFailureReason : uint8_t {
     None = 0,
     InsufficientSamples,
@@ -43,7 +45,8 @@ struct MagCalibrationParams {
     float minCoverageScore = 0.35f;
     float minDirectionalCoverageScore = 0.65f;
     float maxAxisRatio = 6.0f;
-    // Centered, dimensionless ellipsoid-equation RMS.
+    // Minimum centered, dimensionless ellipsoid-equation sanity ceiling.
+    // The effective value cannot be stricter than the geometric gate.
     float maxAlgebraicResidualRms = 0.12f;
     float maxGeometricResidualRmsFactor = 0.10f;
     float outlierSigma = 3.0f;
@@ -52,6 +55,27 @@ struct MagCalibrationParams {
     float trustNormMinFactor = 0.65f;
     float trustNormMaxFactor = 1.35f;
 };
+
+inline float magCalibrationRobustResidualCapFactor(const MagCalibrationParams& params) {
+    // A threshold derived only from the contaminated RMS expands with the
+    // outliers it is supposed to reject.  Bound it above the accepted
+    // geometric RMS while retaining the configured absolute floor.
+    const float qualityCompatible = 1.5f * params.maxGeometricResidualRmsFactor;
+    return std::fmax(params.outlierMinResidualFactor, qualityCompatible);
+}
+
+inline float magCalibrationEffectiveMaxAlgebraicResidualRms(const MagCalibrationParams& params) {
+    // For radial error e, the centered ellipsoid residual is
+    // (1 + e)^2 - 1 = 2e + e^2.  All final geometric inliers are bounded by
+    // the robust threshold, so |algebraic| <= (2 + thresholdFactor) * |e|.
+    // Keep a 2.2 minimum conversion margin for the default 0.15 threshold,
+    // and expand it when a caller deliberately configures a larger floor.
+    const float algebraicPerRadial = std::fmax(
+        2.2f, 2.0f + magCalibrationRobustResidualCapFactor(params));
+    const float geometricCompatible =
+        algebraicPerRadial * params.maxGeometricResidualRmsFactor;
+    return std::fmax(params.maxAlgebraicResidualRms, geometricCompatible);
+}
 
 inline float magCalibrationEffectiveMinBoxCoverage(const MagCalibrationParams& params) {
     // Raw axis spans combine motion coverage with the very soft-iron
@@ -90,6 +114,8 @@ struct MagCalibrationResult {
     float axisRatio = 0.0f;
     float inlierRatio = 0.0f;
     uint32_t inlierSamples = 0;
+    uint8_t robustRefitPasses = 0;
+    float robustInlierThresholdFactor = 0.0f;
 };
 
 struct MagCalibrationStoredSample {
@@ -156,7 +182,7 @@ public:
     const char* lastFailureReasonName() const;
 
 private:
-    static constexpr uint16_t kMaxStoredSamples = 768;
+    static constexpr uint16_t kMaxStoredSamples = MAG_CALIBRATION_MAX_STORED_SAMPLES;
 
     MagCalibrationParams params_;
 

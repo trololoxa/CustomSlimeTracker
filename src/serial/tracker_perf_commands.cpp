@@ -125,7 +125,11 @@ void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
     out.print("compact_motion_sent_delta="); out.println(deltaU32(slime.compactMotionSent, g_trackingPerfBaseline.slime.compactMotionSent));
     out.print("compact_motion_send_failures_delta="); out.println(deltaU32(slime.compactMotionSendFailures, g_trackingPerfBaseline.slime.compactMotionSendFailures));
     out.print("acceleration_rate_limited_delta="); out.println(deltaU32(slime.accelerationRateLimited, g_trackingPerfBaseline.slime.accelerationRateLimited));
-    out.print("udp_reopen_suppressed_recent_rx_delta="); out.println(deltaU32(slime.udpReopenSuppressedRecentRx, g_trackingPerfBaseline.slime.udpReopenSuppressedRecentRx));
+    out.print("udp_transport_rebind_successes_delta="); out.println(deltaU32(slime.udpTransportRebindSuccesses, g_trackingPerfBaseline.slime.udpTransportRebindSuccesses));
+    out.print("udp_full_reopen_escalations_delta="); out.println(deltaU32(slime.udpFullReopenEscalations, g_trackingPerfBaseline.slime.udpFullReopenEscalations));
+    out.print("tx_backoff_drops_delta="); out.println(deltaU32(slime.txBackoffDrops, g_trackingPerfBaseline.slime.txBackoffDrops));
+    out.print("tx_pressure_failures_delta="); out.println(deltaU32(slime.txPressureFailures, g_trackingPerfBaseline.slime.txPressureFailures));
+    out.print("tx_failure_window_trips_delta="); out.println(deltaU32(slime.txFailureWindowTrips, g_trackingPerfBaseline.slime.txFailureWindowTrips));
     out.print("acceleration_sent_delta="); out.println(deltaU32(slime.accelerationSent, g_trackingPerfBaseline.slime.accelerationSent));
     out.print("acceleration_skipped_invalid_delta="); out.println(deltaU32(slime.accelerationSkippedInvalid, g_trackingPerfBaseline.slime.accelerationSkippedInvalid));
     out.print("acceleration_skipped_configuration_delta="); out.println(deltaU32(slime.accelerationSkippedConfiguration, g_trackingPerfBaseline.slime.accelerationSkippedConfiguration));
@@ -157,7 +161,12 @@ void printSlimeQuick(Stream& out, const SlimeVROutputRuntime* slime) {
     out.print("slime_compact_motion_send_failures="); out.println(s.compactMotionSendFailures);
     out.print("slime_acceleration_rate_limited="); out.println(s.accelerationRateLimited);
     out.print("slime_server_bundle_supported="); out.println(s.serverBundleSupported ? "yes" : "no");
-    out.print("slime_udp_reopen_suppressed_recent_rx="); out.println(s.udpReopenSuppressedRecentRx);
+    out.print("slime_udp_transport_rebind_successes="); out.println(s.udpTransportRebindSuccesses);
+    out.print("slime_udp_full_reopen_escalations="); out.println(s.udpFullReopenEscalations);
+    out.print("slime_tx_backoff_drops="); out.println(s.txBackoffDrops);
+    out.print("slime_tx_pressure_failures="); out.println(s.txPressureFailures);
+    out.print("slime_tx_failure_window_trips="); out.println(s.txFailureWindowTrips);
+    out.print("slime_last_udp_send_error="); out.println(s.lastUdpSendError);
     out.print("slime_rotation_send_due="); out.println(s.rotationSendDue);
     out.print("slime_rotation_rate_limited="); out.println(s.rotationRateLimited);
     out.print("slime_rotation_missed_deadlines="); out.println(s.rotationMissedDeadlines);

@@ -14,6 +14,7 @@ public:
     uint16_t localPort() const override;
 
     bool send(const UdpEndpoint& endpoint, const uint8_t* data, size_t len) override;
+    int lastSendError() const override;
     bool resolveHost(const char* host, uint32_t& outIpv4) override;
     int parsePacket() override;
     int read(uint8_t* data, size_t maxLen) override;
@@ -23,6 +24,7 @@ private:
     mutable WiFiUDP udp_;
     bool active_ = false;
     uint16_t localPort_ = 0;
+    int lastSendError_ = 0;
 };
 
 } // namespace tracker

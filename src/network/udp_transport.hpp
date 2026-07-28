@@ -32,6 +32,10 @@ public:
 
     virtual bool send(const UdpEndpoint& endpoint, const uint8_t* data, size_t len) = 0;
 
+    // Returns the errno-style reason captured by the most recent failed send.
+    // Host transports may leave this as zero when no platform error exists.
+    virtual int lastSendError() const { return 0; }
+
     // Resolve a manual server hostname to IPv4. Host-safe transports inherit
     // the dotted-decimal parser; ESP32 overrides this with DNS support.
     virtual bool resolveHost(const char* host, uint32_t& outIpv4) {

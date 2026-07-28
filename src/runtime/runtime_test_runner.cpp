@@ -475,7 +475,15 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.print("slime_unknown_packets_delta: "); out.println(deltaU32(end.slime.unknownPacketsReceived, start_.slime.unknownPacketsReceived));
     out.print("slime_server_silence_resets_delta: "); out.println(deltaU32(end.slime.serverSilenceResets, start_.slime.serverSilenceResets));
     out.print("slime_udp_reopen_requests_delta: "); out.println(deltaU32(end.slime.udpReopenRequests, start_.slime.udpReopenRequests));
-    out.print("slime_udp_reopen_suppressed_recent_rx_delta: "); out.println(deltaU32(end.slime.udpReopenSuppressedRecentRx, start_.slime.udpReopenSuppressedRecentRx));
+    out.print("slime_udp_transport_rebind_requests_delta: "); out.println(deltaU32(end.slime.udpTransportRebindRequests, start_.slime.udpTransportRebindRequests));
+    out.print("slime_udp_transport_rebind_successes_delta: "); out.println(deltaU32(end.slime.udpTransportRebindSuccesses, start_.slime.udpTransportRebindSuccesses));
+    out.print("slime_udp_transport_rebind_failures_delta: "); out.println(deltaU32(end.slime.udpTransportRebindFailures, start_.slime.udpTransportRebindFailures));
+    out.print("slime_udp_full_reopen_escalations_delta: "); out.println(deltaU32(end.slime.udpFullReopenEscalations, start_.slime.udpFullReopenEscalations));
+    out.print("slime_tx_backoff_drops_delta: "); out.println(deltaU32(end.slime.txBackoffDrops, start_.slime.txBackoffDrops));
+    out.print("slime_tx_pressure_failures_delta: "); out.println(deltaU32(end.slime.txPressureFailures, start_.slime.txPressureFailures));
+    out.print("slime_tx_other_failures_delta: "); out.println(deltaU32(end.slime.txOtherFailures, start_.slime.txOtherFailures));
+    out.print("slime_tx_failure_window_trips_delta: "); out.println(deltaU32(end.slime.txFailureWindowTrips, start_.slime.txFailureWindowTrips));
+    out.print("slime_last_udp_send_error_end: "); out.println(end.slime.lastUdpSendError);
     out.println("RUNTIME TEST DONE");
     out.println("==============================================================================");
 
