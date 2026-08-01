@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 
 #include "core/math.hpp"
 
@@ -55,5 +56,43 @@ inline SensorToDeviceFrame makeSensorToDeviceFrame(bool valid, const Mat3& rotat
     out.rotation = out.enabled ? rotation : Mat3::identity();
     return out;
 }
+
+// Runtime cache for the validated sensor-to-device frame. TrackerConfig::sanitize()
+// already guarantees that a persisted valid frame is a proper rotation, but
+// hot-path consumers also need to remain fail-closed if a runtime caller presents
+// an unsanitized candidate. The config CRC is the explicit runtime revision:
+// every authoritative config mutation must sanitize/updateCrc before apply.
+class SensorToDeviceFrameCache {
+public:
+    const SensorToDeviceFrame& resolve(uint32_t configRevision,
+                                       bool valid,
+                                       const Mat3& rotation) {
+        if (initialized_ && configRevision_ == configRevision) {
+            return frame_;
+        }
+        frame_ = makeSensorToDeviceFrame(valid, rotation);
+        configRevision_ = configRevision;
+        initialized_ = true;
+        ++refreshes_;
+        return frame_;
+    }
+
+    void invalidate() {
+        initialized_ = false;
+        configRevision_ = 0u;
+        frame_ = SensorToDeviceFrame{};
+    }
+
+    bool initialized() const { return initialized_; }
+    uint32_t configRevision() const { return configRevision_; }
+    uint32_t refreshes() const { return refreshes_; }
+    const SensorToDeviceFrame& frame() const { return frame_; }
+
+private:
+    SensorToDeviceFrame frame_;
+    uint32_t configRevision_ = 0u;
+    uint32_t refreshes_ = 0u;
+    bool initialized_ = false;
+};
 
 } // namespace tracker

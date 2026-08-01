@@ -237,6 +237,11 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
     deps.lastCalibratedSample = &g_lastCalibratedSample;
     deps.lastQualityFlags = &g_lastQualityFlags;
     deps.lastImuSampleSequence = &g_lastImuSampleSequence;
+    deps.fifoRuntime = &g_fifoRuntime;
+    deps.sensorToDeviceFrameCache = &g_sensorToDeviceFrameCache;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    deps.runtimeProfiler = &g_runtimeProfiler;
+#endif
     return deps;
 }
 
@@ -245,6 +250,23 @@ static ImuSamplePipelineDeps& runtimeImuSamplePipelineDeps() {
     // avoids rebuilding a large aggregate of references/pointers at 960 Hz.
     static ImuSamplePipelineDeps deps = makeImuSamplePipelineDeps();
     return deps;
+}
+
+static bool finalizeRuntimeBiasWindow() {
+    if (!g_runtimeBias.completedWindowPending) return false;
+    ImuSamplePipelineDeps& pipeline = runtimeImuSamplePipelineDeps();
+    RuntimeGyroBiasUpdateDeps deps{
+        pipeline.runtimeBias,
+        pipeline.imuCal,
+        pipeline.gyroTempComp,
+        pipeline.ahrs,
+        pipeline.trackingState.recoveryActive(),
+        pipeline.logState != nullptr && pipeline.logState->enabled(),
+        pipeline.logState != nullptr ? &pipeline.logState->sequence : nullptr,
+        pipeline.logCounters,
+        &pipeline.out
+    };
+    return runtimeBiasFinalizePendingWindow(deps);
 }
 
 static FifoRuntimeSampleResult processRuntimeRawSampleCallback(const Lsm6dsv::RawSample& raw,
@@ -321,19 +343,8 @@ static const char* appBatteryAdcBackendName() {
 #endif
 }
 
-static void appBatterySortSmall(uint16_t* values, uint8_t count) {
-    for (uint8_t i = 1; i < count; ++i) {
-        const uint16_t key = values[i];
-        uint8_t j = i;
-        while (j > 0 && values[j - 1] > key) {
-            values[j] = values[j - 1];
-            --j;
-        }
-        values[j] = key;
-    }
-}
-
-static bool appBatteryReadOneMillivolts(uint16_t& outMillivolts) {
+static bool appBatteryReadOneMillivolts(uint16_t& outMillivolts, void* user) {
+    (void)user;
     const int raw = analogReadMilliVolts(TRACKER_BATTERY_ADC_PIN);
     if (raw < 0 || raw > TRACKER_BATTERY_ADC_MAX_MV) {
         return false;
@@ -342,67 +353,9 @@ static bool appBatteryReadOneMillivolts(uint16_t& outMillivolts) {
     return true;
 }
 
-static bool appBatteryReadMillivolts(uint16_t& outMillivolts, void* user) {
+static bool appBatteryConsumeBatchMillivolts(uint16_t& outMillivolts, void* user) {
     (void)user;
-#if TRACKER_ENABLE_BATTERY_RUNTIME
-    constexpr uint8_t kMaxReads = 128;
-    constexpr uint8_t kConfiguredReads =
-        TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT < 1 ? 1 :
-        (TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT > kMaxReads ? kMaxReads : TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT);
-    constexpr uint8_t kDiscardReadsRaw =
-        TRACKER_BATTERY_ADC_DISCARD_COUNT > 8 ? 8 : TRACKER_BATTERY_ADC_DISCARD_COUNT;
-    constexpr uint8_t kDiscardReads = kConfiguredReads <= 1 ? 0 :
-        (kDiscardReadsRaw >= kConfiguredReads ? static_cast<uint8_t>(kConfiguredReads - 1) : kDiscardReadsRaw);
-
-    // High-value divider without a hardware capacitor: throw away the first
-    // few conversions after the sparse wake-up read, then use a trimmed mean
-    // of the remaining burst. This keeps the long-term EMA from chasing SAR
-    // settling noise or one-off RF/USB spikes.
-    for (uint8_t i = 0; i < kDiscardReads; ++i) {
-        uint16_t ignored = 0;
-        (void)appBatteryReadOneMillivolts(ignored);
-    }
-
-    uint16_t reads[kMaxReads] = {};
-    uint8_t valid = 0;
-    const uint8_t readsToKeep = static_cast<uint8_t>(kConfiguredReads - kDiscardReads);
-    for (uint8_t i = 0; i < readsToKeep; ++i) {
-        uint16_t mv = 0;
-        if (appBatteryReadOneMillivolts(mv)) {
-            reads[valid++] = mv;
-        }
-    }
-    if (valid == 0) return false;
-
-    appBatterySortSmall(reads, valid);
-
-    uint8_t trim = 0;
-    if (valid >= 16) {
-        trim = valid / 8; // discard roughly 12.5% from each tail
-    } else if (valid >= 5) {
-        trim = 1;
-    }
-
-    uint8_t begin = trim;
-    uint8_t end = static_cast<uint8_t>(valid - trim);
-    if (begin >= end) {
-        begin = 0;
-        end = valid;
-    }
-
-    uint32_t sum = 0;
-    uint8_t used = 0;
-    for (uint8_t i = begin; i < end; ++i) {
-        sum += reads[i];
-        ++used;
-    }
-    if (used == 0) return false;
-    outMillivolts = static_cast<uint16_t>((sum + used / 2) / used);
-    return true;
-#else
-    outMillivolts = 0;
-    return false;
-#endif
+    return g_batteryAdcBatchSampler.consume(outMillivolts);
 }
 
 static BatteryRuntimeConfig makeAppBatteryRuntimeConfig() {
@@ -431,10 +384,16 @@ static void setupBatteryRuntime() {
     analogSetPinAttenuation(TRACKER_BATTERY_ADC_PIN, ADC_11db);
 #endif
 #endif
-    g_batteryRuntime.begin(appBatteryReadMillivolts, nullptr);
+    BatteryAdcBatchSamplerConfig samplerCfg;
+    samplerCfg.totalReads = TRACKER_BATTERY_ADC_OVERSAMPLE_COUNT;
+    samplerCfg.discardReads = TRACKER_BATTERY_ADC_DISCARD_COUNT;
+    g_batteryAdcBatchSampler.begin(appBatteryReadOneMillivolts, nullptr);
+    g_batteryAdcBatchSampler.configure(samplerCfg);
+
+    g_batteryRuntime.begin(appBatteryConsumeBatchMillivolts, nullptr);
     const BatteryRuntimeConfig cfg = makeAppBatteryRuntimeConfig();
     g_batteryRuntime.configure(cfg);
-    g_batteryRuntime.update(millis());
+    (void)g_batteryAdcBatchSampler.request();
 
 #if TRACKER_ENABLE_SERIAL_CONSOLE
     appConsoleOutput().print("# battery_runtime_enabled=");
@@ -451,7 +410,20 @@ static void setupBatteryRuntime() {
 }
 
 static bool updateBatteryRuntime() {
-    return g_batteryRuntime.update(millis());
+    const uint32_t nowMs = millis();
+    bool worked = false;
+    if (!g_batteryAdcBatchSampler.active() &&
+        !g_batteryAdcBatchSampler.resultReady() &&
+        g_batteryRuntime.sampleDue(nowMs)) {
+        worked = g_batteryAdcBatchSampler.request() || worked;
+    }
+    if (g_batteryAdcBatchSampler.active()) {
+        worked = g_batteryAdcBatchSampler.service(TRACKER_BATTERY_ADC_READS_PER_SERVICE) || worked;
+    }
+    if (g_batteryAdcBatchSampler.resultReady()) {
+        worked = g_batteryRuntime.update(nowMs) || worked;
+    }
+    return worked;
 }
 
 #endif // TRACKER_ENABLE_BATTERY_RUNTIME
@@ -672,6 +644,14 @@ static bool copyPreparedOutputSnapshotForSlimeVR(TrackerPreparedOutputSnapshot& 
     return g_preparedOutput.copy(out);
 }
 
+
+#if TRACKER_HAS_RUNTIME_PROFILER
+static void recordSlimeVRRotationSoftwareAge(uint32_t softwareAgeUs, void* user) {
+    (void)user;
+    g_runtimeProfiler.recordRotationSoftwareAge(softwareAgeUs);
+}
+#endif
+
 static void publishTrackerHealthState(const TrackerHealthSnapshot& health) {
     g_slimevrRuntime.setTrackerHealth(health);
 }
@@ -681,7 +661,16 @@ static void startNetworkRuntimeFromCurrentConfig(bool printStartup) {
 
     g_wifiManager.begin(g_wifiStation);
     g_wifiManager.configure(makeAppWifiManagerConfig());
-    g_slimevrRuntime.begin(g_udpTransport, g_wifiManager, copyPreparedOutputSnapshotForSlimeVR, nullptr);
+    g_slimevrRuntime.begin(g_udpTransport,
+                           g_wifiManager,
+                           copyPreparedOutputSnapshotForSlimeVR,
+                           nullptr,
+#if TRACKER_HAS_RUNTIME_PROFILER
+                           recordSlimeVRRotationSoftwareAge,
+#else
+                           nullptr,
+#endif
+                           nullptr);
     g_slimevrRuntime.setTrackerHealth(g_trackerHealth.snapshot());
     const bool slimeAutostart = slimevrAutostartEnabledFromConfig();
     const uint32_t nowMs = millis();
@@ -800,6 +789,14 @@ static void setupStatusLedRuntime() {
 
 static bool updateStatusLedRuntime() {
     const uint32_t nowMs = millis();
+    static bool s_policyPollValid = false;
+    static uint32_t s_lastPolicyPollMs = 0u;
+    if (s_policyPollValid &&
+        static_cast<uint32_t>(nowMs - s_lastPolicyPollMs) < TRACKER_STATUS_LED_UPDATE_INTERVAL_MS) {
+        return false;
+    }
+    s_policyPollValid = true;
+    s_lastPolicyPollMs = nowMs;
     g_statusLedRuntime.setMode(deriveStatusLedMode(), nowMs);
     return g_statusLedRuntime.update(nowMs);
 }
@@ -978,6 +975,30 @@ static bool updateRemoteConsoleRuntime() {
     );
 }
 #endif
+
+static bool criticalNetworkRuntimeDue() {
+    return g_slimevrRuntime.criticalRotationServiceDue(millis());
+}
+
+static bool updateCriticalNetworkRuntime() {
+    // Only a due rotation for an already established session is allowed here.
+    // RX/discovery/config/telemetry work remains in the outer app loop.
+    return g_slimevrRuntime.updateCritical(millis());
+}
+
+static bool appRotationDeadlineSlackUs(uint32_t& outSlackUs) {
+    uint32_t slackMs = 0u;
+    if (!g_slimevrRuntime.rotationDeadlineSlackMs(millis(), slackMs)) {
+        outSlackUs = 0xffffffffu;
+        return false;
+    }
+    if (slackMs > 0xffffffffu / 1000u) {
+        outSlackUs = 0xffffffffu;
+    } else {
+        outSlackUs = slackMs * 1000u;
+    }
+    return true;
+}
 
 static bool updateNetworkRuntime() {
     const uint32_t nowMs = millis();
@@ -1168,6 +1189,10 @@ static TrackerAppDeps makeTrackerAppDeps() {
 #endif
     deps.callbacks.publishHealthState = publishTrackerHealthState;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
+    deps.callbacks.updateCriticalNetworkRuntime = updateCriticalNetworkRuntime;
+    deps.callbacks.criticalNetworkRuntimeDue = criticalNetworkRuntimeDue;
+    deps.callbacks.updateHotpathDeferredRuntime = finalizeRuntimeBiasWindow;
+    deps.callbacks.rotationDeadlineSlackUs = appRotationDeadlineSlackUs;
     deps.callbacks.updateMagDeferredRuntime = updateMagDeferredRuntime;
 #if TRACKER_HAS_CALIBRATION_AUTONOMY
     deps.callbacks.updateCalibrationAutonomyRuntime = updateCalibrationAutonomyRuntime;

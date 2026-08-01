@@ -154,6 +154,7 @@ static MagRuntimeControllerDeps makeMagRuntimeControllerDeps() {
     deps.lastImuSampleSequence = &g_lastImuSampleSequence;
     deps.accelCalibrationReady = &g_imuCal.accelCalValid;
     deps.fallbackTimestampUs = &g_lastSampleTimestampUs;
+    deps.sensorToDeviceFrameCache = &g_sensorToDeviceFrameCache;
     deps.recoveryActive = magControllerRecoveryActiveCallback;
     deps.magHubPeriodUs = MAG_HUB_PERIOD_US;
     deps.callbacks = callbacks;

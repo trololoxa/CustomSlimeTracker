@@ -11,6 +11,7 @@
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/imu_quality.hpp"
+#include "sensor/frame_transform.hpp"
 #if TRACKER_HAS_CALIBRATION_UI
 #include "sensor/fifo_calibrations.hpp"
 #endif
@@ -65,6 +66,7 @@
 #endif
 #if TRACKER_HAS_BATTERY_RUNTIME
 #include "runtime/battery_runtime.hpp"
+#include "runtime/battery_adc_batch_sampler.hpp"
 #endif
 #if TRACKER_HAS_SERIAL_STREAM_STATE || TRACKER_HAS_SERIAL_CLI || TRACKER_HAS_MACHINE_LOG
 #include "serial/tracker_serial_context.hpp"
@@ -105,6 +107,7 @@ static StatusLedRuntime g_statusLedRuntime;
 #endif
 #if TRACKER_HAS_BATTERY_RUNTIME
 static BatteryRuntime g_batteryRuntime;
+static BatteryAdcBatchSampler g_batteryAdcBatchSampler;
 #endif
 
 static ImuCalibration g_imuCal;
@@ -156,6 +159,7 @@ static FifoInterruptEventSource g_fifoEvents;
 static FifoRuntimeProcessor g_fifoRuntime;
 
 static PreparedOutputRuntime g_preparedOutput;
+static SensorToDeviceFrameCache g_sensorToDeviceFrameCache;
 
 static TrackingStateController g_trackingState;
 

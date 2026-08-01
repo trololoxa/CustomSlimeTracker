@@ -23,12 +23,17 @@ Vec3 runtimeBiasCurrentGyroBiasRadS(const RuntimeGyroBiasEstimator& bias,
                                     const ImuCalibration& imuCal,
                                     const GyroTempCompensator& gyroTempComp,
                                     float tempC);
+Vec3 runtimeBiasCurrentGyroBiasRadS(const RuntimeGyroBiasEstimator& bias,
+                                    const ImuCalibration& imuCal,
+                                    const GyroTempCompRuntimeEval& tempEval);
 uint32_t runtimeBiasGyroBiasRuntimeFlags(const RuntimeGyroBiasEstimator& bias,
                                          const GyroTempCompensator& gyroTempComp,
                                          float tempC);
 void runtimeBiasApplyGyroTempQualityFlags(const GyroTempCompensator& gyroTempComp,
                                           ImuQualityResult& quality,
                                           float tempC);
+void runtimeBiasApplyGyroTempQualityFlags(const GyroTempCompRuntimeEval& tempEval,
+                                          ImuQualityResult& quality);
 
 struct RuntimeBiasTempGate {
     bool rangeRelevant = false;
@@ -43,6 +48,8 @@ struct RuntimeBiasTempGate {
 RuntimeBiasTempGate runtimeBiasTempGateFor(const RuntimeGyroBiasEstimator& bias,
                                            const GyroTempCompensator& gyroTempComp,
                                            float tempC);
+RuntimeBiasTempGate runtimeBiasTempGateFor(const RuntimeGyroBiasEstimator& bias,
+                                           const GyroTempCompRuntimeEval& tempEval);
 uint32_t runtimeBiasDecisionFlags(bool accepted,
                                   bool badTiming,
                                   bool saturated,
@@ -76,11 +83,19 @@ void emitRuntimeBiasUpdateLog(const RuntimeGyroBiasUpdateDeps& deps,
                               const Vec3& trimDps,
                               uint32_t flags);
 Vec3 clampRuntimeTrimDps(const RuntimeGyroBiasEstimator& bias, const Vec3& trimDps);
-void runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
+bool runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
                                 const Lsm6dsv::Sample& scaled,
                                 const Lsm6dsv::Sample& calibrated,
                                 const ImuQualityResult& quality,
                                 uint64_t timestampUs);
+bool runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
+                                const Lsm6dsv::Sample& scaled,
+                                const Lsm6dsv::Sample& calibrated,
+                                const ImuQualityResult& quality,
+                                uint64_t timestampUs,
+                                const GyroTempCompRuntimeEval& tempEval,
+                                const Vec3& currentGyroBiasRadS);
+bool runtimeBiasFinalizePendingWindow(const RuntimeGyroBiasUpdateDeps& deps);
 void runtimeBiasPrintStatus(Stream& out,
                             const RuntimeGyroBiasEstimator& bias,
                             const ImuCalibration& imuCal,

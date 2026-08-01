@@ -116,6 +116,20 @@
 #define TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS 16UL
 #endif
 
+// Optional runtime work is admitted only when the sensor queues are empty and
+// enough time remains before the next 100 Hz pose deadline. These gates do not
+// alter IMU/AHRS/mag observation order; they defer battery, console and
+// background calibration bookkeeping to a later loop.
+#ifndef TRACKER_OPTIONAL_SHORT_SERVICE_MIN_SLACK_US
+#define TRACKER_OPTIONAL_SHORT_SERVICE_MIN_SLACK_US 1500UL
+#endif
+#ifndef TRACKER_OPTIONAL_CONSOLE_SERVICE_MIN_SLACK_US
+#define TRACKER_OPTIONAL_CONSOLE_SERVICE_MIN_SLACK_US 2500UL
+#endif
+#ifndef TRACKER_OPTIONAL_BACKGROUND_SERVICE_MIN_SLACK_US
+#define TRACKER_OPTIONAL_BACKGROUND_SERVICE_MIN_SLACK_US 3500UL
+#endif
+
 // Optional motion-triggered light sleep. This is intentionally disabled by
 // default: it takes exclusive ownership of the shared INT1/FIFO pin while
 // sleeping. Enable with TRACKER_ENABLE_MOTION_LIGHT_SLEEP=1 only on ESP32
@@ -149,6 +163,18 @@
 // temperature/system, Wi-Fi and SlimeVR counters with `perf status`.
 #ifndef TRACKER_ENABLE_RUNTIME_PROFILER_DEFAULT_ON
 #define TRACKER_ENABLE_RUNTIME_PROFILER_DEFAULT_ON 0
+#endif
+
+#ifndef TRACKER_MOTION_DIAGNOSTICS_SAMPLE_DIVISOR
+// Expensive norm/temperature aggregates are sampled; exact quality/event
+// counters still observe every IMU sample.
+#define TRACKER_MOTION_DIAGNOSTICS_SAMPLE_DIVISOR 16UL
+#endif
+
+#ifndef TRACKER_IMU_STAGE_PROFILER_SAMPLE_DIVISOR
+// Detailed stage timing reads micros() several times, so profile only one of
+// every 64 IMU samples. The ordinary raw-callback timing remains unchanged.
+#define TRACKER_IMU_STAGE_PROFILER_SAMPLE_DIVISOR 64UL
 #endif
 
 #ifndef TRACKER_RUNTIME_PROFILER_SLOW_LOOP_US
@@ -344,6 +370,11 @@
 
 #ifndef TRACKER_BATTERY_ADC_DISCARD_COUNT
 #define TRACKER_BATTERY_ADC_DISCARD_COUNT 4
+#endif
+
+#ifndef TRACKER_BATTERY_ADC_READS_PER_SERVICE
+// Bound sparse ADC acquisition to a few conversions per tracker loop.
+#define TRACKER_BATTERY_ADC_READS_PER_SERVICE 2u
 #endif
 
 #ifndef TRACKER_BATTERY_ADC_MAX_MV

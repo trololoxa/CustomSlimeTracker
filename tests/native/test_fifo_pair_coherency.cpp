@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <vector>
 
 #include "connection/lsm6dsv_driver.hpp"
@@ -17,6 +18,7 @@ namespace {
 class PairingTransport final : public Lsm6dsvTransport {
 public:
     using Word = std::array<uint8_t, Lsm6dsvFifoReader::FIFO_WORD_BYTES>;
+    using Write = std::array<uint8_t, 2>;
 
     bool read(uint8_t, uint8_t* dst, size_t len) override {
         if (!dst || len == 0) return false;
@@ -43,8 +45,8 @@ public:
     }
 
     bool write(uint8_t reg, const uint8_t* src, size_t len) override {
-        if (src == nullptr || len == 0) return false;
-        writes_.push_back({reg, src[0]});
+        if (src == nullptr || len == 0 || writeCount_ >= writes_.size()) return false;
+        writes_[writeCount_++] = Write{reg, src[0]};
         return true;
     }
     void delayMs(uint32_t) override {}
@@ -71,8 +73,10 @@ public:
             0));
     }
 
-    void clearWrites() { writes_.clear(); }
-    const std::vector<std::array<uint8_t, 2>>& writes() const { return writes_; }
+    void clearWrites() { writeCount_ = 0; }
+    std::span<const Write> writes() const {
+        return std::span<const Write>(writes_.data(), writeCount_);
+    }
 
 private:
     static Word makeWord(uint8_t sensorTag, uint8_t counter, int16_t x, int16_t y, int16_t z) {
@@ -90,9 +94,14 @@ private:
         dst[1] = static_cast<uint8_t>((u >> 8) & 0xffu);
     }
 
+    // Keep the test transport write log bounded and allocation-free. This also
+    // avoids false GCC 13 stringop-overflow diagnostics in vector reallocation.
+    static constexpr size_t WRITE_LOG_CAPACITY = 256u;
+
     std::vector<Word> words_;
     size_t readIndex_ = 0;
-    std::vector<std::array<uint8_t, 2>> writes_;
+    std::array<Write, WRITE_LOG_CAPACITY> writes_{};
+    size_t writeCount_ = 0;
 };
 
 struct Fixture {

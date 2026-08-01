@@ -56,17 +56,30 @@ bool WifiRemoteConsoleRuntime::update(bool wifiConnected,
         worked = true;
     }
 
-    WiFiClient candidate = server_.available();
-    if (candidate) {
-        if (client_ && client_.connected()) {
-            candidate.println("# ERR remote console busy");
-            candidate.flush();
-            candidate.stop();
-            ++rejectedClients_;
-        } else {
-            acceptClient(candidate);
+    const bool acceptPollDue = !acceptPollScheduled_ ||
+                               static_cast<uint32_t>(nowMs - lastAcceptPollMs_) >=
+                                   TRACKER_REMOTE_CONSOLE_ACCEPT_POLL_INTERVAL_MS;
+    if (acceptPollDue) {
+        lastAcceptPollMs_ = nowMs;
+        acceptPollScheduled_ = true;
+        ++acceptPolls_;
+        WiFiClient candidate = server_.available();
+        if (candidate) {
+            if (client_ && client_.connected()) {
+                static constexpr char kBusy[] = "# ERR remote console busy\r\n";
+                const int fd = candidate.fd();
+                if (fd >= 0) {
+                    (void)::send(fd, kBusy, sizeof(kBusy) - 1u, MSG_DONTWAIT);
+                }
+                candidate.stop();
+                ++rejectedClients_;
+            } else {
+                acceptClient(candidate);
+            }
+            worked = true;
         }
-        worked = true;
+    } else {
+        ++acceptPollSkips_;
     }
 
     if (client_) {
@@ -179,6 +192,8 @@ WifiRemoteConsoleStatus WifiRemoteConsoleRuntime::status() const {
     s.droppedClients = droppedClients_;
     s.bytesIn = bytesIn_;
     s.bytesDropped = bytesDropped_;
+    s.acceptPolls = acceptPolls_;
+    s.acceptPollSkips = acceptPollSkips_;
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
     s.output = clientStream_.status();
 #endif
@@ -191,6 +206,10 @@ void WifiRemoteConsoleRuntime::resetOutputState() {
 #endif
     bytesDropped_ = 0u;
     lastOutputDrainMs_ = 0u;
+    lastAcceptPollMs_ = 0u;
+    acceptPollScheduled_ = false;
+    acceptPolls_ = 0u;
+    acceptPollSkips_ = 0u;
 }
 
 void WifiRemoteConsoleRuntime::printStatus(Stream& out) const {
@@ -206,6 +225,8 @@ void WifiRemoteConsoleRuntime::printStatus(Stream& out) const {
     out.print("remote_console_dropped_clients="); out.println(s.droppedClients);
     out.print("remote_console_bytes_in="); out.println(s.bytesIn);
     out.print("remote_console_bytes_dropped="); out.println(s.bytesDropped);
+    out.print("remote_console_accept_polls="); out.println(s.acceptPolls);
+    out.print("remote_console_accept_poll_skips="); out.println(s.acceptPollSkips);
     printBoundedDuplexStreamStatus(out, "remote_console_output", s.output);
 }
 
@@ -226,6 +247,8 @@ void WifiRemoteConsoleRuntime::stopServer() {
     server_.stop();
 #endif
     serverStarted_ = false;
+    lastAcceptPollMs_ = 0u;
+    acceptPollScheduled_ = false;
 }
 
 void WifiRemoteConsoleRuntime::stopClient() {

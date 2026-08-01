@@ -33,9 +33,15 @@ static void testBaseAndCurrentBiasSelection(TestContext& ctx) {
 
     bias.runtimeTrimRadS = Vec3(0.01f, 0.02f, -0.03f) * MATH_DEG_TO_RAD;
     const Vec3 currentDps = runtimeBiasCurrentGyroBiasRadS(bias, imu, comp, 35.0f) * MATH_RAD_TO_DEG;
+    const GyroTempCompRuntimeEval eval = comp.evaluateRuntime(35.0f);
+    const Vec3 currentFromEvalDps =
+        runtimeBiasCurrentGyroBiasRadS(bias, imu, eval) * MATH_RAD_TO_DEG;
     CHECK_NEAR(ctx, currentDps.x, 0.16f, 1.0e-6f);
     CHECK_NEAR(ctx, currentDps.y, -0.18f, 1.0e-6f);
     CHECK_NEAR(ctx, currentDps.z, -0.08f, 1.0e-6f);
+    CHECK_NEAR(ctx, currentFromEvalDps.x, currentDps.x, 0.0f);
+    CHECK_NEAR(ctx, currentFromEvalDps.y, currentDps.y, 0.0f);
+    CHECK_NEAR(ctx, currentFromEvalDps.z, currentDps.z, 0.0f);
 }
 
 static void testTemperatureGateAndQualityFlags(TestContext& ctx) {
@@ -53,12 +59,20 @@ static void testTemperatureGateAndQualityFlags(TestContext& ctx) {
     CHECK_NEAR(ctx, inside.gainScale, 1.0f, 1.0e-6f);
 
     RuntimeBiasTempGate near = runtimeBiasTempGateFor(bias, comp, 38.0f);
+    RuntimeBiasTempGate nearFromEval = runtimeBiasTempGateFor(
+        bias, comp.evaluateRuntime(38.0f));
     CHECK(ctx, near.rangeRelevant);
     CHECK(ctx, near.outOfRange);
     CHECK(ctx, near.nearOutOfRange);
     CHECK(ctx, !near.reject);
     CHECK_NEAR(ctx, near.distanceToRangeC, 3.0f, 1.0e-6f);
     CHECK_NEAR(ctx, near.gainScale, 0.22f, 1.0e-6f);
+    CHECK(ctx, nearFromEval.rangeRelevant == near.rangeRelevant);
+    CHECK(ctx, nearFromEval.outOfRange == near.outOfRange);
+    CHECK(ctx, nearFromEval.nearOutOfRange == near.nearOutOfRange);
+    CHECK(ctx, nearFromEval.reject == near.reject);
+    CHECK_NEAR(ctx, nearFromEval.distanceToRangeC, near.distanceToRangeC, 0.0f);
+    CHECK_NEAR(ctx, nearFromEval.gainScale, near.gainScale, 0.0f);
 
     RuntimeBiasTempGate moderate = runtimeBiasTempGateFor(bias, comp, 44.0f);
     CHECK(ctx, moderate.outOfRange);
@@ -98,10 +112,67 @@ static void testClampAndDecisionFlags(TestContext& ctx) {
     CHECK(ctx, (flags & (1u << 10)) != 0); // temp cautious
 }
 
+
+static void testDeferredWindowFinalizationPreservesDecision(TestContext& ctx) {
+    ImuCalibration imu;
+    imu.gyroBiasValid = true;
+    imu.gyroBiasRadS = Vec3::zero();
+    imu.accelCalValid = true;
+
+    GyroTempCompensator temp;
+    RuntimeGyroBiasEstimator bias;
+    bias.enabled = true;
+    bias.requireTempCompRange = false;
+    bias.windowSamplesRequired = 4u;
+    bias.stationaryWindowsBeforeUpdate = 1u;
+    bias.accelTrustMin = 0.0f;
+    bias.gyroMeanMaxDps = 0.08f;
+    bias.gyroStdNormMaxDps = 0.16f;
+    bias.gyroStdAxisMaxDps = 0.12f;
+    bias.accelNormMeanMaxErrG = 0.015f;
+    bias.accelNormStdMaxG = 0.006f;
+    bias.updateAlpha = 0.05f;
+    bias.maxUpdateStepDps = 0.0015f;
+
+    Ahrs6Dof ahrs;
+    RuntimeGyroBiasUpdateDeps deps{bias, imu, temp, ahrs};
+    ImuQualityResult quality;
+    quality.flags = imu_quality_flags::OK;
+    quality.shouldUpdateAhrs = true;
+    quality.shouldUseAccelCorrection = true;
+    quality.accelNormValid = true;
+    quality.accelNormG = 1.0f;
+
+    Lsm6dsv::Sample scaled;
+    scaled.gyro_rad_s = Vec3(0.02f, 0.0f, 0.0f) * MATH_DEG_TO_RAD;
+    scaled.accel_g = Vec3(0.0f, 0.0f, 1.0f);
+    scaled.temp_c = 25.0f;
+    Lsm6dsv::Sample calibrated = scaled;
+
+    CHECK(ctx, !runtimeBiasUpdateEstimator(deps, scaled, calibrated, quality, 1000u));
+    CHECK(ctx, !runtimeBiasUpdateEstimator(deps, scaled, calibrated, quality, 2000u));
+    CHECK(ctx, !runtimeBiasUpdateEstimator(deps, scaled, calibrated, quality, 3000u));
+    CHECK(ctx, runtimeBiasUpdateEstimator(deps, scaled, calibrated, quality, 4000u));
+    CHECK(ctx, bias.completedWindowPending);
+    CHECK(ctx, bias.windowsDeferred == 1u);
+    CHECK(ctx, bias.windows == 0u);
+    CHECK_NEAR(ctx, bias.runtimeTrimRadS.norm(), 0.0f, 1.0e-9f);
+    CHECK(ctx, bias.calibratedGyroRadS.count == 0u);
+
+    CHECK(ctx, runtimeBiasFinalizePendingWindow(deps));
+    CHECK(ctx, !bias.completedWindowPending);
+    CHECK(ctx, bias.windows == 1u);
+    CHECK(ctx, bias.accepted == 1u);
+    CHECK(ctx, bias.updates == 1u);
+    CHECK_NEAR(ctx, bias.runtimeTrimRadS.x * MATH_RAD_TO_DEG, 0.001f, 1.0e-7f);
+    CHECK(ctx, !runtimeBiasFinalizePendingWindow(deps));
+}
+
 int main() {
     TestContext ctx;
     testBaseAndCurrentBiasSelection(ctx);
     testTemperatureGateAndQualityFlags(ctx);
     testClampAndDecisionFlags(ctx);
+    testDeferredWindowFinalizationPreservesDecision(ctx);
     return ctx.finish("test_runtime_bias_controller");
 }

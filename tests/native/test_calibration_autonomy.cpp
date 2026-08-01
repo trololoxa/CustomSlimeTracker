@@ -70,6 +70,9 @@ void feedWindow(CalibrationAutonomyController& controller,
         sample.t_us = timestampUs;
         controller.observeImuSample(sample, quality, timestampUs, nowMs);
     }
+    // Production finalizes a completed observation window immediately after
+    // the FIFO slice. Preserve that scheduling boundary in controller tests.
+    (void)controller.service(nowMs);
 }
 
 void driveGyroCandidateToProbation(TestContext& ctx,

@@ -287,6 +287,12 @@ void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {
         out.print("axis_service_deferral_hardware_status="); out.println(a.serviceDeferralHardwareStatus);
         out.print("axis_service_deferral_hardware_busy="); out.println(a.serviceDeferralHardwareBusy);
         out.print("axis_service_deferral_output_deadline="); out.println(a.serviceDeferralOutputDeadline);
+        out.print("axis_evidence_queued="); out.println(a.evidenceQueued);
+        out.print("axis_evidence_processed="); out.println(a.evidenceProcessed);
+        out.print("axis_evidence_dropped="); out.println(a.evidenceDropped);
+        out.print("axis_evidence_stale_dropped="); out.println(a.evidenceStaleDropped);
+        out.print("axis_evidence_service_deferrals="); out.println(a.evidenceServiceDeferrals);
+        out.print("axis_evidence_queue_high_water="); out.println(a.evidenceQueueHighWater);
         out.print("axis_last_deferred_fifo_unread_words="); out.println(a.lastDeferredFifoUnreadWords);
         out.print("axis_max_deferred_fifo_unread_words="); out.println(a.maxDeferredFifoUnreadWords);
         out.print("axis_last_deferred_rotation_slack_ms="); out.println(a.lastDeferredRotationSlackMs);

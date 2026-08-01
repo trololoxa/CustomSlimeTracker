@@ -18,6 +18,8 @@ public:
         uint64_t lastTimestampUs = 0;
 
         uint32_t samples = 0;
+        uint32_t metricSamples = 0;
+        uint32_t sampleDivisor = TRACKER_MOTION_DIAGNOSTICS_SAMPLE_DIVISOR;
         uint32_t ahrsUsableSamples = 0;
         uint32_t ahrsSkippedSamples = 0;
         uint32_t accelCorrectionDisabledSamples = 0;
@@ -69,8 +71,7 @@ public:
 
     void recordSample(const Lsm6dsv::RawSample& raw,
                       const Lsm6dsv::Sample& calibrated,
-                      const ImuQualityResult& quality,
-                      uint32_t nowMs);
+                      const ImuQualityResult& quality);
 
     const WindowStats& stats() const { return stats_; }
     uint32_t windowMs(uint32_t nowMs) const;

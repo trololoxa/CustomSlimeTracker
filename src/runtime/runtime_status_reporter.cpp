@@ -46,6 +46,10 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
     if (deps.fifoRuntime) {
         const FifoRuntimeQueueStats& qs = deps.fifoRuntime->queueStats();
         out.print("fifo_runtime_raw_queue_high_water="); out.println(qs.rawQueueHighWater);
+        out.print("fifo_runtime_raw_queue_oldest_age_us="); out.println(qs.rawQueueOldestAgeLastUs);
+        out.print("fifo_runtime_raw_queue_oldest_age_max_us="); out.println(qs.rawQueueOldestAgeMaxUs);
+        out.print("fifo_runtime_raw_queue_span_us="); out.println(qs.rawQueueSpanLastUs);
+        out.print("fifo_runtime_raw_queue_wait_max_us="); out.println(qs.rawQueueWaitMaxUs);
         out.print("fifo_runtime_mag_queue_high_water="); out.println(qs.magQueueHighWater);
         out.print("fifo_runtime_raw_queue_overflow="); out.println(qs.rawQueueOverflow);
         out.print("fifo_runtime_mag_queue_overflow="); out.println(qs.magQueueOverflow);
@@ -225,6 +229,10 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
         const FifoRuntimeQueueStats& qs = deps.fifoRuntime->queueStats();
         out.print("runtime_raw_queue_depth="); out.println(deps.fifoRuntime->rawQueueDepth());
         out.print("runtime_raw_queue_high_water="); out.println(qs.rawQueueHighWater);
+        out.print("runtime_raw_queue_oldest_age_us="); out.println(qs.rawQueueOldestAgeLastUs);
+        out.print("runtime_raw_queue_oldest_age_max_us="); out.println(qs.rawQueueOldestAgeMaxUs);
+        out.print("runtime_raw_queue_span_us="); out.println(qs.rawQueueSpanLastUs);
+        out.print("runtime_raw_queue_wait_max_us="); out.println(qs.rawQueueWaitMaxUs);
         out.print("runtime_raw_queue_overflow="); out.println(qs.rawQueueOverflow);
         out.print("runtime_mag_queue_depth="); out.println(deps.fifoRuntime->magQueueDepth());
         out.print("runtime_mag_queue_high_water="); out.println(qs.magQueueHighWater);

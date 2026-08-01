@@ -23,6 +23,8 @@ struct WifiRemoteConsoleStatus {
     uint32_t droppedClients = 0;
     uint32_t bytesIn = 0;
     uint32_t bytesDropped = 0;
+    uint32_t acceptPolls = 0;
+    uint32_t acceptPollSkips = 0;
     BoundedDuplexStreamStatus output;
 };
 
@@ -65,6 +67,10 @@ private:
     uint32_t bytesIn_ = 0;
     uint32_t bytesDropped_ = 0;
     uint32_t lastOutputDrainMs_ = 0;
+    uint32_t lastAcceptPollMs_ = 0;
+    bool acceptPollScheduled_ = false;
+    uint32_t acceptPolls_ = 0;
+    uint32_t acceptPollSkips_ = 0;
 
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
     WiFiServer server_{TRACKER_REMOTE_CONSOLE_PORT};

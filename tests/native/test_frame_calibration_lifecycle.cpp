@@ -66,6 +66,48 @@ static void testFrameValidationAndThreeSensorAgreement(TestContext& ctx) {
     CHECK_NEAR(ctx, out.body.y, 1.0f, 1.0e-6f);
 }
 
+
+static void testSensorToDeviceFrameCacheUsesConfigRevision(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+    cfg.data.frame.sensorToDeviceValid = true;
+    cfg.data.frame.sensorToDevice = rotateSensorXToDeviceY();
+    cfg.updateCrc();
+
+    SensorToDeviceFrameCache cache;
+    const SensorToDeviceFrame& first = cache.resolve(
+        cfg.data.crc32,
+        cfg.data.frame.sensorToDeviceValid,
+        cfg.data.frame.sensorToDevice);
+    CHECK(ctx, first.enabled);
+    CHECK(ctx, cache.refreshes() == 1u);
+    CHECK_NEAR(ctx, first.apply(Vec3::unitX()).y, 1.0f, 1.0e-6f);
+
+    const SensorToDeviceFrame& repeated = cache.resolve(
+        cfg.data.crc32,
+        cfg.data.frame.sensorToDeviceValid,
+        cfg.data.frame.sensorToDevice);
+    CHECK(ctx, repeated.enabled);
+    CHECK(ctx, cache.refreshes() == 1u);
+
+    cfg.data.frame.sensorToDevice = Mat3::diagonal(2.0f, 1.0f, 1.0f);
+    cfg.updateCrc();
+    const SensorToDeviceFrame& invalid = cache.resolve(
+        cfg.data.crc32,
+        cfg.data.frame.sensorToDeviceValid,
+        cfg.data.frame.sensorToDevice);
+    CHECK(ctx, !invalid.enabled);
+    CHECK(ctx, cache.refreshes() == 2u);
+
+    cfg.sanitize();
+    const SensorToDeviceFrame& sanitized = cache.resolve(
+        cfg.data.crc32,
+        cfg.data.frame.sensorToDeviceValid,
+        cfg.data.frame.sensorToDevice);
+    CHECK(ctx, !sanitized.enabled);
+    CHECK(ctx, cache.refreshes() == 3u);
+}
+
 static void testInvalidFrameIsSanitizedWithoutTouchingCalibration(TestContext& ctx) {
     TrackerConfig cfg;
     cfg.resetDefaults();
@@ -348,6 +390,7 @@ static void testCalibrationClearPreservesPolicy(TestContext& ctx) {
 int main() {
     TestContext ctx;
     testFrameValidationAndThreeSensorAgreement(ctx);
+    testSensorToDeviceFrameCacheUsesConfigRevision(ctx);
     testInvalidFrameIsSanitizedWithoutTouchingCalibration(ctx);
     testGyroTemperatureLifecycleAndPersistence(ctx);
     testCalibrationSnapshotAndRevisionSemantics(ctx);

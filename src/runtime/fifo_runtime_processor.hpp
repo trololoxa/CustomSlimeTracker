@@ -6,6 +6,8 @@
 
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
+#include "build_config/profile_contract.hpp"
+#include "build_config/tracking_tuning.hpp"
 #include "runtime/tracker_runtime_types.hpp"
 
 namespace tracker {
@@ -40,6 +42,7 @@ private:
 enum class FifoRuntimeSampleResult : uint8_t {
     Continue,
     FifoRecovered,
+    YieldRequested,
 };
 
 using FifoRuntimeSampleCallback = FifoRuntimeSampleResult (*)(const Lsm6dsv::RawSample& raw,
@@ -68,6 +71,36 @@ struct FifoRuntimeQueueStats {
     uint32_t magCallbackBudgetDeferrals = 0;
     size_t rawQueueHighWater = 0;
     size_t magQueueHighWater = 0;
+
+    // Exact MCU-clock wait inside the software raw queue. Hardware-FIFO
+    // residence is reported separately by FIFO counters; this metric proves
+    // whether the application itself is serving historical samples.
+    uint32_t rawQueueWaitSamples = 0;
+    uint64_t rawQueueWaitSumUs = 0;
+    uint32_t rawQueueWaitLastUs = 0;
+    uint32_t rawQueueWaitMaxUs = 0;
+    uint32_t rawQueueOldestAgeLastUs = 0;
+    uint32_t rawQueueOldestAgeMaxUs = 0;
+    uint32_t rawQueueSpanLastUs = 0;
+    uint32_t rawQueueSpanMaxUs = 0;
+
+    uint32_t hardwareDrainTimeCalls = 0;
+    uint64_t hardwareDrainTimeSumUs = 0;
+    uint32_t hardwareDrainTimeMaxUs = 0;
+    uint32_t callbackTimeCalls = 0;
+    uint64_t callbackTimeSumUs = 0;
+    uint32_t callbackTimeMaxUs = 0;
+    uint32_t rawCallbackTimedSamples = 0;
+    uint64_t rawCallbackTimeSumUs = 0;
+    uint32_t rawCallbackTimeMaxUs = 0;
+    uint32_t magCallbackTimeCalls = 0;
+    uint64_t magCallbackTimeSumUs = 0;
+    uint32_t magCallbackTimeMaxUs = 0;
+    uint32_t sliceBudgetStops = 0;
+    uint32_t drainBudgetDeferrals = 0;
+    uint32_t nearDeadlineReducedDrains = 0;
+    uint32_t sliceBudgetOvershootEvents = 0;
+    uint32_t sliceBudgetOvershootMaxUs = 0;
 };
 
 class FifoRuntimeProcessor {
@@ -91,28 +124,35 @@ public:
     bool process(uint16_t watermarkWords,
                  uint16_t maxWordsPerDrain,
                  uint8_t maxDrainRoundsPerEvent,
-                 Stream& out);
+                 Stream& out,
+                 uint32_t sliceBudgetUs = cfg::FIFO_RUNTIME_SLICE_BUDGET_US);
 
     // Discard all samples captured before an external/manual FIFO reset.
     void resetWork();
 
     bool hasPendingWork() const;
     bool urgent() const;
+    bool urgentByDepth() const;
+    bool urgentByAge() const;
     size_t rawQueueDepth() const;
     size_t magQueueDepth() const;
+    uint32_t rawQueueOldestAgeUs(uint32_t nowUs) const;
+    uint32_t rawQueueSpanUs() const;
+    uint32_t lastDequeuedQueueAgeUs() const { return lastDequeuedQueueAgeUs_; }
     const FifoRuntimeQueueStats& queueStats() const;
 
 private:
     bool ready() const;
     bool beginDrainEvent(uint16_t watermarkWords, uint8_t maxDrainRoundsPerEvent);
     bool drainOneRound(uint16_t maxWordsPerDrain, Stream& out);
-    bool enqueueRaw(const Lsm6dsv::RawSample& raw, bool checkStats);
+    bool enqueueRaw(const Lsm6dsv::RawSample& raw, bool checkStats, uint32_t queuedAtUs);
     bool enqueueMag(const Lsm6dsvFifoReader::MagRawSample& mag);
     bool dequeueRaw(Lsm6dsv::RawSample& raw, bool& checkStats);
     bool dequeueMag(Lsm6dsvFifoReader::MagRawSample& mag);
     bool peekMagTimestamp(uint64_t& timestampUs) const;
     bool dispatchDueMagCallbacks(uint64_t rawTimestampUs,
-                                 uint32_t callbackSliceStartUs,
+                                 uint32_t sliceStartUs,
+                                 uint32_t sliceBudgetUs,
                                  uint8_t& magCallbacks,
                                  bool& worked);
     void clearQueues();
@@ -143,6 +183,13 @@ private:
     bool drainActive_ = false;
     uint8_t drainRoundsRemaining_ = 0;
     uint64_t lastDispatchedRawTimestampUs_ = 0;
+    static constexpr size_t kTrackedRawQueueCapacity = 512u;
+    static_assert(cfg::FIFO_RUNTIME_RAW_QUEUE_CAPACITY <= kTrackedRawQueueCapacity,
+                  "runtime queue age storage must cover the configured queue");
+#if TRACKER_HAS_RUNTIME_PROFILER
+    uint32_t rawQueueEnqueuedAtUs_[kTrackedRawQueueCapacity] = {};
+#endif
+    uint32_t lastDequeuedQueueAgeUs_ = 0;
     FifoRuntimeQueueStats queueStats_;
 };
 

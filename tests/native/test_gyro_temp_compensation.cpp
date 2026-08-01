@@ -53,6 +53,55 @@ static void testSnapshotRangeAndMetadata(TestContext& ctx) {
     CHECK(ctx, farOutside.tempHardExtrapolated);
 }
 
+static void testRuntimeEvalMatchesSnapshot(TestContext& ctx) {
+    GyroTempCompensator comp;
+    comp.setModel(Vec3(0.1f, -0.2f, 0.05f) * MATH_DEG_TO_RAD,
+                  30.0f,
+                  Vec3(0.01f, 0.02f, -0.03f) * MATH_DEG_TO_RAD);
+    comp.setQualityMetadata(25.0f, 35.0f, 0.8f, 0.2f, 0.05f);
+
+    const float temperatures[] = {20.0f, 25.0f, 30.0f, 35.0f, 40.0f, 60.0f};
+    for (float tempC : temperatures) {
+        const GyroTempCompRuntimeEval eval = comp.evaluateRuntime(tempC);
+        const GyroTempCompSnapshot snapshot = comp.snapshot(tempC);
+        CHECK(ctx, eval.valid == snapshot.valid);
+        CHECK(ctx, eval.temperatureModelValid == snapshot.temperatureModelValid);
+        CHECK(ctx, eval.enabled == snapshot.enabled);
+        CHECK(ctx, eval.hasCalibratedRange == snapshot.hasCalibratedRange);
+        CHECK(ctx, eval.tempOutOfRange == snapshot.tempOutOfRange);
+        CHECK(ctx, eval.tempSoftExtrapolated == snapshot.tempSoftExtrapolated);
+        CHECK(ctx, eval.tempHardExtrapolated == snapshot.tempHardExtrapolated);
+        CHECK_NEAR(ctx, eval.currentBiasRadS.x, snapshot.currentBiasRadS.x, 0.0f);
+        CHECK_NEAR(ctx, eval.currentBiasRadS.y, snapshot.currentBiasRadS.y, 0.0f);
+        CHECK_NEAR(ctx, eval.currentBiasRadS.z, snapshot.currentBiasRadS.z, 0.0f);
+        CHECK_NEAR(ctx, eval.tempDistanceToRangeC, snapshot.tempDistanceToRangeC, 0.0f);
+        CHECK_NEAR(ctx, eval.extrapolationConfidence, snapshot.extrapolationConfidence, 0.0f);
+    }
+
+    const GyroTempCompRuntimeEval nonfinite = comp.evaluateRuntime(NAN);
+    const GyroTempCompSnapshot nonfiniteSnapshot = comp.snapshot(NAN);
+    CHECK(ctx, nonfinite.valid == nonfiniteSnapshot.valid);
+    CHECK(ctx, nonfinite.tempOutOfRange == nonfiniteSnapshot.tempOutOfRange);
+    CHECK(ctx, nonfinite.tempSoftExtrapolated == nonfiniteSnapshot.tempSoftExtrapolated);
+    CHECK(ctx, nonfinite.tempHardExtrapolated == nonfiniteSnapshot.tempHardExtrapolated);
+
+    comp.setEnabled(false);
+    const GyroTempCompRuntimeEval disabled = comp.evaluateRuntime(40.0f);
+    CHECK(ctx, disabled.valid);
+    CHECK(ctx, !disabled.enabled);
+    CHECK_NEAR(ctx, disabled.currentBiasRadS.x,
+               comp.referenceBiasRadS().x, 0.0f);
+
+    GyroTempCompensator invalid;
+    const GyroTempCompRuntimeEval invalidEval = invalid.evaluateRuntime(25.0f);
+    const GyroTempCompSnapshot invalidSnapshot = invalid.snapshot(25.0f);
+    CHECK(ctx, invalidEval.valid == invalidSnapshot.valid);
+    CHECK(ctx, invalidEval.temperatureModelValid ==
+               invalidSnapshot.temperatureModelValid);
+    CHECK_NEAR(ctx, invalidEval.currentBiasRadS.norm(),
+               invalidSnapshot.currentBiasRadS.norm(), 0.0f);
+}
+
 static void testSlopeAcceptanceLimit(TestContext& ctx) {
     GyroTempCompensator comp;
     const float limit = comp.config().maxAcceptedSlopeDpsPerC;
@@ -77,6 +126,7 @@ int main() {
     TestContext ctx;
     testBiasAtAndCorrectedGyro(ctx);
     testSnapshotRangeAndMetadata(ctx);
+    testRuntimeEvalMatchesSnapshot(ctx);
     testSlopeAcceptanceLimit(ctx);
     testSetModelRejectsOversizedSlope(ctx);
     return ctx.finish("test_gyro_temp_compensation");

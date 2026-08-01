@@ -4,6 +4,7 @@
 
 #include "core/math.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
+#include "sensor/frame_transform.hpp"
 
 namespace tracker {
 
@@ -31,6 +32,10 @@ struct MagRuntimeConfig {
     Mat3 magToImu = Mat3::identity();
     bool sensorToDeviceValid = false;
     Mat3 sensorToDevice = Mat3::identity();
+    // Runtime controllers may supply an already validated frame. Direct unit
+    // tests and standalone callers retain the fail-closed fallback above.
+    bool sensorToDevicePrevalidated = false;
+    SensorToDeviceFrame sensorToDeviceFrame;
 
     float expectedFieldNorm = 1.0f;
     float minTrustNorm = 0.25f;

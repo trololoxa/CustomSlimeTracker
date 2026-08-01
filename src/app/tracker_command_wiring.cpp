@@ -18,6 +18,7 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.tapRuntime = objects.tapRuntime;
     ctx.statusLedRuntime = objects.statusLedRuntime;
     ctx.batteryRuntime = objects.batteryRuntime;
+    ctx.batteryAdcBatchSampler = objects.batteryAdcBatchSampler;
     ctx.health = objects.health;
     ctx.lsm = objects.lsm;
     ctx.fifo = objects.fifo;
@@ -31,6 +32,7 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.runtimeProfiler = objects.runtimeProfiler;
     ctx.motionDiagnostics = objects.motionDiagnostics;
     ctx.fifoRuntime = objects.fifoRuntime;
+    ctx.magAxisAlignmentState = objects.magAxisAlignmentState;
     ctx.trackingState = objects.trackingState;
     ctx.preparedOutput = objects.preparedOutput;
 #if TRACKER_HAS_CALIBRATION_AUTONOMY

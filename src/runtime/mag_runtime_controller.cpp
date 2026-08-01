@@ -45,12 +45,26 @@ Vec3 inverseApplyAcceptedSensorToDevice(const Mat3& rotation,
 
 void MagRuntimeController::begin(const MagRuntimeControllerDeps& deps) {
     deps_ = deps;
+    runtimeConfigCache_ = MagRuntimeConfig{};
+    runtimeConfigCacheRevision_ = 0u;
+    runtimeConfigCacheValid_ = false;
+    clearAxisAlignmentEvidence();
 }
 
-MagRuntimeConfig MagRuntimeController::runtimeConfig() const {
-    MagRuntimeConfig c;
-    if (!deps_.config) return c;
+const MagRuntimeConfig& MagRuntimeController::runtimeConfig() const {
+    if (!deps_.config) {
+        runtimeConfigCache_ = MagRuntimeConfig{};
+        runtimeConfigCacheRevision_ = 0u;
+        runtimeConfigCacheValid_ = true;
+        return runtimeConfigCache_;
+    }
 
+    const uint32_t revision = deps_.config->data.crc32;
+    if (runtimeConfigCacheValid_ && runtimeConfigCacheRevision_ == revision) {
+        return runtimeConfigCache_;
+    }
+
+    MagRuntimeConfig c;
     const auto& magCal = deps_.config->data.magCal;
     c.enabled = magCal.driverEnabled;
     c.calibrationValid = magCal.calibrationValid;
@@ -61,6 +75,17 @@ MagRuntimeConfig MagRuntimeController::runtimeConfig() const {
     c.magToImu = magCal.magToImu;
     c.sensorToDeviceValid = deps_.config->data.frame.sensorToDeviceValid;
     c.sensorToDevice = deps_.config->data.frame.sensorToDevice;
+    if (deps_.sensorToDeviceFrameCache != nullptr) {
+        c.sensorToDeviceFrame = deps_.sensorToDeviceFrameCache->resolve(
+            revision,
+            c.sensorToDeviceValid,
+            c.sensorToDevice);
+    } else {
+        c.sensorToDeviceFrame = makeSensorToDeviceFrame(
+            c.sensorToDeviceValid,
+            c.sensorToDevice);
+    }
+    c.sensorToDevicePrevalidated = true;
 
     c.expectedFieldNorm = magCal.expectedFieldNorm;
     c.minTrustNorm = magCal.minTrustNorm;
@@ -68,7 +93,10 @@ MagRuntimeConfig MagRuntimeController::runtimeConfig() const {
 
     c.maxSampleAgeMs = 250;
     c.minUsableNorm = 1.0e-6f;
-    return c;
+    runtimeConfigCache_ = c;
+    runtimeConfigCacheRevision_ = revision;
+    runtimeConfigCacheValid_ = true;
+    return runtimeConfigCache_;
 }
 
 MagHeadingConfig MagRuntimeController::headingConfig() const {
@@ -139,6 +167,7 @@ void MagRuntimeController::resetYawCorrectionRuntime() {
 }
 
 void MagRuntimeController::resetAxisAlignmentCandidate() {
+    clearAxisAlignmentEvidence();
 #if TRACKER_ENABLE_CALIBRATION_CANDIDATES
     if (deps_.axisAlignmentCollector) deps_.axisAlignmentCollector->reset();
     if (deps_.axisAlignmentState) deps_.axisAlignmentState->reset();
@@ -684,7 +713,7 @@ TRACKER_MAG_RUNTIME_NOINLINE void MagRuntimeController::processRawSample(
     // Build the relatively large runtime config once. 0023ge previously built
     // it twice in this 60 Hz callback and also kept all downstream workspaces
     // in one compiler-visible frame, which exceeded the MSYS2 stack ceiling.
-    const MagRuntimeConfig magCfg = runtimeConfig();
+    const MagRuntimeConfig& magCfg = runtimeConfig();
     MagProcessedSample& processed = *deps_.lastProcessed;
     deps_.processor->process(mag, magCfg, nowMs, processed);
     captureGyroEndpoint(processed);
@@ -709,7 +738,7 @@ TRACKER_MAG_RUNTIME_NOINLINE void MagRuntimeController::processRawSample(
                                    reliability);
     const bool magTrustedForUse = processorTrustedForUse && reliability.trustedForYaw;
 
-    updateAxisAlignmentCandidate(nowMs);
+    (void)enqueueAxisAlignmentEvidence(nowMs);
     updateAutoReference(nowMs, gyroNormDps, accelTrust, magTrustedForUse);
     updateYawCorrectionSnapshot(nowMs,
                                 gyroNormDps,
@@ -926,49 +955,101 @@ bool MagRuntimeController::deferredServiceAllowed(MagDeferredServiceGate& gate) 
         gate, deps_.callbacks.evaluateDeferredServiceGateUser);
 }
 
-void MagRuntimeController::updateAxisAlignmentCandidate(uint32_t nowMs) {
+void MagRuntimeController::clearAxisAlignmentEvidence() {
+    for (AxisAlignmentEvidence& evidence : axisEvidence_) {
+        evidence = AxisAlignmentEvidence{};
+    }
+    axisEvidenceHead_ = 0u;
+    axisEvidenceTail_ = 0u;
+    axisEvidenceCount_ = 0u;
+}
+
+bool MagRuntimeController::enqueueAxisAlignmentEvidence(uint32_t nowMs) {
+#if !TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    (void)nowMs;
+    return false;
+#else
+    if (!axisAlignmentLearningEnabled_ || !deps_.axisAlignmentCollector ||
+        !deps_.axisAlignmentState || !deps_.config || !deps_.configStore ||
+        !deps_.lastProcessed || !deps_.config->data.magCal.calibrationValid ||
+        (deps_.calibrationCollector && deps_.calibrationCollector->active())) {
+        return false;
+    }
+    if (deps_.axisAlignmentState->candidateStaged ||
+        deps_.axisAlignmentState->blockedByExistingCandidate) {
+        deps_.axisAlignmentState->pendingAction =
+            MagAxisAlignmentDeferredAction::CheckCandidateSlot;
+        return false;
+    }
+    const uint32_t axisIndependentRejects = deps_.lastProcessed->rejectFlags &
+        ~(static_cast<uint32_t>(MAG_REJECT_AXIS_NOT_ALIGNED));
+    if (!deps_.lastProcessed->valid || axisIndependentRejects != MAG_REJECT_NONE ||
+        !deps_.lastProcessed->gyroEndpointValid) {
+        return false;
+    }
+    MagAxisAlignmentRuntimeState& state = *deps_.axisAlignmentState;
+    if (axisEvidenceCount_ >= kAxisEvidenceCapacity) {
+        ++state.evidenceDropped;
+        return false;
+    }
+    AxisAlignmentEvidence& evidence = axisEvidence_[axisEvidenceTail_];
+    evidence.nowMs = nowMs;
+    evidence.gyroSensorRadS = deps_.lastProcessed->gyroSensorRadS;
+    evidence.gyroTimestampUs = deps_.lastProcessed->gyroTimestampUs;
+    evidence.configCrc = deps_.config->data.crc32;
+    evidence.mag = *deps_.lastProcessed;
+    axisEvidenceTail_ = static_cast<uint8_t>((axisEvidenceTail_ + 1u) % kAxisEvidenceCapacity);
+    ++axisEvidenceCount_;
+    ++state.evidenceQueued;
+    if (axisEvidenceCount_ > state.evidenceQueueHighWater) {
+        state.evidenceQueueHighWater = axisEvidenceCount_;
+    }
+    return true;
+#endif
+}
+
+bool MagRuntimeController::serviceOneAxisAlignmentEvidence() {
+#if !TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    return false;
+#else
+    if (axisEvidenceCount_ == 0u) return false;
+    const AxisAlignmentEvidence evidence = axisEvidence_[axisEvidenceHead_];
+    axisEvidence_[axisEvidenceHead_] = AxisAlignmentEvidence{};
+    axisEvidenceHead_ = static_cast<uint8_t>((axisEvidenceHead_ + 1u) % kAxisEvidenceCapacity);
+    --axisEvidenceCount_;
+    if (!deps_.config || deps_.config->data.crc32 != evidence.configCrc) {
+        if (deps_.axisAlignmentState) ++deps_.axisAlignmentState->evidenceStaleDropped;
+        return true;
+    }
+    updateAxisAlignmentCandidate(evidence);
+    if (deps_.axisAlignmentState) ++deps_.axisAlignmentState->evidenceProcessed;
+    return true;
+#endif
+}
+
+void MagRuntimeController::updateAxisAlignmentCandidate(
+    const AxisAlignmentEvidence& evidence) {
 #if TRACKER_ENABLE_CALIBRATION_CANDIDATES
     if (!axisAlignmentLearningEnabled_) return;
     if (!deps_.axisAlignmentCollector || !deps_.axisAlignmentState || !deps_.config ||
-        !deps_.configStore || !deps_.lastProcessed) {
+        !deps_.configStore) {
         return;
     }
     if (!deps_.config->data.magCal.calibrationValid) return;
     if (deps_.calibrationCollector && deps_.calibrationCollector->active()) return;
+    const uint32_t nowMs = evidence.nowMs;
     if (deps_.axisAlignmentState->nextCollectionAllowedMs != 0u &&
         static_cast<int32_t>(nowMs - deps_.axisAlignmentState->nextCollectionAllowedMs) < 0) {
         return;
     }
-
-    // A staged/foreign candidate owns the single candidate slot. Do not keep
-    // collecting a dataset that cannot be consumed; only request a deferred,
-    // rate-limited slot check outside the sample callback.
     if (deps_.axisAlignmentState->candidateStaged ||
         deps_.axisAlignmentState->blockedByExistingCandidate) {
         deps_.axisAlignmentState->pendingAction =
             MagAxisAlignmentDeferredAction::CheckCandidateSlot;
         return;
     }
-
-    const uint32_t axisIndependentRejects = deps_.lastProcessed->rejectFlags &
-        ~(static_cast<uint32_t>(MAG_REJECT_AXIS_NOT_ALIGNED));
-    // Axis learning must be able to repair a bad-but-formally-valid active
-    // mapping.  Dip and world-heading reliability are computed after applying
-    // that mapping and can otherwise create a self-locking dependency.  The
-    // gyro/mag finite-rotation objective is independent of absolute magnetic
-    // heading, so collect from calibrated, finite, in-range sensor-frame data
-    // and let train/holdout validation reject non-rigid/transient fields.
-    const bool collectionFieldUsable =
-        deps_.lastProcessed->valid && axisIndependentRejects == MAG_REJECT_NONE;
-    if (!collectionFieldUsable) return;
-
-    if (!deps_.lastProcessed->gyroEndpointValid) return;
     deps_.axisAlignmentCollector->observe(
-        deps_.lastProcessed->gyroSensorRadS,
-        deps_.lastProcessed->gyroTimestampUs,
-        *deps_.lastProcessed,
-        collectionFieldUsable);
-
+        evidence.gyroSensorRadS, evidence.gyroTimestampUs, evidence.mag, true);
     static constexpr uint32_t kSolveRetryMs = 5000u;
     if (!deps_.axisAlignmentCollector->readyToSolve() ||
         deps_.axisAlignmentState->solvePending ||
@@ -979,11 +1060,10 @@ void MagRuntimeController::updateAxisAlignmentCandidate(uint32_t nowMs) {
         nowMs - deps_.axisAlignmentState->lastSolveAttemptMs < kSolveRetryMs) {
         return;
     }
-
     deps_.axisAlignmentState->solvePending = true;
     deps_.axisAlignmentState->pendingAction = MagAxisAlignmentDeferredAction::Solve;
 #else
-    (void)nowMs;
+    (void)evidence;
 #endif
 }
 
@@ -1000,6 +1080,7 @@ bool MagRuntimeController::serviceDeferred() {
     const uint32_t nowMs = millis();
     static constexpr uint32_t kCandidateSlotRetryMs = 10000u;
 
+    const bool evidencePending = axisEvidenceCount_ != 0u;
     const bool slotCheckDue =
         (state.candidateStaged || state.blockedByExistingCandidate) &&
         (state.lastStorageCheckMs == 0u ||
@@ -1007,12 +1088,17 @@ bool MagRuntimeController::serviceDeferred() {
     const bool stageRetryDue = state.stagePending &&
         (state.lastStorageCheckMs == 0u ||
          nowMs - state.lastStorageCheckMs >= kCandidateSlotRetryMs);
-    const bool workPending = state.solvePending || stageRetryDue || slotCheckDue;
+    const bool workPending = evidencePending || state.solvePending || stageRetryDue || slotCheckDue;
     if (!workPending) return false;
 
+    // Evidence collection was moved out of the chronological mag callback to
+    // protect raw IMU progress. It must obey the same measured FIFO/output
+    // admission gate as solving and storage; otherwise the deferred path would
+    // simply recreate the old pressure one app-loop later.
     MagDeferredServiceGate serviceGate;
     if (!deferredServiceAllowed(serviceGate)) {
         state.serviceDeferrals++;
+        if (evidencePending) ++state.evidenceServiceDeferrals;
         state.lastDeferredFifoUnreadWords = serviceGate.fifoUnreadWords;
         if (serviceGate.fifoUnreadWords > state.maxDeferredFifoUnreadWords) {
             state.maxDeferredFifoUnreadWords = serviceGate.fifoUnreadWords;
@@ -1039,6 +1125,11 @@ bool MagRuntimeController::serviceDeferred() {
     }
     state.lastDeferredRotationSlackMs = serviceGate.rotationDeadlineSlackMs;
     state.lastDeferredRejectFlags = MAG_DEFERRED_REJECT_NONE;
+
+    // Process at most one queued observation per admitted service call. This
+    // preserves order, keeps work bounded, and lets pose/FIFO deadlines
+    // preempt the next evidence item.
+    if (evidencePending) return serviceOneAxisAlignmentEvidence();
 
     if (slotCheckDue) {
         const uint32_t startUs = micros();

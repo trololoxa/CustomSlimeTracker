@@ -45,6 +45,27 @@ struct GyroTempCompConfig {
     float hardExtrapolationMarginC = 12.0f;
 };
 
+// Lightweight per-sample evaluation used by the 960 Hz tracking hot path.
+// It contains only values required for gyro correction and runtime quality
+// gates. Human-readable DPS conversions and fit-report metadata remain in the
+// full snapshot API and are not recomputed for every IMU sample.
+struct GyroTempCompRuntimeEval {
+    bool valid = false;
+    bool temperatureModelValid = false;
+    bool enabled = false;
+    bool hasCalibratedRange = false;
+    bool tempOutOfRange = false;
+    bool tempSoftExtrapolated = false;
+    bool tempHardExtrapolated = false;
+
+    float currentTempC = 25.0f;
+    Vec3 currentBiasRadS = Vec3::zero();
+    float tempDistanceToRangeC = 0.0f;
+    float softExtrapolationMarginC = 0.0f;
+    float hardExtrapolationMarginC = 0.0f;
+    float extrapolationConfidence = 1.0f;
+};
+
 struct GyroTempCompSnapshot {
     bool valid = false;
     bool temperatureModelValid = false;
@@ -121,6 +142,7 @@ public:
     Vec3 biasAt(float tempC) const;
     Vec3 correctedGyro(const Vec3& rawGyroRadS, float tempC) const;
 
+    GyroTempCompRuntimeEval evaluateRuntime(float currentTempC) const;
     GyroTempCompSnapshot snapshot(float currentTempC) const;
 
 private:

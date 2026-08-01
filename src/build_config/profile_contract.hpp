@@ -312,6 +312,16 @@
 #if TRACKER_ENABLE_IDLE_YIELD && (TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS == 0)
 #error "TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS must be greater than zero."
 #endif
+
+#if (TRACKER_OPTIONAL_SHORT_SERVICE_MIN_SLACK_US == 0) ||     (TRACKER_OPTIONAL_CONSOLE_SERVICE_MIN_SLACK_US == 0) ||     (TRACKER_OPTIONAL_BACKGROUND_SERVICE_MIN_SLACK_US == 0)
+#error "Optional runtime service slack thresholds must be non-zero."
+#endif
+#if (TRACKER_OPTIONAL_SHORT_SERVICE_MIN_SLACK_US > 10000UL) ||     (TRACKER_OPTIONAL_CONSOLE_SERVICE_MIN_SLACK_US > 10000UL) ||     (TRACKER_OPTIONAL_BACKGROUND_SERVICE_MIN_SLACK_US > 10000UL)
+#error "Optional runtime service slack thresholds must fit the 10 ms output frame."
+#endif
+#if TRACKER_IMU_STAGE_PROFILER_SAMPLE_DIVISOR == 0
+#error "TRACKER_IMU_STAGE_PROFILER_SAMPLE_DIVISOR must be greater than zero."
+#endif
 #if TRACKER_ENABLE_MOTION_LIGHT_SLEEP && !defined(ARDUINO_ARCH_ESP32)
 #error "TRACKER_ENABLE_MOTION_LIGHT_SLEEP requires the Arduino ESP32 target."
 #endif

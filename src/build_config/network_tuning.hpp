@@ -115,10 +115,24 @@
   #endif
 #endif
 
+
+#ifndef TRACKER_REMOTE_CONSOLE_ACCEPT_POLL_INTERVAL_MS
+// The listening socket is diagnostic-only. Polling it at 20 Hz keeps connect
+// latency bounded without charging server.available() to every tracker loop.
+#define TRACKER_REMOTE_CONSOLE_ACCEPT_POLL_INTERVAL_MS 50UL
+#endif
+
 // Network/SlimeVR update budget. This does not affect IMU/FIFO/AHRS cadence;
 // it only avoids spinning Wi-Fi/UDP state machines on every high-rate loop.
 // The values remain well below RotationData periods (100 Hz = 10 ms, Slim
 // default 50 Hz = 20 ms) and keep ping/config handling latency small.
+#ifndef TRACKER_WIFI_DIAGNOSTIC_INFO_REFRESH_MS
+// Link state is still checked at TrackerWifiManager cadence. RSSI, power-save,
+// TX power and MAC are diagnostic/telemetry fields and need not call ESP-IDF
+// getters four times per second.
+#define TRACKER_WIFI_DIAGNOSTIC_INFO_REFRESH_MS 1000UL
+#endif
+
 #ifndef TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_NETWORK_RUNTIME_UPDATE_INTERVAL_MS 5UL
@@ -289,19 +303,21 @@
 #endif
 
 // ESP-IDF documents that UDP sendto() can fail with ENOMEM while Wi-Fi TX
-// buffers are full. Never hammer the same failing path at 100 Hz: drop stale
-// pose during a bounded backoff, then recover the socket before FIFO starvation
-// can become self-sustaining.
+// buffers are temporarily full. Treat ENOMEM/ENOBUFS/EAGAIN as pressure, not
+// immediate socket corruption: skip stale motion for one or more output slots,
+// then recover only when no successful motion datagram has passed for a bounded
+// interval. This prevents a multi-tracker contention burst from becoming a
+// rebind/discovery storm.
 #ifndef TRACKER_SLIMEVR_TX_BACKOFF_INITIAL_MS
-#define TRACKER_SLIMEVR_TX_BACKOFF_INITIAL_MS 20UL
+#define TRACKER_SLIMEVR_TX_BACKOFF_INITIAL_MS 10UL
 #endif
 
 #ifndef TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS
-#define TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS 160UL
+#define TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS 80UL
 #endif
 
-#ifndef TRACKER_SLIMEVR_TX_REBIND_CONSECUTIVE_FAILURES
-#define TRACKER_SLIMEVR_TX_REBIND_CONSECUTIVE_FAILURES 4U
+#ifndef TRACKER_SLIMEVR_TX_OTHER_REBIND_CONSECUTIVE_FAILURES
+#define TRACKER_SLIMEVR_TX_OTHER_REBIND_CONSECUTIVE_FAILURES 4U
 #endif
 
 #ifndef TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS
@@ -313,16 +329,41 @@
 #endif
 
 #ifndef TRACKER_SLIMEVR_TX_RECENT_RX_MS
-// Heartbeat/ping proves the server association is alive, but not that the
-// local TX path is healthy. In that case rebind the local UDP socket while
-// preserving the negotiated session instead of suppressing recovery.
 #define TRACKER_SLIMEVR_TX_RECENT_RX_MS 2000UL
 #endif
 
-#ifndef TRACKER_SLIMEVR_TX_REBIND_ESCALATION_MS
-// A second failure burst shortly after a session-preserving socket rebind means
-// the recovery was insufficient; escalate to the normal discovery lifecycle.
-#define TRACKER_SLIMEVR_TX_REBIND_ESCALATION_MS 2000UL
+#ifndef TRACKER_SLIMEVR_TX_PRESSURE_REBIND_STALL_MS
+// A local socket rebind is justified only when no motion datagram succeeds for
+// this long. Intermittent ENOMEM with continuing successful motion remains a
+// transient pressure episode and never churns the socket.
+#define TRACKER_SLIMEVR_TX_PRESSURE_REBIND_STALL_MS 500UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_POST_REBIND_REOPEN_STALL_MS
+// After a successful local rebind, escalate to full discovery only when motion
+// still cannot pass for this additional bounded interval.
+#define TRACKER_SLIMEVR_TX_POST_REBIND_REOPEN_STALL_MS 1000UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_PRESSURE_STABLE_RESET_MS
+// Close a pressure episode only after a genuinely stable motion-success period;
+// one isolated success does not erase the episode history.
+#define TRACKER_SLIMEVR_TX_PRESSURE_STABLE_RESET_MS 1000UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_PRESSURE_ACTIVE_ATTEMPT_MS
+// Recovery requires evidence that fresh motion is still being attempted and
+// failing. A paused/duplicate snapshot source must not be mistaken for a dead
+// socket merely because no successful motion was observed recently.
+#define TRACKER_SLIMEVR_TX_PRESSURE_ACTIVE_ATTEMPT_MS 250UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_REBIND_COOLDOWN_MS
+#define TRACKER_SLIMEVR_TX_REBIND_COOLDOWN_MS 5000UL
+#endif
+
+#ifndef TRACKER_SLIMEVR_TX_FULL_REOPEN_COOLDOWN_MS
+#define TRACKER_SLIMEVR_TX_FULL_REOPEN_COOLDOWN_MS 10000UL
 #endif
 
 #ifndef TRACKER_SLIMEVR_TX_REBIND_SEND_GRACE_MS

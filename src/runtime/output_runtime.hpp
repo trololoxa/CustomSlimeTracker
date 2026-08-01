@@ -19,12 +19,13 @@ class PreparedOutputRuntime {
 public:
     bool enabled(const TrackerConfig& config) const;
     void reset();
-    void update(const TrackerConfig& config,
+    bool update(const TrackerConfig& config,
                 uint32_t runtimeSamples,
                 uint64_t timestampUs,
                 const Ahrs6Dof& ahrs,
                 const ImuQualityResult& quality,
-                const Vec3& accelDeviceG);
+                const Vec3& accelDeviceG,
+                uint32_t softwareQueueAgeUs = 0u);
     bool copy(TrackerPreparedOutputSnapshot& out) const;
 
 private:

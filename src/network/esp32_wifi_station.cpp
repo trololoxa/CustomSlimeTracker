@@ -107,16 +107,26 @@ bool Esp32WifiStationAdapter::begin(const char* ssid, const char* password, cons
     }
     applyTrackerWifiTxPower();
     applyTrackerWifiPowerSave();
+    invalidateInfoCache();
     return true;
 }
 
 void Esp32WifiStationAdapter::disconnect() {
     WiFi.disconnect(false, false);
+    invalidateInfoCache();
 }
 
 void Esp32WifiStationAdapter::radioOff() {
     WiFi.disconnect(false, false);
     WiFi.mode(WIFI_OFF);
+    invalidateInfoCache();
+}
+
+void Esp32WifiStationAdapter::invalidateInfoCache() {
+    cachedSlowInfo_ = WifiStationInfo{};
+    slowInfoValid_ = false;
+    lastSlowInfoMs_ = 0u;
+    lastSlowLinkStatus_ = WifiLinkStatus::Disconnected;
 }
 
 WifiStationInfo Esp32WifiStationAdapter::info() const {
@@ -150,20 +160,39 @@ WifiStationInfo Esp32WifiStationAdapter::info() const {
                    (static_cast<uint32_t>(ip[1]) << 16) |
                    (static_cast<uint32_t>(ip[2]) << 8) |
                    static_cast<uint32_t>(ip[3]);
-        out.rssiDbm = WiFi.RSSI();
     }
 
-    wifi_ps_type_t ps = WIFI_PS_NONE;
-    if (esp_wifi_get_ps(&ps) == ESP_OK) {
-        out.powerSaveMode = mapPowerSaveMode(ps);
-    }
-    int8_t txPower = 0;
-    if (esp_wifi_get_max_tx_power(&txPower) == ESP_OK) {
-        out.txPowerValid = true;
-        out.txPowerQuarterDbm = txPower;
+    const uint32_t nowMs = millis();
+    const bool refreshSlow = !slowInfoValid_ ||
+        out.linkStatus != lastSlowLinkStatus_ ||
+        static_cast<uint32_t>(nowMs - lastSlowInfoMs_) >= TRACKER_WIFI_DIAGNOSTIC_INFO_REFRESH_MS;
+    if (refreshSlow) {
+        cachedSlowInfo_ = WifiStationInfo{};
+        cachedSlowInfo_.linkStatus = out.linkStatus;
+        cachedSlowInfo_.ipv4 = out.ipv4;
+        if (out.linkStatus == WifiLinkStatus::Connected) {
+            cachedSlowInfo_.rssiDbm = WiFi.RSSI();
+        }
+        wifi_ps_type_t ps = WIFI_PS_NONE;
+        if (esp_wifi_get_ps(&ps) == ESP_OK) {
+            cachedSlowInfo_.powerSaveMode = mapPowerSaveMode(ps);
+        }
+        int8_t txPower = 0;
+        if (esp_wifi_get_max_tx_power(&txPower) == ESP_OK) {
+            cachedSlowInfo_.txPowerValid = true;
+            cachedSlowInfo_.txPowerQuarterDbm = txPower;
+        }
+        WiFi.macAddress(cachedSlowInfo_.mac);
+        slowInfoValid_ = true;
+        lastSlowInfoMs_ = nowMs;
+        lastSlowLinkStatus_ = out.linkStatus;
     }
 
-    WiFi.macAddress(out.mac);
+    out.rssiDbm = cachedSlowInfo_.rssiDbm;
+    out.powerSaveMode = cachedSlowInfo_.powerSaveMode;
+    out.txPowerValid = cachedSlowInfo_.txPowerValid;
+    out.txPowerQuarterDbm = cachedSlowInfo_.txPowerQuarterDbm;
+    std::memcpy(out.mac, cachedSlowInfo_.mac, sizeof(out.mac));
     return out;
 }
 

@@ -74,6 +74,9 @@ struct TrackerPreparedOutputSnapshot {
     // MCU-clock publication time. Unlike timestampUs, this shares the same
     // micros() epoch as the network scheduler and is safe for age metrics.
     uint32_t publishedAtMcuUs = 0;
+    // Exact wait in the application raw-sample queue before this sample was
+    // processed. This intentionally excludes unknown hardware-FIFO residence.
+    uint32_t softwareQueueAgeUs = 0;
     // Hamilton q_world_from_device: rotates device-frame vectors into the
     // AHRS world frame. The SlimeVR protocol adapter preserves this local basis.
     Quat q = Quat::identity();

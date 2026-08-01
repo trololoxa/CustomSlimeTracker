@@ -22,6 +22,7 @@ class SlimeVROutputRuntime;
 class TapRuntimeController;
 class StatusLedRuntime;
 class BatteryRuntime;
+class BatteryAdcBatchSampler;
 class TrackerHealthState;
 class RuntimeProfiler;
 class RuntimeMotionDiagnostics;
@@ -43,6 +44,7 @@ class FifoAccel6PosCalibrationRunner;
 class GyroTempCalibrationCapture;
 struct StaticRuntimeTest;
 struct MagProcessedSample;
+struct MagAxisAlignmentRuntimeState;
 
 // ============================================================
 // Lightweight serial command protocol
@@ -129,6 +131,7 @@ struct TrackerSerialCommandContext {
     TapRuntimeController* tapRuntime = nullptr;
     StatusLedRuntime* statusLedRuntime = nullptr;
     BatteryRuntime* batteryRuntime = nullptr;
+    BatteryAdcBatchSampler* batteryAdcBatchSampler = nullptr;
     TrackerHealthState* health = nullptr;
 
     Lsm6dsv* lsm = nullptr;
@@ -150,6 +153,7 @@ struct TrackerSerialCommandContext {
     RuntimeProfiler* runtimeProfiler = nullptr;
     RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
     FifoRuntimeProcessor* fifoRuntime = nullptr;
+    const MagAxisAlignmentRuntimeState* magAxisAlignmentState = nullptr;
     TrackingStateController* trackingState = nullptr;
     PreparedOutputRuntime* preparedOutput = nullptr;
 #if TRACKER_HAS_CALIBRATION_AUTONOMY

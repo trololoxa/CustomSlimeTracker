@@ -44,13 +44,10 @@ void RuntimeMotionDiagnostics::updateMinMaxF(float value, float& minValue, float
 
 void RuntimeMotionDiagnostics::recordSample(const Lsm6dsv::RawSample& raw,
                                             const Lsm6dsv::Sample& calibrated,
-                                            const ImuQualityResult& quality,
-                                            uint32_t nowMs) {
+                                            const ImuQualityResult& quality) {
     if (!stats_.enabled) return;
 
-    const bool first = stats_.samples == 0u;
     ++stats_.samples;
-    stats_.lastRecordMs = nowMs;
     stats_.lastTimestampUs = raw.t_us;
 
     if (quality.shouldUpdateAhrs) ++stats_.ahrsUsableSamples;
@@ -75,15 +72,26 @@ void RuntimeMotionDiagnostics::recordSample(const Lsm6dsv::RawSample& raw,
     if (quality.has(imu_quality_flags::ACCEL_COMPONENT_MISSING)) ++stats_.accelComponentMissingSamples;
     if (quality.has(imu_quality_flags::FIFO_PAIR_DEGRADED)) ++stats_.pairCoherencyDegradedSamples;
 
+    const uint32_t divisor = stats_.sampleDivisor == 0u ? 1u : stats_.sampleDivisor;
+    if (((stats_.samples - 1u) % divisor) != 0u) {
+        stats_.qualityFlagsOr |= quality.flags;
+        stats_.lastQualityFlags = quality.flags;
+        return;
+    }
+
+    const bool firstMetric = stats_.metricSamples == 0u;
+    ++stats_.metricSamples;
+    stats_.lastRecordMs = millis();
+
     if (quality.dtUs > 0u) {
         stats_.dtSumUs += static_cast<double>(quality.dtUs);
-        updateMinMaxU32(quality.dtUs, stats_.dtMinUs, stats_.dtMaxUs, first || stats_.dtMinUs == 0u);
+        updateMinMaxU32(quality.dtUs, stats_.dtMinUs, stats_.dtMaxUs, firstMetric || stats_.dtMinUs == 0u);
     }
 
     const float gyroNormDps = calibrated.gyro_rad_s.norm() * MATH_RAD_TO_DEG;
     stats_.gyroNormLastDps = gyroNormDps;
     stats_.gyroNormSumDps += static_cast<double>(gyroNormDps);
-    if (gyroNormDps > stats_.gyroNormMaxDps || first) stats_.gyroNormMaxDps = gyroNormDps;
+    if (gyroNormDps > stats_.gyroNormMaxDps || firstMetric) stats_.gyroNormMaxDps = gyroNormDps;
 
     if (quality.accelNormValid) {
         const float accelNormG = quality.accelNormG;
@@ -97,7 +105,7 @@ void RuntimeMotionDiagnostics::recordSample(const Lsm6dsv::RawSample& raw,
     stats_.confidenceLast = quality.overallConfidence;
     stats_.confidenceSum += static_cast<double>(quality.overallConfidence);
 
-    if (first) {
+    if (firstMetric) {
         stats_.tempStartC = calibrated.temp_c;
         stats_.tempValid = true;
     }
@@ -113,11 +121,11 @@ float RuntimeMotionDiagnostics::sampleRateHz(const WindowStats& s, uint32_t wind
 }
 
 float RuntimeMotionDiagnostics::avgDtUs(const WindowStats& s) {
-    return s.samples == 0u ? 0.0f : static_cast<float>(s.dtSumUs / static_cast<double>(s.samples));
+    return s.metricSamples == 0u ? 0.0f : static_cast<float>(s.dtSumUs / static_cast<double>(s.metricSamples));
 }
 
 float RuntimeMotionDiagnostics::avgGyroNormDps(const WindowStats& s) {
-    return s.samples == 0u ? 0.0f : static_cast<float>(s.gyroNormSumDps / static_cast<double>(s.samples));
+    return s.metricSamples == 0u ? 0.0f : static_cast<float>(s.gyroNormSumDps / static_cast<double>(s.metricSamples));
 }
 
 float RuntimeMotionDiagnostics::avgAccelNormG(const WindowStats& s) {
@@ -127,7 +135,7 @@ float RuntimeMotionDiagnostics::avgAccelNormG(const WindowStats& s) {
 }
 
 float RuntimeMotionDiagnostics::avgConfidence(const WindowStats& s) {
-    return s.samples == 0u ? 0.0f : static_cast<float>(s.confidenceSum / static_cast<double>(s.samples));
+    return s.metricSamples == 0u ? 0.0f : static_cast<float>(s.confidenceSum / static_cast<double>(s.metricSamples));
 }
 
 void RuntimeMotionDiagnostics::printStatus(Stream& out, uint32_t nowMs) const {
@@ -139,6 +147,8 @@ void RuntimeMotionDiagnostics::printStatus(Stream& out, uint32_t nowMs) const {
     out.print("motion_last_record_age_ms="); out.println(stats_.lastRecordMs == 0u ? 0u : nowMs - stats_.lastRecordMs);
     out.print("motion_samples="); out.println(stats_.samples);
     out.print("motion_sample_rate_hz="); out.println(sampleRateHz(stats_, winMs), 3);
+    out.print("motion_metric_samples="); out.println(stats_.metricSamples);
+    out.print("motion_sample_divisor="); out.println(stats_.sampleDivisor);
 
     out.print("motion_dt_avg_us="); out.println(avgDtUs(stats_), 3);
     out.print("motion_dt_min_us="); out.println(stats_.dtMinUs);

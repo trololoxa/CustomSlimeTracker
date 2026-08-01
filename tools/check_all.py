@@ -158,6 +158,11 @@ def run_tool_smokes(summary: CheckSummary) -> None:
         ("tools/test_slimevr_connect_trackers_0023gj_policy.py", "0023gj already-connected Connect Trackers session restart"),
         ("tools/test_calibration_0023gk_policy.py", "0023gk magnetometer robust-fit acceptance policy"),
         ("tools/test_slimevr_udp_tx_recovery_0023gl_policy.py", "0023gl SlimeVR UDP TX recovery policy"),
+        ("tools/test_pre_0024_hotpath_headroom_policy.py", "pre-0024 hotpath headroom policy"),
+        ("tools/test_pre_0024a_tracking_deadline_policy.py", "pre-0024a tracking deadline policy"),
+        ("tools/test_pre_0024ab_hotpath_transform_cache_policy.py", "pre-0024ab transform cache policy"),
+        ("tools/test_pre_0024ac_imu_hotpath_slack_policy.py", "pre-0024ac IMU hotpath/slack policy"),
+        ("tools/test_pre_0024ad_network_pressure_policy.py", "pre-0024ad network pressure pacing/recovery policy"),
         ("tools/test_calibration_integration_policy.py", "calibration integration policy"),
         ("tools/test_mag_heading_reliability_policy.py", "mag heading reliability policy"),
     )

@@ -43,7 +43,18 @@ struct RuntimeGyroBiasEstimator {
     ScalarStats accelTrust;
     ScalarStats tempC;
 
+    // Completed evidence is copied out of the 960 Hz path and finalized by
+    // the application immediately before the next raw sample is processed.
+    Vec3Stats completedCalibratedGyroRadS;
+    ScalarStats completedAccelNormG;
+    ScalarStats completedAccelTrust;
+    ScalarStats completedTempC;
+    uint64_t completedTimestampUs = 0u;
+    bool completedWindowPending = false;
+
     uint32_t windows = 0;
+    uint32_t windowsDeferred = 0;
+    uint32_t completedWindowDrops = 0;
     uint32_t stationaryWindows = 0;
     uint32_t primingWindows = 0;
     uint32_t accepted = 0;
@@ -83,8 +94,18 @@ struct RuntimeGyroBiasEstimator {
         tempC.reset();
     }
 
+    void resetCompletedWindow() {
+        completedCalibratedGyroRadS.reset();
+        completedAccelNormG.reset();
+        completedAccelTrust.reset();
+        completedTempC.reset();
+        completedTimestampUs = 0u;
+        completedWindowPending = false;
+    }
+
     void resetCounters() {
-        windows = stationaryWindows = primingWindows = 0;
+        windows = windowsDeferred = completedWindowDrops = 0;
+        stationaryWindows = primingWindows = 0;
         accepted = rejected = 0;
         badTimingRejects = motionRejects = accelRejects = saturationRejects = 0;
         tempRejects = tempCautiousSamples = tempCautiousWindows = tempFarRejects = 0;
@@ -104,6 +125,7 @@ struct RuntimeGyroBiasEstimator {
         lastDecisionFlags = 0;
         lastUpdateMs = 0;
         resetWindow();
+        resetCompletedWindow();
     }
 
     void resetAll() {

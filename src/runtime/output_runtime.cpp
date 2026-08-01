@@ -40,14 +40,15 @@ void PreparedOutputRuntime::reset() {
     lastPublishedTimestampUs_ = 0;
 }
 
-void PreparedOutputRuntime::update(const TrackerConfig& config,
+bool PreparedOutputRuntime::update(const TrackerConfig& config,
                                    uint32_t runtimeSamples,
                                    uint64_t timestampUs,
                                    const Ahrs6Dof& ahrs,
                                    const ImuQualityResult& quality,
-                                   const Vec3& accelDeviceG) {
+                                   const Vec3& accelDeviceG,
+                                   uint32_t softwareQueueAgeUs) {
 #if TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
-    if (!enabled(config)) return;
+    if (!enabled(config)) return false;
 
     const Ahrs6DofStats& ast = ahrs.stats();
     const bool orientationCoherent =
@@ -60,7 +61,7 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
     if (orientationCoherent && lastPublishedTimestampUs_ != 0u &&
         timestampUs > lastPublishedTimestampUs_ &&
         timestampUs - lastPublishedTimestampUs_ < cfg::PREPARED_OUTPUT_MIN_INTERVAL_US) {
-        return;
+        return false;
     }
 
     // Read the MCU clock only for an actual publication (roughly the output
@@ -79,6 +80,7 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
     snapshot_.ahrsUpdateCount = ast.updateCount;
     snapshot_.timestampUs = timestampUs;
     snapshot_.publishedAtMcuUs = publishedAtMcuUs;
+    snapshot_.softwareQueueAgeUs = softwareQueueAgeUs;
     snapshot_.q = orientationCoherent ? ahrs.quaternionPositiveW() : Quat::identity();
     snapshot_.linearAccelerationDeviceG = Vec3::zero();
     snapshot_.qualityFlags = quality.flags;
@@ -122,12 +124,14 @@ void PreparedOutputRuntime::update(const TrackerConfig& config,
 
     lastPublishedTimestampUs_ = orientationCoherent ? timestampUs : 0u;
     seqLock_ = startSeq + 1u;
+    return true;
 #else
     (void)config;
     (void)runtimeSamples;
     (void)timestampUs;
     (void)ahrs;
     (void)quality;
+    (void)softwareQueueAgeUs;
     (void)accelDeviceG;
 #endif
 }

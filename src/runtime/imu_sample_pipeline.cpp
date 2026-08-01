@@ -21,13 +21,26 @@ Vec3 imuPipelineCurrentGyroBiasRadS(const ImuSamplePipelineDeps& deps, float tem
 
 Lsm6dsv::Sample imuPipelineMakeSensorFrameCalibratedSample(const ImuSamplePipelineDeps& deps,
                                                            const Lsm6dsv::Sample& scaled) {
+    const GyroTempCompRuntimeEval tempEval =
+        deps.gyroTempComp.evaluateRuntime(deps.latestTempC);
+    return imuPipelineMakeSensorFrameCalibratedSample(
+        deps,
+        scaled,
+        tempEval.valid || deps.imuCal.gyroBiasValid,
+        runtimeBiasCurrentGyroBiasRadS(deps.runtimeBias, deps.imuCal, tempEval));
+}
+
+Lsm6dsv::Sample imuPipelineMakeSensorFrameCalibratedSample(const ImuSamplePipelineDeps& deps,
+                                                           const Lsm6dsv::Sample& scaled,
+                                                           bool hasBaseGyroBiasModel,
+                                                           const Vec3& currentGyroBiasRadS) {
     Lsm6dsv::Sample calibrated = scaled;
     calibrated.temp_c = deps.latestTempC;
 
-    if (runtimeBiasHasBaseGyroBiasModel(deps.imuCal, deps.gyroTempComp)) {
+    if (hasBaseGyroBiasModel) {
         // Persistent and runtime gyro-bias state is stored in the native
         // sensor frame. Subtract it before rotating into the device frame.
-        calibrated.gyro_rad_s = scaled.gyro_rad_s - imuPipelineCurrentGyroBiasRadS(deps, deps.latestTempC);
+        calibrated.gyro_rad_s = scaled.gyro_rad_s - currentGyroBiasRadS;
     }
 
     if (deps.imuCal.accelCalValid) {
@@ -39,13 +52,35 @@ Lsm6dsv::Sample imuPipelineMakeSensorFrameCalibratedSample(const ImuSamplePipeli
 
 Lsm6dsv::Sample imuPipelineMakeCalibratedSample(const ImuSamplePipelineDeps& deps,
                                                 const Lsm6dsv::Sample& scaled) {
-    Lsm6dsv::Sample calibrated = imuPipelineMakeSensorFrameCalibratedSample(deps, scaled);
-    const SensorToDeviceFrame frame = makeSensorToDeviceFrame(
-        deps.config.data.frame.sensorToDeviceValid,
-        deps.config.data.frame.sensorToDevice
-    );
-    calibrated.gyro_rad_s = frame.apply(calibrated.gyro_rad_s);
-    calibrated.accel_g = frame.apply(calibrated.accel_g);
+    const GyroTempCompRuntimeEval tempEval =
+        deps.gyroTempComp.evaluateRuntime(deps.latestTempC);
+    return imuPipelineMakeCalibratedSample(
+        deps,
+        scaled,
+        tempEval.valid || deps.imuCal.gyroBiasValid,
+        runtimeBiasCurrentGyroBiasRadS(deps.runtimeBias, deps.imuCal, tempEval));
+}
+
+Lsm6dsv::Sample imuPipelineMakeCalibratedSample(const ImuSamplePipelineDeps& deps,
+                                                const Lsm6dsv::Sample& scaled,
+                                                bool hasBaseGyroBiasModel,
+                                                const Vec3& currentGyroBiasRadS) {
+    Lsm6dsv::Sample calibrated = imuPipelineMakeSensorFrameCalibratedSample(
+        deps, scaled, hasBaseGyroBiasModel, currentGyroBiasRadS);
+    if (deps.sensorToDeviceFrameCache != nullptr) {
+        const SensorToDeviceFrame& frame = deps.sensorToDeviceFrameCache->resolve(
+            deps.config.data.crc32,
+            deps.config.data.frame.sensorToDeviceValid,
+            deps.config.data.frame.sensorToDevice);
+        calibrated.gyro_rad_s = frame.apply(calibrated.gyro_rad_s);
+        calibrated.accel_g = frame.apply(calibrated.accel_g);
+    } else {
+        const SensorToDeviceFrame fallbackFrame = makeSensorToDeviceFrame(
+            deps.config.data.frame.sensorToDeviceValid,
+            deps.config.data.frame.sensorToDevice);
+        calibrated.gyro_rad_s = fallbackFrame.apply(calibrated.gyro_rad_s);
+        calibrated.accel_g = fallbackFrame.apply(calibrated.accel_g);
+    }
     return calibrated;
 }
 
@@ -67,13 +102,29 @@ void imuPipelineRecordSampleProcessTime(ImuSamplePipelineDeps& deps, uint32_t dt
 #endif
 }
 
-void imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
+bool imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
                                                const Lsm6dsv::Sample& scaled,
                                                const Lsm6dsv::Sample& calibrated,
                                                const ImuQualityResult& quality,
                                                uint64_t timestampUs) {
+    const GyroTempCompRuntimeEval tempEval =
+        deps.gyroTempComp.evaluateRuntime(calibrated.temp_c);
+    return imuPipelineUpdateRuntimeGyroBiasEstimator(
+        deps, scaled, calibrated, quality, timestampUs,
+        tempEval,
+        runtimeBiasCurrentGyroBiasRadS(
+            deps.runtimeBias, deps.imuCal, tempEval));
+}
+
+bool imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
+                                               const Lsm6dsv::Sample& scaled,
+                                               const Lsm6dsv::Sample& calibrated,
+                                               const ImuQualityResult& quality,
+                                               uint64_t timestampUs,
+                                               const GyroTempCompRuntimeEval& tempEval,
+                                               const Vec3& currentGyroBiasRadS) {
     if (!deps.runtimeBias.enabled) {
-        return;
+        return false;
     }
 
     RuntimeGyroBiasUpdateDeps biasDeps{
@@ -87,17 +138,41 @@ void imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
         deps.logCounters,
         &deps.out
     };
-    runtimeBiasUpdateEstimator(biasDeps, scaled, calibrated, quality, timestampUs);
+    return runtimeBiasUpdateEstimator(
+        biasDeps, scaled, calibrated, quality, timestampUs,
+        tempEval, currentGyroBiasRadS);
 }
 
-void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
+bool imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
                                      const Lsm6dsv::RawSample& raw,
                                      const Lsm6dsv::Sample& scaled,
                                      const Lsm6dsv::Sample& calibrated,
                                      const ImuQualityResult& quality) {
+    const GyroTempCompRuntimeEval tempEval =
+        deps.gyroTempComp.evaluateRuntime(calibrated.temp_c);
+    return imuPipelineEmitPerSampleOutputs(
+        deps, raw, scaled, calibrated, quality,
+        tempEval,
+        runtimeBiasCurrentGyroBiasRadS(
+            deps.runtimeBias, deps.imuCal, tempEval));
+}
+
+bool imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
+                                     const Lsm6dsv::RawSample& raw,
+                                     const Lsm6dsv::Sample& scaled,
+                                     const Lsm6dsv::Sample& calibrated,
+                                     const ImuQualityResult& quality,
+                                     const GyroTempCompRuntimeEval& tempEval,
+                                     const Vec3& currentGyroBiasRadS) {
 #if TRACKER_HAS_SERIAL_STREAM
-    if (deps.streamState != nullptr) {
-        emitSerialStreamIfNeeded(*deps.streamState, deps.out, raw, scaled, calibrated, deps.ahrs, quality, micros());
+    if (deps.streamState != nullptr &&
+        deps.streamState->mode != TrackerStreamMode::Off &&
+        deps.streamState->mode != TrackerStreamMode::Heartbeat) {
+        // Do not read the MCU clock on every 960 Hz sample merely to discover
+        // that the production serial stream is disabled.
+        emitSerialStreamIfNeeded(
+            *deps.streamState, deps.out, raw, scaled, calibrated,
+            deps.ahrs, quality, micros());
     }
 #endif
     if (deps.callbacks.emitMachineLogFrame != nullptr) {
@@ -105,7 +180,7 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
     }
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (deps.motionDiagnostics != nullptr && deps.motionDiagnostics->enabled()) {
-        deps.motionDiagnostics->recordSample(raw, calibrated, quality, millis());
+        deps.motionDiagnostics->recordSample(raw, calibrated, quality);
     }
 #endif
     const bool hasCoherentAccel = quality.shouldUseAccelCorrection && quality.accelNormValid;
@@ -151,13 +226,36 @@ void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
     }
 #endif
     if (hasCoherentAccel) {
-        imuPipelineUpdateRuntimeGyroBiasEstimator(deps, scaled, calibrated, quality, raw.t_us);
+        return imuPipelineUpdateRuntimeGyroBiasEstimator(
+            deps, scaled, calibrated, quality, raw.t_us,
+            tempEval, currentGyroBiasRadS);
     }
+    return false;
 }
 
 FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
                                                     const Lsm6dsv::RawSample& raw,
                                                     bool checkFifoStatsDelta) {
+#if TRACKER_HAS_RUNTIME_PROFILER
+    const bool profileImuStages = deps.runtimeProfiler != nullptr &&
+        deps.runtimeProfiler->enabled() &&
+        (deps.runtimeSamples % TRACKER_IMU_STAGE_PROFILER_SAMPLE_DIVISOR) == 0u;
+    uint32_t imuStageStartUs = profileImuStages ? micros() : 0u;
+    const auto finishImuStage = [&](RuntimeProfiler::ImuStage stage) {
+        if (!profileImuStages) return;
+        const uint32_t nowUs = micros();
+        deps.runtimeProfiler->recordImuStage(stage, nowUs - imuStageStartUs);
+        imuStageStartUs = nowUs;
+    };
+#endif
+    const uint32_t softwareQueueAgeUs = deps.fifoRuntime != nullptr
+        ? deps.fifoRuntime->lastDequeuedQueueAgeUs()
+        : 0u;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (deps.runtimeProfiler != nullptr) {
+        deps.runtimeProfiler->recordProcessedSoftwareAge(softwareQueueAgeUs);
+    }
+#endif
 #if TRACKER_HAS_HOTPATH_PERF
     const uint32_t sampleProcessStartUs = micros();
 #endif
@@ -166,7 +264,14 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
 
     Lsm6dsv::Sample scaled = deps.lsm.scale(raw);
     scaled.temp_c = deps.latestTempC;
-    Lsm6dsv::Sample calibrated = imuPipelineMakeCalibratedSample(deps, scaled);
+    const GyroTempCompRuntimeEval tempEval =
+        deps.gyroTempComp.evaluateRuntime(deps.latestTempC);
+    const bool hasBaseGyroBiasModel =
+        tempEval.valid || deps.imuCal.gyroBiasValid;
+    const Vec3 currentGyroBiasRadS = runtimeBiasCurrentGyroBiasRadS(
+        deps.runtimeBias, deps.imuCal, tempEval);
+    Lsm6dsv::Sample calibrated = imuPipelineMakeCalibratedSample(
+        deps, scaled, hasBaseGyroBiasModel, currentGyroBiasRadS);
     if ((raw.components & Lsm6dsv::SAMPLE_COMPONENT_ACCEL) == 0u) {
         // A gyro-only continuity sample must not expose an accel value
         // synthesized by applying bias/matrix calibration to zero raw
@@ -175,6 +280,9 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
         scaled.accel_g = Vec3::zero();
         calibrated.accel_g = Vec3::zero();
     }
+#if TRACKER_HAS_RUNTIME_PROFILER
+    finishImuStage(RuntimeProfiler::ImuStage::ScaleAndCalibration);
+#endif
 
     if (deps.lastScaledSample != nullptr) {
         *deps.lastScaledSample = scaled;
@@ -191,7 +299,10 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
 
     const auto& fifoStats = deps.fifo.stats();
     ImuQualityResult quality = deps.qualityMonitor.evaluate(raw, calibrated, fifoStats, checkFifoStatsDelta);
-    runtimeBiasApplyGyroTempQualityFlags(deps.gyroTempComp, quality, calibrated.temp_c);
+    runtimeBiasApplyGyroTempQualityFlags(tempEval, quality);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    finishImuStage(RuntimeProfiler::ImuStage::Quality);
+#endif
 
     const bool unreconstructableGap =
         trackingTimestampGapRequiresRecovery(quality, deps.ahrs.config().maxDtS);
@@ -204,8 +315,17 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
             *deps.lastQualityFlags = quality.flags;
         }
         deps.preparedOutput.reset();
+#if TRACKER_HAS_RUNTIME_PROFILER
+        finishImuStage(RuntimeProfiler::ImuStage::AhrsAndRecovery);
+        finishImuStage(RuntimeProfiler::ImuStage::PreparedOutput);
+#endif
 
-        imuPipelineEmitPerSampleOutputs(deps, raw, scaled, calibrated, quality);
+        (void)imuPipelineEmitPerSampleOutputs(
+            deps, raw, scaled, calibrated, quality,
+            tempEval, currentGyroBiasRadS);
+#if TRACKER_HAS_RUNTIME_PROFILER
+        finishImuStage(RuntimeProfiler::ImuStage::PerSampleOutputs);
+#endif
 
         if (deps.callbacks.maybeRecoverFifo != nullptr) {
             deps.callbacks.maybeRecoverFifo(quality, raw, deps.callbacks.user);
@@ -258,20 +378,46 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
                                                    ahrsIntegrated,
                                                    deps.callbacks.user);
     }
+#if TRACKER_HAS_RUNTIME_PROFILER
+    finishImuStage(RuntimeProfiler::ImuStage::AhrsAndRecovery);
+#endif
 
     if (deps.trackingState.recoveryActive()) {
         deps.preparedOutput.reset();
     } else {
-        deps.preparedOutput.update(deps.config, deps.runtimeSamples, raw.t_us, deps.ahrs, quality, calibrated.accel_g);
+        const bool preparedPublished = deps.preparedOutput.update(deps.config,
+                                                                  deps.runtimeSamples,
+                                                                  raw.t_us,
+                                                                  deps.ahrs,
+                                                                  quality,
+                                                                  calibrated.accel_g,
+                                                                  softwareQueueAgeUs);
+#if TRACKER_HAS_RUNTIME_PROFILER
+        if (preparedPublished && deps.runtimeProfiler != nullptr) {
+            deps.runtimeProfiler->recordPreparedSoftwareAge(softwareQueueAgeUs);
+        }
+#else
+        (void)preparedPublished;
+#endif
     }
+#if TRACKER_HAS_RUNTIME_PROFILER
+    finishImuStage(RuntimeProfiler::ImuStage::PreparedOutput);
+#endif
 
-    imuPipelineEmitPerSampleOutputs(deps, raw, scaled, calibrated, quality);
+    const bool deferredBiasWindowReady = imuPipelineEmitPerSampleOutputs(
+        deps, raw, scaled, calibrated, quality,
+        tempEval, currentGyroBiasRadS);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    finishImuStage(RuntimeProfiler::ImuStage::PerSampleOutputs);
+#endif
 
 #if TRACKER_HAS_HOTPATH_PERF
     const uint32_t processUs = micros() - sampleProcessStartUs;
     imuPipelineRecordSampleProcessTime(deps, processUs);
 #endif
-    return FifoRuntimeSampleResult::Continue;
+    return deferredBiasWindowReady
+        ? FifoRuntimeSampleResult::YieldRequested
+        : FifoRuntimeSampleResult::Continue;
 }
 
 } // namespace tracker

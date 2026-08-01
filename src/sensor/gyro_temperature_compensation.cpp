@@ -160,11 +160,67 @@ Vec3 GyroTempCompensator::correctedGyro(const Vec3& rawGyroRadS, float tempC) co
     return rawGyroRadS - biasAt(tempC);
 }
 
+GyroTempCompRuntimeEval GyroTempCompensator::evaluateRuntime(float currentTempC) const {
+    GyroTempCompRuntimeEval eval;
+    eval.valid = valid_;
+    eval.temperatureModelValid = temperatureModelValid();
+    eval.enabled = cfg_.enabled;
+    eval.currentTempC = currentTempC;
+    eval.currentBiasRadS = biasAt(currentTempC);
+    eval.softExtrapolationMarginC = cfg_.softExtrapolationMarginC;
+    eval.hardExtrapolationMarginC = cfg_.hardExtrapolationMarginC;
+    eval.hasCalibratedRange = eval.temperatureModelValid &&
+        cfg_.calibratedTempMaxC > cfg_.calibratedTempMinC;
+
+    if (eval.hasCalibratedRange && std::isfinite(currentTempC)) {
+        if (currentTempC < cfg_.calibratedTempMinC) {
+            eval.tempDistanceToRangeC = cfg_.calibratedTempMinC - currentTempC;
+        } else if (currentTempC > cfg_.calibratedTempMaxC) {
+            eval.tempDistanceToRangeC = currentTempC - cfg_.calibratedTempMaxC;
+        }
+    }
+    eval.tempOutOfRange = eval.hasCalibratedRange &&
+        eval.tempDistanceToRangeC > 0.0f;
+
+    const float softMarginC =
+        std::isfinite(cfg_.softExtrapolationMarginC) &&
+        cfg_.softExtrapolationMarginC > 0.0f
+            ? cfg_.softExtrapolationMarginC
+            : 0.0f;
+    const float hardMarginC =
+        std::isfinite(cfg_.hardExtrapolationMarginC) &&
+        cfg_.hardExtrapolationMarginC > softMarginC
+            ? cfg_.hardExtrapolationMarginC
+            : softMarginC;
+
+    if (!eval.tempOutOfRange) {
+        eval.extrapolationConfidence = 1.0f;
+    } else if (softMarginC > 0.0f &&
+               eval.tempDistanceToRangeC <= softMarginC) {
+        eval.tempSoftExtrapolated = true;
+        const float u = clampf(eval.tempDistanceToRangeC / softMarginC, 0.0f, 1.0f);
+        eval.extrapolationConfidence = 1.0f - 0.20f * u;
+    } else if (hardMarginC > softMarginC &&
+               eval.tempDistanceToRangeC <= hardMarginC) {
+        eval.tempSoftExtrapolated = true;
+        const float u = clampf(
+            (eval.tempDistanceToRangeC - softMarginC) / (hardMarginC - softMarginC),
+            0.0f,
+            1.0f);
+        eval.extrapolationConfidence = 0.80f - 0.45f * u;
+    } else {
+        eval.tempHardExtrapolated = true;
+        eval.extrapolationConfidence = 0.20f;
+    }
+    return eval;
+}
+
 GyroTempCompSnapshot GyroTempCompensator::snapshot(float currentTempC) const {
+    const GyroTempCompRuntimeEval eval = evaluateRuntime(currentTempC);
     GyroTempCompSnapshot s;
-    s.valid = valid_;
-    s.temperatureModelValid = temperatureModelValid();
-    s.enabled = cfg_.enabled;
+    s.valid = eval.valid;
+    s.temperatureModelValid = eval.temperatureModelValid;
+    s.enabled = eval.enabled;
     s.referenceTempC = referenceTempC_;
     s.currentTempC = currentTempC;
     s.deltaTempC = currentTempC - referenceTempC_;
@@ -172,46 +228,21 @@ GyroTempCompSnapshot GyroTempCompensator::snapshot(float currentTempC) const {
     s.referenceBiasDps = referenceBiasDps();
     s.slopeRadSPerC = slopeRadSPerC_;
     s.slopeDpsPerC = slopeDpsPerC();
-    s.currentBiasRadS = biasAt(currentTempC);
+    s.currentBiasRadS = eval.currentBiasRadS;
     s.currentBiasDps = s.currentBiasRadS * MATH_RAD_TO_DEG;
     s.calibratedTempMinC = cfg_.calibratedTempMinC;
     s.calibratedTempMaxC = cfg_.calibratedTempMaxC;
     s.fitQuality = cfg_.fitQuality;
     s.fitResidualBeforeDps = cfg_.fitResidualBeforeDps;
     s.fitResidualAfterDps = cfg_.fitResidualAfterDps;
-    s.softExtrapolationMarginC = cfg_.softExtrapolationMarginC;
-    s.hardExtrapolationMarginC = cfg_.hardExtrapolationMarginC;
-    s.hasCalibratedRange = s.temperatureModelValid && cfg_.calibratedTempMaxC > cfg_.calibratedTempMinC;
-    if (s.hasCalibratedRange && std::isfinite(currentTempC)) {
-        if (currentTempC < cfg_.calibratedTempMinC) {
-            s.tempDistanceToRangeC = cfg_.calibratedTempMinC - currentTempC;
-        } else if (currentTempC > cfg_.calibratedTempMaxC) {
-            s.tempDistanceToRangeC = currentTempC - cfg_.calibratedTempMaxC;
-        }
-    }
-    s.tempOutOfRange = s.hasCalibratedRange && s.tempDistanceToRangeC > 0.0f;
-
-    const float softMarginC = std::isfinite(cfg_.softExtrapolationMarginC) && cfg_.softExtrapolationMarginC > 0.0f
-        ? cfg_.softExtrapolationMarginC
-        : 0.0f;
-    float hardMarginC = std::isfinite(cfg_.hardExtrapolationMarginC) && cfg_.hardExtrapolationMarginC > softMarginC
-        ? cfg_.hardExtrapolationMarginC
-        : softMarginC;
-
-    if (!s.tempOutOfRange) {
-        s.extrapolationConfidence = 1.0f;
-    } else if (softMarginC > 0.0f && s.tempDistanceToRangeC <= softMarginC) {
-        s.tempSoftExtrapolated = true;
-        const float u = clampf(s.tempDistanceToRangeC / softMarginC, 0.0f, 1.0f);
-        s.extrapolationConfidence = 1.0f - 0.20f * u;
-    } else if (hardMarginC > softMarginC && s.tempDistanceToRangeC <= hardMarginC) {
-        s.tempSoftExtrapolated = true;
-        const float u = clampf((s.tempDistanceToRangeC - softMarginC) / (hardMarginC - softMarginC), 0.0f, 1.0f);
-        s.extrapolationConfidence = 0.80f - 0.45f * u;
-    } else {
-        s.tempHardExtrapolated = true;
-        s.extrapolationConfidence = 0.20f;
-    }
+    s.softExtrapolationMarginC = eval.softExtrapolationMarginC;
+    s.hardExtrapolationMarginC = eval.hardExtrapolationMarginC;
+    s.hasCalibratedRange = eval.hasCalibratedRange;
+    s.tempOutOfRange = eval.tempOutOfRange;
+    s.tempDistanceToRangeC = eval.tempDistanceToRangeC;
+    s.tempSoftExtrapolated = eval.tempSoftExtrapolated;
+    s.tempHardExtrapolated = eval.tempHardExtrapolated;
+    s.extrapolationConfidence = eval.extrapolationConfidence;
     return s;
 }
 

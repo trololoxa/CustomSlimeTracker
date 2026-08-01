@@ -130,19 +130,22 @@ void FifoRuntimeProcessor::resetWork() {
     drainActive_ = false;
     drainRoundsRemaining_ = 0;
     lastDispatchedRawTimestampUs_ = 0;
+    lastDequeuedQueueAgeUs_ = 0;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    for (uint32_t& queuedAtUs : rawQueueEnqueuedAtUs_) queuedAtUs = 0u;
+#endif
 }
 
 bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
                                    uint16_t maxWordsPerDrain,
                                    uint8_t maxDrainRoundsPerEvent,
-                                   Stream& out) {
+                                   Stream& out,
+                                   uint32_t sliceBudgetUs) {
     if (!ready()) return false;
 
-#if TRACKER_HAS_HOTPATH_PERF
+    // This timestamp is part of scheduling correctness, not optional profiling:
+    // hardware drain and callbacks share one absolute slice budget in every profile.
     const uint32_t fifoProcessStartUs = micros();
-#else
-    const uint32_t fifoProcessStartUs = 0;
-#endif
 
     bool worked = false;
     if (!drainActive_) {
@@ -150,13 +153,33 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
     }
 
     // Copy hardware FIFO data into the RAM queue before spending time on AHRS.
-    // This gives short Wi-Fi/CLI stalls hundreds of milliseconds of headroom.
+    // The hardware drain is part of the same absolute slice budget; the old
+    // implementation started timing only after SPI and could overshoot a pose
+    // deadline by an entire drain burst.
     if (drainActive_ && drainRoundsRemaining_ > 0u &&
         rawQueueCount_ < rawQueueCapacity_) {
-        worked = drainOneRound(maxWordsPerDrain, out) || worked;
+        const uint32_t beforeDrainElapsedUs = micros() - fifoProcessStartUs;
+        if (sliceBudgetUs != 0u && beforeDrainElapsedUs >= sliceBudgetUs) {
+            ++queueStats_.drainBudgetDeferrals;
+        } else {
+            uint16_t boundedMaxWords = maxWordsPerDrain;
+            if (sliceBudgetUs != 0u) {
+                const uint32_t remainingUs = sliceBudgetUs - beforeDrainElapsedUs;
+                if (remainingUs <= 1500u && boundedMaxWords > 16u) {
+                    boundedMaxWords = 16u;
+                    ++queueStats_.nearDeadlineReducedDrains;
+                } else if (remainingUs <= 2500u && boundedMaxWords > 32u) {
+                    boundedMaxWords = 32u;
+                    ++queueStats_.nearDeadlineReducedDrains;
+                }
+            }
+            worked = drainOneRound(boundedMaxWords, out) || worked;
+        }
     }
 
+#if TRACKER_HAS_RUNTIME_PROFILER
     const uint32_t callbackSliceStartUs = micros();
+#endif
     uint8_t rawCallbacks = 0;
     uint8_t magCallbacks = 0;
 
@@ -165,23 +188,47 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
     // the last dispatched raw endpoint before advancing the raw timeline.
     bool chronologicalReady = true;
     if (lastDispatchedRawTimestampUs_ != 0u &&
-        !dispatchDueMagCallbacks(lastDispatchedRawTimestampUs_, callbackSliceStartUs,
-                                 magCallbacks, worked)) {
+        !dispatchDueMagCallbacks(lastDispatchedRawTimestampUs_, fifoProcessStartUs,
+                                 sliceBudgetUs, magCallbacks, worked)) {
         queueStats_.magChronologicalDeferrals++;
         chronologicalReady = false;
     }
 
     Lsm6dsv::RawSample raw;
     bool checkStats = false;
-    while (chronologicalReady && dequeueRaw(raw, checkStats)) {
+    while (chronologicalReady) {
+        if (rawCallbacks >= cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE &&
+            sliceBudgetUs != 0u &&
+            static_cast<uint32_t>(micros() - fifoProcessStartUs) >= sliceBudgetUs) {
+            ++queueStats_.sliceBudgetStops;
+            break;
+        }
+        if (!dequeueRaw(raw, checkStats)) break;
         worked = true;
-        if (sampleCallback_(raw, checkStats, callbackUser_) ==
-            FifoRuntimeSampleResult::FifoRecovered) {
+#if TRACKER_HAS_RUNTIME_PROFILER
+        const bool timeRawCallback = (queueStats_.rawProcessed & 31u) == 0u;
+        const uint32_t rawCallbackStartUs = timeRawCallback ? micros() : 0u;
+#endif
+        const FifoRuntimeSampleResult sampleResult =
+            sampleCallback_(raw, checkStats, callbackUser_);
+#if TRACKER_HAS_RUNTIME_PROFILER
+        if (timeRawCallback) {
+            const uint32_t rawCallbackUs = micros() - rawCallbackStartUs;
+            ++queueStats_.rawCallbackTimedSamples;
+            queueStats_.rawCallbackTimeSumUs += rawCallbackUs;
+            if (rawCallbackUs > queueStats_.rawCallbackTimeMaxUs) {
+                queueStats_.rawCallbackTimeMaxUs = rawCallbackUs;
+            }
+        }
+#endif
+        if (sampleResult == FifoRuntimeSampleResult::FifoRecovered) {
             // Every queued sample predates the hardware reset.
             resetWork();
             recordElapsed(fifoProcessStartUs);
             return true;
         }
+        const bool yieldRequested =
+            sampleResult == FifoRuntimeSampleResult::YieldRequested;
         queueStats_.rawProcessed++;
         ++rawCallbacks;
         lastDispatchedRawTimestampUs_ = raw.t_us;
@@ -190,23 +237,52 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
         // queue. Dispatch each one as soon as raw processing reaches/passes its
         // timestamp. The mag callback therefore observes the nearest coherent
         // gyro endpoint instead of the end of a 64-sample IMU burst.
-        if (!dispatchDueMagCallbacks(lastDispatchedRawTimestampUs_, callbackSliceStartUs,
-                                     magCallbacks, worked)) {
+        if (!dispatchDueMagCallbacks(lastDispatchedRawTimestampUs_, fifoProcessStartUs,
+                                     sliceBudgetUs, magCallbacks, worked)) {
             queueStats_.magChronologicalDeferrals++;
             break;
         }
 
+        // A completed runtime-bias window must be finalized before the next
+        // raw sample observes the updated trim. Yield only after all magnetic
+        // samples due at this timestamp have preserved chronological order.
+        if (yieldRequested) break;
+
         if (rawCallbacks >= cfg::FIFO_RUNTIME_MAX_RAW_CALLBACKS_PER_SLICE) break;
-        if (rawCallbacks >= cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE &&
-            cfg::FIFO_RUNTIME_SLICE_BUDGET_US != 0u &&
-            static_cast<uint32_t>(micros() - callbackSliceStartUs) >=
-                cfg::FIFO_RUNTIME_SLICE_BUDGET_US) {
-            break;
-        }
     }
+
+#if TRACKER_HAS_RUNTIME_PROFILER
+    const uint32_t callbackElapsedUs = micros() - callbackSliceStartUs;
+    ++queueStats_.callbackTimeCalls;
+    queueStats_.callbackTimeSumUs += callbackElapsedUs;
+    if (callbackElapsedUs > queueStats_.callbackTimeMaxUs) {
+        queueStats_.callbackTimeMaxUs = callbackElapsedUs;
+    }
+
+    const uint32_t nowUs = micros();
+    queueStats_.rawQueueOldestAgeLastUs = rawQueueOldestAgeUs(nowUs);
+    if (queueStats_.rawQueueOldestAgeLastUs > queueStats_.rawQueueOldestAgeMaxUs) {
+        queueStats_.rawQueueOldestAgeMaxUs = queueStats_.rawQueueOldestAgeLastUs;
+    }
+    queueStats_.rawQueueSpanLastUs = rawQueueSpanUs();
+    if (queueStats_.rawQueueSpanLastUs > queueStats_.rawQueueSpanMaxUs) {
+        queueStats_.rawQueueSpanMaxUs = queueStats_.rawQueueSpanLastUs;
+    }
+#endif
 
     if (drainActive_ && drainRoundsRemaining_ == 0u) {
         drainActive_ = false;
+    }
+
+    if (sliceBudgetUs != 0u) {
+        const uint32_t elapsedUs = micros() - fifoProcessStartUs;
+        if (elapsedUs > sliceBudgetUs) {
+            const uint32_t overshootUs = elapsedUs - sliceBudgetUs;
+            ++queueStats_.sliceBudgetOvershootEvents;
+            if (overshootUs > queueStats_.sliceBudgetOvershootMaxUs) {
+                queueStats_.sliceBudgetOvershootMaxUs = overshootUs;
+            }
+        }
     }
 
     recordElapsed(fifoProcessStartUs);
@@ -222,6 +298,9 @@ bool FifoRuntimeProcessor::beginDrainEvent(uint16_t watermarkWords,
 }
 
 bool FifoRuntimeProcessor::drainOneRound(uint16_t maxWordsPerDrain, Stream& out) {
+#if TRACKER_HAS_RUNTIME_PROFILER
+    const uint32_t drainStartUs = micros();
+#endif
     const size_t rawFree = rawQueueCapacity_ - rawQueueCount_;
     const size_t magFree = magQueueCapacity_ - magQueueCount_;
     if (rawFree == 0u || drainRoundsRemaining_ == 0u) return false;
@@ -245,9 +324,14 @@ bool FifoRuntimeProcessor::drainOneRound(uint16_t maxWordsPerDrain, Stream& out)
 
     const size_t magCount = fifo_->popMagSamples(magDrainBuffer_, magCapacity);
     queueStats_.hardwareDrains++;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    const uint32_t queuedAtUs = micros();
+#else
+    const uint32_t queuedAtUs = 0u;
+#endif
 
     for (size_t i = 0; i < rawCount; ++i) {
-        if (!enqueueRaw(rawDrainBuffer_[i], i == 0u)) {
+        if (!enqueueRaw(rawDrainBuffer_[i], i == 0u, queuedAtUs)) {
             queueStats_.rawQueueOverflow++;
             break;
         }
@@ -263,13 +347,26 @@ bool FifoRuntimeProcessor::drainOneRound(uint16_t maxWordsPerDrain, Stream& out)
         drainActive_ = false;
         drainRoundsRemaining_ = 0;
     }
+#if TRACKER_HAS_RUNTIME_PROFILER
+    const uint32_t drainElapsedUs = micros() - drainStartUs;
+    ++queueStats_.hardwareDrainTimeCalls;
+    queueStats_.hardwareDrainTimeSumUs += drainElapsedUs;
+    if (drainElapsedUs > queueStats_.hardwareDrainTimeMaxUs) {
+        queueStats_.hardwareDrainTimeMaxUs = drainElapsedUs;
+    }
+#endif
     return true;
 }
 
-bool FifoRuntimeProcessor::enqueueRaw(const Lsm6dsv::RawSample& raw, bool checkStats) {
+bool FifoRuntimeProcessor::enqueueRaw(const Lsm6dsv::RawSample& raw, bool checkStats, uint32_t queuedAtUs) {
     if (rawQueueCount_ >= rawQueueCapacity_) return false;
     rawQueueBuffer_[rawQueueTail_] = raw;
     rawQueueFlags_[rawQueueTail_] = checkStats ? 1u : 0u;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    rawQueueEnqueuedAtUs_[rawQueueTail_] = queuedAtUs;
+#else
+    (void)queuedAtUs;
+#endif
     rawQueueTail_ = (rawQueueTail_ + 1u) % rawQueueCapacity_;
     ++rawQueueCount_;
     ++queueStats_.rawQueued;
@@ -295,6 +392,19 @@ bool FifoRuntimeProcessor::dequeueRaw(Lsm6dsv::RawSample& raw, bool& checkStats)
     if (rawQueueCount_ == 0u) return false;
     raw = rawQueueBuffer_[rawQueueHead_];
     checkStats = rawQueueFlags_[rawQueueHead_] != 0u;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    const uint32_t queuedAtUs = rawQueueEnqueuedAtUs_[rawQueueHead_];
+    lastDequeuedQueueAgeUs_ = queuedAtUs == 0u ? 0u : micros() - queuedAtUs;
+    ++queueStats_.rawQueueWaitSamples;
+    queueStats_.rawQueueWaitSumUs += lastDequeuedQueueAgeUs_;
+    queueStats_.rawQueueWaitLastUs = lastDequeuedQueueAgeUs_;
+    if (lastDequeuedQueueAgeUs_ > queueStats_.rawQueueWaitMaxUs) {
+        queueStats_.rawQueueWaitMaxUs = lastDequeuedQueueAgeUs_;
+    }
+    rawQueueEnqueuedAtUs_[rawQueueHead_] = 0u;
+#else
+    lastDequeuedQueueAgeUs_ = 0u;
+#endif
     rawQueueHead_ = (rawQueueHead_ + 1u) % rawQueueCapacity_;
     --rawQueueCount_;
     return true;
@@ -315,7 +425,8 @@ bool FifoRuntimeProcessor::peekMagTimestamp(uint64_t& timestampUs) const {
 }
 
 bool FifoRuntimeProcessor::dispatchDueMagCallbacks(uint64_t rawTimestampUs,
-                                                     uint32_t callbackSliceStartUs,
+                                                     uint32_t sliceStartUs,
+                                                     uint32_t sliceBudgetUs,
                                                      uint8_t& magCallbacks,
                                                      bool& worked) {
     if (rawTimestampUs == 0u) return true;
@@ -326,20 +437,28 @@ bool FifoRuntimeProcessor::dispatchDueMagCallbacks(uint64_t rawTimestampUs,
             queueStats_.magCallbackCountDeferrals++;
             return false;
         }
-        // Hardware drain time is deliberately excluded because
-        // callbackSliceStartUs is captured after the drain. Mag callbacks,
-        // however, are cooperative app work just like raw/AHRS callbacks and
-        // must not bypass the same output-latency budget.
-        if (cfg::FIFO_RUNTIME_SLICE_BUDGET_US != 0u &&
-            static_cast<uint32_t>(micros() - callbackSliceStartUs) >=
-                cfg::FIFO_RUNTIME_SLICE_BUDGET_US) {
+        // Mag callbacks are cooperative app work and share the same absolute
+        // budget as SPI drain and raw/AHRS callbacks.
+        if (sliceBudgetUs != 0u &&
+            static_cast<uint32_t>(micros() - sliceStartUs) >= sliceBudgetUs) {
             queueStats_.magCallbackBudgetDeferrals++;
             return false;
         }
 
         Lsm6dsvFifoReader::MagRawSample mag;
         (void)dequeueMag(mag);
+#if TRACKER_HAS_RUNTIME_PROFILER
+        const uint32_t magCallbackStartUs = micros();
+#endif
         magCallback_(mag, callbackUser_);
+#if TRACKER_HAS_RUNTIME_PROFILER
+        const uint32_t magCallbackUs = micros() - magCallbackStartUs;
+        ++queueStats_.magCallbackTimeCalls;
+        queueStats_.magCallbackTimeSumUs += magCallbackUs;
+        if (magCallbackUs > queueStats_.magCallbackTimeMaxUs) {
+            queueStats_.magCallbackTimeMaxUs = magCallbackUs;
+        }
+#endif
         queueStats_.magProcessed++;
         ++magCallbacks;
         worked = true;
@@ -354,18 +473,52 @@ void FifoRuntimeProcessor::clearQueues() {
     magQueueHead_ = 0;
     magQueueTail_ = 0;
     magQueueCount_ = 0;
+    lastDequeuedQueueAgeUs_ = 0u;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    for (uint32_t& queuedAtUs : rawQueueEnqueuedAtUs_) queuedAtUs = 0u;
+#endif
 }
 
 bool FifoRuntimeProcessor::hasPendingWork() const {
     return drainActive_ || rawQueueCount_ != 0u || magQueueCount_ != 0u;
 }
 
-bool FifoRuntimeProcessor::urgent() const {
+bool FifoRuntimeProcessor::urgentByDepth() const {
     return rawQueueCount_ >= cfg::FIFO_RUNTIME_RAW_QUEUE_HIGH_WATER;
+}
+
+bool FifoRuntimeProcessor::urgentByAge() const {
+    return rawQueueSpanUs() >= cfg::FIFO_RUNTIME_URGENT_SPAN_US;
+}
+
+bool FifoRuntimeProcessor::urgent() const {
+    return urgentByDepth() || urgentByAge();
 }
 
 size_t FifoRuntimeProcessor::rawQueueDepth() const { return rawQueueCount_; }
 size_t FifoRuntimeProcessor::magQueueDepth() const { return magQueueCount_; }
+
+uint32_t FifoRuntimeProcessor::rawQueueOldestAgeUs(uint32_t nowUs) const {
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (rawQueueCount_ == 0u) return 0u;
+    const uint32_t queuedAtUs = rawQueueEnqueuedAtUs_[rawQueueHead_];
+    return queuedAtUs == 0u ? 0u : nowUs - queuedAtUs;
+#else
+    (void)nowUs;
+    return 0u;
+#endif
+}
+
+uint32_t FifoRuntimeProcessor::rawQueueSpanUs() const {
+    if (rawQueueCount_ < 2u) return 0u;
+    const size_t lastIndex = rawQueueTail_ == 0u ? rawQueueCapacity_ - 1u : rawQueueTail_ - 1u;
+    const uint64_t oldest = rawQueueBuffer_[rawQueueHead_].t_us;
+    const uint64_t newest = rawQueueBuffer_[lastIndex].t_us;
+    if (newest <= oldest) return 0u;
+    const uint64_t span = newest - oldest;
+    return span > 0xffffffffULL ? 0xffffffffu : static_cast<uint32_t>(span);
+}
+
 const FifoRuntimeQueueStats& FifoRuntimeProcessor::queueStats() const { return queueStats_; }
 
 bool FifoRuntimeProcessor::ready() const {

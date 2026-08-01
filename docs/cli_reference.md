@@ -221,12 +221,12 @@ Safety behavior: `perf` and `motion` are runtime-only diagnostics. `motion` does
 | Command | Effect | Persisted | Notes |
 |---|---|---:|---|
 | `perf on` / `perf off` | Enable/disable rolling loop-section profiler | Runtime | Off by default; enabling resets the timing window. |
-| `perf status` | Print loop-section timing plus temperature/system, Wi-Fi, quality and SlimeVR counters | No | Shows all measured sections (`loop`, `cli`, `remote`, `fifo`, `battery`, `network`, `calibration_0022`, `calibration_0023`, `tap`, `led`, `heartbeat`, `idle_yield`), not only the top offender. |
+| `perf status` | Print loop-section timing plus temperature/system, Wi-Fi, quality and SlimeVR counters | No | Shows all measured sections (`loop`, `cli`, `remote`, `fifo`, `battery`, `network_outer`, `network_nested`, `calibration_0022`, `calibration_0023`, `runtime_bias_deferred`, `tap`, `led`, `heartbeat`, `idle_yield`), fixed-memory p50/p95/p99, 10 ms frame headroom, profiler overhead, software-only queue/prepared/rotation age, optional-service admission skips, and 1/64 sampled IMU stage timings. Hardware-FIFO residence is not folded into the software-age fields. |
 | `perf top` | Print highest average/max section summary plus correlation blocks | No | Shortcut for TPS-drop triage. |
 | `perf tracking reset` | Capture a compact, non-destructive FIFO/tracking baseline | Runtime | Does not reset timestamp reconstruction, quality state, recovery state or transport counters. |
 | `perf tracking` / `perf brief` | Print compact deltas and effective rotation rate | No | Before the first reset it reports counters since boot; after reset it reports only the selected test window. Intended for low-intrusion hardware validation. |
 | `perf reset` | Reset profiler window and tracking baseline | Runtime | Does not reset firmware quality/timestamp state. |
-| `motion on` / `motion off` | Enable/disable per-sample motion diagnostics | Runtime | Intended for ankle/fast-motion tests. |
+| `motion on` / `motion off` | Enable/disable per-sample motion diagnostics | Runtime | Intended for ankle/fast-motion tests. Exact quality/event counters still observe every sample; expensive aggregate metrics are sampled and `motion_metric_samples`/`motion_sample_divisor` expose that cadence. |
 | `motion status` | Print motion window plus FIFO/quality/bias/SlimeVR correlation | No | Reports dt, sample rate, gyro/accel norms, saturation, accel outliers, AHRS skips and runtime-bias rejects. SlimeVR packet counters are printed both as absolute totals and as deltas/rates since `motion on`/`motion reset`, so `slime_rotation_sent_rate_hz` is a window rate rather than a boot-total rate. |
 | `motion reset` | Reset motion diagnostic window | Runtime | Keeps current enabled/disabled state. |
 
@@ -494,3 +494,67 @@ until the due magnetic backlog is serviced.
 ## 0023gg magnetic timestamp and setup verification diagnostics
 
 FIFO, magnetic status, and runtime status reports include `mag_timestamp_imu_anchors`, `mag_timestamp_nominal_fallbacks`, `mag_timestamp_monotonic_adjustments`, `mag_timestamp_last_anchor_correction_us`, and `mag_timestamp_max_anchor_correction_us`. Guided mag-axis diagnostics distinguish `gyro_mag_axis_coarse_winner_matches_training`, `gyro_mag_axis_continuous_refinement_agreement`, and `gyro_mag_axis_coarse_consensus_fallback_used`. Final setup verification prints `capture_duration_ms` plus the individual `stationary_input_sample_count_passed`, `stationary_gyro_mean_passed`, `stationary_gyro_precision_passed`, `stationary_accel_mean_passed`, and `stationary_accel_std_passed` gates.
+
+## pre-0024a deadline and deferred magnetic evidence diagnostics
+
+`perf tracking` adds:
+
+```text
+runtime_fifo_urgent_by_depth
+runtime_fifo_urgent_by_age
+runtime_fifo_raw_callback_sample_divisor
+runtime_fifo_raw_callback_avg_us
+runtime_fifo_raw_callback_max_us
+runtime_fifo_mag_callback_avg_us
+runtime_fifo_mag_callback_max_us
+runtime_fifo_slice_budget_overshoot_delta
+runtime_fifo_slice_budget_overshoot_max_us
+runtime_mag_axis_evidence_queued_delta
+runtime_mag_axis_evidence_processed_delta
+runtime_mag_axis_evidence_dropped_delta
+runtime_mag_axis_evidence_stale_dropped_delta
+runtime_mag_axis_evidence_service_deferrals_delta
+runtime_mag_axis_evidence_queue_high_water
+```
+
+Depth urgency means the legacy software-queue depth threshold was reached. Age urgency means the retained sensor-timestamp span reached 40 ms even though depth may still be below that threshold. Overshoot is measured after the mandatory four-sample coherent micro-batch and should remain near one raw/magnetic callback cost, not a twelve-callback burst. Axis evidence overflow or stale drops affect only uncommitted background alignment learning; they must remain zero in an ordinary single-tracker run. `runtime_mag_axis_evidence_service_deferrals_delta` may increase while FIFO/output deadlines are busy; this proves evidence work was postponed instead of competing with tracking.
+
+## pre-0024ab overload-age and transform-cache diagnostics
+
+The existing `perf status` and `perf tracking` software-age percentile fields now remain finite and readable when queue age exceeds 100 ms. Histogram bounds extend through 2 seconds; samples beyond the final finite bound report the actual observed maximum rather than `4294967295`. This changes diagnostics only. Sensor timestamps, queue contents, output cadence and packet payloads are unchanged.
+
+### pre-0024ac hotpath/slack fields
+
+`perf status` additionally reports `perf_optional_service_admission_skips_{battery,led,mag_deferred,calibration_autonomy,remote_console}` and five `perf_imu_stage=` rows (`scale_calibration`, `quality`, `ahrs_recovery`, `prepared_output`, `per_sample_outputs`). Stage timings sample one of every `perf_imu_stage_sample_divisor` IMU samples and are diagnostic only. Admission-skip counters mean the ordinary-loop call was withheld because FIFO work was pending/urgent or insufficient rotation-deadline slack; they do not indicate dropped IMU samples or changed AHRS cadence.
+
+
+## pre-0024ad network-pressure diagnostics
+
+`slime status`, `slime debug`, `perf tracking`, `perf status`, `motion status`, and the runtime test report expose the pressure episode and physical datagram split:
+
+```text
+tx_pressure_state
+tx_recovery_reason
+tx_pressure_episode_active
+tx_pressure_episode_count
+tx_pressure_episode_duration_ms
+tx_pressure_episode_max_ms
+tx_pressure_stable_resets
+last_successful_motion_tx_age_ms
+successful_motion_tx_streak
+udp_rebind_suppressed_cooldown
+udp_full_reopen_suppressed_cooldown
+physical_datagrams_sent
+motion_datagrams_sent
+separate_rotation_datagrams_sent
+separate_acceleration_datagrams_sent
+background_control_datagrams_sent
+critical_control_datagrams_sent
+motion_packet_mode_transitions
+bundle_to_separate_transitions
+separate_to_bundle_transitions
+acceleration_suppressed_during_negotiation
+rotation_phase_offset_ms
+```
+
+`tx_pressure_state=transient_pressure` with continuing successful motion is not a broken socket. Rebind should remain rare; `full_reopen` should be near zero in a healthy multi-tracker session. `last_successful_motion_tx_age_ms` is `4294967295` only before the first successful motion datagram. A rising `acceleration_suppressed_during_negotiation` is expected only during bounded reconnect capability negotiation and indicates packet 4 was withheld to avoid a temporary 150-datagram/s fallback.

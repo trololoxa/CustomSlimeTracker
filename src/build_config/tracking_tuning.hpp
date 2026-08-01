@@ -21,10 +21,14 @@ static constexpr uint8_t FIFO_WATERMARK_WORDS = 18;
 static constexpr uint16_t FIFO_MAX_WORDS_PER_DRAIN = 384;
 static constexpr uint8_t FIFO_MAX_DRAIN_ROUNDS_PER_EVENT = 6;
 // Runtime FIFO work is deliberately sliced so the app loop can service the
-// 100 Hz UDP scheduler between IMU batches. Hardware SPI drain time is not part
-// of this budget: once a batch has been copied out of the sensor, processing
-// must make guaranteed forward progress or the hardware FIFO can overflow.
-static constexpr uint8_t FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE = 12;
+// 100 Hz UDP scheduler between IMU batches. SPI drain and raw/mag callbacks
+// share one absolute slice budget; a small emergency slice guarantees bounded
+// hardware progress near a pose deadline without allowing multi-millisecond
+// drain bursts to bypass the scheduler.
+// Re-check the absolute budget after a small coherent micro-batch. Twelve
+// callbacks allowed a diagnostic/heavy sample path to overshoot a 3.5 ms
+// slice by more than 10 ms before the scheduler could regain control.
+static constexpr uint8_t FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE = 4;
 static constexpr uint8_t FIFO_RUNTIME_MAX_RAW_CALLBACKS_PER_SLICE = 64;
 // At 960 Hz raw IMU and 60 Hz sensor-hub ODR, one 64-sample raw slice
 // spans about four magnetometer periods. Keep enough bounded budget to
@@ -46,6 +50,10 @@ static constexpr size_t FIFO_RUNTIME_RAW_QUEUE_CAPACITY = 512;
 static constexpr size_t FIFO_RUNTIME_MAG_QUEUE_CAPACITY = 64;
 static constexpr size_t FIFO_RUNTIME_RAW_QUEUE_HIGH_WATER =
     (FIFO_RUNTIME_RAW_QUEUE_CAPACITY * 3u) / 8u;
+// Count alone reacts too late on a 512-slot queue. Forty milliseconds of
+// sensor-time span is already visible latency and must enter urgent catch-up
+// even when the queue contains far fewer than the legacy depth threshold.
+static constexpr uint32_t FIFO_RUNTIME_URGENT_SPAN_US = 40000u;
 static_assert(FIFO_RUNTIME_RAW_QUEUE_HIGH_WATER < FIFO_RUNTIME_RAW_QUEUE_CAPACITY,
               "FIFO urgent threshold must leave queue headroom");
 

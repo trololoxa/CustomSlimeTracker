@@ -15,6 +15,7 @@ namespace tracker {
 class TrackerNetworkConfig;
 
 using SlimeVRCopyOutputSnapshotFn = bool (*)(TrackerPreparedOutputSnapshot& out, void* user);
+using SlimeVRRotationSoftwareAgeSinkFn = void (*)(uint32_t softwareAgeUs, void* user);
 using SlimeVRSetConfigFlagFn = bool (*)(uint8_t sensorId, uint16_t configType, bool enabled, void* user);
 
 constexpr uint16_t SLIMEVR_DISCOVERY_LOCAL_PORT = 6969;
@@ -57,6 +58,27 @@ enum class SlimeVRFeatureNegotiationState : uint8_t {
 };
 
 const char* slimevrFeatureNegotiationStateName(SlimeVRFeatureNegotiationState state);
+
+enum class SlimeVRTxPressureState : uint8_t {
+    Healthy,
+    TransientPressure,
+    SustainedPressure,
+    AwaitingPostRebindSuccess,
+    FullReopenCooldown,
+};
+
+const char* slimevrTxPressureStateName(SlimeVRTxPressureState state);
+
+enum class SlimeVRTxRecoveryReason : uint8_t {
+    None,
+    PressureMotionStall,
+    NonPressureTransportFailure,
+    StaleServerRx,
+    RebindFailure,
+    PostRebindMotionStall,
+};
+
+const char* slimevrTxRecoveryReasonName(SlimeVRTxRecoveryReason reason);
 
 struct SlimeVROutputRuntimeConfig {
     bool enabled = false;
@@ -232,6 +254,28 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t txFailureWindowTrips = 0;
     uint32_t consecutiveSendFailures = 0;
     int32_t lastUdpSendError = 0;
+    SlimeVRTxPressureState txPressureState = SlimeVRTxPressureState::Healthy;
+    SlimeVRTxRecoveryReason txRecoveryReason = SlimeVRTxRecoveryReason::None;
+    bool txPressureEpisodeActive = false;
+    uint32_t txPressureEpisodeCount = 0;
+    uint32_t txPressureEpisodeDurationMs = 0;
+    uint32_t txPressureEpisodeMaxMs = 0;
+    uint32_t txPressureStableResets = 0;
+    uint32_t lastSuccessfulMotionTxAgeMs = 0;
+    uint32_t successfulMotionTxStreak = 0;
+    uint32_t udpRebindSuppressedCooldown = 0;
+    uint32_t udpFullReopenSuppressedCooldown = 0;
+    uint32_t physicalDatagramsSent = 0;
+    uint32_t motionDatagramsSent = 0;
+    uint32_t separateRotationDatagramsSent = 0;
+    uint32_t separateAccelerationDatagramsSent = 0;
+    uint32_t backgroundControlDatagramsSent = 0;
+    uint32_t criticalControlDatagramsSent = 0;
+    uint32_t motionPacketModeTransitions = 0;
+    uint32_t bundleToSeparateTransitions = 0;
+    uint32_t separateToBundleTransitions = 0;
+    uint32_t accelerationSuppressedDuringNegotiation = 0;
+    uint16_t rotationPhaseOffsetMs = 0;
 
     uint32_t nextPacketNumber = 0;
     uint16_t rotationRateHz = 0;
@@ -275,6 +319,7 @@ struct SlimeVROutputRuntimeStatus {
     uint32_t lastRotationQualityFlags = 0;
     float lastRotationConfidence = 0.0f;
     uint32_t lastRotationSnapshotAgeUs = 0;
+    uint32_t lastRotationSoftwareAgeUs = 0;
     bool trackerErrorActive = false;
     bool trackerDegradedNoImu = false;
     uint8_t trackerErrorCode = 0;
@@ -287,7 +332,9 @@ public:
     void begin(IUdpTransport& udp,
                const TrackerWifiManager& wifi,
                SlimeVRCopyOutputSnapshotFn copyOutputSnapshot = nullptr,
-               void* copyOutputSnapshotUser = nullptr);
+               void* copyOutputSnapshotUser = nullptr,
+               SlimeVRRotationSoftwareAgeSinkFn rotationSoftwareAgeSink = nullptr,
+               void* rotationSoftwareAgeSinkUser = nullptr);
     void configure(const SlimeVROutputRuntimeConfig& config);
     void updateLiveState(bool latestTemperatureValid,
                          float latestTemperatureC,
@@ -300,6 +347,15 @@ public:
     void stop();
     void restart();
     bool update(uint32_t nowMs);
+    // Deadline-only service used while FIFO catch-up is active. It may send
+    // the newest due rotation for an already established session, but it does
+    // not poll Wi-Fi, process discovery, send telemetry, or mutate connection
+    // state. The ordinary update() call remains authoritative for all other
+    // network work.
+    bool updateCritical(uint32_t nowMs);
+    // Side-effect-free O(1) gate for the FIFO catch-up scheduler. Returns true
+    // only when updateCritical() can actually consume a due rotation deadline.
+    bool criticalRotationServiceDue(uint32_t nowMs) const;
     void requestSensorInfoRefresh();
     bool sendTap(uint8_t value);
     bool sendUserAction(SlimeVRUserAction action);
@@ -364,6 +420,7 @@ private:
     enum class PacketPurpose : uint8_t {
         Discovery,
         Control,
+        ControlBackground,
         Telemetry,
         Rotation,
         Acceleration,
@@ -378,15 +435,25 @@ private:
                                 PacketPurpose purpose);
     void recordSendFailure(PacketPurpose purpose);
     void recordSendBackoffDrop(PacketPurpose purpose);
-    void recordPhysicalSendOutcome(bool success);
+    void recordPhysicalSendOutcome(bool success, PacketPurpose purpose,
+                                   bool pressureFailure, uint32_t nowMs);
     bool txFailureWindowExceeded() const;
     static bool packetMayBeDroppedDuringTxBackoff(PacketPurpose purpose);
+    static bool packetPurposeIsMotion(PacketPurpose purpose);
     void armTxBackoff(uint32_t nowMs);
     bool txBackoffActive(uint32_t nowMs) const;
+    void resetTxAttemptState();
     void resetTxRecoveryState();
-    void requestUdpTxRecovery(uint32_t nowMs);
+    void beginTxPressureEpisode(uint32_t nowMs);
+    void closeTxPressureEpisode(uint32_t nowMs);
+    void serviceTxRecovery(uint32_t nowMs);
+    void requestUdpTransportRebind(uint32_t nowMs, SlimeVRTxRecoveryReason reason);
+    void requestUdpFullReopen(uint32_t nowMs, SlimeVRTxRecoveryReason reason);
     bool rebindUdpPreservingSession(uint32_t nowMs);
     static bool isUdpTxPressureError(int errorCode);
+    void refreshRotationPhaseOffset();
+    void noteMotionPacketMode(SlimeVRMotionPacketMode mode);
+    bool fallbackAccelerationAllowed() const;
     uint32_t rotationPeriodMs() const;
     uint16_t sensorConfigFlags() const;
     static uint8_t accuracyFromConfidence(float confidence);
@@ -395,6 +462,8 @@ private:
     IUdpTransport* udp_ = nullptr;
     const TrackerWifiManager* wifi_ = nullptr;
     SlimeVRCopyOutputSnapshotFn copyOutputSnapshot_ = nullptr;
+    SlimeVRRotationSoftwareAgeSinkFn rotationSoftwareAgeSink_ = nullptr;
+    void* rotationSoftwareAgeSinkUser_ = nullptr;
     void* copyOutputSnapshotUser_ = nullptr;
 
     SlimeVRPacketWriter writer_;
@@ -560,9 +629,48 @@ private:
     uint32_t txOutcomeWindowBits_ = 0;
     uint8_t txOutcomeWindowCount_ = 0;
     uint8_t txOutcomeFailureCount_ = 0;
+    SlimeVRTxPressureState txPressureState_ = SlimeVRTxPressureState::Healthy;
+    SlimeVRTxRecoveryReason txRecoveryReason_ = SlimeVRTxRecoveryReason::None;
+    bool txPressureEpisodeActive_ = false;
+    uint32_t txPressureEpisodeCount_ = 0;
+    uint32_t txPressureEpisodeStartMs_ = 0;
+    uint32_t txPressureEpisodeMaxMs_ = 0;
+    uint32_t txPressureStableSinceMs_ = 0;
+    bool txPressureStableActive_ = false;
+    uint32_t txPressureStableResets_ = 0;
+    uint32_t lastTxPressureFailureMs_ = 0;
+    uint32_t lastSuccessfulMotionTxMs_ = 0;
+    bool lastSuccessfulMotionTxValid_ = false;
+    uint32_t lastMotionTxAttemptMs_ = 0;
+    bool lastMotionTxAttemptValid_ = false;
+    bool lastMotionTxAttemptSucceeded_ = false;
+    uint32_t successfulMotionTxStreak_ = 0;
     uint32_t lastUdpTransportRebindMs_ = 0;
+    bool lastUdpTransportRebindValid_ = false;
+    uint32_t lastUdpFullReopenMs_ = 0;
+    bool lastUdpFullReopenValid_ = false;
+    uint32_t postRebindStartedMs_ = 0;
+    bool awaitingPostRebindSuccess_ = false;
+    uint32_t udpRebindSuppressedCooldown_ = 0;
+    uint32_t udpFullReopenSuppressedCooldown_ = 0;
+    uint32_t txRecoveryRetryAfterMs_ = 0;
+    bool txRecoveryRetryAfterValid_ = false;
     bool udpTransportRebindRequested_ = false;
     bool udpReopenRequested_ = false;
+    uint32_t physicalDatagramsSent_ = 0;
+    uint32_t motionDatagramsSent_ = 0;
+    uint32_t separateRotationDatagramsSent_ = 0;
+    uint32_t separateAccelerationDatagramsSent_ = 0;
+    uint32_t backgroundControlDatagramsSent_ = 0;
+    uint32_t criticalControlDatagramsSent_ = 0;
+    uint32_t motionPacketModeTransitions_ = 0;
+    uint32_t bundleToSeparateTransitions_ = 0;
+    uint32_t separateToBundleTransitions_ = 0;
+    uint32_t accelerationSuppressedDuringNegotiation_ = 0;
+    SlimeVRMotionPacketMode lastObservedMotionPacketMode_ = SlimeVRMotionPacketMode::SeparateRotation17Accel4;
+    bool lastObservedMotionPacketModeValid_ = false;
+    uint16_t rotationPhaseOffsetMs_ = 0;
+    bool rotationPhaseOffsetValid_ = false;
 
     uint32_t lastHandshakeMs_ = 0;
     uint32_t lastDiscoveryAttemptMs_ = 0;
@@ -588,6 +696,7 @@ private:
     uint32_t lastRotationQualityFlags_ = 0;
     float lastRotationConfidence_ = 0.0f;
     uint32_t lastRotationSnapshotAgeUs_ = 0;
+    uint32_t lastRotationSoftwareAgeUs_ = 0;
     uint32_t nextUdpBeginRetryMs_ = 0;
     uint32_t serverFoundSendGraceUntilMs_ = 0;
     uint32_t lastRuntimeNowMs_ = 0;

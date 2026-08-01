@@ -81,10 +81,9 @@ bool MagRuntimeProcessor::process(const Lsm6dsvFifoReader::MagRawSample& raw,
 
     // magToImu produces the native IMU sensor frame.  Keep magnetometer,
     // gyro and accelerometer in one device frame before heading estimation.
-    const SensorToDeviceFrame frame = makeSensorToDeviceFrame(
-        cfg.sensorToDeviceValid,
-        cfg.sensorToDevice
-    );
+    const SensorToDeviceFrame frame = cfg.sensorToDevicePrevalidated
+        ? cfg.sensorToDeviceFrame
+        : makeSensorToDeviceFrame(cfg.sensorToDeviceValid, cfg.sensorToDevice);
     out.sensorToDeviceApplied = frame.enabled;
     out.body = frame.apply(out.body);
 

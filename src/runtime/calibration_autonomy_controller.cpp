@@ -159,7 +159,7 @@ bool CalibrationAutonomyController::deferredServiceRequired() const {
     if (!begun_) return false;
 
     if (CalibrationAutonomyStore::valid(journal_) || prepared_.valid ||
-        proposalPending_) {
+        proposalPending_ || completedWindowPending_) {
         return true;
     }
 
@@ -246,6 +246,9 @@ void CalibrationAutonomyController::begin(const CalibrationAutonomyDeps& deps,
 
 void CalibrationAutonomyController::resetRuntimeEvidence() {
     window_.reset();
+    completedWindow_.reset();
+    completedWindowPending_ = false;
+    completedWindowNowMs_ = 0u;
     clearSessions();
     motionSeenSinceSession_ = true;
     lastSessionMs_ = 0u;
@@ -332,19 +335,31 @@ void CalibrationAutonomyController::observeImuSample(
 
     window_.push(scaledSensorFrame, timestampUs);
     if (window_.count >= kWindowSamples) {
-        finalizeWindow(nowMs);
+        if (completedWindowPending_) {
+            // Preserve the older complete evidence window. A service stall may
+            // discard a newer background-calibration window, but must never
+            // block or slow tracking to retain it.
+            ++stats_.observationWindowDrops;
+        } else {
+            completedWindow_ = window_;
+            completedWindowPending_ = true;
+            completedWindowNowMs_ = nowMs;
+            ++stats_.observationWindowsDeferred;
+        }
+        window_.reset();
     }
 }
 
-bool CalibrationAutonomyController::windowLooksStationary(Session& session) const {
-    if (window_.count < kWindowSamples) return false;
-    const Vec3 gyroStd = window_.gyroStd();
-    const Vec3 accelVariance = window_.accelVariance();
+bool CalibrationAutonomyController::windowLooksStationary(
+    const WindowAccumulator& window, Session& session) const {
+    if (window.count < kWindowSamples) return false;
+    const Vec3 gyroStd = window.gyroStd();
+    const Vec3 accelVariance = window.accelVariance();
     const Vec3 accelStd = sqrtVec(accelVariance);
-    const Vec3 rawGyroMean = window_.gyroMean();
-    const float tempSpan = window_.tempMax - window_.tempMin;
+    const Vec3 rawGyroMean = window.gyroMean();
+    const float tempSpan = window.tempMax - window.tempMin;
     const Vec3 baseBias = deps_.config
-        ? gyroBiasAt(deps_.config->data, window_.meanTemp())
+        ? gyroBiasAt(deps_.config->data, window.meanTemp())
         : Vec3::zero();
     const Vec3 gyroResidualDps = (rawGyroMean - baseBias) * kRadToDps;
 
@@ -356,21 +371,21 @@ bool CalibrationAutonomyController::windowLooksStationary(Session& session) cons
     }
 
     session.valid = true;
-    session.tempC = window_.meanTemp();
+    session.tempC = window.meanTemp();
     session.rawGyroMeanRadS = rawGyroMean;
     session.gyroStdRadS = gyroStd;
-    session.rawAccelMeanG = window_.accelMean();
+    session.rawAccelMeanG = window.accelMean();
     session.accelVarianceG2 = accelVariance;
     const auto face = Accel6PosCalibration::detectFace(session.rawAccelMeanG);
     session.face = face.valid ? face.face : Accel6PosCalibration::Face::Invalid;
     return true;
 }
 
-void CalibrationAutonomyController::finalizeWindow(uint32_t nowMs) {
+void CalibrationAutonomyController::finalizeWindow(
+    const WindowAccumulator& window, uint32_t nowMs) {
     Session session{};
-    if (!windowLooksStationary(session)) {
+    if (!windowLooksStationary(window, session)) {
         ++stats_.stationaryWindowsRejected;
-        window_.reset();
         return;
     }
     ++stats_.stationaryWindows;
@@ -383,7 +398,6 @@ void CalibrationAutonomyController::finalizeWindow(uint32_t nowMs) {
          static_cast<uint32_t>(nowMs - lastSessionMs_) >= kMinSessionSeparationMs);
     if (lastSessionMs_ != 0u && !separatedByTime && !separatedByMotion) {
         ++stats_.stationaryWindowsRejected;
-        window_.reset();
         return;
     }
 
@@ -392,7 +406,6 @@ void CalibrationAutonomyController::finalizeWindow(uint32_t nowMs) {
     ++stats_.independentSessions;
     lastSessionMs_ = nowMs;
     motionSeenSinceSession_ = false;
-    window_.reset();
 
     if (state_ == CalibrationAutonomyState::PromotedProbation) {
         (void)evaluateProbationWindow(session, nowMs);
@@ -909,6 +922,25 @@ bool CalibrationAutonomyController::rejectionSuppresses(uint32_t fingerprint) co
 
 bool CalibrationAutonomyController::service(uint32_t nowMs) {
     if (!deferredServiceRequired()) return false;
+
+    // Completed 960 Hz observation windows bypass the slow lifecycle cadence,
+    // but are finalized here, after FIFO processing, never in the sample hook.
+    if (completedWindowPending_) {
+        ++stats_.serviceCalls;
+        const uint32_t serviceStartUs = micros();
+        const WindowAccumulator completed = completedWindow_;
+        const uint32_t completedNowMs = completedWindowNowMs_;
+        completedWindowPending_ = false;
+        completedWindowNowMs_ = 0u;
+        completedWindow_.reset();
+        finalizeWindow(completed, completedNowMs);
+        const uint32_t elapsed = micros() - serviceStartUs;
+        stats_.lastServiceUs = elapsed;
+        stats_.maxServiceUs = std::max(stats_.maxServiceUs, elapsed);
+        ++stats_.serviceWorked;
+        return true;
+    }
+
     if (lastServiceMs_ != 0u && nowMs - lastServiceMs_ < kServiceIntervalMs) return false;
     lastServiceMs_ = nowMs;
     ++stats_.serviceCalls;
@@ -1960,6 +1992,9 @@ void CalibrationAutonomyController::printStatus(Stream& out, uint32_t nowMs) con
     out.print("autonomy_state_age_ms="); out.println(nowMs - stateChangedMs_);
     out.print("autonomy_last_reject_reason="); out.println(rejectReasonName(lastRejectReason_));
     out.print("autonomy_stationary_windows="); out.println(stats_.stationaryWindows);
+    out.print("autonomy_observation_windows_deferred="); out.println(stats_.observationWindowsDeferred);
+    out.print("autonomy_observation_window_pending="); out.println(completedWindowPending_ ? "yes" : "no");
+    out.print("autonomy_observation_window_drops="); out.println(stats_.observationWindowDrops);
     out.print("autonomy_independent_sessions="); out.println(stats_.independentSessions);
     out.print("autonomy_sessions_buffered="); out.println(sessionCount_);
     out.print("autonomy_proposal_pending="); out.println(proposalPending_ ? "yes" : "no");

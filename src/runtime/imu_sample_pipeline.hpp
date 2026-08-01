@@ -15,6 +15,7 @@
 #include "runtime/runtime_gyro_bias_controller.hpp"
 #if TRACKER_HAS_RUNTIME_PROFILER
 #include "runtime/runtime_motion_diagnostics.hpp"
+#include "runtime/runtime_profiler.hpp"
 #endif
 #include "runtime/static_test_runner.hpp"
 #include "runtime/gyro_temp_calibration_capture.hpp"
@@ -28,6 +29,8 @@
 #include "serial/tracker_serial_context.hpp"
 
 namespace tracker {
+
+class SensorToDeviceFrameCache;
 
 using ImuPipelineRecoveryCallback = void (*)(uint32_t reasonFlags,
                                              const char* reason,
@@ -87,6 +90,14 @@ struct ImuSamplePipelineDeps {
     uint32_t* lastQualityFlags = nullptr;
     ImuSamplePipelineCallbacks callbacks;
 
+    // Optional freshness/profiler sources. They never affect AHRS math or
+    // sample acceptance; Production profiles may leave them null.
+    FifoRuntimeProcessor* fifoRuntime = nullptr;
+    SensorToDeviceFrameCache* sensorToDeviceFrameCache = nullptr;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    RuntimeProfiler* runtimeProfiler = nullptr;
+#endif
+
     // Optional latest-sample mirrors for blocking guided calibration flows.
     // They let setup calibration observe normal runtime samples without
     // recursively draining FIFO or bypassing the production sample pipeline.
@@ -99,19 +110,41 @@ void imuPipelineUpdateLatestTemperature(ImuSamplePipelineDeps& deps);
 Vec3 imuPipelineCurrentGyroBiasRadS(const ImuSamplePipelineDeps& deps, float tempC);
 Lsm6dsv::Sample imuPipelineMakeSensorFrameCalibratedSample(const ImuSamplePipelineDeps& deps,
                                                            const Lsm6dsv::Sample& scaled);
+Lsm6dsv::Sample imuPipelineMakeSensorFrameCalibratedSample(const ImuSamplePipelineDeps& deps,
+                                                           const Lsm6dsv::Sample& scaled,
+                                                           bool hasBaseGyroBiasModel,
+                                                           const Vec3& currentGyroBiasRadS);
 Lsm6dsv::Sample imuPipelineMakeCalibratedSample(const ImuSamplePipelineDeps& deps,
                                                 const Lsm6dsv::Sample& scaled);
+Lsm6dsv::Sample imuPipelineMakeCalibratedSample(const ImuSamplePipelineDeps& deps,
+                                                const Lsm6dsv::Sample& scaled,
+                                                bool hasBaseGyroBiasModel,
+                                                const Vec3& currentGyroBiasRadS);
 void imuPipelineRecordSampleProcessTime(ImuSamplePipelineDeps& deps, uint32_t dtUs);
-void imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
+bool imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
                                                const Lsm6dsv::Sample& scaled,
                                                const Lsm6dsv::Sample& calibrated,
                                                const ImuQualityResult& quality,
                                                uint64_t timestampUs);
-void imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
+bool imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
+                                               const Lsm6dsv::Sample& scaled,
+                                               const Lsm6dsv::Sample& calibrated,
+                                               const ImuQualityResult& quality,
+                                               uint64_t timestampUs,
+                                               const GyroTempCompRuntimeEval& tempEval,
+                                               const Vec3& currentGyroBiasRadS);
+bool imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
                                      const Lsm6dsv::RawSample& raw,
                                      const Lsm6dsv::Sample& scaled,
                                      const Lsm6dsv::Sample& calibrated,
                                      const ImuQualityResult& quality);
+bool imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
+                                     const Lsm6dsv::RawSample& raw,
+                                     const Lsm6dsv::Sample& scaled,
+                                     const Lsm6dsv::Sample& calibrated,
+                                     const ImuQualityResult& quality,
+                                     const GyroTempCompRuntimeEval& tempEval,
+                                     const Vec3& currentGyroBiasRadS);
 FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
                                                     const Lsm6dsv::RawSample& raw,
                                                     bool checkFifoStatsDelta);

@@ -20,6 +20,7 @@ class Lsm6dsvSensorHub;
 class Qmc6309;
 class TrackerConfig;
 class TrackerConfigStore;
+class SensorToDeviceFrameCache;
 class MagCalibrationCollector;
 
 enum MagDeferredServiceRejectFlags : uint32_t {
@@ -110,6 +111,7 @@ struct MagRuntimeControllerDeps {
     const uint32_t* lastImuSampleSequence = nullptr;
     const bool* accelCalibrationReady = nullptr;
     const uint64_t* fallbackTimestampUs = nullptr;
+    SensorToDeviceFrameCache* sensorToDeviceFrameCache = nullptr;
     bool (*recoveryActive)(void* user) = nullptr;
     void* recoveryActiveUser = nullptr;
 
@@ -122,7 +124,7 @@ class MagRuntimeController {
 public:
     void begin(const MagRuntimeControllerDeps& deps);
 
-    MagRuntimeConfig runtimeConfig() const;
+    const MagRuntimeConfig& runtimeConfig() const;
     MagHeadingConfig headingConfig() const;
     MagYawCorrectionConfig yawConfig() const;
     MagFieldReliabilityConfig fieldReliabilityConfig() const;
@@ -158,6 +160,9 @@ public:
 
 private:
     MagRuntimeControllerDeps deps_;
+    mutable MagRuntimeConfig runtimeConfigCache_;
+    mutable uint32_t runtimeConfigCacheRevision_ = 0u;
+    mutable bool runtimeConfigCacheValid_ = false;
     bool axisAlignmentLearningEnabled_ = true;
 
     Stream& stream() const;
@@ -191,7 +196,22 @@ private:
                              float gyroNormDps,
                              float accelTrust,
                              bool magTrustedForUse);
-    void updateAxisAlignmentCandidate(uint32_t nowMs);
+    struct AxisAlignmentEvidence {
+        uint32_t nowMs = 0;
+        Vec3 gyroSensorRadS = Vec3::zero();
+        uint64_t gyroTimestampUs = 0;
+        uint32_t configCrc = 0;
+        MagProcessedSample mag;
+    };
+    static constexpr uint8_t kAxisEvidenceCapacity = 8u;
+    AxisAlignmentEvidence axisEvidence_[kAxisEvidenceCapacity] = {};
+    uint8_t axisEvidenceHead_ = 0u;
+    uint8_t axisEvidenceTail_ = 0u;
+    uint8_t axisEvidenceCount_ = 0u;
+    bool enqueueAxisAlignmentEvidence(uint32_t nowMs);
+    bool serviceOneAxisAlignmentEvidence();
+    void clearAxisAlignmentEvidence();
+    void updateAxisAlignmentCandidate(const AxisAlignmentEvidence& evidence);
     bool stageAxisAlignmentCandidate(const MagAxisAlignmentResult& result, uint32_t nowMs);
     bool deferredServiceAllowed(MagDeferredServiceGate& gate) const;
     bool applyYawCorrectionToAhrs(const MagYawCorrectionOutput& yaw);

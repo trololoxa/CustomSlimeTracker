@@ -4,11 +4,13 @@
 
 #include "runtime/runtime_profiler.hpp"
 #include "runtime/fifo_runtime_processor.hpp"
+#include "runtime/battery_adc_batch_sampler.hpp"
 #include "runtime/slimevr_output_runtime.hpp"
 #include "runtime/tracking_state_controller.hpp"
 #include "network/wifi_manager.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/imu_quality.hpp"
+#include "sensor/mag_axis_alignment.hpp"
 #include "serial/tracker_serial_parse.hpp"
 #include "serial/tracker_serial_print.hpp"
 
@@ -24,6 +26,11 @@ struct TrackingPerfBaseline {
     FifoRuntimeQueueStats queue;
     TrackingStateController::Snapshot tracking;
     SlimeVROutputRuntimeStatus slime;
+    uint32_t axisEvidenceQueued = 0;
+    uint32_t axisEvidenceProcessed = 0;
+    uint32_t axisEvidenceDropped = 0;
+    uint32_t axisEvidenceStaleDropped = 0;
+    uint32_t axisEvidenceServiceDeferrals = 0;
 };
 
 TrackingPerfBaseline g_trackingPerfBaseline;
@@ -46,6 +53,13 @@ void captureTrackingBaseline(TrackerSerialCommandContext& ctx, uint32_t nowMs) {
     if (ctx.fifoRuntime) g_trackingPerfBaseline.queue = ctx.fifoRuntime->queueStats();
     if (ctx.trackingState) g_trackingPerfBaseline.tracking = ctx.trackingState->snapshot();
     if (ctx.slimevrRuntime) g_trackingPerfBaseline.slime = ctx.slimevrRuntime->status();
+    if (ctx.magAxisAlignmentState) {
+        g_trackingPerfBaseline.axisEvidenceQueued = ctx.magAxisAlignmentState->evidenceQueued;
+        g_trackingPerfBaseline.axisEvidenceProcessed = ctx.magAxisAlignmentState->evidenceProcessed;
+        g_trackingPerfBaseline.axisEvidenceDropped = ctx.magAxisAlignmentState->evidenceDropped;
+        g_trackingPerfBaseline.axisEvidenceStaleDropped = ctx.magAxisAlignmentState->evidenceStaleDropped;
+        g_trackingPerfBaseline.axisEvidenceServiceDeferrals = ctx.magAxisAlignmentState->evidenceServiceDeferrals;
+    }
 }
 
 void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
@@ -91,6 +105,17 @@ void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
     out.print("recovery_timestamp_backwards_delta="); out.println(deltaU32(quality.fifoRecoveryTimestampBackwardsRequests, g_trackingPerfBaseline.quality.fifoRecoveryTimestampBackwardsRequests));
     out.print("runtime_raw_queue_depth="); out.println(ctx.fifoRuntime ? ctx.fifoRuntime->rawQueueDepth() : 0u);
     out.print("runtime_raw_queue_high_water="); out.println(queue.rawQueueHighWater);
+    out.print("runtime_fifo_urgent_by_depth="); out.println(ctx.fifoRuntime && ctx.fifoRuntime->urgentByDepth() ? "yes" : "no");
+    out.print("runtime_fifo_urgent_by_age="); out.println(ctx.fifoRuntime && ctx.fifoRuntime->urgentByAge() ? "yes" : "no");
+    out.print("runtime_raw_queue_oldest_age_us="); out.println(queue.rawQueueOldestAgeLastUs);
+    out.print("runtime_raw_queue_oldest_age_max_us="); out.println(queue.rawQueueOldestAgeMaxUs);
+    out.print("runtime_raw_queue_span_us="); out.println(queue.rawQueueSpanLastUs);
+    out.print("runtime_raw_queue_span_max_us="); out.println(queue.rawQueueSpanMaxUs);
+    out.print("runtime_raw_queue_wait_last_us="); out.println(queue.rawQueueWaitLastUs);
+    out.print("runtime_raw_queue_wait_max_us="); out.println(queue.rawQueueWaitMaxUs);
+    out.print("runtime_raw_queue_wait_avg_us=");
+    out.println(queue.rawQueueWaitSamples == 0u ? 0.0f :
+        static_cast<float>(queue.rawQueueWaitSumUs) / static_cast<float>(queue.rawQueueWaitSamples), 3);
     out.print("runtime_raw_queue_overflow_delta="); out.println(deltaU32(queue.rawQueueOverflow, g_trackingPerfBaseline.queue.rawQueueOverflow));
     out.print("runtime_mag_queue_depth="); out.println(ctx.fifoRuntime ? ctx.fifoRuntime->magQueueDepth() : 0u);
     out.print("runtime_mag_queue_high_water="); out.println(queue.magQueueHighWater);
@@ -98,6 +123,36 @@ void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
     out.print("runtime_mag_chronological_deferrals_delta="); out.println(deltaU32(queue.magChronologicalDeferrals, g_trackingPerfBaseline.queue.magChronologicalDeferrals));
     out.print("runtime_mag_count_deferrals_delta="); out.println(deltaU32(queue.magCallbackCountDeferrals, g_trackingPerfBaseline.queue.magCallbackCountDeferrals));
     out.print("runtime_mag_budget_deferrals_delta="); out.println(deltaU32(queue.magCallbackBudgetDeferrals, g_trackingPerfBaseline.queue.magCallbackBudgetDeferrals));
+    out.print("runtime_fifo_hardware_drain_avg_us=");
+    out.println(queue.hardwareDrainTimeCalls == 0u ? 0.0f :
+        static_cast<float>(queue.hardwareDrainTimeSumUs) / static_cast<float>(queue.hardwareDrainTimeCalls), 3);
+    out.print("runtime_fifo_hardware_drain_max_us="); out.println(queue.hardwareDrainTimeMaxUs);
+    out.print("runtime_fifo_callback_avg_us=");
+    out.println(queue.callbackTimeCalls == 0u ? 0.0f :
+        static_cast<float>(queue.callbackTimeSumUs) / static_cast<float>(queue.callbackTimeCalls), 3);
+    out.print("runtime_fifo_callback_max_us="); out.println(queue.callbackTimeMaxUs);
+    out.print("runtime_fifo_raw_callback_sample_divisor=32"); out.println();
+    out.print("runtime_fifo_raw_callback_avg_us=");
+    out.println(queue.rawCallbackTimedSamples == 0u ? 0.0f :
+        static_cast<float>(queue.rawCallbackTimeSumUs) / static_cast<float>(queue.rawCallbackTimedSamples), 3);
+    out.print("runtime_fifo_raw_callback_max_us="); out.println(queue.rawCallbackTimeMaxUs);
+    out.print("runtime_fifo_mag_callback_avg_us=");
+    out.println(queue.magCallbackTimeCalls == 0u ? 0.0f :
+        static_cast<float>(queue.magCallbackTimeSumUs) / static_cast<float>(queue.magCallbackTimeCalls), 3);
+    out.print("runtime_fifo_mag_callback_max_us="); out.println(queue.magCallbackTimeMaxUs);
+    out.print("runtime_fifo_slice_budget_stops_delta="); out.println(deltaU32(queue.sliceBudgetStops, g_trackingPerfBaseline.queue.sliceBudgetStops));
+    out.print("runtime_fifo_drain_budget_deferrals_delta="); out.println(deltaU32(queue.drainBudgetDeferrals, g_trackingPerfBaseline.queue.drainBudgetDeferrals));
+    out.print("runtime_fifo_near_deadline_reduced_drains_delta="); out.println(deltaU32(queue.nearDeadlineReducedDrains, g_trackingPerfBaseline.queue.nearDeadlineReducedDrains));
+    out.print("runtime_fifo_slice_budget_overshoot_delta="); out.println(deltaU32(queue.sliceBudgetOvershootEvents, g_trackingPerfBaseline.queue.sliceBudgetOvershootEvents));
+    out.print("runtime_fifo_slice_budget_overshoot_max_us="); out.println(queue.sliceBudgetOvershootMaxUs);
+    if (ctx.magAxisAlignmentState) {
+        out.print("runtime_mag_axis_evidence_queued_delta="); out.println(deltaU32(ctx.magAxisAlignmentState->evidenceQueued, g_trackingPerfBaseline.axisEvidenceQueued));
+        out.print("runtime_mag_axis_evidence_processed_delta="); out.println(deltaU32(ctx.magAxisAlignmentState->evidenceProcessed, g_trackingPerfBaseline.axisEvidenceProcessed));
+        out.print("runtime_mag_axis_evidence_dropped_delta="); out.println(deltaU32(ctx.magAxisAlignmentState->evidenceDropped, g_trackingPerfBaseline.axisEvidenceDropped));
+        out.print("runtime_mag_axis_evidence_stale_dropped_delta="); out.println(deltaU32(ctx.magAxisAlignmentState->evidenceStaleDropped, g_trackingPerfBaseline.axisEvidenceStaleDropped));
+        out.print("runtime_mag_axis_evidence_service_deferrals_delta="); out.println(deltaU32(ctx.magAxisAlignmentState->evidenceServiceDeferrals, g_trackingPerfBaseline.axisEvidenceServiceDeferrals));
+        out.print("runtime_mag_axis_evidence_queue_high_water="); out.println(ctx.magAxisAlignmentState->evidenceQueueHighWater);
+    }
     out.print("tracking_recovery_enter_delta="); out.println(deltaU32(tracking.recoveryEnterCount, g_trackingPerfBaseline.tracking.recoveryEnterCount));
     out.print("tracking_recovery_bootstrap_bypass_delta="); out.println(deltaU32(tracking.recoveryBootstrapBypassCount, g_trackingPerfBaseline.tracking.recoveryBootstrapBypassCount));
     out.print("tracking_soft_recovery_active="); out.println(tracking.softRecoveryActive ? "yes" : "no");
@@ -117,6 +172,8 @@ void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
     out.print("rotation_missed_deadlines_delta="); out.println(deltaU32(slime.rotationMissedDeadlines, g_trackingPerfBaseline.slime.rotationMissedDeadlines));
     out.print("rotation_late_events_delta="); out.println(deltaU32(slime.rotationLateEvents, g_trackingPerfBaseline.slime.rotationLateEvents));
     out.print("rotation_lateness_max_ms="); out.println(slime.rotationLatenessMaxMs);
+    out.print("rotation_snapshot_age_us="); out.println(slime.lastRotationSnapshotAgeUs);
+    out.print("rotation_software_age_us="); out.println(slime.lastRotationSoftwareAgeUs);
     out.print("rotation_no_snapshot_delta="); out.println(deltaU32(slime.rotationNoSnapshot, g_trackingPerfBaseline.slime.rotationNoSnapshot));
     out.print("rotation_send_failures_delta="); out.println(deltaU32(slime.rotationSendFailures, g_trackingPerfBaseline.slime.rotationSendFailures));
     out.print("motion_packet_mode="); out.println(slimevrMotionPacketModeName(slime.motionPacketMode));
@@ -129,6 +186,28 @@ void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
     out.print("udp_full_reopen_escalations_delta="); out.println(deltaU32(slime.udpFullReopenEscalations, g_trackingPerfBaseline.slime.udpFullReopenEscalations));
     out.print("tx_backoff_drops_delta="); out.println(deltaU32(slime.txBackoffDrops, g_trackingPerfBaseline.slime.txBackoffDrops));
     out.print("tx_pressure_failures_delta="); out.println(deltaU32(slime.txPressureFailures, g_trackingPerfBaseline.slime.txPressureFailures));
+    out.print("tx_pressure_state="); out.println(slimevrTxPressureStateName(slime.txPressureState));
+    out.print("tx_recovery_reason="); out.println(slimevrTxRecoveryReasonName(slime.txRecoveryReason));
+    out.print("tx_pressure_episode_active="); out.println(slime.txPressureEpisodeActive ? "yes" : "no");
+    out.print("tx_pressure_episode_count_delta="); out.println(deltaU32(slime.txPressureEpisodeCount, g_trackingPerfBaseline.slime.txPressureEpisodeCount));
+    out.print("tx_pressure_episode_duration_ms="); out.println(slime.txPressureEpisodeDurationMs);
+    out.print("tx_pressure_episode_max_ms="); out.println(slime.txPressureEpisodeMaxMs);
+    out.print("tx_pressure_stable_resets_delta="); out.println(deltaU32(slime.txPressureStableResets, g_trackingPerfBaseline.slime.txPressureStableResets));
+    out.print("last_successful_motion_tx_age_ms="); out.println(slime.lastSuccessfulMotionTxAgeMs);
+    out.print("successful_motion_tx_streak="); out.println(slime.successfulMotionTxStreak);
+    out.print("udp_rebind_suppressed_cooldown_delta="); out.println(deltaU32(slime.udpRebindSuppressedCooldown, g_trackingPerfBaseline.slime.udpRebindSuppressedCooldown));
+    out.print("udp_full_reopen_suppressed_cooldown_delta="); out.println(deltaU32(slime.udpFullReopenSuppressedCooldown, g_trackingPerfBaseline.slime.udpFullReopenSuppressedCooldown));
+    out.print("physical_datagrams_sent_delta="); out.println(deltaU32(slime.physicalDatagramsSent, g_trackingPerfBaseline.slime.physicalDatagramsSent));
+    out.print("motion_datagrams_sent_delta="); out.println(deltaU32(slime.motionDatagramsSent, g_trackingPerfBaseline.slime.motionDatagramsSent));
+    out.print("separate_rotation_datagrams_sent_delta="); out.println(deltaU32(slime.separateRotationDatagramsSent, g_trackingPerfBaseline.slime.separateRotationDatagramsSent));
+    out.print("separate_acceleration_datagrams_sent_delta="); out.println(deltaU32(slime.separateAccelerationDatagramsSent, g_trackingPerfBaseline.slime.separateAccelerationDatagramsSent));
+    out.print("background_control_datagrams_sent_delta="); out.println(deltaU32(slime.backgroundControlDatagramsSent, g_trackingPerfBaseline.slime.backgroundControlDatagramsSent));
+    out.print("critical_control_datagrams_sent_delta="); out.println(deltaU32(slime.criticalControlDatagramsSent, g_trackingPerfBaseline.slime.criticalControlDatagramsSent));
+    out.print("motion_packet_mode_transitions_delta="); out.println(deltaU32(slime.motionPacketModeTransitions, g_trackingPerfBaseline.slime.motionPacketModeTransitions));
+    out.print("bundle_to_separate_transitions_delta="); out.println(deltaU32(slime.bundleToSeparateTransitions, g_trackingPerfBaseline.slime.bundleToSeparateTransitions));
+    out.print("separate_to_bundle_transitions_delta="); out.println(deltaU32(slime.separateToBundleTransitions, g_trackingPerfBaseline.slime.separateToBundleTransitions));
+    out.print("acceleration_suppressed_during_negotiation_delta="); out.println(deltaU32(slime.accelerationSuppressedDuringNegotiation, g_trackingPerfBaseline.slime.accelerationSuppressedDuringNegotiation));
+    out.print("rotation_phase_offset_ms="); out.println(slime.rotationPhaseOffsetMs);
     out.print("tx_failure_window_trips_delta="); out.println(deltaU32(slime.txFailureWindowTrips, g_trackingPerfBaseline.slime.txFailureWindowTrips));
     out.print("acceleration_sent_delta="); out.println(deltaU32(slime.accelerationSent, g_trackingPerfBaseline.slime.accelerationSent));
     out.print("acceleration_skipped_invalid_delta="); out.println(deltaU32(slime.accelerationSkippedInvalid, g_trackingPerfBaseline.slime.accelerationSkippedInvalid));
@@ -165,6 +244,21 @@ void printSlimeQuick(Stream& out, const SlimeVROutputRuntime* slime) {
     out.print("slime_udp_full_reopen_escalations="); out.println(s.udpFullReopenEscalations);
     out.print("slime_tx_backoff_drops="); out.println(s.txBackoffDrops);
     out.print("slime_tx_pressure_failures="); out.println(s.txPressureFailures);
+    out.print("slime_tx_pressure_state="); out.println(slimevrTxPressureStateName(s.txPressureState));
+    out.print("slime_tx_recovery_reason="); out.println(slimevrTxRecoveryReasonName(s.txRecoveryReason));
+    out.print("slime_tx_pressure_episode_active="); out.println(s.txPressureEpisodeActive ? "yes" : "no");
+    out.print("slime_tx_pressure_episode_count="); out.println(s.txPressureEpisodeCount);
+    out.print("slime_tx_pressure_episode_duration_ms="); out.println(s.txPressureEpisodeDurationMs);
+    out.print("slime_tx_pressure_episode_max_ms="); out.println(s.txPressureEpisodeMaxMs);
+    out.print("slime_last_successful_motion_tx_age_ms="); out.println(s.lastSuccessfulMotionTxAgeMs);
+    out.print("slime_udp_rebind_suppressed_cooldown="); out.println(s.udpRebindSuppressedCooldown);
+    out.print("slime_udp_full_reopen_suppressed_cooldown="); out.println(s.udpFullReopenSuppressedCooldown);
+    out.print("slime_physical_datagrams_sent="); out.println(s.physicalDatagramsSent);
+    out.print("slime_motion_datagrams_sent="); out.println(s.motionDatagramsSent);
+    out.print("slime_separate_rotation_datagrams_sent="); out.println(s.separateRotationDatagramsSent);
+    out.print("slime_separate_acceleration_datagrams_sent="); out.println(s.separateAccelerationDatagramsSent);
+    out.print("slime_acceleration_suppressed_during_negotiation="); out.println(s.accelerationSuppressedDuringNegotiation);
+    out.print("slime_rotation_phase_offset_ms="); out.println(s.rotationPhaseOffsetMs);
     out.print("slime_tx_failure_window_trips="); out.println(s.txFailureWindowTrips);
     out.print("slime_last_udp_send_error="); out.println(s.lastUdpSendError);
     out.print("slime_rotation_send_due="); out.println(s.rotationSendDue);
@@ -195,6 +289,19 @@ void printSlimeQuick(Stream& out, const SlimeVROutputRuntime* slime) {
 
 void printThermalSystemQuick(Stream& out, TrackerSerialCommandContext& ctx) {
     out.println("# THERMAL/SYSTEM PERF CORRELATION");
+    if (ctx.batteryAdcBatchSampler != nullptr) {
+        const auto& bs = ctx.batteryAdcBatchSampler->status();
+        out.print("battery_adc_batch_active="); out.println(bs.active ? "yes" : "no");
+        out.print("battery_adc_batch_result_ready="); out.println(bs.resultReady ? "yes" : "no");
+        out.print("battery_adc_batch_attempts="); out.println(bs.attempts);
+        out.print("battery_adc_batch_valid_reads="); out.println(bs.validReads);
+        out.print("battery_adc_batches_started="); out.println(bs.batchesStarted);
+        out.print("battery_adc_batches_completed="); out.println(bs.batchesCompleted);
+        out.print("battery_adc_batches_failed="); out.println(bs.batchesFailed);
+        out.print("battery_adc_read_failures="); out.println(bs.readFailures);
+        out.print("battery_adc_service_calls="); out.println(bs.serviceCalls);
+        out.print("battery_adc_max_reads_per_service="); out.println(bs.maxReadsPerService);
+    }
     float imuTempC = 0.0f;
     bool imuTempValid = false;
     if (ctx.fifo != nullptr) {

@@ -198,7 +198,19 @@ void TrackerApp::loop() {
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) profilerSectionStartUs = micros();
 #endif
-    const bool batteryWorked = callBool(deps_.callbacks.updateBatteryRuntime);
+    const TrackingSlackAdmissionInput preNetworkSlack =
+        trackingSlackAdmissionInput();
+    const bool batteryAdmitted = trackingOptionalRuntimeAdmitted(
+        preNetworkSlack, TrackingOptionalServiceClass::Short);
+    const bool batteryWorked = batteryAdmitted
+        ? callBool(deps_.callbacks.updateBatteryRuntime)
+        : false;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive && !batteryAdmitted) {
+        profiler->recordOptionalServiceAdmissionSkip(
+            RuntimeProfiler::OptionalService::Battery);
+    }
+#endif
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) {
         profiler->record(RuntimeProfiler::Section::Battery, micros() - profilerSectionStartUs, batteryWorked, profilerNowMs);
@@ -219,7 +231,19 @@ void TrackerApp::loop() {
         profilerSectionStartUs = micros();
     }
 #endif
-    const bool ledWorked = callBool(deps_.callbacks.updateStatusLedRuntime);
+    const TrackingSlackAdmissionInput postCriticalSlack =
+        trackingSlackAdmissionInput();
+    const bool ledAdmitted = trackingOptionalRuntimeAdmitted(
+        postCriticalSlack, TrackingOptionalServiceClass::Short);
+    const bool ledWorked = ledAdmitted
+        ? callBool(deps_.callbacks.updateStatusLedRuntime)
+        : false;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive && !ledAdmitted) {
+        profiler->recordOptionalServiceAdmissionSkip(
+            RuntimeProfiler::OptionalService::Led);
+    }
+#endif
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) {
         profiler->record(RuntimeProfiler::Section::Led, micros() - profilerSectionStartUs, ledWorked, profilerNowMs);
@@ -239,7 +263,17 @@ void TrackerApp::loop() {
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) profilerSectionStartUs = micros();
 #endif
-    const bool magDeferredWorked = callBool(deps_.callbacks.updateMagDeferredRuntime);
+    const bool magDeferredAdmitted = trackingOptionalRuntimeAdmitted(
+        postCriticalSlack, TrackingOptionalServiceClass::Background);
+    const bool magDeferredWorked = magDeferredAdmitted
+        ? callBool(deps_.callbacks.updateMagDeferredRuntime)
+        : false;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive && !magDeferredAdmitted) {
+        profiler->recordOptionalServiceAdmissionSkip(
+            RuntimeProfiler::OptionalService::MagDeferred);
+    }
+#endif
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) {
         profiler->record(RuntimeProfiler::Section::Calibration0022,
@@ -249,8 +283,22 @@ void TrackerApp::loop() {
         profilerSectionStartUs = micros();
     }
 #endif
-    const bool calibrationAutonomyWorked =
-        callBool(deps_.callbacks.updateCalibrationAutonomyRuntime);
+    // Admit at most one background worker per loop.  A magnetic evidence/solve
+    // step can consume most of the slack that was measured before it ran, so
+    // starting autonomy from the same stale snapshot would recreate a phase
+    // collision.  If magnetic work was only polled and had nothing pending,
+    // autonomy may still use the slot.
+    const bool calibrationAutonomyAdmitted = trackingBackgroundRuntimeAdmitted(
+        postCriticalSlack, magDeferredWorked);
+    const bool calibrationAutonomyWorked = calibrationAutonomyAdmitted
+        ? callBool(deps_.callbacks.updateCalibrationAutonomyRuntime)
+        : false;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive && !calibrationAutonomyAdmitted) {
+        profiler->recordOptionalServiceAdmissionSkip(
+            RuntimeProfiler::OptionalService::CalibrationAutonomy);
+    }
+#endif
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) {
         profiler->record(RuntimeProfiler::Section::Calibration0023,
@@ -278,7 +326,19 @@ void TrackerApp::loop() {
         profilerSectionStartUs = micros();
     }
 #endif
-    remoteConsoleWorked = callBool(deps_.callbacks.updateRemoteConsoleRuntime);
+    const TrackingSlackAdmissionInput consoleSlack =
+        trackingSlackAdmissionInput();
+    const bool remoteConsoleAdmitted = trackingOptionalRuntimeAdmitted(
+        consoleSlack, TrackingOptionalServiceClass::Console);
+    remoteConsoleWorked = remoteConsoleAdmitted
+        ? callBool(deps_.callbacks.updateRemoteConsoleRuntime)
+        : false;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive && !remoteConsoleAdmitted) {
+        profiler->recordOptionalServiceAdmissionSkip(
+            RuntimeProfiler::OptionalService::RemoteConsole);
+    }
+#endif
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) {
         profiler->record(RuntimeProfiler::Section::RemoteConsole, micros() - profilerSectionStartUs, remoteConsoleWorked, profilerNowMs);
@@ -379,7 +439,14 @@ void TrackerApp::loop() {
 #endif
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) {
-        profiler->record(RuntimeProfiler::Section::Loop, micros() - profilerLoopStartUs, anyWork, profilerNowMs);
+        const uint32_t profilerLoopElapsedUs = micros() - profilerLoopStartUs;
+        const uint32_t profilerBookkeepingStartUs = micros();
+        profiler->record(RuntimeProfiler::Section::Loop,
+                         profilerLoopElapsedUs,
+                         anyWork,
+                         profilerNowMs);
+        profiler->recordLoopInterval(profilerLoopStartUs, profilerLoopElapsedUs);
+        profiler->recordProfilerOverhead(micros() - profilerBookkeepingStartUs);
     }
 #endif
 
@@ -845,6 +912,19 @@ void TrackerApp::resumeFromMotionLightSleep() {
 }
 #endif // TRACKER_HAS_MOTION_LIGHT_SLEEP
 
+TrackingSlackAdmissionInput TrackerApp::trackingSlackAdmissionInput() const {
+    TrackingSlackAdmissionInput input;
+    if (deps_.runtime.fifoRuntime != nullptr) {
+        input.softwareQueuePending = deps_.runtime.fifoRuntime->hasPendingWork();
+        input.fifoUrgent = deps_.runtime.fifoRuntime->urgent();
+    }
+    if (deps_.callbacks.rotationDeadlineSlackUs != nullptr) {
+        input.rotationSlackKnown =
+            deps_.callbacks.rotationDeadlineSlackUs(input.rotationSlackUs);
+    }
+    return input;
+}
+
 bool TrackerApp::maybeIdleYield(bool anyWork) {
 #if !TRACKER_ENABLE_IDLE_YIELD
     (void)anyWork;
@@ -908,22 +988,89 @@ bool TrackerApp::processFifoRuntime() {
     const uint32_t startUs = micros();
     bool worked = false;
     do {
+        const uint32_t elapsedUs = micros() - startUs;
+        const uint32_t appBudgetUs = deps_.runtime.fifoRuntime->urgent()
+            ? cfg::FIFO_RUNTIME_URGENT_BUDGET_US
+            : cfg::FIFO_RUNTIME_APP_BUDGET_US;
+        if (elapsedUs >= appBudgetUs) break;
+
+        uint32_t sliceBudgetUs = appBudgetUs - elapsedUs;
+        if (sliceBudgetUs > cfg::FIFO_RUNTIME_SLICE_BUDGET_US) {
+            sliceBudgetUs = cfg::FIFO_RUNTIME_SLICE_BUDGET_US;
+        }
+
+        // Reserve enough time for an already-armed 100 Hz pose deadline. The
+        // emergency floor still permits bounded FIFO progress and never drops
+        // or reorders a sensor sample.
+        uint32_t rotationSlackUs = 0u;
+        if (deps_.callbacks.rotationDeadlineSlackUs != nullptr &&
+            deps_.callbacks.rotationDeadlineSlackUs(rotationSlackUs) &&
+            rotationSlackUs < sliceBudgetUs) {
+            constexpr uint32_t kPoseServiceReserveUs = 500u;
+            constexpr uint32_t kEmergencyFifoSliceUs = 750u;
+            const uint32_t beforePoseUs = rotationSlackUs > kPoseServiceReserveUs
+                ? rotationSlackUs - kPoseServiceReserveUs
+                : kEmergencyFifoSliceUs;
+            sliceBudgetUs = beforePoseUs < kEmergencyFifoSliceUs
+                ? kEmergencyFifoSliceUs
+                : beforePoseUs;
+        }
+
         const bool sliceWorked = deps_.runtime.fifoRuntime->process(
-            watermarkWords, maxWords, maxRounds, *deps_.runtime.out);
+            watermarkWords,
+            maxWords,
+            maxRounds,
+            *deps_.runtime.out,
+            sliceBudgetUs);
         if (!sliceWorked) break;
         worked = true;
 
+#if TRACKER_HAS_RUNTIME_PROFILER
+        RuntimeProfiler* deferredProfiler = deps_.runtime.runtimeProfiler;
+        const bool profileDeferred =
+            deferredProfiler != nullptr && deferredProfiler->enabled();
+        const uint32_t deferredStartUs = profileDeferred ? micros() : 0u;
+#endif
+        const bool deferredWorked =
+            callBool(deps_.callbacks.updateHotpathDeferredRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+        if (profileDeferred) {
+            deferredProfiler->record(
+                RuntimeProfiler::Section::RuntimeBiasDeferred,
+                micros() - deferredStartUs, deferredWorked, millis());
+        }
+#else
+        (void)deferredWorked;
+#endif
+
         if (!deps_.runtime.fifoRuntime->hasPendingWork()) break;
 
-        // Keep UDP/ping-pong cadence alive while catching up, but do not run
-        // CLI, battery, LED or tap work inside the FIFO loop.
-        (void)callBool(deps_.callbacks.updateNetworkRuntime);
-
-        const uint32_t elapsedUs = micros() - startUs;
-        const uint32_t budgetUs = deps_.runtime.fifoRuntime->urgent()
-            ? cfg::FIFO_RUNTIME_URGENT_BUDGET_US
-            : cfg::FIFO_RUNTIME_APP_BUDGET_US;
-        if (elapsedUs >= budgetUs) break;
+        // Keep only a genuinely due pose delivery alive while catching up.
+        // The previous code entered updateCritical() after every FIFO slice;
+        // most calls were no-ops yet still paid Wi-Fi state checks and a large
+        // activity reduction. Full Wi-Fi/config/telemetry service remains in loop().
+        const bool criticalNetworkDue =
+            deps_.callbacks.criticalNetworkRuntimeDue != nullptr &&
+            deps_.callbacks.criticalNetworkRuntimeDue();
+        if (criticalNetworkDue) {
+#if TRACKER_HAS_RUNTIME_PROFILER
+            RuntimeProfiler* profiler = deps_.runtime.runtimeProfiler;
+            const bool profileNested = profiler != nullptr && profiler->enabled();
+            const uint32_t nestedStartUs = profileNested ? micros() : 0u;
+#endif
+            const bool networkWorked =
+                callBool(deps_.callbacks.updateCriticalNetworkRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+            if (profileNested) {
+                profiler->record(RuntimeProfiler::Section::NetworkNested,
+                                 micros() - nestedStartUs,
+                                 networkWorked,
+                                 millis());
+            }
+#else
+            (void)networkWorked;
+#endif
+        }
     } while (deps_.runtime.fifoRuntime->hasPendingWork());
 
     return worked;

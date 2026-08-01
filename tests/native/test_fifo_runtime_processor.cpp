@@ -99,6 +99,7 @@ struct CallbackProbe {
     uint32_t rawCalls = 0;
     uint32_t magCalls = 0;
     uint32_t recoverOnCall = 0;
+    uint32_t yieldOnCall = 0;
     uint32_t rawCallbackCostUs = 0;
     uint32_t magCallbackCostUs = 0;
     uint64_t latestRawTimestampUs = 0;
@@ -116,6 +117,9 @@ FifoRuntimeSampleResult onRaw(const Lsm6dsv::RawSample& raw,
     if (checkFifoStatsDelta) probe.statsDeltaCalls.push_back(probe.rawCalls);
     if (probe.recoverOnCall != 0u && probe.rawCalls == probe.recoverOnCall) {
         return FifoRuntimeSampleResult::FifoRecovered;
+    }
+    if (probe.yieldOnCall != 0u && probe.rawCalls == probe.yieldOnCall) {
+        return FifoRuntimeSampleResult::YieldRequested;
     }
     return FifoRuntimeSampleResult::Continue;
 }
@@ -182,29 +186,32 @@ void testCallbacksAreSlicedAcrossAppPasses(TestContext& ctx) {
     Fixture f;
     for (int16_t i = 0; i < 30; ++i) f.bus.addSample(i);
     CHECK(ctx, f.begin());
-    f.probe.rawCallbackCostUs = 500;
+    f.probe.rawCallbackCostUs = 1000;
     f.irqCount = 1;
 
     CHECK(ctx, f.processor.process(12, 384, 6, f.out));
-    CHECK(ctx, f.probe.rawCalls == 12);
+    CHECK(ctx, f.probe.rawCalls == cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
     CHECK(ctx, f.bus.dataReads() == 1);
     CHECK(ctx, f.bus.remainingWords() == 0);
+    CHECK(ctx, f.processor.queueStats().sliceBudgetStops == 1u);
+    CHECK(ctx, f.processor.queueStats().sliceBudgetOvershootEvents == 1u);
+    CHECK(ctx, f.processor.queueStats().sliceBudgetOvershootMaxUs <= 500u);
 
-    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
-    CHECK(ctx, f.probe.rawCalls == 24);
-    CHECK(ctx, f.bus.dataReads() == 1);
-
-    CHECK(ctx, f.processor.process(12, 384, 6, f.out));
-    CHECK(ctx, f.probe.rawCalls == 30);
-    CHECK(ctx, f.bus.dataReads() == 1);
+    uint32_t expectedCalls = cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE;
+    while (expectedCalls < 30u) {
+        CHECK(ctx, f.processor.process(12, 384, 6, f.out));
+        expectedCalls += cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE;
+        if (expectedCalls > 30u) expectedCalls = 30u;
+        CHECK(ctx, f.probe.rawCalls == expectedCalls);
+        CHECK(ctx, f.bus.dataReads() == 1);
+    }
 
     // FIFO stats deltas are evaluated once per hardware drain, not once per
     // cooperative callback slice.
     CHECK(ctx, f.probe.statsDeltaCalls.size() == 1);
     CHECK(ctx, f.probe.statsDeltaCalls[0] == 1);
 }
-
-void testHardwareDrainTimeDoesNotConsumeCallbackBudget(TestContext& ctx) {
+void testHardwareDrainTimeSharesBudgetButPreservesMinimumProgress(TestContext& ctx) {
     trackerTestSetMicros(0);
     Fixture f;
     for (int16_t i = 0; i < 30; ++i) f.bus.addSample(i);
@@ -214,11 +221,11 @@ void testHardwareDrainTimeDoesNotConsumeCallbackBudget(TestContext& ctx) {
     f.irqCount = 1;
 
     CHECK(ctx, f.processor.process(12, 384, 6, f.out));
-    // The 7 ms SPI read already exceeds the 4.5 ms callback budget. It must
-    // not reduce this pass to one callback: the processor still guarantees
-    // the minimum forward progress required to keep up with the sensor.
-    CHECK(ctx, f.probe.rawCalls == 12);
+    // The 7 ms SPI read consumes the absolute slice budget. The processor
+    // still completes the bounded minimum progress needed to avoid livelock.
+    CHECK(ctx, f.probe.rawCalls == cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
     CHECK(ctx, f.bus.dataReads() == 1);
+    CHECK(ctx, f.processor.queueStats().sliceBudgetOvershootEvents == 1u);
 }
 
 void testRecoveryDropsRemainderOfPredateBatch(TestContext& ctx) {
@@ -244,15 +251,15 @@ void testExternalResetDropsPendingBatch(TestContext& ctx) {
     Fixture f;
     for (int16_t i = 0; i < 20; ++i) f.bus.addSample(i);
     CHECK(ctx, f.begin());
-    f.probe.rawCallbackCostUs = 500;
+    f.probe.rawCallbackCostUs = 1000;
     f.irqCount = 1;
 
     CHECK(ctx, f.processor.process(12, 384, 6, f.out));
-    CHECK(ctx, f.probe.rawCalls == 12);
+    CHECK(ctx, f.probe.rawCalls == cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
     f.processor.resetWork();
 
     CHECK(ctx, !f.processor.process(12, 384, 6, f.out));
-    CHECK(ctx, f.probe.rawCalls == 12);
+    CHECK(ctx, f.probe.rawCalls == cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
 }
 
 void testMagCallbacksFollowNearestRawTimestamp(TestContext& ctx) {
@@ -337,37 +344,70 @@ void testMagCallbacksRespectCooperativeTimeBudget(TestContext& ctx) {
 
 
 
+
+void testYieldPreservesSameTimestampMagOrdering(TestContext& ctx) {
+    trackerTestSetMicros(1000000u);
+    Fixture f;
+    f.bus.addSample(1);
+    f.bus.addMag(1);
+    f.bus.addSample(2);
+    CHECK(ctx, f.begin());
+    f.probe.yieldOnCall = 1u;
+    f.irqCount = 1u;
+
+    CHECK(ctx, f.processor.process(12u, 384u, 6u, f.out));
+    CHECK(ctx, f.probe.rawCalls == 1u);
+    CHECK(ctx, f.probe.magCalls == 1u);
+    CHECK(ctx, f.probe.magEndpointSkewUs.size() == 1u);
+    CHECK(ctx, f.probe.magEndpointSkewUs[0] == 0u);
+    CHECK(ctx, f.processor.rawQueueDepth() == 1u);
+
+    f.probe.yieldOnCall = 0u;
+    CHECK(ctx, f.processor.process(12u, 384u, 6u, f.out));
+    CHECK(ctx, f.probe.rawCalls == 2u);
+}
+
 void testRamQueueAbsorbsSecondHardwareBurst(TestContext& ctx) {
     trackerTestSetMicros(0);
     Fixture f;
     for (int16_t i = 0; i < 80; ++i) f.bus.addSample(i);
     CHECK(ctx, f.begin());
-    f.probe.rawCallbackCostUs = 500;
+    f.probe.rawCallbackCostUs = 1000;
     f.irqCount = 1;
 
     CHECK(ctx, f.processor.process(12, 384, 6, f.out));
-    CHECK(ctx, f.probe.rawCalls == 12);
-    CHECK(ctx, f.processor.rawQueueDepth() == 68);
+    CHECK(ctx, f.probe.rawCalls == cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
+    CHECK(ctx, f.processor.rawQueueDepth() ==
+               80u - cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
+    // Depth is well below the legacy threshold, but the queue already spans
+    // more than the 40 ms freshness threshold.
+    CHECK(ctx, !f.processor.urgentByDepth());
+    CHECK(ctx, f.processor.rawQueueSpanUs() >= cfg::FIFO_RUNTIME_URGENT_SPAN_US);
+    CHECK(ctx, f.processor.urgentByAge());
+    CHECK(ctx, f.processor.urgent());
 
     for (int16_t i = 80; i < 120; ++i) f.bus.addSample(i);
     CHECK(ctx, f.processor.process(12, 384, 6, f.out));
-    CHECK(ctx, f.probe.rawCalls == 24);
-    CHECK(ctx, f.processor.rawQueueDepth() == 96);
-    CHECK(ctx, f.processor.queueStats().rawQueueHighWater >= 108);
+    CHECK(ctx, f.probe.rawCalls ==
+               2u * cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
+    CHECK(ctx, f.processor.rawQueueDepth() ==
+               120u - 2u * cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
+    CHECK(ctx, f.processor.queueStats().rawQueueHighWater >=
+               120u - cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
     CHECK(ctx, f.processor.queueStats().rawQueueOverflow == 0);
 }
-
 } // namespace
 
 int main() {
     TestContext ctx;
     testCallbacksAreSlicedAcrossAppPasses(ctx);
-    testHardwareDrainTimeDoesNotConsumeCallbackBudget(ctx);
+    testHardwareDrainTimeSharesBudgetButPreservesMinimumProgress(ctx);
     testRecoveryDropsRemainderOfPredateBatch(ctx);
     testExternalResetDropsPendingBatch(ctx);
     testMagCallbacksFollowNearestRawTimestamp(ctx);
     testMagCallbacksRespectCountBudget(ctx);
     testMagCallbacksRespectCooperativeTimeBudget(ctx);
+    testYieldPreservesSameTimestampMagOrdering(ctx);
     testRamQueueAbsorbsSecondHardwareBurst(ctx);
     return ctx.finish("test_fifo_runtime_processor");
 }

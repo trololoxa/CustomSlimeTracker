@@ -50,6 +50,31 @@ void serviceNonCliRuntime(TrackerSerialCommandContext& ctx) {
     }
 }
 
+void printTxPressureStatus(Stream& out, const SlimeVROutputRuntimeStatus& s) {
+    out.print("tx_pressure_state="); out.println(slimevrTxPressureStateName(s.txPressureState));
+    out.print("tx_recovery_reason="); out.println(slimevrTxRecoveryReasonName(s.txRecoveryReason));
+    out.print("tx_pressure_episode_active="); out.println(yn(s.txPressureEpisodeActive));
+    out.print("tx_pressure_episode_count="); out.println(s.txPressureEpisodeCount);
+    out.print("tx_pressure_episode_duration_ms="); out.println(s.txPressureEpisodeDurationMs);
+    out.print("tx_pressure_episode_max_ms="); out.println(s.txPressureEpisodeMaxMs);
+    out.print("tx_pressure_stable_resets="); out.println(s.txPressureStableResets);
+    out.print("last_successful_motion_tx_age_ms="); out.println(s.lastSuccessfulMotionTxAgeMs);
+    out.print("successful_motion_tx_streak="); out.println(s.successfulMotionTxStreak);
+    out.print("udp_rebind_suppressed_cooldown="); out.println(s.udpRebindSuppressedCooldown);
+    out.print("udp_full_reopen_suppressed_cooldown="); out.println(s.udpFullReopenSuppressedCooldown);
+    out.print("physical_datagrams_sent="); out.println(s.physicalDatagramsSent);
+    out.print("motion_datagrams_sent="); out.println(s.motionDatagramsSent);
+    out.print("separate_rotation_datagrams_sent="); out.println(s.separateRotationDatagramsSent);
+    out.print("separate_acceleration_datagrams_sent="); out.println(s.separateAccelerationDatagramsSent);
+    out.print("background_control_datagrams_sent="); out.println(s.backgroundControlDatagramsSent);
+    out.print("critical_control_datagrams_sent="); out.println(s.criticalControlDatagramsSent);
+    out.print("motion_packet_mode_transitions="); out.println(s.motionPacketModeTransitions);
+    out.print("bundle_to_separate_transitions="); out.println(s.bundleToSeparateTransitions);
+    out.print("separate_to_bundle_transitions="); out.println(s.separateToBundleTransitions);
+    out.print("acceleration_suppressed_during_negotiation="); out.println(s.accelerationSuppressedDuringNegotiation);
+    out.print("rotation_phase_offset_ms="); out.println(s.rotationPhaseOffsetMs);
+}
+
 bool serialSlimeSetConfigFlag(uint8_t sensorId, uint16_t configType, bool enabled, void* user) {
     (void)sensorId;
     auto* ctx = static_cast<TrackerSerialCommandContext*>(user);
@@ -193,6 +218,7 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("tx_other_failures="); out.println(s.txOtherFailures);
     out.print("tx_failure_window_trips="); out.println(s.txFailureWindowTrips);
     out.print("last_udp_send_error="); out.println(s.lastUdpSendError);
+    printTxPressureStatus(out, s);
     serviceNonCliRuntime(ctx);
     out.print("ping_received="); out.println(s.pingReceived);
     out.print("pong_sent="); out.println(s.pongSent);
@@ -384,6 +410,7 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("tx_other_failures="); out.println(s.txOtherFailures);
     out.print("tx_failure_window_trips="); out.println(s.txFailureWindowTrips);
     out.print("last_udp_send_error="); out.println(s.lastUdpSendError);
+    printTxPressureStatus(out, s);
     out.print("consecutive_send_failures="); out.println(s.consecutiveSendFailures);
     serviceNonCliRuntime(ctx);
     out.print("last_handshake_ms="); out.println(s.lastHandshakeMs);
@@ -396,6 +423,7 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("last_rotation_quality_flags=0x"); out.println(s.lastRotationQualityFlags, HEX);
     out.print("last_rotation_confidence="); out.println(s.lastRotationConfidence, 4);
     out.print("last_rotation_snapshot_age_us="); out.println(s.lastRotationSnapshotAgeUs);
+    out.print("last_rotation_software_age_us="); out.println(s.lastRotationSoftwareAgeUs);
 }
 
 void printHelp(Stream& out) {

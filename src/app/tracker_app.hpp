@@ -18,6 +18,7 @@
 #endif
 #include "runtime/tracker_runtime_types.hpp"
 #include "runtime/tracker_health_state.hpp"
+#include "runtime/tracking_slack_admission.hpp"
 #if TRACKER_HAS_RUNTIME_PROFILER
 #include "runtime/runtime_profiler.hpp"
 #include "runtime/runtime_motion_diagnostics.hpp"
@@ -104,6 +105,13 @@ struct TrackerAppCallbacks {
     void (*resumeNetworkRuntime)() = nullptr;
 #endif
     bool (*updateNetworkRuntime)() = nullptr;
+    // Narrow pose-delivery service used only between FIFO slices. It must not run
+    // Wi-Fi information polling, static configuration rebuilds or diagnostics.
+    bool (*updateCriticalNetworkRuntime)() = nullptr;
+    // Side-effect-free gate used before entering the nested UDP path.
+    bool (*criticalNetworkRuntimeDue)() = nullptr;
+    bool (*updateHotpathDeferredRuntime)() = nullptr;
+    bool (*rotationDeadlineSlackUs)(uint32_t& outSlackUs) = nullptr;
     bool (*updateMagDeferredRuntime)() = nullptr;
     bool (*updateCalibrationAutonomyRuntime)() = nullptr;
     bool (*updateSerialConsoleRuntime)() = nullptr;
@@ -175,6 +183,7 @@ private:
     void publishHealthState();
     void call(void (*callback)());
     bool processFifoRuntime();
+    TrackingSlackAdmissionInput trackingSlackAdmissionInput() const;
     bool maybeIdleYield(bool anyWork);
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     bool maybeEnterMotionLightSleep();

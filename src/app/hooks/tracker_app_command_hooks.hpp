@@ -338,6 +338,7 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
 #endif
 #if TRACKER_ENABLE_BATTERY_RUNTIME
     objects.batteryRuntime = &g_batteryRuntime;
+    objects.batteryAdcBatchSampler = &g_batteryAdcBatchSampler;
 #endif
     objects.lsm = &lsm;
     objects.fifo = &lsmFifo;
@@ -353,6 +354,9 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.motionDiagnostics = &g_motionDiagnostics;
 #endif
     objects.fifoRuntime = &g_fifoRuntime;
+#if TRACKER_ENABLE_CALIBRATION_CANDIDATES
+    objects.magAxisAlignmentState = &g_magAxisAlignmentState;
+#endif
     objects.trackingState = &g_trackingState;
     objects.preparedOutput = &g_preparedOutput;
 #if TRACKER_HAS_CALIBRATION_AUTONOMY

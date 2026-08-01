@@ -25,8 +25,12 @@ static_assert(TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS == 32U,
 static_assert(TRACKER_SLIMEVR_TX_FAILURE_WINDOW_FAILURES > 0U &&
               TRACKER_SLIMEVR_TX_FAILURE_WINDOW_FAILURES <= TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS,
               "TX failure window threshold must fit the outcome window");
-static_assert(TRACKER_SLIMEVR_TX_REBIND_CONSECUTIVE_FAILURES > 0U,
-              "TX consecutive-failure threshold must be nonzero");
+static_assert(TRACKER_SLIMEVR_TX_OTHER_REBIND_CONSECUTIVE_FAILURES > 0U,
+              "non-pressure TX consecutive-failure threshold must be nonzero");
+static_assert(TRACKER_SLIMEVR_TX_PRESSURE_REBIND_STALL_MS > TRACKER_SLIMEVR_TX_BACKOFF_INITIAL_MS,
+              "pressure rebind stall must exceed the initial backoff");
+static_assert(TRACKER_SLIMEVR_TX_POST_REBIND_REOPEN_STALL_MS > TRACKER_SLIMEVR_TX_REBIND_SEND_GRACE_MS,
+              "post-rebind reopen stall must exceed the send grace");
 
 void copyCString(char* dst, size_t dstSize, const char* src) {
     if (!dst || dstSize == 0) return;
@@ -114,6 +118,29 @@ const char* slimevrFeatureNegotiationStateName(SlimeVRFeatureNegotiationState st
     return "unknown";
 }
 
+const char* slimevrTxPressureStateName(SlimeVRTxPressureState state) {
+    switch (state) {
+        case SlimeVRTxPressureState::Healthy: return "healthy";
+        case SlimeVRTxPressureState::TransientPressure: return "transient_pressure";
+        case SlimeVRTxPressureState::SustainedPressure: return "sustained_pressure";
+        case SlimeVRTxPressureState::AwaitingPostRebindSuccess: return "awaiting_post_rebind_success";
+        case SlimeVRTxPressureState::FullReopenCooldown: return "full_reopen_cooldown";
+    }
+    return "unknown";
+}
+
+const char* slimevrTxRecoveryReasonName(SlimeVRTxRecoveryReason reason) {
+    switch (reason) {
+        case SlimeVRTxRecoveryReason::None: return "none";
+        case SlimeVRTxRecoveryReason::PressureMotionStall: return "pressure_motion_stall";
+        case SlimeVRTxRecoveryReason::NonPressureTransportFailure: return "nonpressure_transport_failure";
+        case SlimeVRTxRecoveryReason::StaleServerRx: return "stale_server_rx";
+        case SlimeVRTxRecoveryReason::RebindFailure: return "rebind_failure";
+        case SlimeVRTxRecoveryReason::PostRebindMotionStall: return "post_rebind_motion_stall";
+    }
+    return "unknown";
+}
+
 const char* slimevrOutputStateName(SlimeVROutputState state) {
     switch (state) {
         case SlimeVROutputState::Disabled: return "disabled";
@@ -129,11 +156,15 @@ const char* slimevrOutputStateName(SlimeVROutputState state) {
 void SlimeVROutputRuntime::begin(IUdpTransport& udp,
                                     const TrackerWifiManager& wifi,
                                     SlimeVRCopyOutputSnapshotFn copyOutputSnapshot,
-                                    void* copyOutputSnapshotUser) {
+                                    void* copyOutputSnapshotUser,
+                                    SlimeVRRotationSoftwareAgeSinkFn rotationSoftwareAgeSink,
+                                    void* rotationSoftwareAgeSinkUser) {
     udp_ = &udp;
     wifi_ = &wifi;
     copyOutputSnapshot_ = copyOutputSnapshot;
     copyOutputSnapshotUser_ = copyOutputSnapshotUser;
+    rotationSoftwareAgeSink_ = rotationSoftwareAgeSink;
+    rotationSoftwareAgeSinkUser_ = rotationSoftwareAgeSinkUser;
     resetConnectionState(true);
 }
 
@@ -200,6 +231,7 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
         resetConnectionState(true);
     } else {
         if (rotationRateChanged) {
+            rotationPhaseOffsetValid_ = false;
             resetRotationDeadline();
             resetFallbackAccelerationDeadline();
         }
@@ -377,8 +409,26 @@ void SlimeVROutputRuntime::resetCounters() {
     txOtherFailures_ = 0;
     txFailureWindowTrips_ = 0;
     lastUdpSendError_ = 0;
+    txPressureEpisodeCount_ = 0;
+    txPressureEpisodeMaxMs_ = 0;
+    txPressureStableResets_ = 0;
+    udpRebindSuppressedCooldown_ = 0;
+    udpFullReopenSuppressedCooldown_ = 0;
+    physicalDatagramsSent_ = 0;
+    motionDatagramsSent_ = 0;
+    separateRotationDatagramsSent_ = 0;
+    separateAccelerationDatagramsSent_ = 0;
+    backgroundControlDatagramsSent_ = 0;
+    criticalControlDatagramsSent_ = 0;
+    motionPacketModeTransitions_ = 0;
+    bundleToSeparateTransitions_ = 0;
+    separateToBundleTransitions_ = 0;
+    accelerationSuppressedDuringNegotiation_ = 0;
     resetTxRecoveryState();
     lastUdpTransportRebindMs_ = 0;
+    lastUdpTransportRebindValid_ = false;
+    lastUdpFullReopenMs_ = 0;
+    lastUdpFullReopenValid_ = false;
     udpTransportRebindRequested_ = false;
     udpReopenRequested_ = false;
 }
@@ -393,6 +443,35 @@ void SlimeVROutputRuntime::restart() {
     if (udp_) udp_->stop();
     resetConnectionState(true);
     enabled_ = true;
+}
+
+bool SlimeVROutputRuntime::criticalRotationServiceDue(uint32_t nowMs) const {
+    if (!enabled_ || !udp_ || !wifi_ || !udp_->active() || !serverFound_ ||
+        !wifi_->connected() || trackerHealth_.fatalActive ||
+        udpTransportRebindRequested_ || udpReopenRequested_) {
+        return false;
+    }
+    if (serverFoundSendGraceUntilMs_ != 0u &&
+        static_cast<int32_t>(nowMs - serverFoundSendGraceUntilMs_) < 0) {
+        return false;
+    }
+    // The first fresh snapshot after a reset is intentionally due immediately.
+    return !rotationDeadlineArmed_ ||
+           static_cast<int32_t>(nowMs - nextRotationDeadlineMs_) >= 0;
+}
+
+bool SlimeVROutputRuntime::updateCritical(uint32_t nowMs) {
+    lastRuntimeNowMs_ = nowMs;
+    if (!criticalRotationServiceDue(nowMs)) return false;
+
+    // Rotation is the only work permitted here. All connection lifecycle, RX,
+    // heartbeat, feature/config, telemetry and error service stays in update().
+    // Avoid the full status-signature reduction on this high-frequency path:
+    // every due attempt increments rotationSendDue_, including no-snapshot,
+    // duplicate-snapshot and transport-failure outcomes.
+    const uint32_t dueBefore = rotationSendDue_;
+    maybeSendRotation(nowMs);
+    return rotationSendDue_ != dueBefore;
 }
 
 bool SlimeVROutputRuntime::update(uint32_t nowMs) {
@@ -422,6 +501,9 @@ bool SlimeVROutputRuntime::update(uint32_t nowMs) {
         markSensorInfoDirty();
         resetTxRecoveryState();
         lastUdpTransportRebindMs_ = 0;
+        lastUdpTransportRebindValid_ = false;
+        lastUdpFullReopenMs_ = 0;
+        lastUdpFullReopenValid_ = false;
         udpTransportRebindRequested_ = false;
         udpReopenRequested_ = false;
         transitionTo(SlimeVROutputState::WaitingForWifi, nowMs);
@@ -431,10 +513,12 @@ bool SlimeVROutputRuntime::update(uint32_t nowMs) {
     ensureUdp(nowMs);
     if (!udp_->active()) return activityChanged(stateBefore, activityBefore);
 
+    serviceTxRecovery(nowMs);
+
     if (udpTransportRebindRequested_) {
         udpTransportRebindRequested_ = false;
         if (!rebindUdpPreservingSession(nowMs)) {
-            udpReopenRequested_ = true;
+            requestUdpFullReopen(nowMs, SlimeVRTxRecoveryReason::RebindFailure);
         } else {
             return activityChanged(stateBefore, activityBefore);
         }
@@ -453,6 +537,10 @@ bool SlimeVROutputRuntime::update(uint32_t nowMs) {
         markSensorInfoDirty();
         resetTxRecoveryState();
         lastUdpTransportRebindMs_ = 0;
+        lastUdpTransportRebindValid_ = false;
+        lastUdpFullReopenMs_ = nowMs;
+        lastUdpFullReopenValid_ = true;
+        txPressureState_ = SlimeVRTxPressureState::FullReopenCooldown;
         udpTransportRebindRequested_ = false;
         udpReopenRequested_ = false;
         lastHeartbeatMs_ = 0;
@@ -668,6 +756,30 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.txFailureWindowTrips = txFailureWindowTrips_;
     s.consecutiveSendFailures = consecutiveSendFailures_;
     s.lastUdpSendError = lastUdpSendError_;
+    s.txPressureState = txPressureState_;
+    s.txRecoveryReason = txRecoveryReason_;
+    s.txPressureEpisodeActive = txPressureEpisodeActive_;
+    s.txPressureEpisodeCount = txPressureEpisodeCount_;
+    s.txPressureEpisodeDurationMs = txPressureEpisodeActive_
+        ? static_cast<uint32_t>(lastRuntimeNowMs_ - txPressureEpisodeStartMs_) : 0u;
+    s.txPressureEpisodeMaxMs = txPressureEpisodeMaxMs_;
+    s.txPressureStableResets = txPressureStableResets_;
+    s.lastSuccessfulMotionTxAgeMs = lastSuccessfulMotionTxValid_
+        ? static_cast<uint32_t>(lastRuntimeNowMs_ - lastSuccessfulMotionTxMs_) : 0xFFFFFFFFUL;
+    s.successfulMotionTxStreak = successfulMotionTxStreak_;
+    s.udpRebindSuppressedCooldown = udpRebindSuppressedCooldown_;
+    s.udpFullReopenSuppressedCooldown = udpFullReopenSuppressedCooldown_;
+    s.physicalDatagramsSent = physicalDatagramsSent_;
+    s.motionDatagramsSent = motionDatagramsSent_;
+    s.separateRotationDatagramsSent = separateRotationDatagramsSent_;
+    s.separateAccelerationDatagramsSent = separateAccelerationDatagramsSent_;
+    s.backgroundControlDatagramsSent = backgroundControlDatagramsSent_;
+    s.criticalControlDatagramsSent = criticalControlDatagramsSent_;
+    s.motionPacketModeTransitions = motionPacketModeTransitions_;
+    s.bundleToSeparateTransitions = bundleToSeparateTransitions_;
+    s.separateToBundleTransitions = separateToBundleTransitions_;
+    s.accelerationSuppressedDuringNegotiation = accelerationSuppressedDuringNegotiation_;
+    s.rotationPhaseOffsetMs = rotationPhaseOffsetMs_;
     s.nextPacketNumber = static_cast<uint32_t>(writer_.packetNumber());
     s.rotationRateHz = rotationRateHz_;
     s.preparedOutputAvailable = copyOutputSnapshot_ != nullptr;
@@ -708,6 +820,7 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.lastRotationQualityFlags = lastRotationQualityFlags_;
     s.lastRotationConfidence = lastRotationConfidence_;
     s.lastRotationSnapshotAgeUs = lastRotationSnapshotAgeUs_;
+    s.lastRotationSoftwareAgeUs = lastRotationSoftwareAgeUs_;
     s.trackerErrorActive = trackerHealth_.fatalActive;
     s.trackerDegradedNoImu = trackerHealth_.degradedNoImu;
     s.trackerErrorCode = static_cast<uint8_t>(trackerHealth_.faultCode);
@@ -764,6 +877,7 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastRotationQualityFlags_ = 0;
     lastRotationConfidence_ = 0.0f;
     lastRotationSnapshotAgeUs_ = 0;
+    lastRotationSoftwareAgeUs_ = 0;
     lastPingId_ = 0;
     resetServerFeatureNegotiation();
     lastSetConfigSensorId_ = 0;
@@ -775,7 +889,13 @@ void SlimeVROutputRuntime::resetConnectionState(bool keepCounters) {
     lastUnknownPacketType_ = 0;
     nextUdpBeginRetryMs_ = 0;
     serverFoundSendGraceUntilMs_ = 0;
-    consecutiveSendFailures_ = 0;
+    resetTxRecoveryState();
+    lastUdpTransportRebindMs_ = 0;
+    lastUdpTransportRebindValid_ = false;
+    lastUdpFullReopenMs_ = 0;
+    lastUdpFullReopenValid_ = false;
+    rotationPhaseOffsetValid_ = false;
+    lastObservedMotionPacketModeValid_ = false;
     udpReopenRequested_ = false;
     writer_.resetPacketNumber(0);
     if (!keepCounters) resetCounters();
@@ -1152,8 +1272,12 @@ void SlimeVROutputRuntime::sendSensorInfo(uint32_t nowMs) {
     const SlimeVRPacketWriteResult packet = writer_.writeSensorInfo(
         packetBuffer_, sizeof(packetBuffer_), desiredSensorInfo_
     );
+    const PacketSendResult result = sendPacket(
+        packet, serverEndpoint_, PacketPurpose::ControlBackground
+    );
+    if (result == PacketSendResult::BackoffSuppressed) return;
     lastSensorInfoMs_ = nowMs;
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control) == PacketSendResult::Sent) {
+    if (result == PacketSendResult::Sent) {
         ++sensorInfoSent_;
         lastSentSensorInfo_ = desiredSensorInfo_;
         sensorInfoSyncState_ = SlimeVRSensorInfoSyncState::WaitingForAck;
@@ -1164,7 +1288,7 @@ void SlimeVROutputRuntime::sendSensorInfo(uint32_t nowMs) {
 void SlimeVROutputRuntime::sendHeartbeat(uint32_t nowMs) {
     if (!serverEndpoint_.valid()) return;
     const SlimeVRPacketWriteResult packet = writer_.writeHeartbeat(packetBuffer_, sizeof(packetBuffer_));
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control) == PacketSendResult::Sent) {
+    if (sendPacket(packet, serverEndpoint_, PacketPurpose::ControlBackground) == PacketSendResult::Sent) {
         ++heartbeatSent_;
         lastHeartbeatMs_ = nowMs;
     }
@@ -1187,8 +1311,12 @@ void SlimeVROutputRuntime::maybeSendFeatureFlags(uint32_t nowMs) {
     const SlimeVRPacketWriteResult packet = writer_.writeFeatureFlags(
         packetBuffer_, sizeof(packetBuffer_), flags, sizeof(flags)
     );
+    const PacketSendResult result = sendPacket(
+        packet, serverEndpoint_, PacketPurpose::ControlBackground
+    );
+    if (result == PacketSendResult::BackoffSuppressed) return;
     lastFeatureFlagsRequestMs_ = nowMs;
-    if (sendPacket(packet, serverEndpoint_, PacketPurpose::Control) == PacketSendResult::Sent) {
+    if (result == PacketSendResult::Sent) {
         ++featureFlagsRequestAttempts_;
         ++featureFlagsSent_;
         featureNegotiationState_ = SlimeVRFeatureNegotiationState::Waiting;
@@ -1263,7 +1391,8 @@ uint32_t SlimeVROutputRuntime::activitySignature() const {
            udpTransportRebindSuccesses_ + udpTransportRebindFailures_ +
            udpFullReopenEscalations_ + txBackoffDrops_ + txPressureFailures_ +
            txOtherFailures_ + txFailureWindowTrips_ + consecutiveSendFailures_ +
-           serviceUpdates_;
+           txPressureStableResets_ + udpRebindSuppressedCooldown_ +
+           udpFullReopenSuppressedCooldown_ + serviceUpdates_;
 }
 
 bool SlimeVROutputRuntime::activityChanged(SlimeVROutputState previousState,
@@ -1421,6 +1550,48 @@ bool SlimeVROutputRuntime::serverFeatureEnabled(uint8_t bit) const {
     return (serverFeatureFlags_[byteIndex] & static_cast<uint8_t>(1u << (bit % 8u))) != 0u;
 }
 
+bool SlimeVROutputRuntime::fallbackAccelerationAllowed() const {
+#if TRACKER_SLIMEVR_ENABLE_BUNDLE_NEGOTIATION
+    return featureNegotiationState_ == SlimeVRFeatureNegotiationState::Negotiated ||
+           featureNegotiationState_ == SlimeVRFeatureNegotiationState::Unavailable;
+#else
+    return true;
+#endif
+}
+
+void SlimeVROutputRuntime::noteMotionPacketMode(SlimeVRMotionPacketMode mode) {
+    if (!lastObservedMotionPacketModeValid_) {
+        lastObservedMotionPacketMode_ = mode;
+        lastObservedMotionPacketModeValid_ = true;
+        return;
+    }
+    if (lastObservedMotionPacketMode_ == mode) return;
+    ++motionPacketModeTransitions_;
+    if (lastObservedMotionPacketMode_ == SlimeVRMotionPacketMode::Bundle100Rotation17Accel4 &&
+        mode == SlimeVRMotionPacketMode::SeparateRotation17Accel4) {
+        ++bundleToSeparateTransitions_;
+    } else if (lastObservedMotionPacketMode_ == SlimeVRMotionPacketMode::SeparateRotation17Accel4 &&
+               mode == SlimeVRMotionPacketMode::Bundle100Rotation17Accel4) {
+        ++separateToBundleTransitions_;
+    }
+    lastObservedMotionPacketMode_ = mode;
+}
+
+void SlimeVROutputRuntime::refreshRotationPhaseOffset() {
+    const uint32_t periodMs = rotationPeriodMs();
+    if (rotationPhaseOffsetValid_ || periodMs == 0u) return;
+    uint32_t hash = 2166136261UL;
+    if (wifi_) {
+        const TrackerWifiManagerStatus ws = wifi_->status();
+        for (uint8_t byte : ws.mac) {
+            hash ^= byte;
+            hash *= 16777619UL;
+        }
+    }
+    rotationPhaseOffsetMs_ = static_cast<uint16_t>(hash % periodMs);
+    rotationPhaseOffsetValid_ = true;
+}
+
 void SlimeVROutputRuntime::resetFallbackAccelerationDeadline() {
     nextFallbackAccelerationDeadlineMs_ = 0u;
     fallbackAccelerationDeadlineArmed_ = false;
@@ -1456,10 +1627,15 @@ void SlimeVROutputRuntime::armRotationDeadline(uint32_t deadlineMs) {
 bool SlimeVROutputRuntime::consumeRotationDeadline(uint32_t nowMs) {
     const uint32_t periodMs = rotationPeriodMs();
     if (!rotationDeadlineArmed_) {
-        // Preserve the legacy first-attempt behavior after a health/rate reset:
-        // the current fresh snapshot is due immediately, then phase continues
-        // from a future absolute deadline.
-        armRotationDeadline(nowMs + periodMs);
+        // Preserve immediate first-pose delivery, then distribute the steady
+        // datagram phase by MAC so simultaneously started trackers do not all
+        // refill the AP/TX queues in the same millisecond.
+        refreshRotationPhaseOffset();
+        const uint32_t baseDeadline = nowMs + periodMs;
+        const uint32_t basePhase = baseDeadline % periodMs;
+        const uint32_t phaseAdjust =
+            (static_cast<uint32_t>(rotationPhaseOffsetMs_) + periodMs - basePhase) % periodMs;
+        armRotationDeadline(baseDeadline + phaseAdjust);
         return true;
     }
 
@@ -1546,10 +1722,19 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         lastRotationQualityFlags_ = snapshot.qualityFlags;
         lastRotationConfidence_ = snapshot.confidence;
         lastRotationSnapshotAgeUs_ = micros() - snapshot.publishedAtMcuUs;
+        const uint64_t softwareAge = static_cast<uint64_t>(snapshot.softwareQueueAgeUs) +
+                                   lastRotationSnapshotAgeUs_;
+        lastRotationSoftwareAgeUs_ = softwareAge > 0xffffffffULL
+            ? 0xffffffffu
+            : static_cast<uint32_t>(softwareAge);
+        if (rotationSoftwareAgeSink_ != nullptr) {
+            rotationSoftwareAgeSink_(lastRotationSoftwareAgeUs_, rotationSoftwareAgeSinkUser_);
+        }
     };
 
     const uint8_t accuracy = accuracyFromConfidence(snapshot.confidence);
     const SlimeVRMotionPacketMode mode = motionPacketMode();
+    noteMotionPacketMode(mode);
     const Vec3 accelerationMps2 = slimevr_motion_frame::accelerationWireMps2FromDeviceG(
         snapshot.linearAccelerationDeviceG
     );
@@ -1600,6 +1785,11 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         return;
     }
 
+    if (!fallbackAccelerationAllowed()) {
+        ++accelerationSuppressedDuringNegotiation_;
+        return;
+    }
+
     if (!consumeFallbackAccelerationDeadline(nowMs)) {
         ++accelerationRateLimited_;
         return;
@@ -1634,6 +1824,7 @@ void SlimeVROutputRuntime::recordSendFailure(PacketPurpose purpose) {
             ++discoverySendFailures_;
             break;
         case PacketPurpose::Control:
+        case PacketPurpose::ControlBackground:
             ++controlSendFailures_;
             break;
         case PacketPurpose::Telemetry:
@@ -1689,20 +1880,34 @@ SlimeVROutputRuntime::PacketSendResult SlimeVROutputRuntime::sendPacket(
     if (!udp_->send(endpoint, packetBuffer_, packet.size)) {
         lastUdpSendError_ = udp_->lastSendError();
         recordSendFailure(purpose);
-        if (isUdpTxPressureError(lastUdpSendError_)) {
+        const bool pressureFailure = isUdpTxPressureError(lastUdpSendError_);
+        if (pressureFailure) {
             ++txPressureFailures_;
+            beginTxPressureEpisode(nowMs);
         } else {
             ++txOtherFailures_;
         }
         ++consecutiveSendFailures_;
-        recordPhysicalSendOutcome(false);
+        const bool denseBefore = txFailureWindowExceeded();
+        recordPhysicalSendOutcome(false, purpose, pressureFailure, nowMs);
+        const bool denseAfter = txFailureWindowExceeded();
+        if (!denseBefore && denseAfter) {
+            ++txFailureWindowTrips_;
+        }
         armTxBackoff(nowMs);
 
-        const bool denseFailureWindow = txFailureWindowExceeded();
-        if (denseFailureWindow) ++txFailureWindowTrips_;
-        if (denseFailureWindow ||
-            consecutiveSendFailures_ >= TRACKER_SLIMEVR_TX_REBIND_CONSECUTIVE_FAILURES) {
-            requestUdpTxRecovery(nowMs);
+        // Pressure is recovered by elapsed motion-success age, not by a dense
+        // intermittent ENOMEM bitmap. As long as fresh motion still passes,
+        // the socket and negotiated session remain intact.
+        if (!pressureFailure &&
+            consecutiveSendFailures_ >= TRACKER_SLIMEVR_TX_OTHER_REBIND_CONSECUTIVE_FAILURES) {
+            const bool recentServerRx = serverFound_ && lastIncomingPacketMs_ != 0u &&
+                static_cast<uint32_t>(nowMs - lastIncomingPacketMs_) < TRACKER_SLIMEVR_TX_RECENT_RX_MS;
+            if (recentServerRx) {
+                requestUdpTransportRebind(nowMs, SlimeVRTxRecoveryReason::NonPressureTransportFailure);
+            } else {
+                requestUdpFullReopen(nowMs, SlimeVRTxRecoveryReason::NonPressureTransportFailure);
+            }
         }
         return PacketSendResult::Failed;
     }
@@ -1710,11 +1915,7 @@ SlimeVROutputRuntime::PacketSendResult SlimeVROutputRuntime::sendPacket(
     consecutiveSendFailures_ = 0;
     txBackoffUntilMs_ = 0;
     txBackoffLevel_ = 0;
-    recordPhysicalSendOutcome(true);
-    if (txFailureWindowExceeded()) {
-        ++txFailureWindowTrips_;
-        requestUdpTxRecovery(nowMs);
-    }
+    recordPhysicalSendOutcome(true, purpose, false, nowMs);
     return PacketSendResult::Sent;
 }
 
@@ -1723,7 +1924,16 @@ void SlimeVROutputRuntime::recordSendBackoffDrop(PacketPurpose purpose) {
     ++txBackoffDrops_;
 }
 
-void SlimeVROutputRuntime::recordPhysicalSendOutcome(bool success) {
+bool SlimeVROutputRuntime::packetPurposeIsMotion(PacketPurpose purpose) {
+    return purpose == PacketPurpose::Rotation ||
+           purpose == PacketPurpose::Acceleration ||
+           purpose == PacketPurpose::MotionCombined;
+}
+
+void SlimeVROutputRuntime::recordPhysicalSendOutcome(bool success,
+                                                      PacketPurpose purpose,
+                                                      bool pressureFailure,
+                                                      uint32_t nowMs) {
     constexpr uint32_t oldestBit = 0x80000000UL;
     if (txOutcomeWindowCount_ >= TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS) {
         if ((txOutcomeWindowBits_ & oldestBit) != 0u && txOutcomeFailureCount_ > 0u) {
@@ -1738,6 +1948,60 @@ void SlimeVROutputRuntime::recordPhysicalSendOutcome(bool success) {
         txOutcomeWindowBits_ |= 1u;
         ++txOutcomeFailureCount_;
     }
+
+    if (success) {
+        ++physicalDatagramsSent_;
+        switch (purpose) {
+            case PacketPurpose::Rotation:
+                ++motionDatagramsSent_;
+                ++separateRotationDatagramsSent_;
+                break;
+            case PacketPurpose::Acceleration:
+                ++motionDatagramsSent_;
+                ++separateAccelerationDatagramsSent_;
+                break;
+            case PacketPurpose::MotionCombined:
+                ++motionDatagramsSent_;
+                break;
+            case PacketPurpose::ControlBackground:
+                ++backgroundControlDatagramsSent_;
+                break;
+            case PacketPurpose::Control:
+            case PacketPurpose::UserAction:
+            case PacketPurpose::ErrorReport:
+                ++criticalControlDatagramsSent_;
+                break;
+            case PacketPurpose::Discovery:
+            case PacketPurpose::Telemetry:
+            case PacketPurpose::Tap:
+                break;
+        }
+    }
+
+    if (!packetPurposeIsMotion(purpose)) return;
+    lastMotionTxAttemptMs_ = nowMs;
+    lastMotionTxAttemptValid_ = true;
+    lastMotionTxAttemptSucceeded_ = success;
+    if (success) {
+        lastSuccessfulMotionTxMs_ = nowMs;
+        lastSuccessfulMotionTxValid_ = true;
+        if (successfulMotionTxStreak_ != 0xFFFFFFFFUL) ++successfulMotionTxStreak_;
+        if (awaitingPostRebindSuccess_ && lastUdpTransportRebindValid_ &&
+            static_cast<int32_t>(nowMs - lastUdpTransportRebindMs_) >= 0) {
+            awaitingPostRebindSuccess_ = false;
+            txPressureState_ = SlimeVRTxPressureState::TransientPressure;
+        }
+        if (txPressureEpisodeActive_ && !txPressureStableActive_) {
+            txPressureStableSinceMs_ = nowMs;
+            txPressureStableActive_ = true;
+        }
+        return;
+    }
+
+    successfulMotionTxStreak_ = 0;
+    txPressureStableSinceMs_ = 0;
+    txPressureStableActive_ = false;
+    if (pressureFailure) lastTxPressureFailureMs_ = nowMs;
 }
 
 bool SlimeVROutputRuntime::txFailureWindowExceeded() const {
@@ -1752,6 +2016,8 @@ bool SlimeVROutputRuntime::packetMayBeDroppedDuringTxBackoff(PacketPurpose purpo
         case PacketPurpose::MotionCombined:
         case PacketPurpose::Telemetry:
         case PacketPurpose::Tap:
+            return true;
+        case PacketPurpose::ControlBackground:
             return true;
         case PacketPurpose::Discovery:
         case PacketPurpose::Control:
@@ -1785,7 +2051,7 @@ bool SlimeVROutputRuntime::txBackoffActive(uint32_t nowMs) const {
            static_cast<int32_t>(nowMs - txBackoffUntilMs_) < 0;
 }
 
-void SlimeVROutputRuntime::resetTxRecoveryState() {
+void SlimeVROutputRuntime::resetTxAttemptState() {
     consecutiveSendFailures_ = 0;
     txBackoffUntilMs_ = 0;
     txBackoffLevel_ = 0;
@@ -1794,27 +2060,159 @@ void SlimeVROutputRuntime::resetTxRecoveryState() {
     txOutcomeFailureCount_ = 0;
 }
 
-void SlimeVROutputRuntime::requestUdpTxRecovery(uint32_t nowMs) {
-    txOutcomeWindowBits_ = 0;
-    txOutcomeWindowCount_ = 0;
-    txOutcomeFailureCount_ = 0;
+void SlimeVROutputRuntime::resetTxRecoveryState() {
+    resetTxAttemptState();
+    txPressureState_ = SlimeVRTxPressureState::Healthy;
+    txRecoveryReason_ = SlimeVRTxRecoveryReason::None;
+    txPressureEpisodeActive_ = false;
+    txPressureEpisodeStartMs_ = 0;
+    txPressureStableSinceMs_ = 0;
+    txPressureStableActive_ = false;
+    lastTxPressureFailureMs_ = 0;
+    lastSuccessfulMotionTxMs_ = 0;
+    lastSuccessfulMotionTxValid_ = false;
+    lastMotionTxAttemptMs_ = 0;
+    lastMotionTxAttemptValid_ = false;
+    lastMotionTxAttemptSucceeded_ = false;
+    successfulMotionTxStreak_ = 0;
+    postRebindStartedMs_ = 0;
+    awaitingPostRebindSuccess_ = false;
+    txRecoveryRetryAfterMs_ = 0;
+    txRecoveryRetryAfterValid_ = false;
+}
 
-    const bool recentServerRx = serverFound_ && lastIncomingPacketMs_ != 0u &&
-        static_cast<uint32_t>(nowMs - lastIncomingPacketMs_) < TRACKER_SLIMEVR_TX_RECENT_RX_MS;
-    if (recentServerRx) {
-        const bool recentRebind = lastUdpTransportRebindMs_ != 0u &&
-            static_cast<uint32_t>(nowMs - lastUdpTransportRebindMs_) <
-                TRACKER_SLIMEVR_TX_REBIND_ESCALATION_MS;
-        if (recentRebind) {
-            if (!udpReopenRequested_) ++udpFullReopenEscalations_;
-            udpTransportRebindRequested_ = false;
-            udpReopenRequested_ = true;
-        } else if (!udpReopenRequested_) {
-            udpTransportRebindRequested_ = true;
+void SlimeVROutputRuntime::beginTxPressureEpisode(uint32_t nowMs) {
+    if (!txPressureEpisodeActive_) {
+        txPressureEpisodeActive_ = true;
+        txPressureEpisodeStartMs_ = nowMs;
+        ++txPressureEpisodeCount_;
+    }
+    txPressureState_ = awaitingPostRebindSuccess_
+        ? SlimeVRTxPressureState::AwaitingPostRebindSuccess
+        : SlimeVRTxPressureState::TransientPressure;
+    txPressureStableSinceMs_ = 0;
+    txPressureStableActive_ = false;
+    lastTxPressureFailureMs_ = nowMs;
+}
+
+void SlimeVROutputRuntime::closeTxPressureEpisode(uint32_t nowMs) {
+    if (!txPressureEpisodeActive_) return;
+    const uint32_t durationMs = static_cast<uint32_t>(nowMs - txPressureEpisodeStartMs_);
+    if (durationMs > txPressureEpisodeMaxMs_) txPressureEpisodeMaxMs_ = durationMs;
+    ++txPressureStableResets_;
+    txPressureEpisodeActive_ = false;
+    txPressureEpisodeStartMs_ = 0;
+    txPressureStableSinceMs_ = 0;
+    txPressureStableActive_ = false;
+    lastTxPressureFailureMs_ = 0;
+    successfulMotionTxStreak_ = 0;
+    awaitingPostRebindSuccess_ = false;
+    postRebindStartedMs_ = 0;
+    txRecoveryRetryAfterMs_ = 0;
+    txRecoveryRetryAfterValid_ = false;
+    txPressureState_ = SlimeVRTxPressureState::Healthy;
+    txRecoveryReason_ = SlimeVRTxRecoveryReason::None;
+    resetTxAttemptState();
+}
+
+void SlimeVROutputRuntime::serviceTxRecovery(uint32_t nowMs) {
+    if (!txPressureEpisodeActive_) {
+        if (txPressureState_ == SlimeVRTxPressureState::FullReopenCooldown &&
+            (!lastUdpFullReopenValid_ ||
+             static_cast<uint32_t>(nowMs - lastUdpFullReopenMs_) >= TRACKER_SLIMEVR_TX_FULL_REOPEN_COOLDOWN_MS)) {
+            txPressureState_ = SlimeVRTxPressureState::Healthy;
+            txRecoveryReason_ = SlimeVRTxRecoveryReason::None;
         }
         return;
     }
 
+    const uint32_t episodeDurationMs = static_cast<uint32_t>(nowMs - txPressureEpisodeStartMs_);
+    if (episodeDurationMs > txPressureEpisodeMaxMs_) txPressureEpisodeMaxMs_ = episodeDurationMs;
+
+    if (txRecoveryRetryAfterValid_) {
+        if (static_cast<int32_t>(nowMs - txRecoveryRetryAfterMs_) < 0) return;
+        txRecoveryRetryAfterValid_ = false;
+    }
+
+    if (txPressureStableActive_ &&
+        static_cast<uint32_t>(nowMs - txPressureStableSinceMs_) >= TRACKER_SLIMEVR_TX_PRESSURE_STABLE_RESET_MS &&
+        static_cast<uint32_t>(nowMs - lastTxPressureFailureMs_) >= TRACKER_SLIMEVR_TX_PRESSURE_STABLE_RESET_MS) {
+        closeTxPressureEpisode(nowMs);
+        return;
+    }
+
+    if (!serverFound_ || udpTransportRebindRequested_ || udpReopenRequested_) return;
+
+    if (awaitingPostRebindSuccess_) {
+        txPressureState_ = SlimeVRTxPressureState::AwaitingPostRebindSuccess;
+        if (lastSuccessfulMotionTxValid_ && lastUdpTransportRebindValid_ &&
+            static_cast<int32_t>(lastSuccessfulMotionTxMs_ - lastUdpTransportRebindMs_) >= 0) {
+            awaitingPostRebindSuccess_ = false;
+            txPressureState_ = SlimeVRTxPressureState::TransientPressure;
+            return;
+        }
+        if (static_cast<uint32_t>(nowMs - postRebindStartedMs_) >=
+                TRACKER_SLIMEVR_TX_POST_REBIND_REOPEN_STALL_MS) {
+            requestUdpFullReopen(nowMs, SlimeVRTxRecoveryReason::PostRebindMotionStall);
+        }
+        return;
+    }
+
+    const bool activelyFailingMotion = lastMotionTxAttemptValid_ &&
+        !lastMotionTxAttemptSucceeded_ &&
+        static_cast<uint32_t>(nowMs - lastMotionTxAttemptMs_) <=
+            TRACKER_SLIMEVR_TX_PRESSURE_ACTIVE_ATTEMPT_MS;
+    if (!activelyFailingMotion) return;
+
+    uint32_t stallOriginMs = txPressureEpisodeStartMs_;
+    if (lastSuccessfulMotionTxValid_ &&
+        static_cast<int32_t>(lastSuccessfulMotionTxMs_ - txPressureEpisodeStartMs_) >= 0) {
+        stallOriginMs = lastSuccessfulMotionTxMs_;
+    }
+    const uint32_t motionStallMs = static_cast<uint32_t>(nowMs - stallOriginMs);
+    if (motionStallMs < TRACKER_SLIMEVR_TX_PRESSURE_REBIND_STALL_MS) return;
+
+    txPressureState_ = SlimeVRTxPressureState::SustainedPressure;
+    const bool recentServerRx = lastIncomingPacketMs_ != 0u &&
+        static_cast<uint32_t>(nowMs - lastIncomingPacketMs_) < TRACKER_SLIMEVR_TX_RECENT_RX_MS;
+    if (recentServerRx) {
+        requestUdpTransportRebind(nowMs, SlimeVRTxRecoveryReason::PressureMotionStall);
+        return;
+    }
+
+    if (motionStallMs >= TRACKER_SLIMEVR_TX_POST_REBIND_REOPEN_STALL_MS) {
+        requestUdpFullReopen(nowMs, SlimeVRTxRecoveryReason::StaleServerRx);
+    }
+}
+
+void SlimeVROutputRuntime::requestUdpTransportRebind(uint32_t nowMs,
+                                                     SlimeVRTxRecoveryReason reason) {
+    if (udpReopenRequested_ || udpTransportRebindRequested_) return;
+    if (lastUdpTransportRebindValid_ &&
+        static_cast<uint32_t>(nowMs - lastUdpTransportRebindMs_) < TRACKER_SLIMEVR_TX_REBIND_COOLDOWN_MS) {
+        ++udpRebindSuppressedCooldown_;
+        txPressureState_ = SlimeVRTxPressureState::SustainedPressure;
+        txRecoveryRetryAfterMs_ = lastUdpTransportRebindMs_ + TRACKER_SLIMEVR_TX_REBIND_COOLDOWN_MS;
+        txRecoveryRetryAfterValid_ = true;
+        return;
+    }
+    txRecoveryReason_ = reason;
+    udpTransportRebindRequested_ = true;
+}
+
+void SlimeVROutputRuntime::requestUdpFullReopen(uint32_t nowMs,
+                                                SlimeVRTxRecoveryReason reason) {
+    if (udpReopenRequested_) return;
+    if (lastUdpFullReopenValid_ &&
+        static_cast<uint32_t>(nowMs - lastUdpFullReopenMs_) < TRACKER_SLIMEVR_TX_FULL_REOPEN_COOLDOWN_MS) {
+        ++udpFullReopenSuppressedCooldown_;
+        txPressureState_ = SlimeVRTxPressureState::FullReopenCooldown;
+        txRecoveryRetryAfterMs_ = lastUdpFullReopenMs_ + TRACKER_SLIMEVR_TX_FULL_REOPEN_COOLDOWN_MS;
+        txRecoveryRetryAfterValid_ = true;
+        return;
+    }
+    ++udpFullReopenEscalations_;
+    txRecoveryReason_ = reason;
     udpTransportRebindRequested_ = false;
     udpReopenRequested_ = true;
 }
@@ -1831,8 +2229,16 @@ bool SlimeVROutputRuntime::rebindUdpPreservingSession(uint32_t nowMs) {
 
     ++udpTransportRebindSuccesses_;
     lastUdpTransportRebindMs_ = nowMs;
-    resetTxRecoveryState();
+    lastUdpTransportRebindValid_ = true;
+    postRebindStartedMs_ = nowMs;
+    awaitingPostRebindSuccess_ = true;
+    txPressureState_ = SlimeVRTxPressureState::AwaitingPostRebindSuccess;
+    resetTxAttemptState();
     serverFoundSendGraceUntilMs_ = nowMs + TRACKER_SLIMEVR_TX_REBIND_SEND_GRACE_MS;
+    // Preserve the same grace for stale motion and optional background
+    // control traffic. Discovery and request/response control remain
+    // exempt so a genuinely lost session can still recover.
+    txBackoffUntilMs_ = serverFoundSendGraceUntilMs_;
     lastServiceUpdateMs_ = 0;
     return true;
 }

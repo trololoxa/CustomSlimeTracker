@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "runtime/battery_runtime.hpp"
+#include "runtime/battery_adc_batch_sampler.hpp"
 
 using namespace tracker;
 
@@ -145,6 +146,40 @@ int main() {
     CHECK(ctx, !disabled.telemetry(voltage, percentage));
     CHECK_NEAR(ctx, voltage, 0.0f, 1.0e-6f);
     CHECK_NEAR(ctx, percentage, 0.0f, 1.0e-6f);
+
+
+    struct SequenceAdc {
+        uint16_t values[10] = {100u, 200u, 1000u, 1100u, 1200u,
+                               1300u, 1400u, 1500u, 1600u, 10000u};
+        uint8_t index = 0u;
+        static bool read(uint16_t& out, void* user) {
+            auto& self = *static_cast<SequenceAdc*>(user);
+            if (self.index >= 10u) return false;
+            out = self.values[self.index++];
+            return true;
+        }
+    } sequence;
+    BatteryAdcBatchSampler sampler;
+    sampler.begin(SequenceAdc::read, &sequence);
+    BatteryAdcBatchSamplerConfig samplerCfg;
+    samplerCfg.totalReads = 10u;
+    samplerCfg.discardReads = 2u;
+    sampler.configure(samplerCfg);
+    CHECK(ctx, sampler.request());
+    for (uint8_t i = 0u; i < 5u; ++i) {
+        CHECK(ctx, sampler.service(2u));
+        CHECK(ctx, sequence.index <= static_cast<uint8_t>((i + 1u) * 2u));
+    }
+    CHECK(ctx, !sampler.active());
+    CHECK(ctx, sampler.resultReady());
+    CHECK(ctx, sampler.status().maxReadsPerService == 2u);
+    CHECK(ctx, sampler.status().serviceCalls == 5u);
+    uint16_t batchMv = 0u;
+    CHECK(ctx, sampler.consume(batchMv));
+    // After discarding 100/200 and trimming one low/high sample from the
+    // remaining eight values, the exact legacy trimmed mean is 1350 mV.
+    CHECK(ctx, batchMv == 1350u);
+    CHECK(ctx, !sampler.resultReady());
 
     return ctx.finish("battery_runtime");
 }

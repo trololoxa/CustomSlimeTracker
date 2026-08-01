@@ -21,6 +21,7 @@ struct TrackerCommandRuntimeObjects {
     TapRuntimeController* tapRuntime = nullptr;
     StatusLedRuntime* statusLedRuntime = nullptr;
     BatteryRuntime* batteryRuntime = nullptr;
+    BatteryAdcBatchSampler* batteryAdcBatchSampler = nullptr;
     TrackerHealthState* health = nullptr;
 
     Lsm6dsv* lsm = nullptr;
@@ -35,6 +36,7 @@ struct TrackerCommandRuntimeObjects {
     RuntimeProfiler* runtimeProfiler = nullptr;
     RuntimeMotionDiagnostics* motionDiagnostics = nullptr;
     FifoRuntimeProcessor* fifoRuntime = nullptr;
+    const MagAxisAlignmentRuntimeState* magAxisAlignmentState = nullptr;
     TrackingStateController* trackingState = nullptr;
     PreparedOutputRuntime* preparedOutput = nullptr;
 #if TRACKER_HAS_CALIBRATION_AUTONOMY

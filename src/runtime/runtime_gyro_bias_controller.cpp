@@ -49,7 +49,16 @@ Vec3 runtimeBiasCurrentGyroBiasRadS(const RuntimeGyroBiasEstimator& bias,
                                            const ImuCalibration& imuCal,
                                            const GyroTempCompensator& gyroTempComp,
                                            float tempC) {
-    Vec3 out = runtimeBiasBaseGyroBiasRadS(imuCal, gyroTempComp, tempC);
+    return runtimeBiasCurrentGyroBiasRadS(
+        bias, imuCal, gyroTempComp.evaluateRuntime(tempC));
+}
+
+Vec3 runtimeBiasCurrentGyroBiasRadS(const RuntimeGyroBiasEstimator& bias,
+                                           const ImuCalibration& imuCal,
+                                           const GyroTempCompRuntimeEval& tempEval) {
+    Vec3 out = tempEval.valid
+        ? tempEval.currentBiasRadS
+        : (imuCal.gyroBiasValid ? imuCal.gyroBiasRadS : Vec3::zero());
     if (bias.runtimeTrimRadS.isFinite()) {
         out += bias.runtimeTrimRadS;
     }
@@ -74,13 +83,20 @@ uint32_t runtimeBiasGyroBiasRuntimeFlags(const RuntimeGyroBiasEstimator& bias,
 void runtimeBiasApplyGyroTempQualityFlags(const GyroTempCompensator& gyroTempComp,
                                                  ImuQualityResult& quality,
                                                  float tempC) {
-    const GyroTempCompSnapshot s = gyroTempComp.snapshot(tempC);
-    if (s.valid && s.enabled && s.hasCalibratedRange && s.tempOutOfRange) {
+    runtimeBiasApplyGyroTempQualityFlags(
+        gyroTempComp.evaluateRuntime(tempC), quality);
+}
+
+void runtimeBiasApplyGyroTempQualityFlags(const GyroTempCompRuntimeEval& tempEval,
+                                                 ImuQualityResult& quality) {
+    if (tempEval.valid && tempEval.enabled && tempEval.hasCalibratedRange &&
+        tempEval.tempOutOfRange) {
         // The calibrated temperature interval is a confidence hint, not a
-        // hard runtime cliff.  Just outside the fitted range, keep tracking
+        // hard runtime cliff. Just outside the fitted range, keep tracking
         // confidence almost unchanged; degrade more only for large
         // extrapolation.
-        const float multiplier = clampf(s.extrapolationConfidence, 0.35f, 0.98f);
+        const float multiplier = clampf(
+            tempEval.extrapolationConfidence, 0.35f, 0.98f);
         quality.markTempCompOutOfRange(multiplier);
     }
 }
@@ -89,50 +105,58 @@ void runtimeBiasApplyGyroTempQualityFlags(const GyroTempCompensator& gyroTempCom
 RuntimeBiasTempGate runtimeBiasTempGateFor(const RuntimeGyroBiasEstimator& bias,
                                                   const GyroTempCompensator& gyroTempComp,
                                                   float tempC) {
+    return runtimeBiasTempGateFor(bias, gyroTempComp.evaluateRuntime(tempC));
+}
+
+RuntimeBiasTempGate runtimeBiasTempGateFor(const RuntimeGyroBiasEstimator& bias,
+                                                  const GyroTempCompRuntimeEval& tempEval) {
     RuntimeBiasTempGate gate;
-    const GyroTempCompSnapshot s = gyroTempComp.snapshot(tempC);
 
     // Temperature range is meaningful only for an active validated temp model.
     // If temp compensation is disabled, runtime bias trim can still operate on
     // top of the plain gyro bias model using the normal stationary gates.
-    gate.rangeRelevant = s.valid && s.enabled && s.hasCalibratedRange;
-    if (!gate.rangeRelevant || !std::isfinite(tempC)) {
+    gate.rangeRelevant = tempEval.valid && tempEval.enabled &&
+        tempEval.hasCalibratedRange;
+    if (!gate.rangeRelevant || !std::isfinite(tempEval.currentTempC)) {
         return gate;
     }
 
-    if (tempC < s.calibratedTempMinC) {
-        gate.outOfRange = true;
-        gate.distanceToRangeC = s.calibratedTempMinC - tempC;
-    } else if (tempC > s.calibratedTempMaxC) {
-        gate.outOfRange = true;
-        gate.distanceToRangeC = tempC - s.calibratedTempMaxC;
-    }
-
+    gate.outOfRange = tempEval.tempOutOfRange;
+    gate.distanceToRangeC = tempEval.tempDistanceToRangeC;
     if (!gate.outOfRange) {
         return gate;
     }
 
-    const float configuredMarginC = std::isfinite(bias.tempExtrapolationMarginC) && bias.tempExtrapolationMarginC >= 0.0f
-        ? bias.tempExtrapolationMarginC
-        : 0.0f;
-    const float softMarginC = std::isfinite(s.softExtrapolationMarginC) && s.softExtrapolationMarginC > 0.0f
-        ? s.softExtrapolationMarginC
-        : 0.0f;
-    const float cautiousMarginC = configuredMarginC > softMarginC ? configuredMarginC : softMarginC;
-    float hardMarginC = std::isfinite(s.hardExtrapolationMarginC) && s.hardExtrapolationMarginC > cautiousMarginC
-        ? s.hardExtrapolationMarginC
-        : cautiousMarginC;
+    const float configuredMarginC =
+        std::isfinite(bias.tempExtrapolationMarginC) &&
+        bias.tempExtrapolationMarginC >= 0.0f
+            ? bias.tempExtrapolationMarginC
+            : 0.0f;
+    const float softMarginC =
+        std::isfinite(tempEval.softExtrapolationMarginC) &&
+        tempEval.softExtrapolationMarginC > 0.0f
+            ? tempEval.softExtrapolationMarginC
+            : 0.0f;
+    const float cautiousMarginC = configuredMarginC > softMarginC
+        ? configuredMarginC
+        : softMarginC;
+    const float hardMarginC =
+        std::isfinite(tempEval.hardExtrapolationMarginC) &&
+        tempEval.hardExtrapolationMarginC > cautiousMarginC
+            ? tempEval.hardExtrapolationMarginC
+            : cautiousMarginC;
 
     const float baseScale = clampf(bias.outOfRangeGainScale, 0.01f, 1.0f);
-    gate.gainScale = clampf(baseScale * clampf(s.extrapolationConfidence, 0.20f, 1.0f), 0.01f, 1.0f);
+    gate.gainScale = clampf(
+        baseScale * clampf(tempEval.extrapolationConfidence, 0.20f, 1.0f),
+        0.01f,
+        1.0f);
 
-    if (bias.allowOutOfRangeEstimator && gate.distanceToRangeC <= cautiousMarginC) {
+    if (bias.allowOutOfRangeEstimator &&
+        gate.distanceToRangeC <= cautiousMarginC) {
         gate.nearOutOfRange = true;
-    } else if (bias.allowOutOfRangeEstimator && gate.distanceToRangeC <= hardMarginC) {
-        // Still allow very cautious updates for moderate extrapolation.  This
-        // avoids a hard failure when the tracker naturally warms a few degrees
-        // beyond the setup range, while keeping learning slow and visible in
-        // diagnostics.
+    } else if (bias.allowOutOfRangeEstimator &&
+               gate.distanceToRangeC <= hardMarginC) {
         gate.nearOutOfRange = true;
         gate.farOutOfRange = true;
         gate.gainScale = clampf(gate.gainScale * 0.5f, 0.01f, 1.0f);
@@ -218,18 +242,35 @@ Vec3 clampRuntimeTrimDps(const RuntimeGyroBiasEstimator& bias, const Vec3& trimD
     );
 }
 
-void runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
-                                       const Lsm6dsv::Sample& scaled,
-                                       const Lsm6dsv::Sample& calibrated,
-                                       const ImuQualityResult& quality,
-                                       uint64_t timestampUs) {
+bool runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
+                                const Lsm6dsv::Sample& scaled,
+                                const Lsm6dsv::Sample& calibrated,
+                                const ImuQualityResult& quality,
+                                uint64_t timestampUs) {
+    const GyroTempCompRuntimeEval tempEval =
+        deps.gyroTempComp.evaluateRuntime(calibrated.temp_c);
+    const Vec3 currentGyroBiasRadS = runtimeBiasCurrentGyroBiasRadS(
+        deps.bias, deps.imuCal, tempEval);
+    return runtimeBiasUpdateEstimator(
+        deps, scaled, calibrated, quality, timestampUs,
+        tempEval, currentGyroBiasRadS);
+}
+
+bool runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
+                                const Lsm6dsv::Sample& scaled,
+                                const Lsm6dsv::Sample& calibrated,
+                                const ImuQualityResult& quality,
+                                uint64_t timestampUs,
+                                const GyroTempCompRuntimeEval& tempEval,
+                                const Vec3& currentGyroBiasRadS) {
     RuntimeGyroBiasEstimator& bias = deps.bias;
-    if (!bias.enabled) return;
+    if (!bias.enabled) return false;
 
     const bool calibrationBad = !runtimeBiasHasBaseGyroBiasModel(deps.imuCal, deps.gyroTempComp) ||
         (bias.requireAccelCalibration && !deps.imuCal.accelCalValid);
 
-    const RuntimeBiasTempGate sampleTempGate = runtimeBiasTempGateFor(bias, deps.gyroTempComp, calibrated.temp_c);
+    const RuntimeBiasTempGate sampleTempGate = runtimeBiasTempGateFor(
+        bias, tempEval);
     const bool tempBad = sampleTempGate.reject;
 
     const bool badTiming = deps.trackingRecovering ||
@@ -266,42 +307,75 @@ void runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
         bias.consecutiveStationaryWindows = 0;
         bias.lastTempDistanceToRangeC = sampleTempGate.distanceToRangeC;
         bias.lastUpdateGainScale = sampleTempGate.gainScale;
-        bias.lastDecisionFlags = runtimeBiasDecisionFlags(false, badTiming, saturated, calibrationBad, tempBad, false, false, finiteBad, false, false, sampleTempGate.nearOutOfRange);
+        bias.lastDecisionFlags = runtimeBiasDecisionFlags(
+            false, badTiming, saturated, calibrationBad, tempBad,
+            false, false, finiteBad, false, false,
+            sampleTempGate.nearOutOfRange);
         bias.resetWindow();
-        return;
+        return false;
     }
 
     const Ahrs6DofStats& ast = deps.ahrs.stats();
     if (sampleTempGate.nearOutOfRange) bias.tempCautiousSamples++;
 
     // runtimeTrimRadS is persisted only in RAM but shares the same native
-    // sensor frame as the static/temperature bias.  Derive the residual from
-    // the unrotated scaled gyro so a non-identity sensorToDevice transform
-    // cannot mix coordinate frames inside the estimator.
-    const Vec3 sensorResidualRadS = scaled.gyro_rad_s -
-        runtimeBiasCurrentGyroBiasRadS(bias, deps.imuCal, deps.gyroTempComp, calibrated.temp_c);
+    // sensor frame as the static/temperature bias. Derive the residual from
+    // the unrotated scaled gyro so a non-identity frame cannot mix axes.
+    const Vec3 sensorResidualRadS = scaled.gyro_rad_s - currentGyroBiasRadS;
     bias.calibratedGyroRadS.push(sensorResidualRadS);
-    bias.accelNormG.push(calibrated.accel_g.norm());
+    bias.accelNormG.push(quality.accelNormValid
+        ? quality.accelNormG
+        : calibrated.accel_g.norm());
     bias.accelTrust.push(ast.lastAccelGate.trust);
     bias.tempC.push(calibrated.temp_c);
 
-    if (bias.calibratedGyroRadS.count < bias.windowSamplesRequired) return;
+    if (bias.calibratedGyroRadS.count < bias.windowSamplesRequired) return false;
+
+    if (bias.completedWindowPending) {
+        // This should be impossible because the FIFO processor yields at every
+        // completed window. Preserve the older evidence and fail closed rather
+        // than blocking tracking or overwriting a pending estimator decision.
+        ++bias.completedWindowDrops;
+        bias.resetWindow();
+        return false;
+    }
+
+    bias.completedCalibratedGyroRadS = bias.calibratedGyroRadS;
+    bias.completedAccelNormG = bias.accelNormG;
+    bias.completedAccelTrust = bias.accelTrust;
+    bias.completedTempC = bias.tempC;
+    bias.completedTimestampUs = timestampUs;
+    bias.completedWindowPending = true;
+    ++bias.windowsDeferred;
+    bias.resetWindow();
+    return true;
+}
+
+bool runtimeBiasFinalizePendingWindow(const RuntimeGyroBiasUpdateDeps& deps) {
+    RuntimeGyroBiasEstimator& bias = deps.bias;
+    if (!bias.completedWindowPending) return false;
+
+    const Vec3Stats& gyroStats = bias.completedCalibratedGyroRadS;
+    const ScalarStats& accelNormStats = bias.completedAccelNormG;
+    const ScalarStats& accelTrustStats = bias.completedAccelTrust;
+    const ScalarStats& tempStats = bias.completedTempC;
+    const uint64_t timestampUs = bias.completedTimestampUs;
 
     bias.windows++;
 
-    const Vec3 meanGyroDps = bias.calibratedGyroRadS.mean() * MATH_RAD_TO_DEG;
-    const Vec3 stdGyroDps = bias.calibratedGyroRadS.stddev() * MATH_RAD_TO_DEG;
+    const Vec3 meanGyroDps = gyroStats.mean() * MATH_RAD_TO_DEG;
+    const Vec3 stdGyroDps = gyroStats.stddev() * MATH_RAD_TO_DEG;
     const float gyroMeanNormDps = meanGyroDps.norm();
     const float gyroStdNormDps = stdGyroDps.norm();
     float gyroStdAxisMax = stdGyroDps.x;
     if (stdGyroDps.y > gyroStdAxisMax) gyroStdAxisMax = stdGyroDps.y;
     if (stdGyroDps.z > gyroStdAxisMax) gyroStdAxisMax = stdGyroDps.z;
-    const float accelMeanG = bias.accelNormG.mean();
+    const float accelMeanG = accelNormStats.mean();
     const float accelMeanErrG = std::fabs(accelMeanG - 1.0f);
-    const float accelStdG = bias.accelNormG.stddev();
-    const float accelTrustMean = bias.accelTrust.mean();
-    const float tempMin = bias.tempC.minValue;
-    const float tempMax = bias.tempC.maxValue;
+    const float accelStdG = accelNormStats.stddev();
+    const float accelTrustMean = accelTrustStats.mean();
+    const float tempMin = tempStats.minValue;
+    const float tempMax = tempStats.maxValue;
     const float tempSpanC = tempMax - tempMin;
 
     bias.lastResidualDps = meanGyroDps;
@@ -309,9 +383,10 @@ void runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
     bias.lastAccelNormMeanG = accelMeanG;
     bias.lastAccelNormStdG = accelStdG;
     bias.lastAccelTrustMean = accelTrustMean;
-    bias.lastTempC = bias.tempC.mean();
+    bias.lastTempC = tempStats.mean();
     bias.lastTempSpanC = tempSpanC;
-    const RuntimeBiasTempGate windowTempGate = runtimeBiasTempGateFor(bias, deps.gyroTempComp, bias.lastTempC);
+    const RuntimeBiasTempGate windowTempGate = runtimeBiasTempGateFor(
+        bias, deps.gyroTempComp, bias.lastTempC);
     const bool tempCautious = windowTempGate.nearOutOfRange;
     bias.lastTempDistanceToRangeC = windowTempGate.distanceToRangeC;
     bias.lastUpdateGainScale = windowTempGate.gainScale;
@@ -332,24 +407,34 @@ void runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
         if (windowTempBad) bias.tempRejects++;
         bias.rejected++;
         bias.consecutiveStationaryWindows = 0;
-        bias.lastDecisionFlags = runtimeBiasDecisionFlags(false, false, false, false, windowTempBad, motionBad, accelBad, false, false, false, tempCautious);
-        bias.resetWindow();
-        return;
+        bias.lastDecisionFlags = runtimeBiasDecisionFlags(
+            false, false, false, false, windowTempBad, motionBad,
+            accelBad, false, false, false, tempCautious);
+        bias.resetCompletedWindow();
+        return true;
     }
 
     if (tempCautious) bias.tempCautiousWindows++;
 
     bias.stationaryWindows++;
-    if (bias.consecutiveStationaryWindows < 255) bias.consecutiveStationaryWindows++;
+    if (bias.consecutiveStationaryWindows < 255) {
+        bias.consecutiveStationaryWindows++;
+    }
 
-    const bool priming = bias.consecutiveStationaryWindows < bias.stationaryWindowsBeforeUpdate;
+    const bool priming =
+        bias.consecutiveStationaryWindows < bias.stationaryWindowsBeforeUpdate;
     if (priming) {
         bias.primingWindows++;
         bias.lastAppliedDeltaDps = Vec3::zero();
-        bias.lastDecisionFlags = runtimeBiasDecisionFlags(false, false, false, false, false, false, false, false, true, bias.dryRun, tempCautious);
-        emitRuntimeBiasUpdateLog(deps, timestampUs, bias.lastTempC, meanGyroDps, stdGyroDps, Vec3::zero(), bias.runtimeTrimRadS * MATH_RAD_TO_DEG, bias.lastDecisionFlags);
-        bias.resetWindow();
-        return;
+        bias.lastDecisionFlags = runtimeBiasDecisionFlags(
+            false, false, false, false, false, false, false,
+            false, true, bias.dryRun, tempCautious);
+        emitRuntimeBiasUpdateLog(
+            deps, timestampUs, bias.lastTempC, meanGyroDps, stdGyroDps,
+            Vec3::zero(), bias.runtimeTrimRadS * MATH_RAD_TO_DEG,
+            bias.lastDecisionFlags);
+        bias.resetCompletedWindow();
+        return true;
     }
 
     const float effectiveGainScale = clampf(bias.lastUpdateGainScale, 0.01f, 1.0f);
@@ -373,9 +458,14 @@ void runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
 
     bias.lastAppliedDeltaDps = appliedDeltaDps;
     bias.lastUpdateMs = millis();
-    bias.lastDecisionFlags = runtimeBiasDecisionFlags(!bias.dryRun, false, false, false, false, false, false, false, false, bias.dryRun, tempCautious);
-    emitRuntimeBiasUpdateLog(deps, timestampUs, bias.lastTempC, meanGyroDps, stdGyroDps, appliedDeltaDps, newTrimDps, bias.lastDecisionFlags);
-    bias.resetWindow();
+    bias.lastDecisionFlags = runtimeBiasDecisionFlags(
+        !bias.dryRun, false, false, false, false, false, false,
+        false, false, bias.dryRun, tempCautious);
+    emitRuntimeBiasUpdateLog(
+        deps, timestampUs, bias.lastTempC, meanGyroDps, stdGyroDps,
+        appliedDeltaDps, newTrimDps, bias.lastDecisionFlags);
+    bias.resetCompletedWindow();
+    return true;
 }
 
 void runtimeBiasPrintStatus(Stream& out,
@@ -405,6 +495,9 @@ void runtimeBiasPrintStatus(Stream& out,
     out.print("max_update_step_dps="); out.println(bias.maxUpdateStepDps, 6);
     out.print("max_runtime_trim_dps="); out.println(bias.maxRuntimeTrimDps, 6);
     out.print("windows="); out.println(bias.windows);
+    out.print("windows_deferred="); out.println(bias.windowsDeferred);
+    out.print("completed_window_pending="); out.println(bias.completedWindowPending ? "yes" : "no");
+    out.print("completed_window_drops="); out.println(bias.completedWindowDrops);
     out.print("stationary_windows="); out.println(bias.stationaryWindows);
     out.print("priming_windows="); out.println(bias.primingWindows);
     out.print("consecutive_stationary_windows="); out.println(bias.consecutiveStationaryWindows);

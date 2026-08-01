@@ -106,13 +106,17 @@ def main() -> int:
     require(esp, "lastSendError_ = errno != 0 ? errno : EIO", "physical send error capture")
     require(esp, "lastSendError_ = EMSGSIZE", "partial write classification")
 
+    # 0023gl introduced errno-aware bounded pressure handling. Successor
+    # pre-0024ad intentionally replaces the original burst-trigger thresholds,
+    # so this predecessor gate protects the durable transport invariants rather
+    # than freezing superseded timing constants.
     for needle, label in (
-        ("TRACKER_SLIMEVR_TX_BACKOFF_INITIAL_MS 20UL", "20 ms initial backoff"),
-        ("TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS 160UL", "160 ms bounded backoff"),
-        ("TRACKER_SLIMEVR_TX_REBIND_CONSECUTIVE_FAILURES 4U", "consecutive recovery gate"),
+        ("TRACKER_SLIMEVR_TX_BACKOFF_INITIAL_MS", "bounded initial backoff"),
+        ("TRACKER_SLIMEVR_TX_BACKOFF_MAX_MS", "bounded maximum backoff"),
+        ("TRACKER_SLIMEVR_TX_OTHER_REBIND_CONSECUTIVE_FAILURES", "non-pressure consecutive recovery gate"),
         ("TRACKER_SLIMEVR_TX_FAILURE_WINDOW_ATTEMPTS 32U", "exact outcome window"),
-        ("TRACKER_SLIMEVR_TX_FAILURE_WINDOW_FAILURES 8U", "density recovery gate"),
-        ("TRACKER_SLIMEVR_TX_REBIND_ESCALATION_MS 2000UL", "bounded escalation interval"),
+        ("TRACKER_SLIMEVR_TX_FAILURE_WINDOW_FAILURES 8U", "density diagnostic gate"),
+        ("TRACKER_SLIMEVR_TX_REBIND_SEND_GRACE_MS", "bounded rebind grace"),
     ):
         require(tuning, needle, label)
 
@@ -123,7 +127,7 @@ def main() -> int:
     require(runtime, "case PacketPurpose::Control", "control bypass from pose backoff")
     require(runtime, "isUdpTxPressureError(lastUdpSendError_)", "TX-pressure classification")
     require(runtime, "txFailureWindowExceeded()", "density gate checked on outcomes")
-    require(runtime, "recordPhysicalSendOutcome(true);", "successful physical attempts in density window")
+    require(runtime, "recordPhysicalSendOutcome(true, purpose, false, nowMs);", "successful physical attempts in density window")
     require(runtime, "udpTransportRebindRequested_ = true", "session-preserving recovery request")
     require(runtime, "lastUdpTransportRebindMs_", "rebind escalation memory")
     require(runtime, "udpFullReopenEscalations_", "full-reopen escalation counter")
@@ -155,12 +159,12 @@ def main() -> int:
     forbid(runtime, "new ", "heap allocation in TX recovery")
 
     for needle, label in (
-        ("sendCallsAfterFirstFailure", "no-extra-send backoff regression"),
+        ("sendsAfterFirstPressure", "no-extra-send backoff regression"),
         ("txBackoffDrops == 1u", "backoff counter regression"),
         ("udpTransportRebindSuccesses == 1u", "successful local rebind regression"),
-        ("txFailureWindowTrips == 1u", "intermittent-density regression"),
-        ("udpFullReopenEscalations == 1u", "second-burst escalation regression"),
-        ("staleRt.status().udpReopenRequests == 1u", "stale RX direct reopen regression"),
+        ("txFailureWindowTrips >= 1u", "intermittent-density diagnostic regression"),
+        ("udpFullReopenEscalations == 1u", "post-rebind escalation regression"),
+        ("staleRt.status().udpReopenRequests == 1u", "stale RX bounded reopen regression"),
         ("rebindFailRt.status().udpTransportRebindFailures == 1u", "failed rebind regression"),
     ):
         require(test, needle, label)

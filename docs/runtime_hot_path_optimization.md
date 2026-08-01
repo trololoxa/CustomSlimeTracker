@@ -336,3 +336,9 @@ allocation, a retry queue, or stale-pose backlog.
 When the transport is congested, latest-state semantics apply: failed pose is
 dropped rather than retried. A recent inbound server packet suppresses automatic
 UDP reopen so transient TX pressure cannot create a discovery/grace latency gap.
+
+## pre-0024ab immutable transform caching
+
+The tracker configuration CRC is the authoritative runtime revision for immutable sensor-frame data. IMU and magnetic hot paths reuse a previously validated `SensorToDeviceFrame` while that revision is unchanged. Any authoritative configuration mutation must sanitize and call `updateCrc()` before publication; a new revision reconstructs and validates the frame fail-closed. The magnetic controller additionally caches its immutable `MagRuntimeConfig` and returns it by reference, avoiding a per-sample rebuild and large value copy. Standalone processors without an injected cache retain the original validation path.
+
+This optimization does not skip, decimate or reorder samples and does not alter calibration, AHRS, magnetic-yaw or output equations.

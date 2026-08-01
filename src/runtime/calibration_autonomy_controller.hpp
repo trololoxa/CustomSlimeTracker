@@ -49,6 +49,8 @@ struct CalibrationAutonomyStats {
     uint32_t samplesRejected = 0;
     uint32_t stationaryWindows = 0;
     uint32_t stationaryWindowsRejected = 0;
+    uint32_t observationWindowsDeferred = 0;
+    uint32_t observationWindowDrops = 0;
     uint32_t independentSessions = 0;
     uint32_t gyroProposals = 0;
     uint32_t temperatureProposals = 0;
@@ -208,6 +210,9 @@ private:
     CalibrationAutonomyStats stats_;
 
     WindowAccumulator window_;
+    WindowAccumulator completedWindow_;
+    bool completedWindowPending_ = false;
+    uint32_t completedWindowNowMs_ = 0u;
     Session sessions_[kMaxSessions] = {};
     Accel6PosCalibration accelProposalCalibration_;
     Session accelBest_[6] = {};
@@ -249,8 +254,8 @@ private:
     void noteMotion(const Lsm6dsv::Sample& scaled, const ImuQualityResult& quality);
     bool sampleEligible(const Lsm6dsv::Sample& scaled,
                         const ImuQualityResult& quality) const;
-    void finalizeWindow(uint32_t nowMs);
-    bool windowLooksStationary(Session& session) const;
+    void finalizeWindow(const WindowAccumulator& window, uint32_t nowMs);
+    bool windowLooksStationary(const WindowAccumulator& window, Session& session) const;
     void appendSession(const Session& session);
     void clearSessions();
 

@@ -428,6 +428,12 @@ struct MagAxisAlignmentRuntimeState {
     uint32_t serviceDeferralHardwareStatus = 0;
     uint32_t serviceDeferralHardwareBusy = 0;
     uint32_t serviceDeferralOutputDeadline = 0;
+    uint32_t evidenceQueued = 0;
+    uint32_t evidenceProcessed = 0;
+    uint32_t evidenceDropped = 0;
+    uint32_t evidenceStaleDropped = 0;
+    uint32_t evidenceServiceDeferrals = 0;
+    uint8_t evidenceQueueHighWater = 0;
     uint32_t lastSolveAttemptMs = 0;
     uint32_t lastStorageCheckMs = 0;
     uint32_t lastStageMs = 0;
