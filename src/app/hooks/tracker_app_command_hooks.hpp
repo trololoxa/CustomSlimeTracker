@@ -99,6 +99,7 @@ static void printLogSummary(Stream& out, void* user) {
                            g_lastMagProcessed,
                            g_lastMagYawCorrection,
                            g_runtimeBias);
+    g_machineLogDeferred.printStatus(out);
 #else
     out.println("# machine log is not compiled in this profile");
 #endif
@@ -106,28 +107,28 @@ static void printLogSummary(Stream& out, void* user) {
 
 static void emitMachineLogFrame(const Lsm6dsv::RawSample& raw,
                                 const Lsm6dsv::Sample& calibrated,
-                                const ImuQualityResult& quality) {
+                                const ImuQualityResult& quality,
+                                const GyroTempCompRuntimeEval& tempEval,
+                                const Vec3& currentGyroBiasRadS) {
 #if TRACKER_ENABLE_MACHINE_LOG
-    machineLogEmitFrame(appConsoleOutput(),
-                        g_logState,
-                        g_logCounters,
-                        g_lastBiasLogEmitUs,
-                        MACHINE_BIAS_LOG_PERIOD_US,
-                        raw,
-                        calibrated,
-                        quality,
-                        g_ahrs6dof,
-                        trackingStateName(),
-                        g_trackingState.recoveryActive(),
-                        g_gyroTempComp,
-                        g_imuCal,
-                        g_runtimeBias,
-                        currentGyroBiasRadS(calibrated.temp_c) * MATH_RAD_TO_DEG,
-                        gyroBiasRuntimeFlags(calibrated.temp_c));
+    (void)g_machineLogDeferred.enqueueImu(
+        raw,
+        calibrated,
+        quality,
+        g_ahrs6dof,
+        trackingStateName(),
+        g_trackingState.recoveryActive(),
+        g_gyroTempComp,
+        g_imuCal,
+        g_runtimeBias,
+        currentGyroBiasRadS * MATH_RAD_TO_DEG,
+        runtimeBiasGyroBiasRuntimeFlags(g_runtimeBias, tempEval));
 #else
     (void)raw;
     (void)calibrated;
     (void)quality;
+    (void)tempEval;
+    (void)currentGyroBiasRadS;
 #endif
 }
 
@@ -138,15 +139,12 @@ static void emitMachineLogMagFrame(const MagProcessedSample& mag,
                                    uint32_t rejectFlagsForUse,
                                    bool trustedForUse) {
 #if TRACKER_ENABLE_MACHINE_LOG
-    machineLogEmitMagFrame(appConsoleOutput(),
-                           g_logState,
-                           g_logCounters,
-                           mag,
-                           heading,
-                           reliability,
-                           yaw,
-                           rejectFlagsForUse,
-                           trustedForUse);
+    (void)g_machineLogDeferred.enqueueMag(mag,
+                                          heading,
+                                          reliability,
+                                          yaw,
+                                          rejectFlagsForUse,
+                                          trustedForUse);
 #else
     (void)mag;
     (void)heading;
@@ -169,6 +167,8 @@ static void setupStaticTestRunner() {
     deps.perf = &g_perf;
     deps.config = &g_config;
     deps.ahrs = &g_ahrs6dof;
+    deps.wifi = &g_wifiManager;
+    deps.slimevr = &g_slimevrRuntime;
     deps.magProcessor = &g_magProcessor;
     deps.magHeading = &g_magHeading;
     deps.magYawCorrection = &g_magYawCorrection;
@@ -198,25 +198,30 @@ static void setupRuntimeTestRunner() {
 #endif
 }
 
-static bool startStaticTestHook(uint32_t durationMs, void* user) {
+static bool startStaticTestHook(uint32_t durationMs, Stream& out, void* user) {
     (void)user;
 #if TRACKER_ENABLE_STATIC_TEST
+#if TRACKER_ENABLE_RUNTIME_TEST
+    if (g_runtimeTestRunner.active()) return false;
+#endif
     const float magErrorStartDeg =
         (g_magHeadingRef.valid && g_lastMagHeading.valid)
             ? magHeadingErrorToReferenceDeg(g_lastMagHeading)
             : 0.0f;
-    return g_staticTestRunner.start(durationMs, appConsoleOutput(), magErrorStartDeg);
+    return g_staticTestRunner.start(durationMs, out, magErrorStartDeg);
 #else
     (void)durationMs;
     return false;
 #endif
 }
 
-static bool stopStaticTestHook(void* user) {
+static bool stopStaticTestHook(Stream& out, bool force, void* user) {
     (void)user;
 #if TRACKER_ENABLE_STATIC_TEST
-    return g_staticTestRunner.stop();
+    return g_staticTestRunner.stop(out, force);
 #else
+    (void)out;
+    (void)force;
     return false;
 #endif
 }
@@ -230,21 +235,60 @@ static void printStaticTestStatus(Stream& out, void* user) {
 #endif
 }
 
-static bool startRuntimeTestHook(uint32_t durationMs, void* user) {
+static bool printStaticTestReport(Stream& out, void* user) {
+    (void)user;
+#if TRACKER_ENABLE_STATIC_TEST
+#if TRACKER_ENABLE_RUNTIME_TEST
+    if (g_runtimeTestRunner.active()) {
+        out.println("# ERR stop the active runtime test before printing a report");
+        return false;
+    }
+#endif
+    if (g_staticTestRunner.active()) {
+        out.println("# ERR stop the active static test before printing a report");
+        return false;
+    }
+    return g_staticTestRunner.printLastReport(out);
+#else
+    out.println("# static test is not compiled in this profile");
+    return false;
+#endif
+}
+
+static bool printStaticTestSummary(Stream& out, void* user) {
+    (void)user;
+#if TRACKER_ENABLE_STATIC_TEST
+    if (g_staticTestRunner.active()) {
+        out.println("# ERR stop the active static test before printing a summary");
+        return false;
+    }
+    return g_staticTestRunner.printLastSummary(out);
+#else
+    out.println("# static test is not compiled in this profile");
+    return false;
+#endif
+}
+
+static bool startRuntimeTestHook(uint32_t durationMs, Stream& out, void* user) {
     (void)user;
 #if TRACKER_ENABLE_RUNTIME_TEST
-    return g_runtimeTestRunner.start(durationMs, millis(), appConsoleOutput());
+#if TRACKER_ENABLE_STATIC_TEST
+    if (g_staticTestRunner.active()) return false;
+#endif
+    return g_runtimeTestRunner.start(durationMs, millis(), out);
 #else
     (void)durationMs;
     return false;
 #endif
 }
 
-static bool stopRuntimeTestHook(void* user) {
+static bool stopRuntimeTestHook(Stream& out, bool force, void* user) {
     (void)user;
 #if TRACKER_ENABLE_RUNTIME_TEST
-    return g_runtimeTestRunner.stop();
+    return g_runtimeTestRunner.stop(out, force);
 #else
+    (void)out;
+    (void)force;
     return false;
 #endif
 }
@@ -256,6 +300,64 @@ static void printRuntimeTestStatus(Stream& out, void* user) {
 #else
     out.println("# runtime test is not compiled in this profile");
 #endif
+}
+
+static bool printRuntimeTestReport(Stream& out, void* user) {
+    (void)user;
+#if TRACKER_ENABLE_RUNTIME_TEST
+#if TRACKER_ENABLE_STATIC_TEST
+    if (g_staticTestRunner.active()) {
+        out.println("# ERR stop the active static test before printing a report");
+        return false;
+    }
+#endif
+    if (g_runtimeTestRunner.active()) {
+        out.println("# ERR stop the active runtime test before printing a report");
+        return false;
+    }
+    return g_runtimeTestRunner.printLastReport(out);
+#else
+    out.println("# runtime test is not compiled in this profile");
+    return false;
+#endif
+}
+
+static bool printRuntimeTestSummary(Stream& out, void* user) {
+    (void)user;
+#if TRACKER_ENABLE_RUNTIME_TEST
+    if (g_runtimeTestRunner.active()) {
+        out.println("# ERR stop the active runtime test before printing a summary");
+        return false;
+    }
+    return g_runtimeTestRunner.printLastSummary(out);
+#else
+    out.println("# runtime test is not compiled in this profile");
+    return false;
+#endif
+}
+
+static bool closeCommandSessionHook(TrackerCommandOrigin origin,
+                                    uint32_t sessionId,
+                                    Stream& out,
+                                    void* user) {
+    (void)user;
+    bool aborted = false;
+#if TRACKER_ENABLE_MACHINE_LOG
+    if (g_logState.enabled() && g_logState.output == &out &&
+        g_logState.ownerOrigin == origin && g_logState.ownerSessionId == sessionId) {
+        g_machineLogDeferred.reset(true);
+        g_logState.release();
+        ++g_logCounters.disconnectAbort;
+        aborted = true;
+    }
+#endif
+#if TRACKER_ENABLE_STATIC_TEST
+    aborted = g_staticTestRunner.abortOutput(out) || aborted;
+#endif
+#if TRACKER_ENABLE_RUNTIME_TEST
+    aborted = g_runtimeTestRunner.abortOutput(out) || aborted;
+#endif
+    return aborted;
 }
 
 
@@ -398,6 +500,7 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     hooks.emitLogHeader = emitMachineLogHeader;
     hooks.printLogSummary = printLogSummary;
     hooks.resetLogCounters = resetLogCountersHook;
+    hooks.resetLogPipeline = resetLogPipelineHook;
 #endif
     hooks.printRuntimeGyroBiasStatus = printRuntimeGyroBiasStatus;
     hooks.setRuntimeGyroBiasEnabled = setRuntimeGyroBiasEnabled;
@@ -406,12 +509,17 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     hooks.startStaticTest = startStaticTestHook;
     hooks.stopStaticTest = stopStaticTestHook;
     hooks.printStaticTestStatus = printStaticTestStatus;
+    hooks.printStaticTestSummary = printStaticTestSummary;
+    hooks.printStaticTestReport = printStaticTestReport;
 #endif
 #if TRACKER_ENABLE_RUNTIME_TEST
     hooks.startRuntimeTest = startRuntimeTestHook;
     hooks.stopRuntimeTest = stopRuntimeTestHook;
     hooks.printRuntimeTestStatus = printRuntimeTestStatus;
+    hooks.printRuntimeTestSummary = printRuntimeTestSummary;
+    hooks.printRuntimeTestReport = printRuntimeTestReport;
 #endif
+    hooks.closeCommandSession = closeCommandSessionHook;
     hooks.setMagRuntimeEnabled = setMagRuntimeEnabledHook;
     hooks.printMagRuntimeStatus = printMagRuntimeStatus;
     hooks.printMagProcessedStatus = printMagProcessedStatus;
@@ -449,6 +557,12 @@ static void setupCommandInterface() {
     setupRuntimeTestRunner();
 #endif
 #if TRACKER_ENABLE_SERIAL_CLI
+#if TRACKER_ENABLE_MACHINE_LOG
+    g_machineLogDeferred.begin(&g_logState,
+                               &g_logCounters,
+                               &g_lastBiasLogEmitUs,
+                               MACHINE_BIAS_LOG_PERIOD_US);
+#endif
     const TrackerCommandRuntimeObjects commandObjects = makeTrackerCommandRuntimeObjects();
     const TrackerCommandRuntimeHooks commandHooks = makeTrackerCommandRuntimeHooks();
     wireTrackerCommandContext(g_cmdCtx, commandObjects, commandHooks);

@@ -5,21 +5,6 @@
 namespace tracker {
 namespace runtime_bias_detail {
 
-void printU64Dec(Stream& out, uint64_t v) {
-    char buf[21];
-    size_t i = sizeof(buf);
-    buf[--i] = '\0';
-    if (v == 0) {
-        buf[--i] = '0';
-    } else {
-        while (v > 0 && i > 0) {
-            buf[--i] = static_cast<char>('0' + (v % 10));
-            v /= 10;
-        }
-    }
-    out.print(&buf[i]);
-}
-
 void printVec3Line(Stream& out, const char* label, const Vec3& v, uint8_t decimals = 6) {
     out.print(label);
     out.print('=');
@@ -65,15 +50,35 @@ Vec3 runtimeBiasCurrentGyroBiasRadS(const RuntimeGyroBiasEstimator& bias,
     return out;
 }
 
+const char* runtimeBiasSourceName(const RuntimeGyroBiasEstimator& bias,
+                                 const ImuCalibration& imuCal,
+                                 const GyroTempCompensator& gyroTempComp) {
+    const bool runtimeTrim =
+        bias.runtimeTrimRadS.norm() > (0.00001f * MATH_DEG_TO_RAD);
+    if (runtimeTrim) {
+        return gyroTempComp.valid()
+            ? "temp+rt"
+            : (imuCal.gyroBiasValid ? "bias+rt" : "rt");
+    }
+    return gyroTempComp.valid()
+        ? "temp"
+        : (imuCal.gyroBiasValid ? "bias" : "none");
+}
+
 uint32_t runtimeBiasGyroBiasRuntimeFlags(const RuntimeGyroBiasEstimator& bias,
                                                 const GyroTempCompensator& gyroTempComp,
                                                 float tempC) {
-    const GyroTempCompSnapshot s = gyroTempComp.snapshot(tempC);
+    return runtimeBiasGyroBiasRuntimeFlags(
+        bias, gyroTempComp.evaluateRuntime(tempC));
+}
+
+uint32_t runtimeBiasGyroBiasRuntimeFlags(const RuntimeGyroBiasEstimator& bias,
+                                         const GyroTempCompRuntimeEval& tempEval) {
     uint32_t flags = 0;
-    if (s.valid) flags |= 1u << 0;
-    if (s.enabled) flags |= 1u << 1;
-    if (s.hasCalibratedRange) flags |= 1u << 2;
-    if (s.tempOutOfRange) flags |= 1u << 3;
+    if (tempEval.valid) flags |= 1u << 0;
+    if (tempEval.enabled) flags |= 1u << 1;
+    if (tempEval.hasCalibratedRange) flags |= 1u << 2;
+    if (tempEval.tempOutOfRange) flags |= 1u << 3;
     if (bias.enabled) flags |= 1u << 4;
     if (bias.runtimeTrimRadS.norm() > (0.00001f * MATH_DEG_TO_RAD)) flags |= 1u << 5;
     if (bias.dryRun) flags |= 1u << 6;
@@ -204,33 +209,9 @@ void emitRuntimeBiasUpdateLog(const RuntimeGyroBiasUpdateDeps& deps,
                                      const Vec3& deltaDps,
                                      const Vec3& trimDps,
                                      uint32_t flags) {
-    if (!deps.logEnabled || deps.logSequence == nullptr || deps.logStream == nullptr) return;
-    Stream& out = *deps.logStream;
-    constexpr int RUNTIME_BIAS_LOG_RESERVE_BYTES = 640;
-    if (out.availableForWrite() < RUNTIME_BIAS_LOG_RESERVE_BYTES) {
-        if (deps.logCounters != nullptr) ++deps.logCounters->backpressureDrop;
-        return;
-    }
-    const uint32_t seq = (*deps.logSequence)++;
-    out.print("BIASUPD,"); runtime_bias_detail::printU64Dec(out, tUs);
-    out.print(','); out.print(seq);
-    out.print(','); out.print(tempC, 3);
-    out.print(','); out.print(residualDps.x, 8);
-    out.print(','); out.print(residualDps.y, 8);
-    out.print(','); out.print(residualDps.z, 8);
-    out.print(','); out.print(stdDps.x, 8);
-    out.print(','); out.print(stdDps.y, 8);
-    out.print(','); out.print(stdDps.z, 8);
-    out.print(','); out.print(deltaDps.x, 8);
-    out.print(','); out.print(deltaDps.y, 8);
-    out.print(','); out.print(deltaDps.z, 8);
-    out.print(','); out.print(trimDps.x, 8);
-    out.print(','); out.print(trimDps.y, 8);
-    out.print(','); out.print(trimDps.z, 8);
-    out.print(",0x"); out.println(flags, HEX);
-    if (deps.logCounters != nullptr) {
-        deps.logCounters->biasUpdate++;
-    }
+    if (deps.enqueueLog == nullptr) return;
+    (void)deps.enqueueLog(tUs, tempC, residualDps, stdDps, deltaDps,
+                          trimDps, flags, deps.enqueueLogUser);
 }
 
 Vec3 clampRuntimeTrimDps(const RuntimeGyroBiasEstimator& bias, const Vec3& trimDps) {
@@ -473,7 +454,21 @@ void runtimeBiasPrintStatus(Stream& out,
                                    const ImuCalibration& imuCal,
                                    const GyroTempCompensator& gyroTempComp,
                                    float latestTempC) {
+    const GyroTempCompRuntimeEval tempEval =
+        gyroTempComp.evaluateRuntime(latestTempC);
     out.println("# RUNTIME GYRO BIAS");
+    out.print("bias_source=");
+    out.println(runtimeBiasSourceName(bias, imuCal, gyroTempComp));
+    out.print("base_bias_valid=");
+    out.println((tempEval.valid || imuCal.gyroBiasValid) ? "yes" : "no");
+    out.print("gyro_bias_valid=");
+    out.println(imuCal.gyroBiasValid ? "yes" : "no");
+    out.print("temp_comp_valid="); out.println(tempEval.valid ? "yes" : "no");
+    out.print("temp_comp_enabled="); out.println(tempEval.enabled ? "yes" : "no");
+    out.print("temp_comp_has_calibrated_range=");
+    out.println(tempEval.hasCalibratedRange ? "yes" : "no");
+    out.print("temp_comp_out_of_range=");
+    out.println(tempEval.tempOutOfRange ? "yes" : "no");
     out.print("enabled="); out.println(bias.enabled ? "yes" : "no");
     out.print("dry_run="); out.println(bias.dryRun ? "yes" : "no");
     out.print("require_accel_calibration="); out.println(bias.requireAccelCalibration ? "yes" : "no");

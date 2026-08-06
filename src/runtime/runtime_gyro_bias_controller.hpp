@@ -26,9 +26,14 @@ Vec3 runtimeBiasCurrentGyroBiasRadS(const RuntimeGyroBiasEstimator& bias,
 Vec3 runtimeBiasCurrentGyroBiasRadS(const RuntimeGyroBiasEstimator& bias,
                                     const ImuCalibration& imuCal,
                                     const GyroTempCompRuntimeEval& tempEval);
+const char* runtimeBiasSourceName(const RuntimeGyroBiasEstimator& bias,
+                                  const ImuCalibration& imuCal,
+                                  const GyroTempCompensator& gyroTempComp);
 uint32_t runtimeBiasGyroBiasRuntimeFlags(const RuntimeGyroBiasEstimator& bias,
                                          const GyroTempCompensator& gyroTempComp,
                                          float tempC);
+uint32_t runtimeBiasGyroBiasRuntimeFlags(const RuntimeGyroBiasEstimator& bias,
+                                         const GyroTempCompRuntimeEval& tempEval);
 void runtimeBiasApplyGyroTempQualityFlags(const GyroTempCompensator& gyroTempComp,
                                           ImuQualityResult& quality,
                                           float tempC);
@@ -68,10 +73,15 @@ struct RuntimeGyroBiasUpdateDeps {
     const GyroTempCompensator& gyroTempComp;
     const Ahrs6Dof& ahrs;
     bool trackingRecovering = false;
-    bool logEnabled = false;
-    uint32_t* logSequence = nullptr;
-    MachineLogCounters* logCounters = nullptr;
-    Stream* logStream = nullptr;
+    bool (*enqueueLog)(uint64_t timestampUs,
+                       float temperatureC,
+                       const Vec3& residualDps,
+                       const Vec3& stdDps,
+                       const Vec3& deltaDps,
+                       const Vec3& trimDps,
+                       uint32_t flags,
+                       void* user) = nullptr;
+    void* enqueueLogUser = nullptr;
 };
 
 void emitRuntimeBiasUpdateLog(const RuntimeGyroBiasUpdateDeps& deps,

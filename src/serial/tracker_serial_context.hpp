@@ -8,6 +8,7 @@
 // compile a different struct layout (and silently drop optional callbacks).
 #include "defines.h"
 #include "connection/lsm6dsv_driver.hpp"
+#include "serial/tracker_command_origin.hpp"
 #include "serial/tracker_serial_parse.hpp"
 #include "serial/tracker_serial_print.hpp"
 
@@ -45,6 +46,7 @@ class GyroTempCalibrationCapture;
 struct StaticRuntimeTest;
 struct MagProcessedSample;
 struct MagAxisAlignmentRuntimeState;
+struct TrackerSerialCommandContext;
 
 // ============================================================
 // Lightweight serial command protocol
@@ -105,20 +107,51 @@ struct TrackerSerialLogState {
     uint16_t rateHz = 20;
     uint32_t lastEmitUs = 0;
     uint32_t lastMagEmitUs = 0;
+    uint32_t lastNetworkEmitUs = 0;
     uint32_t sequence = 0;
+    bool finishing = false;
+    Stream* output = nullptr;
+    TrackerCommandOrigin ownerOrigin = TrackerCommandOrigin::UsbSerial;
+    uint32_t ownerSessionId = 0;
 
     bool enabled() const {
         return mode != TrackerLogMode::Off;
+    }
+
+    bool accepting() const {
+        return enabled() && !finishing;
     }
 
     uint32_t periodUs() const {
         const uint16_t hz = rateHz == 0 ? 1 : rateHz;
         return 1000000UL / hz;
     }
+
+    bool ownedBy(const TrackerSerialCommandContext& context) const;
+
+    void bind(Stream& sink, TrackerCommandOrigin origin, uint32_t sessionId) {
+        output = &sink;
+        ownerOrigin = origin;
+        ownerSessionId = sessionId;
+        finishing = false;
+    }
+
+    void release() {
+        mode = TrackerLogMode::Off;
+        lastEmitUs = 0;
+        lastMagEmitUs = 0;
+        lastNetworkEmitUs = 0;
+        finishing = false;
+        output = nullptr;
+        ownerOrigin = TrackerCommandOrigin::UsbSerial;
+        ownerSessionId = 0;
+    }
 };
 
 struct TrackerSerialCommandContext {
     Stream* io = nullptr;
+    TrackerCommandOrigin origin = TrackerCommandOrigin::UsbSerial;
+    uint32_t sessionId = 0;
 
     TrackerConfig* config = nullptr;
     TrackerConfigStore* configStore = nullptr;
@@ -205,6 +238,9 @@ struct TrackerSerialCommandContext {
     void (*resetLogCounters)(void* user) = nullptr;
     void* resetLogCountersUser = nullptr;
 
+    void (*resetLogPipeline)(bool countPendingAsDropped, void* user) = nullptr;
+    void* resetLogPipelineUser = nullptr;
+
     void (*printRuntimeGyroBiasStatus)(Stream& out, void* user) = nullptr;
     void* printRuntimeGyroBiasStatusUser = nullptr;
 
@@ -214,23 +250,31 @@ struct TrackerSerialCommandContext {
     void (*resetRuntimeGyroBiasEstimator)(void* user) = nullptr;
     void* resetRuntimeGyroBiasEstimatorUser = nullptr;
 
-    bool (*startStaticTest)(uint32_t durationMs, void* user) = nullptr;
+    bool (*startStaticTest)(uint32_t durationMs, Stream& out, void* user) = nullptr;
     void* startStaticTestUser = nullptr;
 
-    bool (*stopStaticTest)(void* user) = nullptr;
+    bool (*stopStaticTest)(Stream& out, bool force, void* user) = nullptr;
     void* stopStaticTestUser = nullptr;
 
     void (*printStaticTestStatus)(Stream& out, void* user) = nullptr;
     void* printStaticTestStatusUser = nullptr;
+    bool (*printStaticTestSummary)(Stream& out, void* user) = nullptr;
+    void* printStaticTestSummaryUser = nullptr;
+    bool (*printStaticTestReport)(Stream& out, void* user) = nullptr;
+    void* printStaticTestReportUser = nullptr;
 
-    bool (*startRuntimeTest)(uint32_t durationMs, void* user) = nullptr;
+    bool (*startRuntimeTest)(uint32_t durationMs, Stream& out, void* user) = nullptr;
     void* startRuntimeTestUser = nullptr;
 
-    bool (*stopRuntimeTest)(void* user) = nullptr;
+    bool (*stopRuntimeTest)(Stream& out, bool force, void* user) = nullptr;
     void* stopRuntimeTestUser = nullptr;
 
     void (*printRuntimeTestStatus)(Stream& out, void* user) = nullptr;
     void* printRuntimeTestStatusUser = nullptr;
+    bool (*printRuntimeTestSummary)(Stream& out, void* user) = nullptr;
+    void* printRuntimeTestSummaryUser = nullptr;
+    bool (*printRuntimeTestReport)(Stream& out, void* user) = nullptr;
+    void* printRuntimeTestReportUser = nullptr;
 
     bool (*setMagRuntimeEnabled)(bool enabled, bool persist, void* user) = nullptr;
     void* setMagRuntimeEnabledUser = nullptr;
@@ -307,6 +351,16 @@ struct TrackerSerialCommandContext {
     bool commandOutputNeedsExplicitFlush = false;
     uint32_t lastCommandOutputFlushMs = 0u;
 
+    // Called before a transport-owned Stream is detached. Session-bound log
+    // and test producers must release the sink here; retaining it would turn a
+    // normal TCP disconnect into a use-after-detach or an unintended USB
+    // fallback.
+    bool (*closeCommandSession)(TrackerCommandOrigin origin,
+                                uint32_t sessionId,
+                                Stream& out,
+                                void* user) = nullptr;
+    void* closeCommandSessionUser = nullptr;
+
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     // Queues a deferred platform sleep transition. It must not enter sleep
     // synchronously from the CLI parser callback.
@@ -314,6 +368,11 @@ struct TrackerSerialCommandContext {
     void* requestMotionLightSleepUser = nullptr;
 #endif
 };
+
+inline bool TrackerSerialLogState::ownedBy(const TrackerSerialCommandContext& context) const {
+    return output == context.io && ownerOrigin == context.origin &&
+           ownerSessionId == context.sessionId;
+}
 
 
 } // namespace tracker

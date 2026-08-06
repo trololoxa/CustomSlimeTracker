@@ -7,8 +7,9 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,12 +62,13 @@ def compile_and_run(cxx: str, exe: Path, extra: list[str]) -> None:
             "-I", str(ROOT / "src"),
             "-I", str(ROOT / "tests/native"),
             str(ROOT / "tests/native/test_mag_calibration.cpp"),
+            str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
             str(ROOT / "src/sensor/mag_calibration.cpp"),
             "-o", str(exe),
         ],
         check=True,
     )
-    subprocess.run([str(exe)], check=True)
+    subprocess.run([str(exe)], check=True, env=asan_ubsan_environment(ROOT))
 
 
 def main() -> int:
@@ -118,7 +120,7 @@ def main() -> int:
     require(report, "0.310533,0.164865", "first hardware failure evidence")
 
     cxx = compiler()
-    with tempfile.TemporaryDirectory(prefix="tracker-0023gk-") as tmp_name:
+    with project_temp_directory(ROOT, "tracker-0023gk-") as tmp_name:
         tmp = Path(tmp_name)
         compile_and_run(cxx, tmp / "test_mag_calibration", ["-O2", "-Wall", "-Wextra", "-Werror"])
         compile_and_run(

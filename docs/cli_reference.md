@@ -130,11 +130,12 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 |---|---|---:|---|
 | `stream off|heartbeat|raw|scaled|quat|debug` | Set serial stream mode | Runtime | Also updates config runtime fields where supported. |
 | `stream rate <hz>` | Set stream rate | Runtime | May be saved through config save. |
-| `log off|basic|full|start|stop` | Control machine-readable log | Runtime | Used by host replay/metrics tooling. `log full` also emits `MAGR` raw/calibrated/body magnetometer vectors. |
-| `log rate <hz>` | Set machine-log rate | Runtime | Runtime only. |
+| `log off|basic|full|start|stop` | Control session-bound machine log | Runtime | Used by host replay/metrics tooling. `log full` also emits `MAGR` raw/calibrated/body magnetometer vectors. TCP is capped at 20 Hz. |
+| `log finish` | Stop producers but retain/drain the deferred queue | Runtime | Wait for `LOGSTAT,PIPELINE` queued `0` and equal enqueued/serialized before summary/off. |
+| `log rate <hz>` | Set machine-log rate | Runtime | USB accepts 1..200 Hz; TCP accepts 1..20 Hz. A quality fixture uses full 20 Hz. |
 | `log header` | Emit LOGVER/LOGFMT header | No | Use before captures intended for replay. |
 | `log summary` | Emit compact runtime summary | No | Human/agent diagnostic helper. |
-| `log reset` | Reset log counters | Runtime | Does not reset firmware runtime. |
+| `log reset` | Reset log counters and deferred pipeline | Runtime | Does not reset firmware runtime. Only the owning session, or USB, may control an active log. |
 | `output mode debug` | Select local serial debug output | Runtime/config | Does not affect SlimeVR UDP. |
 | `output mode binary` | Return `NOT_IMPLEMENTED` | No | Custom binary backend is still reserved. |
 | `output rate <hz>` | Set local serial output rate | Runtime/config | SlimeVR has its own `slime rate <hz>` command. |
@@ -146,16 +147,18 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 | Command | Effect | Persisted | Notes |
 |---|---|---:|---|
 | `test status` | Print static-test and runtime-test status | No | Runtime test status is shown when the hook is available. |
-| `test static <seconds>` | Existing IMU/FIFO stationary test | No | Best for calibration/stability of IMU path, not full Wi-Fi load. |
-| `test runtime <seconds>` | Full firmware runtime/load test | No | Measures loop/CLI/FIFO/network/heartbeat timing plus Wi-Fi/SlimeVR/FIFO/quality deltas. |
-| `test stop` | Stop active static/runtime test | No | Requests stop; report is printed by the runner. |
+| `test static <seconds>` | Low-overhead IMU/FIFO stationary observer | No | Exact fault/timestamp counters, block-aggregated statistics and deferred completion. TCP duration is capped at 900 s. |
+| `test runtime <seconds>` | Sampled full firmware runtime/load observer | No | Existing counters remain exact; section timers sample 1/16 loops. TCP duration is capped at 900 s. |
+| `test stop` | Stop active static/runtime test | No | Only the owner can stop over TCP; USB may force-stop. Completion prints a compact marker. |
+| `test summary static|runtime` | Print one immutable compact `TESTSUM` CSV row | No | Available after completion over USB or the owning TCP session; contains exact measured-window counters without the multi-page report. |
+| `test report static|runtime` | Print the retained detailed report | No | Available only after completion and intentionally USB-only. It never runs from the measured sample/loop hot path. |
 
 ## Network / SlimeVR
 
 | Command | Effect | Persisted | Notes |
 |---|---|---:|---|
 | `remote status` | Print Wi-Fi TCP console state | No | Shows enabled/listening/client/counter state. |
-| `remote off` / `remote on` | Disable/enable the TCP CLI console for the current boot | No | Use `remote off` after cable-free setup/calibration. |
+| `remote off` / `remote on` | Disable/enable the TCP diagnostic listener for the current boot | No | Privileged USB-only control; use `remote off` after cable-free diagnostics. |
 | `net status` | Print Wi-Fi config/runtime status | No | Shows NVS load state, IP, RSSI, MAC, reconnect counters. |
 | `net print` | Print network config | No | Password is not revealed. |
 | `net set ssid <ssid> [save]` | Set Wi-Fi SSID | Optional | Use 2.4 GHz SSID for ESP32-C3. |
@@ -183,20 +186,20 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 
 ### Wi-Fi remote console
 
-Debug and Production expose the same CLI over TCP by default. The port is
+Debug and the explicit ProductionDiag image expose a restricted diagnostic CLI
+over TCP. Production and Slim compile the listener out. The port is
 `TRACKER_REMOTE_CONSOLE_PORT` (`7777` by default):
 
 ```bash
 nc <tracker-ip> 7777
 ```
 
-Use it for cable-free `setup calibration`, then run `remote off` to close the
-TCP client/server for the current boot. Both USB and TCP command output use
-fixed-size, byte-budgeted queues; use `console status` after a diagnostic burst
-to confirm that no output was dropped. During `setup calibration`, the
-firmware keeps an already connected Wi-Fi link instead of forcing a reconnect
-at the temperature stage, so the TCP console should stay attached. Slim
-compiles this feature out. See `docs/wifi_remote_console.md` for details.
+Remote commands pass an exact fail-closed allowlist before dispatch. Persistent
+config/setup/calibration/network changes, reset/reboot and other mutations are
+USB-only. TCP supports bounded status/performance inspection plus session-bound
+`log` and `test` control; a disconnect aborts those producers without falling
+back to USB. Both transports use fixed-size, byte-budgeted output queues. See
+`docs/wifi_remote_console.md` for the complete policy and unattended capture.
 
 SlimeVR UDP is independent from the local `output`/`stream` commands. `slime start` leaves serial `Q,...` output off and reads prepared quaternion snapshots directly.
 
@@ -212,7 +215,10 @@ That command scans visible networks, asks for a numbered selection and password,
 
 ## Live performance and motion diagnostics
 
-These commands are compiled only when `TRACKER_ENABLE_RUNTIME_PROFILER=1` (Debug by default, plus the service `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` environment). Production and Slim exclude the profiler/motion source files in `platformio.ini`, so a clean product/control build does not carry these commands. Use them from USB serial or the Wi-Fi remote console when a tracker drops SlimeVR TPS.
+These commands are compiled only when `TRACKER_ENABLE_RUNTIME_PROFILER=1`
+(Debug and ProductionDiag). Production and Slim exclude the profiler/motion
+source files. Profiler/motion activation is USB-only; the restricted TCP console
+may inspect their bounded status without mutating them.
 
 FIFO tuning behavior: apply `fifo watermark` while the tracker is stationary. A successful live hardware reconfigure intentionally enters controlled recovery, so output resumes after the short stationary tilt capture. A failed apply or NVS save restores the previous config and hardware settings.
 
@@ -277,10 +283,12 @@ promotion contracts.
 | `bias status` | Print runtime gyro-bias estimator state | No | Inspection only. |
 | `bias on|off` | Enable/disable runtime bias estimator | Runtime | No NVS write by itself. |
 | `bias reset` | Clear runtime trim/estimator state | Runtime | Does not clear saved calibration. |
-| `test static <seconds>` | Start non-blocking static test | Runtime | FIFO/AHRS/CLI continue running. |
-| `test runtime <seconds>` | Start full loop/network runtime test | Runtime | Measures Wi-Fi/SlimeVR/FIFO/quality deltas. |
+| `test static <seconds>` | Start non-blocking static test | Runtime | FIFO/AHRS/CLI continue; statistics merge in bounded blocks. |
+| `test runtime <seconds>` | Start sampled full loop/network runtime test | Runtime | Measures Wi-Fi/SlimeVR/FIFO/quality deltas without permanent loop timers. |
 | `test status` | Print static/runtime test status | No | Inspection only. |
-| `test stop` | Stop current static/runtime test | Runtime | Leaves last completed report when available. |
+| `test stop` | Stop current static/runtime test | Runtime | Leaves an immutable completed snapshot when usable samples exist. |
+| `test summary static|runtime` | Print compact immutable E1 completion evidence | No | Remote-safe after completion; exact measured-window counters. |
+| `test report static|runtime` | Print retained detailed result | No | Run after the measured window; USB-only. |
 
 ## Guided setup commands
 

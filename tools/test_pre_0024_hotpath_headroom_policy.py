@@ -7,8 +7,9 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,11 +53,12 @@ def compile_run(cxx: str, tmp: Path, name: str, sources: list[str], extra: list[
             "-I", str(ROOT / "src"),
             "-I", str(ROOT / "tests/native"),
             *[str(ROOT / source) for source in sources],
+            str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
             "-o", str(exe),
         ],
         check=True,
     )
-    subprocess.run([str(exe)], check=True)
+    subprocess.run([str(exe)], check=True, env=asan_ubsan_environment(ROOT))
 
 
 def stack_usage(tmp: Path, symbol: str) -> int:
@@ -172,7 +174,7 @@ def main() -> int:
     require(report, "tracking equations", "quality-preservation report")
 
     cxx = compiler()
-    with tempfile.TemporaryDirectory(prefix="tracker-pre0024-") as temp_name:
+    with project_temp_directory(ROOT, "tracker-pre0024-") as temp_name:
         tmp = Path(temp_name)
         compile_run(cxx, tmp, "profiler", [
             "tests/native/test_runtime_profiler.cpp",

@@ -7,8 +7,9 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,7 +36,7 @@ def compiler() -> str:
 
 
 def run(cmd: list[str]) -> None:
-    subprocess.run(cmd, cwd=ROOT, check=True)
+    subprocess.run(cmd, cwd=ROOT, check=True, env=asan_ubsan_environment(ROOT))
 
 
 def stack_usage(tmp: Path, symbol: str) -> int:
@@ -112,7 +113,7 @@ def main() -> int:
     require(report, "No tracking equation, cadence or packet payload changes", "quality report")
 
     cxx = compiler()
-    with tempfile.TemporaryDirectory(prefix="tracker-pre0024ab-") as temp_name:
+    with project_temp_directory(ROOT, "tracker-pre0024ab-") as temp_name:
         tmp = Path(temp_name)
         common = ["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
                   "-I", str(ROOT / "src"), "-I", str(ROOT / "tests/native")]
@@ -120,6 +121,7 @@ def main() -> int:
         run([
             cxx, *common,
             str(ROOT / "tests/native/policy_pre_0024ab_frame_cache.cpp"),
+            str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
             str(ROOT / "src/sensor/mag_runtime.cpp"),
             "-o", str(tmp / "frame_cache"),
         ])
@@ -131,6 +133,7 @@ def main() -> int:
         run([
             cxx, *sanitizer,
             str(ROOT / "tests/native/policy_pre_0024ab_frame_cache.cpp"),
+            str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
             str(ROOT / "src/sensor/mag_runtime.cpp"),
             "-o", str(tmp / "frame_cache_sanitized"),
         ])
@@ -139,6 +142,7 @@ def main() -> int:
         run([
             cxx, *common,
             str(ROOT / "tests/native/test_runtime_profiler.cpp"),
+            str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
             str(ROOT / "src/runtime/runtime_profiler.cpp"),
             "-o", str(tmp / "runtime_profiler"),
         ])

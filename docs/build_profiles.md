@@ -1,8 +1,8 @@
 # Build profiles
 
-The committed default environment is `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG`.
+The committed default environment is `BOARD_LOLIN_C3_MINI_PRODUCTION`.
 
-The firmware has three committed compile-time profiles. Select a profile with
+The firmware has four committed compile-time profiles. Select a profile with
 `TRACKER_BUILD_PROFILE` in `platformio.ini`; this must stay a build-time choice
 because the goal is to remove unused code from the final binary.
 
@@ -15,20 +15,17 @@ pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG
 pio run -e BOARD_LOLIN_C3_MINI_SLIM
 ```
 
-The committed matrix also contains one service environment,
-`BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG`. It is not a fourth product profile: it
-uses `TRACKER_PROFILE_PRODUCTION` plus `TRACKER_ENABLE_RUNTIME_PROFILER=1` so a
-wearable tracker can expose `perf`/`motion` over serial/telnet without linking
-the full Debug profile. It is also the committed default environment in
-`platformio.ini`, because it is the normal on-device diagnostic baseline for the
-`Upgrades` branch. For other local A/B experiments, pass `-D...` overrides from
-a private PlatformIO config or a one-off build command.
+`BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` is the explicit capture/service image. It
+has its own `TRACKER_PROFILE_PRODUCTION_DIAG` identity, uses Production-family
+scheduling and includes the complete bounded diagnostic surface needed for
+cable-free LOGVER3 capture. It cannot present itself as Production. For local
+A/B experiments, pass `-D...` overrides from a private PlatformIO config or a
+one-off build command.
 
 The profile validator treats this as an explicit contract: all four build
-environments must exist, Production Diagnostic must map to
-`TRACKER_PROFILE_PRODUCTION`, and `default_envs` must remain the committed
-wearable diagnostic environment unless the policy and documentation are changed
-together.
+environments must exist, Production Diagnostic must map to its distinct
+profile, and `default_envs` must remain locked-down Production unless policy and
+documentation are changed together.
 
 ## Debug
 
@@ -50,8 +47,8 @@ Use Debug for:
 ## Production
 
 Production keeps user-facing functionality: Wi-Fi/NVS setup, SlimeVR networking,
-basic CLI, Wi-Fi remote console for cable-free calibration, calibration/config
-commands, battery runtime and server telemetry. It
+basic USB CLI, calibration/config commands, battery runtime and server
+telemetry. The TCP listener is compiled out. It
 excludes developer-only diagnostics such as machine log, serial stream, `perf`/`motion`, static
 tests, runtime tests and boot heartbeat.
 
@@ -64,14 +61,10 @@ Production keeps a compact config/network summary for service checks.
 
 ## Production Diagnostic
 
-`BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` is the recommended wearable stress-test
-build when normal Production boots but full Debug is too heavy or unstable. It
-keeps the Production feature policy and source-filter exclusions, but leaves in:
-
-- `runtime/runtime_profiler.cpp`;
-- `runtime/runtime_motion_diagnostics.cpp`;
-- `serial/tracker_perf_commands.cpp`;
-- `serial/tracker_motion_commands.cpp`.
+`BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` is the explicit wearable stress-test and
+capture build. It keeps Production-family runtime cadence while compiling the
+full CLI, static/runtime tests, machine log, detailed reporters, profiler,
+motion diagnostics and bounded TCP console.
 
 Use it for ankle/thermal/TPS diagnostics:
 
@@ -79,17 +72,18 @@ Use it for ankle/thermal/TPS diagnostics:
 pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG -t upload
 ```
 
-Then connect over serial or telnet and run:
+Then connect over USB for privileged work or TCP for the read-only/runtime
+diagnostic allowlist. Example cable-free capture:
 
-```text
-perf on
-motion on
-perf status
-motion status
+```bash
+python3 tools/capture_telnet_log.py --host <tracker-ip> --seconds 600 \
+  --rate 20 --mode full --output logver3_static_clean_001.log
 ```
 
-This environment is intentionally closer to Production than Debug: no machine
-log, no serial stream, no static/runtime test runners and no boot heartbeat.
+The remote allowlist permits status/performance inspection plus bounded
+`log`/`test` control, but rejects setup, persistence, calibration, network
+mutation, reset and reboot. Detailed retained test reports are USB-only; TCP
+receives compact progress/completion markers during measured windows.
 
 Safety note: profiler and motion diagnostic objects are optional diagnostic sinks.
 The application no longer treats missing profiler/motion pointers as a boot-blocking

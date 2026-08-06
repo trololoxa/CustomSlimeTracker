@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "defines.h"
+#include "network/wifi_remote_console_lease.hpp"
 #include "serial/tracker_serial_commands.hpp"
 #include "serial/bounded_duplex_stream.hpp"
 
@@ -23,6 +24,11 @@ struct WifiRemoteConsoleStatus {
     uint32_t droppedClients = 0;
     uint32_t bytesIn = 0;
     uint32_t bytesDropped = 0;
+    uint32_t activeSessionId = 0;
+    uint32_t captureAborts = 0;
+    uint32_t leaseTimeoutMs = TRACKER_REMOTE_CONSOLE_SESSION_LEASE_MS;
+    uint32_t leaseAgeMs = 0;
+    uint32_t leaseExpirations = 0;
     uint32_t acceptPolls = 0;
     uint32_t acceptPollSkips = 0;
     BoundedDuplexStreamStatus output;
@@ -43,6 +49,10 @@ public:
     // It intentionally does not create a client or change console enable state.
     bool writeDiagnosticLine(const char* line);
     bool enabled() const { return enabled_; }
+    bool clientSessionActive() const { return clientConnected_; }
+    // Enforce the lease even when deadline admission repeatedly skips socket
+    // service. A live, non-expired diagnostic session blocks motion sleep.
+    bool sessionBlocksMotionSleep(uint32_t nowMs);
     WifiRemoteConsoleStatus status() const;
     void printStatus(Stream& out) const;
     void resetOutputState();
@@ -54,7 +64,7 @@ private:
     void startServer();
     void stopServer();
     void stopClient();
-    void acceptClient(WiFiClient& candidate);
+    void acceptClient(WiFiClient& candidate, uint32_t nowMs);
 #endif
 
     bool configured_ = false;
@@ -66,6 +76,11 @@ private:
     uint32_t droppedClients_ = 0;
     uint32_t bytesIn_ = 0;
     uint32_t bytesDropped_ = 0;
+    uint32_t nextSessionId_ = 0;
+    uint32_t activeSessionId_ = 0;
+    uint32_t captureAborts_ = 0;
+    uint32_t leaseExpirations_ = 0;
+    WifiRemoteConsoleSessionLease sessionLease_;
     uint32_t lastOutputDrainMs_ = 0;
     uint32_t lastAcceptPollMs_ = 0;
     bool acceptPollScheduled_ = false;

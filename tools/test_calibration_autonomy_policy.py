@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -139,7 +140,7 @@ def main() -> int:
     require(config_detail, "CONFIG_VERSION = 2", "unchanged config schema v2")
     require(storage_h, "CANDIDATE_VERSION = 3", "unchanged candidate format v3")
 
-    with tempfile.TemporaryDirectory(prefix="tracker-autonomy-stack-") as tmp:
+    with project_temp_directory(ROOT, "tracker-autonomy-stack-") as tmp:
         tmp_path = Path(tmp)
         cxx = compiler()
         common = [

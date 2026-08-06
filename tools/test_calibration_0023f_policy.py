@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -99,7 +100,7 @@ def main() -> int:
     require(pipeline, "const bool gyroTempCaptureActive", "inactive setup capture cold gate")
     require(pipeline, "if (hasCoherentAccel && (staticTestCaptureActive || gyroTempCaptureActive))", "setup transform admission")
 
-    with tempfile.TemporaryDirectory(prefix="tracker-0023f-stack-") as tmp:
+    with project_temp_directory(ROOT, "tracker-0023f-stack-") as tmp:
         tmp_path = Path(tmp)
         source = ROOT / "src/runtime/gyro_temp_static_fit.cpp"
         subprocess.run(

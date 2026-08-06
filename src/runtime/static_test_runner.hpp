@@ -10,6 +10,8 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "core/math.hpp"
 #include "runtime/mag_runtime_state.hpp"
+#include "network/wifi_manager.hpp"
+#include "runtime/slimevr_output_runtime.hpp"
 #include "runtime/static_test_types.hpp"
 #include "runtime/tracker_runtime_types.hpp"
 #include "sensor/ahrs_6dof.hpp"
@@ -36,6 +38,8 @@ public:
         const TrackerPerfCounters* perf = nullptr;
         const TrackerConfig* config = nullptr;
         const Ahrs6Dof* ahrs = nullptr;
+        const TrackerWifiManager* wifi = nullptr;
+        const SlimeVROutputRuntime* slimevr = nullptr;
 
         const MagRuntimeProcessor* magProcessor = nullptr;
         const MagHeadingEstimator* magHeading = nullptr;
@@ -51,19 +55,21 @@ public:
     const StaticRuntimeTest* lastCompleted() const;
 
     bool start(uint32_t durationMs, Stream& out, float magErrorStartDeg);
-    bool stop();
+    bool stop(Stream& out, bool force = false);
+    bool abortOutput(Stream& out);
     void printStatus(Stream& out) const;
+    bool printLastSummary(Stream& out) const;
+    bool printLastReport(Stream& out) const;
 
     void recordMagYawSample(float headingErrorDeg,
                             const MagHeadingSample& heading,
                             const MagYawCorrectionOutput& yaw);
     void updateSample(const Lsm6dsv::Sample& calibrated,
-                      const ImuQualityResult& quality,
-                      Stream& out);
+                      const ImuQualityResult& quality);
 
     void recordSampleProcessTime(uint32_t processUs);
     void recordFifoProcessTime(uint32_t processUs);
-    void finish(Stream& out);
+    void finish();
 
 private:
     struct PerfDelta {
@@ -81,8 +87,11 @@ private:
     void snapshotPerfCounters(StaticRuntimeTest& t) const;
     PerfDelta perfDelta(const StaticRuntimeTest& t) const;
     void printProgress(Stream& out, uint32_t elapsedMs) const;
+    void flushStats(StaticRuntimeTest& test);
 
     Dependencies deps_;
+    Stream* output_ = nullptr;
+    StaticTestStatsBlock statsBlock_;
 };
 
 } // namespace tracker

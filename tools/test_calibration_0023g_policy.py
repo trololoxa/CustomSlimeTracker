@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -129,7 +130,7 @@ def main() -> int:
     require(report, "Why the supplied 0023h did not apply", "0023g defect report")
     require(report, "dynamic_axis_partition_confirmed_axes", "hardware acceptance diagnostics")
 
-    with tempfile.TemporaryDirectory(prefix="tracker-0023g-stack-") as tmp:
+    with project_temp_directory(ROOT, "tracker-0023g-stack-") as tmp:
         tmp_path = Path(tmp)
         common = [
             compiler(), "-std=c++20", "-O2", "-fstack-usage",

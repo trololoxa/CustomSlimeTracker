@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPAT = ROOT / "src/serial/tracker_slimevr_serial_compat_commands.cpp"
@@ -101,10 +102,8 @@ def main() -> int:
     require(testing, "0023gi SlimeVR Connect Trackers handshake/build-date regression", "testing documentation")
     require(report, "packet number to `0`", "protocol audit finding")
 
-    subprocess.run([os.environ.get("PYTHON", "python3"), str(ROOT / "tools/test_build_identity.py")], check=True)
-
     cxx = compiler()
-    with tempfile.TemporaryDirectory(prefix="tracker-0023gi-") as tmp_name:
+    with project_temp_directory(ROOT, "tracker-0023gi-") as tmp_name:
         tmp = Path(tmp_name)
         common = [
             cxx,

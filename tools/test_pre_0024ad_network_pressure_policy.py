@@ -7,8 +7,9 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,13 +40,14 @@ def compile_runtime(cxx: str, exe: Path, extra: list[str]) -> None:
         cxx, "-std=c++20", *extra,
         "-I", str(ROOT / "src"), "-I", str(ROOT / "tests/native"),
         str(ROOT / "tests/native/test_slimevr_output_runtime.cpp"),
+        str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
         str(ROOT / "src/runtime/slimevr_output_runtime.cpp"),
         str(ROOT / "src/output/slimevr_packet_writer.cpp"),
         str(ROOT / "src/network/wifi_manager.cpp"),
         str(ROOT / "src/network/udp_transport.cpp"),
         "-o", str(exe),
     ], check=True)
-    subprocess.run([str(exe)], check=True)
+    subprocess.run([str(exe)], check=True, env=asan_ubsan_environment(ROOT))
 
 
 def stack_usage(tmp: Path, symbol: str) -> int:
@@ -155,7 +157,7 @@ def main() -> int:
     require(report, "815", "five-hour full-reopen evidence")
 
     cxx = compiler()
-    with tempfile.TemporaryDirectory(prefix="tracker-pre0024ad-") as tmp_name:
+    with project_temp_directory(ROOT, "tracker-pre0024ad-") as tmp_name:
         tmp = Path(tmp_name)
         compile_runtime(cxx, tmp / "runtime", ["-O2", "-Wall", "-Wextra", "-Werror"])
         compile_runtime(cxx, tmp / "runtime_san", [

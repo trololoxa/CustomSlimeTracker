@@ -6,9 +6,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -87,7 +87,7 @@ def main() -> int:
     require(report, "algebraic_residual_too_high", "recorded hardware failure")
     require(report, "x^T A x + b^T x = 1", "equation analysis")
 
-    with tempfile.TemporaryDirectory(prefix="tracker-0023gb-") as tmp:
+    with project_temp_directory(ROOT, "tracker-0023gb-") as tmp:
         exe = Path(tmp) / "test_mag_calibration"
         subprocess.run(
             [
@@ -101,7 +101,6 @@ def main() -> int:
         )
         subprocess.run([str(exe)], check=True)
 
-    subprocess.run([sys.executable, str(ROOT / "tools/test_calibration_0023ga_policy.py")], check=True)
     print("# calibration_0023gb_policy: PASS")
     return 0
 

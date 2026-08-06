@@ -130,6 +130,9 @@ public:
     // Discard all samples captured before an external/manual FIFO reset.
     void resetWork();
 
+    void setDiagnosticsTimingEnabled(bool enabled);
+    bool diagnosticsTimingEnabled() const { return diagnosticsTimingEnabled_; }
+
     bool hasPendingWork() const;
     bool urgent() const;
     bool urgentByDepth() const;
@@ -190,6 +193,9 @@ private:
     uint32_t rawQueueEnqueuedAtUs_[kTrackedRawQueueCapacity] = {};
 #endif
     uint32_t lastDequeuedQueueAgeUs_ = 0;
+    bool diagnosticsTimingEnabled_ = false;
+    bool diagnosticsTimingSampled_ = false;
+    uint32_t diagnosticsTimingDecimator_ = 0u;
     FifoRuntimeQueueStats queueStats_;
 };
 

@@ -1,6 +1,7 @@
 #include "runtime/static_test_runner.hpp"
 
 #include "build_config/build_identity.hpp"
+#include "runtime/diagnostic_test_summary.hpp"
 
 namespace tracker {
 
@@ -14,6 +15,8 @@ float staticTestAngleDiffDeg(float a, float b) {
 
 void StaticTestRunner::begin(const Dependencies& deps) {
     deps_ = deps;
+    output_ = nullptr;
+    statsBlock_.reset();
 }
 
 bool StaticTestRunner::active() const {
@@ -39,6 +42,8 @@ bool StaticTestRunner::start(uint32_t durationMs, Stream& out, float magErrorSta
     if (t.active) return false;
 
     t.reset();
+    statsBlock_.reset();
+    output_ = &out;
     t.active = true;
     t.durationMs = durationMs;
     t.startMs = millis();
@@ -57,6 +62,23 @@ bool StaticTestRunner::start(uint32_t durationMs, Stream& out, float magErrorSta
     t.fifoUnknownAtStart = fs.unknownWords;
     t.fifoHwTsAtStart = fs.hwTimestampAssigned;
     t.fifoFbTsAtStart = fs.fallbackTimestampAssigned;
+
+    if (deps_.wifi != nullptr && deps_.slimevr != nullptr) {
+        const TrackerWifiManagerStatus wifi = deps_.wifi->status();
+        const SlimeVROutputRuntimeStatus slime = deps_.slimevr->status();
+        t.networkMetricsValid = true;
+        t.wifiDisconnectsAtStart = wifi.disconnects;
+        t.wifiConnectTimeoutsAtStart = wifi.connectTimeouts;
+        t.udpSendFailuresAtStart = slime.sendFailures;
+        t.rotationSendFailuresAtStart = slime.rotationSendFailures;
+        t.rotationMissedDeadlinesAtStart = slime.rotationMissedDeadlines;
+        t.rotationLateEventsAtStart = slime.rotationLateEvents;
+        t.txPressureFailuresAtStart = slime.txPressureFailures;
+        t.txOtherFailuresAtStart = slime.txOtherFailures;
+        t.udpRebindSuccessesAtStart = slime.udpTransportRebindSuccesses;
+        t.udpRebindFailuresAtStart = slime.udpTransportRebindFailures;
+        t.udpFullReopensAtStart = slime.udpFullReopenEscalations;
+    }
 
     snapshotPerfCounters(t);
 
@@ -98,14 +120,28 @@ bool StaticTestRunner::start(uint32_t durationMs, Stream& out, float magErrorSta
 #endif
 }
 
-bool StaticTestRunner::stop() {
+bool StaticTestRunner::stop(Stream& out, bool force) {
 #if !TRACKER_ENABLE_STATIC_TEST
     return false;
 #else
     if (!ready()) return false;
     StaticRuntimeTest& t = *deps_.activeTest;
     if (!t.active) return false;
+    if (!force && output_ != &out) return false;
     t.stopRequested = true;
+    return true;
+#endif
+}
+
+bool StaticTestRunner::abortOutput(Stream& out) {
+#if !TRACKER_ENABLE_STATIC_TEST
+    (void)out;
+    return false;
+#else
+    if (!active() || output_ != &out) return false;
+    deps_.activeTest->reset();
+    statsBlock_.reset();
+    output_ = nullptr;
     return true;
 #endif
 }
@@ -132,6 +168,7 @@ void StaticTestRunner::printStatus(Stream& out) const {
     out.print("elapsed_s="); out.println(elapsed / 1000UL);
     out.print("duration_s="); out.println(t.durationMs / 1000UL);
     out.print("samples="); out.println(t.samples);
+    out.print("stats_pending_samples="); out.println(statsBlock_.bufferedSamples);
     out.print("hw_ts="); out.println(t.hwTs);
     out.print("fallback_ts="); out.println(t.fallbackTs);
     out.print("bad_ts="); out.println(t.badTs);
@@ -188,19 +225,24 @@ void StaticTestRunner::recordMagYawSample(float headingErrorDeg,
 }
 
 void StaticTestRunner::updateSample(const Lsm6dsv::Sample& calibrated,
-                  const ImuQualityResult& quality,
-                  Stream& out) {
+                  const ImuQualityResult& quality) {
 #if !TRACKER_ENABLE_STATIC_TEST
     (void)calibrated;
     (void)quality;
-    (void)out;
     return;
 #else
     if (!active()) return;
+    if (output_ == nullptr) {
+        deps_.activeTest->reset();
+        return;
+    }
+    Stream& out = *output_;
 
     StaticRuntimeTest& t = *deps_.activeTest;
-    const uint32_t updateStartUs = micros();
-    const uint32_t nowMs = millis();
+    const bool sampleClock = t.stopRequested ||
+        (t.updateDecimator++ % TRACKER_DIAGNOSTIC_TIMING_SAMPLE_DIVISOR) == 0u;
+    const uint32_t updateStartUs = sampleClock ? micros() : 0u;
+    const uint32_t nowMs = sampleClock ? millis() : t.lastProgressMs;
     const uint32_t elapsedMs = nowMs - t.startMs;
 
     if (quality.has(imu_quality_flags::TIMESTAMP_HARDWARE)) t.hwTs++;
@@ -212,9 +254,6 @@ void StaticTestRunner::updateSample(const Lsm6dsv::Sample& calibrated,
     if (!quality.shouldUseAccelCorrection) t.accelDisabled++;
 
     const float accelNormG = quality.accelNormValid ? quality.accelNormG : calibrated.accel_g.norm();
-    if (quality.dtUs > 0) t.dtUs.push(static_cast<float>(quality.dtUs));
-    t.accelNormG.push(accelNormG);
-    t.accelTrust.push(quality.accelConfidence);
     if (!t.tempCaptured) {
         t.tempCaptured = true;
         t.tempStartC = calibrated.temp_c;
@@ -222,8 +261,6 @@ void StaticTestRunner::updateSample(const Lsm6dsv::Sample& calibrated,
 
     t.tempEndC = calibrated.temp_c;
 
-    t.tempC.push(calibrated.temp_c);
-    t.gyroAfterRadS.push(calibrated.gyro_rad_s);
     const int tempBinIdx = staticTempBinIndex(calibrated.temp_c);
     const bool staticSampleGoodForTempFit = quality.shouldUpdateAhrs &&
         !quality.shouldRequestFifoRecovery &&
@@ -235,17 +272,32 @@ void StaticTestRunner::updateSample(const Lsm6dsv::Sample& calibrated,
         !quality.has(imu_quality_flags::FIFO_FULL) &&
         !quality.has(imu_quality_flags::GYRO_SATURATED) &&
         !quality.has(imu_quality_flags::ACCEL_SATURATED);
-    if (tempBinIdx >= 0) {
-        t.tempBins[tempBinIdx].push(
-            calibrated.temp_c,
-            calibrated.gyro_rad_s,
-            accelNormG,
-            staticSampleGoodForTempFit
-        );
-    } else {
+    if (!statsBlock_.push(quality.dtUs,
+                          quality.accelConfidence,
+                          calibrated.temp_c,
+                          calibrated.gyro_rad_s,
+                          accelNormG,
+                          tempBinIdx,
+                          staticSampleGoodForTempFit)) {
+        // A physically implausible >4 C span inside one 64-sample block must
+        // not lose or double-count a sample. Flush the bounded sparse bins and
+        // retry into the now-empty block.
+        flushStats(t);
+        (void)statsBlock_.push(quality.dtUs,
+                               quality.accelConfidence,
+                               calibrated.temp_c,
+                               calibrated.gyro_rad_s,
+                               accelNormG,
+                               tempBinIdx,
+                               staticSampleGoodForTempFit);
+    }
+    if (tempBinIdx < 0) {
         t.tempBinOutOfRangeSamples++;
     }
     t.samples++;
+    if (statsBlock_.bufferedSamples >= TRACKER_STATIC_TEST_STATS_BLOCK_SAMPLES) {
+        flushStats(t);
+    }
 
     if (deps_.ahrs != nullptr && deps_.ahrs->initialized()) {
         const Quat q = deps_.ahrs->quaternionPositiveW();
@@ -260,17 +312,21 @@ void StaticTestRunner::updateSample(const Lsm6dsv::Sample& calibrated,
         t.poseSamples++;
     }
 
-    if (nowMs - t.lastProgressMs >= deps_.progressPeriodMs) {
+    if (sampleClock && nowMs - t.lastProgressMs >= deps_.progressPeriodMs) {
+        flushStats(t);
         t.lastProgressMs = nowMs;
         printProgress(out, elapsedMs);
     }
 
-    const uint32_t updateUs = micros() - updateStartUs;
-    if (updateUs > t.maxUpdateUs) t.maxUpdateUs = updateUs;
-    if (updateUs > 1000UL) t.slowUpdateCount++;
+    if (sampleClock) {
+        ++t.updateTimingSamples;
+        const uint32_t updateUs = micros() - updateStartUs;
+        if (updateUs > t.maxUpdateUs) t.maxUpdateUs = updateUs;
+        if (updateUs > 1000UL) t.slowUpdateCount++;
+    }
 
-    if (t.stopRequested || elapsedMs >= t.durationMs) {
-        finish(out);
+    if (t.stopRequested || (sampleClock && elapsedMs >= t.durationMs)) {
+        finish();
     }
 #endif
 }
@@ -291,12 +347,14 @@ void StaticTestRunner::recordFifoProcessTime(uint32_t processUs) {
     }
 }
 
-void StaticTestRunner::finish(Stream& out) {
-    if (!active()) return;
-
-    StaticRuntimeTest& t = *deps_.activeTest;
-    const auto& fs = deps_.fifo->stats();
-    const uint32_t elapsedMs = millis() - t.startMs;
+bool StaticTestRunner::printLastReport(Stream& out) const {
+    const StaticRuntimeTest* completed = lastCompleted();
+    if (completed == nullptr) {
+        out.println("# ERR no completed static test report");
+        return false;
+    }
+    const StaticRuntimeTest& t = *completed;
+    const uint32_t elapsedMs = t.finishedElapsedMs;
     const float durationS = static_cast<float>(elapsedMs) / 1000.0f;
     const float sampleRate = durationS > 0.0f ? static_cast<float>(t.samples) / durationS : 0.0f;
 
@@ -304,10 +362,6 @@ void StaticTestRunner::finish(Stream& out) {
     const Vec3 gyroAfterStdDps = t.gyroAfterRadS.stddev() * MATH_RAD_TO_DEG;
     const Vec3 gyroAfterMinDps = t.gyroAfterRadS.minValue * MATH_RAD_TO_DEG;
     const Vec3 gyroAfterMaxDps = t.gyroAfterRadS.maxValue * MATH_RAD_TO_DEG;
-
-    if (t.poseCaptured) {
-        t.eulerEndDeg = t.qEnd.toEulerXYZ() * MATH_RAD_TO_DEG;
-    }
 
     const float dRoll = staticTestAngleDiffDeg(t.eulerStartDeg.x, t.eulerEndDeg.x);
     const float dPitch = staticTestAngleDiffDeg(t.eulerStartDeg.y, t.eulerEndDeg.y);
@@ -323,7 +377,7 @@ void StaticTestRunner::finish(Stream& out) {
     out.print("build_profile: "); out.println(trackerBuildProfileName());
     out.print("build_pio_env: "); out.println(trackerBuildPioEnvironment());
     out.print("build_git: "); out.println(trackerBuildIdentityString());
-    out.print("stopped_by_command: "); out.println(t.stopRequested ? "yes" : "no");
+    out.print("stopped_by_command: "); out.println(t.stoppedByCommand ? "yes" : "no");
     out.print("duration_s: "); out.println(durationS, 3);
     out.print("samples: "); out.println(t.samples);
     out.print("sample_rate_hz: "); out.println(sampleRate, 3);
@@ -335,11 +389,24 @@ void StaticTestRunner::finish(Stream& out) {
     out.print("ahrs_skipped_samples: "); out.println(t.ahrsSkipped);
     out.print("accel_correction_disabled_samples: "); out.println(t.accelDisabled);
     out.print("static_update_max_us: "); out.println(t.maxUpdateUs);
+    out.print("static_update_timing_samples: "); out.println(t.updateTimingSamples);
+    out.print("diagnostic_timing_sample_divisor: ");
+    out.println((uint32_t)TRACKER_DIAGNOSTIC_TIMING_SAMPLE_DIVISOR);
+    out.print("static_stats_block_samples: ");
+    out.println((uint32_t)TRACKER_STATIC_TEST_STATS_BLOCK_SAMPLES);
     out.print("sample_process_max_us: "); out.println(t.maxSampleProcessUs);
     out.print("fifo_process_max_us: "); out.println(t.maxFifoProcessUs);
     out.print("static_update_slow_count: "); out.println(t.slowUpdateCount);
 
-    const PerfDelta perf = perfDelta(t);
+    PerfDelta perf;
+    perf.sampleCalls = t.perfSampleCallsDelta;
+    perf.sampleSumUs = t.perfSampleSumUsDelta;
+    perf.fifoCalls = t.perfFifoCallsDelta;
+    perf.fifoSumUs = t.perfFifoSumUsDelta;
+    perf.emptyPolls = t.perfEmptyPollsDelta;
+    perf.irqEvents = t.perfIrqEventsDelta;
+    perf.fallbackPolls = t.perfFallbackPollsDelta;
+    perf.fallbackEvents = t.perfFallbackEventsDelta;
     out.println("------------------------------------------------------------------------------");
     out.println("PERF delta during test");
     out.print("perf_sample_process_calls: "); out.println(perf.sampleCalls);
@@ -357,11 +424,11 @@ void StaticTestRunner::finish(Stream& out) {
 
     out.println("------------------------------------------------------------------------------");
     out.println("FIFO delta during test");
-    out.print("fifo_overrun_delta: "); out.println(fs.overrunEvents - t.fifoOverrunAtStart);
-    out.print("fifo_full_delta: "); out.println(fs.fullEvents - t.fifoFullAtStart);
-    out.print("fifo_unknown_delta: "); out.println(fs.unknownWords - t.fifoUnknownAtStart);
-    out.print("fifo_hw_ts_delta: "); out.println(fs.hwTimestampAssigned - t.fifoHwTsAtStart);
-    out.print("fifo_fb_ts_delta: "); out.println(fs.fallbackTimestampAssigned - t.fifoFbTsAtStart);
+    out.print("fifo_overrun_delta: "); out.println(t.fifoOverrunDelta);
+    out.print("fifo_full_delta: "); out.println(t.fifoFullDelta);
+    out.print("fifo_unknown_delta: "); out.println(t.fifoUnknownDelta);
+    out.print("fifo_hw_ts_delta: "); out.println(t.fifoHwTsDelta);
+    out.print("fifo_fb_ts_delta: "); out.println(t.fifoFbTsDelta);
 
     out.println("------------------------------------------------------------------------------");
     out.println("Timing / motion stats");
@@ -463,10 +530,6 @@ void StaticTestRunner::finish(Stream& out) {
     out.println("------------------------------------------------------------------------------");
     out.println("MAG / YAW CORRECTION");
 
-    const auto& ms = deps_.magProcessor->stats();
-    const auto& hs = deps_.magHeading->stats();
-    const auto& ys = deps_.magYawCorrection->stats();
-
     const float magErrorAbsMeanDeg =
         t.magErrorSamples > 0
             ? static_cast<float>(t.magErrorAbsSumDeg / static_cast<double>(t.magErrorSamples))
@@ -482,7 +545,7 @@ void StaticTestRunner::finish(Stream& out) {
     out.println(t.magRefValidAtStart ? "yes" : "no");
 
     out.print("mag_ref_valid_end: ");
-    out.println(deps_.magHeadingRef != nullptr && deps_.magHeadingRef->valid ? "yes" : "no");
+    out.println(t.magRefValidEnd ? "yes" : "no");
 
     out.print("mag_error_start_deg: ");
     out.println(t.magErrorStartDeg, 6);
@@ -539,82 +602,231 @@ void StaticTestRunner::finish(Stream& out) {
     out.println(t.magYawCorrectionStepDeg.maxValue, 9);
 
     out.print("mag_trusted_delta: ");
-    out.println(ms.trustedSamples - t.magTrustedAtStart);
+    out.println(t.magTrustedDelta);
 
     out.print("mag_rejected_delta: ");
-    out.println(ms.rejectedSamples - t.magRejectedAtStart);
+    out.println(t.magRejectedDelta);
 
     out.print("mag_heading_valid_delta: ");
-    out.println(hs.valid - t.magHeadingValidAtStart);
+    out.println(t.magHeadingValidDelta);
 
     out.print("mag_heading_rejected_delta: ");
-    out.println(hs.rejected - t.magHeadingRejectedAtStart);
+    out.println(t.magHeadingRejectedDelta);
 
     out.print("mag_yaw_updates_delta: ");
-    out.println(ys.updates - t.magYawUpdatesAtStart);
+    out.println(t.magYawUpdatesDelta);
 
     out.print("mag_yaw_gate_open_delta: ");
-    out.println(ys.gateOpenCount - t.magYawGateOpenAtStart);
+    out.println(t.magYawGateOpenDelta);
 
     out.print("mag_yaw_gate_closed_delta: ");
-    out.println(ys.gateClosedCount - t.magYawGateClosedAtStart);
+    out.println(t.magYawGateClosedDelta);
 
     out.print("mag_yaw_apply_allowed_delta: ");
-    out.println(ys.applyAllowedCount - t.magYawApplyAllowedAtStart);
+    out.println(t.magYawApplyAllowedDelta);
 
     out.print("mag_yaw_applied_delta: ");
-    out.println(ys.appliedCount - t.magYawAppliedAtStart);
+    out.println(t.magYawAppliedDelta);
 
-    const MagYawCorrectionOutput* lastYaw = deps_.lastMagYawCorrection;
     out.print("mag_yaw_last_error_deg: ");
-    out.println(lastYaw != nullptr ? lastYaw->errorDeg : 0.0f, 6);
+    out.println(t.lastMagYawErrorDeg, 6);
 
     out.print("mag_yaw_last_correction_rate_deg_s: ");
-    out.println(lastYaw != nullptr ? lastYaw->correctionRateDegS : 0.0f, 6);
+    out.println(t.lastMagYawCorrectionRateDegS, 6);
 
     out.print("mag_yaw_last_correction_step_deg: ");
-    out.println(lastYaw != nullptr ? lastYaw->correctionStepDeg : 0.0f, 6);
+    out.println(t.lastMagYawCorrectionStepDeg, 6);
 
     out.print("mag_yaw_reject_no_reference_delta: ");
-    out.println(ys.rejectNoReference - t.magYawRejectNoReferenceAtStart);
+    out.println(t.magYawRejectNoReferenceDelta);
 
     out.print("mag_yaw_reject_heading_invalid_delta: ");
-    out.println(ys.rejectHeadingInvalid - t.magYawRejectHeadingInvalidAtStart);
+    out.println(t.magYawRejectHeadingInvalidDelta);
 
     out.print("mag_yaw_reject_mag_not_trusted_delta: ");
-    out.println(ys.rejectMagNotTrusted - t.magYawRejectMagNotTrustedAtStart);
+    out.println(t.magYawRejectMagNotTrustedDelta);
 
     out.print("mag_yaw_reject_mag_stale_delta: ");
-    out.println(ys.rejectMagStale - t.magYawRejectMagStaleAtStart);
+    out.println(t.magYawRejectMagStaleDelta);
 
     out.print("mag_yaw_reject_horizontal_bad_delta: ");
-    out.println(ys.rejectHorizontalBad - t.magYawRejectHorizontalBadAtStart);
+    out.println(t.magYawRejectHorizontalBadDelta);
 
     out.print("mag_yaw_reject_innovation_too_large_delta: ");
-    out.println(ys.rejectInnovationTooLarge - t.magYawRejectInnovationTooLargeAtStart);
+    out.println(t.magYawRejectInnovationTooLargeDelta);
 
     out.print("mag_yaw_reject_gyro_moving_delta: ");
-    out.println(ys.rejectGyroMoving - t.magYawRejectGyroMovingAtStart);
+    out.println(t.magYawRejectGyroMovingDelta);
 
     out.print("mag_yaw_reject_accel_not_trusted_delta: ");
-    out.println(ys.rejectAccelNotTrusted - t.magYawRejectAccelNotTrustedAtStart);
+    out.println(t.magYawRejectAccelNotTrustedDelta);
     out.println("==============================================================================");
-    out.println("STATIC TEST DONE");
+    out.println("STATIC TEST REPORT END");
     out.println("==============================================================================");
+    return true;
+}
 
-    const bool completedOk = t.samples > 0 &&
-                             t.gyroAfterRadS.count > 0 &&
-                             t.tempC.count > 0;
-    if (completedOk && deps_.lastCompletedTest != nullptr &&
-        deps_.lastCompletedValid != nullptr && deps_.lastCompletedFinishedMs != nullptr) {
+bool StaticTestRunner::printLastSummary(Stream& out) const {
+    const StaticRuntimeTest* completed = lastCompleted();
+    if (completed == nullptr) {
+        out.println("# ERR no completed static test summary");
+        return false;
+    }
+
+    const StaticRuntimeTest& t = *completed;
+    DiagnosticTestSummary summary;
+    summary.kind = DiagnosticTestKind::Static;
+    summary.durationMs = t.finishedElapsedMs;
+    summary.stoppedByCommand = t.stoppedByCommand;
+    summary.samples = t.samples;
+    summary.hwTimestampSamples = t.hwTs;
+    summary.fallbackTimestampSamples = t.fallbackTs;
+    summary.badTimestampSamples = t.badTs;
+    summary.estimatedDroppedSamples = t.droppedEstimate;
+    summary.recoveryRequests = t.recoveryRequests;
+    summary.fifoOverruns = t.fifoOverrunDelta;
+    summary.fifoFull = t.fifoFullDelta;
+    summary.fifoUnknown = t.fifoUnknownDelta;
+    summary.networkMetricsValid = t.networkMetricsValid;
+    summary.wifiDisconnects = t.wifiDisconnectsDelta;
+    summary.wifiConnectTimeouts = t.wifiConnectTimeoutsDelta;
+    summary.udpSendFailures = t.udpSendFailuresDelta;
+    summary.rotationSendFailures = t.rotationSendFailuresDelta;
+    summary.rotationMissedDeadlines = t.rotationMissedDeadlinesDelta;
+    summary.rotationLateEvents = t.rotationLateEventsDelta;
+    summary.txPressureFailures = t.txPressureFailuresDelta;
+    summary.txOtherFailures = t.txOtherFailuresDelta;
+    summary.udpRebindSuccesses = t.udpRebindSuccessesDelta;
+    summary.udpRebindFailures = t.udpRebindFailuresDelta;
+    summary.udpFullReopens = t.udpFullReopensDelta;
+    summary.staticMetricsValid = true;
+    summary.gyroMeanDps = (t.gyroAfterRadS.mean() * MATH_RAD_TO_DEG).norm();
+    summary.gyroStdDps = (t.gyroAfterRadS.stddev() * MATH_RAD_TO_DEG).norm();
+    summary.accelNormMeanG = t.accelNormG.mean();
+    summary.accelNormStdG = t.accelNormG.stddev();
+    summary.tempStartC = t.tempStartC;
+    summary.tempEndC = t.tempEndC;
+    summary.magMetricsValid = true;
+    summary.magTrusted = t.magTrustedDelta;
+    summary.magRejected = t.magRejectedDelta;
+    diagnosticTestPrintSummary(out, summary);
+    return true;
+}
+
+void StaticTestRunner::finish() {
+    if (!active() || output_ == nullptr) return;
+    Stream& out = *output_;
+    StaticRuntimeTest& t = *deps_.activeTest;
+
+    // No text formatting occurs before the measured window has closed. The
+    // last partial block and immutable counter snapshots are finalized once;
+    // the large human-readable report is emitted only on an explicit command.
+    flushStats(t);
+    const uint32_t finishedMs = millis();
+    t.finishedElapsedMs = finishedMs - t.startMs;
+    t.stoppedByCommand = t.stopRequested;
+    if (t.poseCaptured) {
+        t.eulerEndDeg = t.qEnd.toEulerXYZ() * MATH_RAD_TO_DEG;
+    }
+
+    const PerfDelta perf = perfDelta(t);
+    t.perfSampleCallsDelta = perf.sampleCalls;
+    t.perfSampleSumUsDelta = perf.sampleSumUs;
+    t.perfFifoCallsDelta = perf.fifoCalls;
+    t.perfFifoSumUsDelta = perf.fifoSumUs;
+    t.perfEmptyPollsDelta = perf.emptyPolls;
+    t.perfIrqEventsDelta = perf.irqEvents;
+    t.perfFallbackPollsDelta = perf.fallbackPolls;
+    t.perfFallbackEventsDelta = perf.fallbackEvents;
+
+    const auto& fs = deps_.fifo->stats();
+    t.fifoOverrunDelta = fs.overrunEvents - t.fifoOverrunAtStart;
+    t.fifoFullDelta = fs.fullEvents - t.fifoFullAtStart;
+    t.fifoUnknownDelta = fs.unknownWords - t.fifoUnknownAtStart;
+    t.fifoHwTsDelta = fs.hwTimestampAssigned - t.fifoHwTsAtStart;
+    t.fifoFbTsDelta = fs.fallbackTimestampAssigned - t.fifoFbTsAtStart;
+
+    if (t.networkMetricsValid && deps_.wifi != nullptr && deps_.slimevr != nullptr) {
+        const TrackerWifiManagerStatus wifi = deps_.wifi->status();
+        const SlimeVROutputRuntimeStatus slime = deps_.slimevr->status();
+        t.wifiDisconnectsDelta = wifi.disconnects - t.wifiDisconnectsAtStart;
+        t.wifiConnectTimeoutsDelta = wifi.connectTimeouts - t.wifiConnectTimeoutsAtStart;
+        t.udpSendFailuresDelta = slime.sendFailures - t.udpSendFailuresAtStart;
+        t.rotationSendFailuresDelta = slime.rotationSendFailures - t.rotationSendFailuresAtStart;
+        t.rotationMissedDeadlinesDelta =
+            slime.rotationMissedDeadlines - t.rotationMissedDeadlinesAtStart;
+        t.rotationLateEventsDelta = slime.rotationLateEvents - t.rotationLateEventsAtStart;
+        t.txPressureFailuresDelta = slime.txPressureFailures - t.txPressureFailuresAtStart;
+        t.txOtherFailuresDelta = slime.txOtherFailures - t.txOtherFailuresAtStart;
+        t.udpRebindSuccessesDelta =
+            slime.udpTransportRebindSuccesses - t.udpRebindSuccessesAtStart;
+        t.udpRebindFailuresDelta =
+            slime.udpTransportRebindFailures - t.udpRebindFailuresAtStart;
+        t.udpFullReopensDelta =
+            slime.udpFullReopenEscalations - t.udpFullReopensAtStart;
+    }
+
+    const auto& ms = deps_.magProcessor->stats();
+    const auto& hs = deps_.magHeading->stats();
+    const auto& ys = deps_.magYawCorrection->stats();
+    t.magRefValidEnd = deps_.magHeadingRef != nullptr && deps_.magHeadingRef->valid;
+    t.magTrustedDelta = ms.trustedSamples - t.magTrustedAtStart;
+    t.magRejectedDelta = ms.rejectedSamples - t.magRejectedAtStart;
+    t.magHeadingValidDelta = hs.valid - t.magHeadingValidAtStart;
+    t.magHeadingRejectedDelta = hs.rejected - t.magHeadingRejectedAtStart;
+    t.magYawUpdatesDelta = ys.updates - t.magYawUpdatesAtStart;
+    t.magYawGateOpenDelta = ys.gateOpenCount - t.magYawGateOpenAtStart;
+    t.magYawGateClosedDelta = ys.gateClosedCount - t.magYawGateClosedAtStart;
+    t.magYawApplyAllowedDelta = ys.applyAllowedCount - t.magYawApplyAllowedAtStart;
+    t.magYawAppliedDelta = ys.appliedCount - t.magYawAppliedAtStart;
+    t.magYawRejectNoReferenceDelta =
+        ys.rejectNoReference - t.magYawRejectNoReferenceAtStart;
+    t.magYawRejectHeadingInvalidDelta =
+        ys.rejectHeadingInvalid - t.magYawRejectHeadingInvalidAtStart;
+    t.magYawRejectMagNotTrustedDelta =
+        ys.rejectMagNotTrusted - t.magYawRejectMagNotTrustedAtStart;
+    t.magYawRejectMagStaleDelta =
+        ys.rejectMagStale - t.magYawRejectMagStaleAtStart;
+    t.magYawRejectHorizontalBadDelta =
+        ys.rejectHorizontalBad - t.magYawRejectHorizontalBadAtStart;
+    t.magYawRejectInnovationTooLargeDelta =
+        ys.rejectInnovationTooLarge - t.magYawRejectInnovationTooLargeAtStart;
+    t.magYawRejectGyroMovingDelta =
+        ys.rejectGyroMoving - t.magYawRejectGyroMovingAtStart;
+    t.magYawRejectAccelNotTrustedDelta =
+        ys.rejectAccelNotTrusted - t.magYawRejectAccelNotTrustedAtStart;
+    if (deps_.lastMagYawCorrection != nullptr) {
+        t.lastMagYawErrorDeg = deps_.lastMagYawCorrection->errorDeg;
+        t.lastMagYawCorrectionRateDegS =
+            deps_.lastMagYawCorrection->correctionRateDegS;
+        t.lastMagYawCorrectionStepDeg =
+            deps_.lastMagYawCorrection->correctionStepDeg;
+    }
+
+    const bool completedOk = t.samples > 0u &&
+                             t.gyroAfterRadS.count > 0u &&
+                             t.tempC.count > 0u;
+    if (completedOk) {
         *deps_.lastCompletedTest = t;
         deps_.lastCompletedTest->active = false;
         deps_.lastCompletedTest->stopRequested = false;
         *deps_.lastCompletedValid = true;
-        *deps_.lastCompletedFinishedMs = millis();
+        *deps_.lastCompletedFinishedMs = finishedMs;
+        out.println("STATIC TEST DONE");
+        out.println("# detailed report retained; use: test report static");
+    } else {
+        out.println("# ERR static test completed without usable samples");
     }
 
     t.reset();
+    statsBlock_.reset();
+    output_ = nullptr;
+}
+
+void StaticTestRunner::flushStats(StaticRuntimeTest& test) {
+    if (statsBlock_.bufferedSamples == 0u) return;
+    statsBlock_.mergeInto(test);
+    statsBlock_.reset();
 }
 
 bool StaticTestRunner::ready() const {
@@ -626,6 +838,8 @@ bool StaticTestRunner::ready() const {
            deps_.fifo != nullptr &&
            deps_.perf != nullptr &&
            deps_.config != nullptr &&
+           deps_.wifi != nullptr &&
+           deps_.slimevr != nullptr &&
            deps_.magProcessor != nullptr &&
            deps_.magHeading != nullptr &&
            deps_.magYawCorrection != nullptr &&

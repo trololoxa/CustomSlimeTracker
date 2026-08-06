@@ -201,6 +201,22 @@ struct StaticRuntimeTest {
     uint32_t fifoHwTsAtStart = 0;
     uint32_t fifoFbTsAtStart = 0;
 
+    // Exact network counter snapshots for the measured window. Periodic NET
+    // records describe chronology; these deltas remain authoritative even if
+    // a boundary record is delayed by serializer backpressure.
+    bool networkMetricsValid = false;
+    uint32_t wifiDisconnectsAtStart = 0;
+    uint32_t wifiConnectTimeoutsAtStart = 0;
+    uint32_t udpSendFailuresAtStart = 0;
+    uint32_t rotationSendFailuresAtStart = 0;
+    uint32_t rotationMissedDeadlinesAtStart = 0;
+    uint32_t rotationLateEventsAtStart = 0;
+    uint32_t txPressureFailuresAtStart = 0;
+    uint32_t txOtherFailuresAtStart = 0;
+    uint32_t udpRebindSuccessesAtStart = 0;
+    uint32_t udpRebindFailuresAtStart = 0;
+    uint32_t udpFullReopensAtStart = 0;
+
     // Perf counter snapshots. These make `test static` useful as a before/after
     // optimization benchmark without changing AHRS/FIFO behavior.
     uint32_t perfFifoProcessCallsAtStart = 0;
@@ -256,10 +272,62 @@ struct StaticRuntimeTest {
     // so we can prove whether the test itself is starving FIFO service.
     uint32_t updateDecimator = 0;
     uint32_t poseSamples = 0;
+    uint32_t updateTimingSamples = 0;
     uint32_t slowUpdateCount = 0;
     uint32_t maxUpdateUs = 0;
     uint32_t maxSampleProcessUs = 0;
     uint32_t maxFifoProcessUs = 0;
+
+    // Immutable end-of-window snapshots used by the explicitly requested
+    // detailed report. Capturing these before the test is released prevents a
+    // later `test report static` from accidentally including post-test faults.
+    uint32_t finishedElapsedMs = 0;
+    bool stoppedByCommand = false;
+    uint32_t perfSampleCallsDelta = 0;
+    uint64_t perfSampleSumUsDelta = 0;
+    uint32_t perfFifoCallsDelta = 0;
+    uint64_t perfFifoSumUsDelta = 0;
+    uint32_t perfEmptyPollsDelta = 0;
+    uint32_t perfIrqEventsDelta = 0;
+    uint32_t perfFallbackPollsDelta = 0;
+    uint32_t perfFallbackEventsDelta = 0;
+    uint32_t fifoOverrunDelta = 0;
+    uint32_t fifoFullDelta = 0;
+    uint32_t fifoUnknownDelta = 0;
+    uint32_t fifoHwTsDelta = 0;
+    uint32_t fifoFbTsDelta = 0;
+    uint32_t wifiDisconnectsDelta = 0;
+    uint32_t wifiConnectTimeoutsDelta = 0;
+    uint32_t udpSendFailuresDelta = 0;
+    uint32_t rotationSendFailuresDelta = 0;
+    uint32_t rotationMissedDeadlinesDelta = 0;
+    uint32_t rotationLateEventsDelta = 0;
+    uint32_t txPressureFailuresDelta = 0;
+    uint32_t txOtherFailuresDelta = 0;
+    uint32_t udpRebindSuccessesDelta = 0;
+    uint32_t udpRebindFailuresDelta = 0;
+    uint32_t udpFullReopensDelta = 0;
+    bool magRefValidEnd = false;
+    uint32_t magTrustedDelta = 0;
+    uint32_t magRejectedDelta = 0;
+    uint32_t magHeadingValidDelta = 0;
+    uint32_t magHeadingRejectedDelta = 0;
+    uint32_t magYawUpdatesDelta = 0;
+    uint32_t magYawGateOpenDelta = 0;
+    uint32_t magYawGateClosedDelta = 0;
+    uint32_t magYawApplyAllowedDelta = 0;
+    uint32_t magYawAppliedDelta = 0;
+    uint32_t magYawRejectNoReferenceDelta = 0;
+    uint32_t magYawRejectHeadingInvalidDelta = 0;
+    uint32_t magYawRejectMagNotTrustedDelta = 0;
+    uint32_t magYawRejectMagStaleDelta = 0;
+    uint32_t magYawRejectHorizontalBadDelta = 0;
+    uint32_t magYawRejectInnovationTooLargeDelta = 0;
+    uint32_t magYawRejectGyroMovingDelta = 0;
+    uint32_t magYawRejectAccelNotTrustedDelta = 0;
+    float lastMagYawErrorDeg = 0.0f;
+    float lastMagYawCorrectionRateDegS = 0.0f;
+    float lastMagYawCorrectionStepDeg = 0.0f;
 
     ScalarStats magHeadingHorizontalNorm;
     ScalarStats magYawCombinedTrust;
@@ -294,6 +362,18 @@ struct StaticRuntimeTest {
         fifoUnknownAtStart = 0;
         fifoHwTsAtStart = 0;
         fifoFbTsAtStart = 0;
+        networkMetricsValid = false;
+        wifiDisconnectsAtStart = 0;
+        wifiConnectTimeoutsAtStart = 0;
+        udpSendFailuresAtStart = 0;
+        rotationSendFailuresAtStart = 0;
+        rotationMissedDeadlinesAtStart = 0;
+        rotationLateEventsAtStart = 0;
+        txPressureFailuresAtStart = 0;
+        txOtherFailuresAtStart = 0;
+        udpRebindSuccessesAtStart = 0;
+        udpRebindFailuresAtStart = 0;
+        udpFullReopensAtStart = 0;
 
         perfFifoProcessCallsAtStart = 0;
         perfFifoProcessSumUsAtStart = 0;
@@ -344,10 +424,58 @@ struct StaticRuntimeTest {
         tempBinOutOfRangeSamples = 0;
         updateDecimator = 0;
         poseSamples = 0;
+        updateTimingSamples = 0;
         slowUpdateCount = 0;
         maxUpdateUs = 0;
         maxSampleProcessUs = 0;
         maxFifoProcessUs = 0;
+        finishedElapsedMs = 0;
+        stoppedByCommand = false;
+        perfSampleCallsDelta = 0;
+        perfSampleSumUsDelta = 0;
+        perfFifoCallsDelta = 0;
+        perfFifoSumUsDelta = 0;
+        perfEmptyPollsDelta = 0;
+        perfIrqEventsDelta = 0;
+        perfFallbackPollsDelta = 0;
+        perfFallbackEventsDelta = 0;
+        fifoOverrunDelta = 0;
+        fifoFullDelta = 0;
+        fifoUnknownDelta = 0;
+        fifoHwTsDelta = 0;
+        fifoFbTsDelta = 0;
+        wifiDisconnectsDelta = 0;
+        wifiConnectTimeoutsDelta = 0;
+        udpSendFailuresDelta = 0;
+        rotationSendFailuresDelta = 0;
+        rotationMissedDeadlinesDelta = 0;
+        rotationLateEventsDelta = 0;
+        txPressureFailuresDelta = 0;
+        txOtherFailuresDelta = 0;
+        udpRebindSuccessesDelta = 0;
+        udpRebindFailuresDelta = 0;
+        udpFullReopensDelta = 0;
+        magRefValidEnd = false;
+        magTrustedDelta = 0;
+        magRejectedDelta = 0;
+        magHeadingValidDelta = 0;
+        magHeadingRejectedDelta = 0;
+        magYawUpdatesDelta = 0;
+        magYawGateOpenDelta = 0;
+        magYawGateClosedDelta = 0;
+        magYawApplyAllowedDelta = 0;
+        magYawAppliedDelta = 0;
+        magYawRejectNoReferenceDelta = 0;
+        magYawRejectHeadingInvalidDelta = 0;
+        magYawRejectMagNotTrustedDelta = 0;
+        magYawRejectMagStaleDelta = 0;
+        magYawRejectHorizontalBadDelta = 0;
+        magYawRejectInnovationTooLargeDelta = 0;
+        magYawRejectGyroMovingDelta = 0;
+        magYawRejectAccelNotTrustedDelta = 0;
+        lastMagYawErrorDeg = 0.0f;
+        lastMagYawCorrectionRateDegS = 0.0f;
+        lastMagYawCorrectionStepDeg = 0.0f;
         magHeadingHorizontalNorm.reset();
         magYawCombinedTrust.reset();
         magYawCorrectionRateDegS.reset();
@@ -359,5 +487,189 @@ struct StaticRuntimeTest {
         qEnd = Quat::identity();
     }
 };
+
+// Float blocks keep per-sample work on the ESP32-C3 inexpensive. Sums are
+// centred on the first value in each block: this avoids the catastrophic
+// precision loss of summing values such as dt_us^2 in float, while reserving
+// double-precision reconstruction for the deferred block merge.
+struct StaticScalarStatsBlock {
+    uint32_t count = 0;
+    float origin = 0.0f;
+    float centeredSum = 0.0f;
+    float centeredSumSq = 0.0f;
+    float minValue = 0.0f;
+    float maxValue = 0.0f;
+
+    void reset() { *this = StaticScalarStatsBlock{}; }
+
+    void push(float value) {
+        if (!std::isfinite(value)) return;
+        if (count == 0u) {
+            origin = value;
+            minValue = value;
+            maxValue = value;
+        } else {
+            if (value < minValue) minValue = value;
+            if (value > maxValue) maxValue = value;
+        }
+        ++count;
+        const float centered = value - origin;
+        centeredSum += centered;
+        centeredSumSq += centered * centered;
+    }
+
+    void mergeInto(ScalarStats& target) const {
+        if (count == 0u) return;
+        ScalarStats block;
+        block.count = count;
+        const double n = static_cast<double>(count);
+        const double o = static_cast<double>(origin);
+        const double s = static_cast<double>(centeredSum);
+        block.sum = n * o + s;
+        block.sumSq = n * o * o + 2.0 * o * s + static_cast<double>(centeredSumSq);
+        block.minValue = minValue;
+        block.maxValue = maxValue;
+        target.merge(block);
+    }
+};
+
+struct StaticVec3StatsBlock {
+    uint32_t count = 0;
+    Vec3 origin = Vec3::zero();
+    Vec3 centeredSum = Vec3::zero();
+    Vec3 centeredSumSq = Vec3::zero();
+    Vec3 minValue = Vec3::zero();
+    Vec3 maxValue = Vec3::zero();
+
+    void reset() { *this = StaticVec3StatsBlock{}; }
+
+    void push(const Vec3& value) {
+        if (!value.isFinite()) return;
+        if (count == 0u) {
+            origin = value;
+            minValue = value;
+            maxValue = value;
+        } else {
+            if (value.x < minValue.x) minValue.x = value.x;
+            if (value.y < minValue.y) minValue.y = value.y;
+            if (value.z < minValue.z) minValue.z = value.z;
+            if (value.x > maxValue.x) maxValue.x = value.x;
+            if (value.y > maxValue.y) maxValue.y = value.y;
+            if (value.z > maxValue.z) maxValue.z = value.z;
+        }
+        ++count;
+        const Vec3 centered = value - origin;
+        centeredSum += centered;
+        centeredSumSq += hadamard(centered, centered);
+    }
+
+    void mergeInto(Vec3Stats& target) const {
+        if (count == 0u) return;
+        Vec3Stats block;
+        block.count = count;
+        const float n = static_cast<float>(count);
+        block.sum = origin * n + centeredSum;
+        block.sumSq = hadamard(origin, origin) * n +
+            hadamard(origin, centeredSum) * 2.0f + centeredSumSq;
+        block.minValue = minValue;
+        block.maxValue = maxValue;
+        target.merge(block);
+    }
+};
+
+struct StaticTempBinStatsBlock {
+    StaticScalarStatsBlock tempC;
+    StaticScalarStatsBlock accelNormG;
+    StaticVec3StatsBlock gyroAfterRadS;
+    uint32_t badQualitySamples = 0;
+
+    void reset() { *this = StaticTempBinStatsBlock{}; }
+
+    void push(float temp, const Vec3& gyroAfter, float accelNorm, bool goodQuality) {
+        if (!goodQuality) {
+            ++badQualitySamples;
+            return;
+        }
+        tempC.push(temp);
+        accelNormG.push(accelNorm);
+        gyroAfterRadS.push(gyroAfter);
+    }
+
+    void mergeInto(StaticTempBinStats& target) const {
+        tempC.mergeInto(target.tempC);
+        accelNormG.mergeInto(target.accelNormG);
+        gyroAfterRadS.mergeInto(target.gyroAfterRadS);
+        target.badQualitySamples += badQualitySamples;
+    }
+};
+
+struct StaticTestStatsBlock {
+    static constexpr uint8_t TEMP_BIN_SLOTS = 4u;
+
+    uint32_t bufferedSamples = 0;
+    StaticScalarStatsBlock dtUs;
+    StaticScalarStatsBlock accelNormG;
+    StaticScalarStatsBlock accelTrust;
+    StaticScalarStatsBlock tempC;
+    StaticVec3StatsBlock gyroAfterRadS;
+    int8_t tempBinIndices[TEMP_BIN_SLOTS] = {-1, -1, -1, -1};
+    StaticTempBinStatsBlock tempBins[TEMP_BIN_SLOTS];
+
+    void reset() {
+        *this = StaticTestStatsBlock{};
+        for (uint8_t i = 0u; i < TEMP_BIN_SLOTS; ++i) tempBinIndices[i] = -1;
+    }
+
+    bool push(uint32_t sampleDtUs,
+              float sampleAccelConfidence,
+              float sampleTempC,
+              const Vec3& sampleGyroRadS,
+              float accelNorm,
+              int tempBinIdx,
+              bool goodForTempFit) {
+        int8_t tempSlot = -1;
+        if (tempBinIdx >= 0 && tempBinIdx < static_cast<int>(STATIC_TEMP_BIN_COUNT)) {
+            for (uint8_t i = 0u; i < TEMP_BIN_SLOTS; ++i) {
+                if (tempBinIndices[i] == tempBinIdx) {
+                    tempSlot = static_cast<int8_t>(i);
+                    break;
+                }
+                if (tempSlot < 0 && tempBinIndices[i] < 0) {
+                    tempSlot = static_cast<int8_t>(i);
+                }
+            }
+            if (tempSlot < 0) return false;
+            tempBinIndices[static_cast<uint8_t>(tempSlot)] = static_cast<int8_t>(tempBinIdx);
+        }
+        if (sampleDtUs > 0u) dtUs.push(static_cast<float>(sampleDtUs));
+        accelNormG.push(accelNorm);
+        accelTrust.push(sampleAccelConfidence);
+        tempC.push(sampleTempC);
+        gyroAfterRadS.push(sampleGyroRadS);
+        if (tempSlot >= 0) {
+            tempBins[static_cast<uint8_t>(tempSlot)].push(sampleTempC,
+                                                          sampleGyroRadS,
+                                                          accelNorm,
+                                                          goodForTempFit);
+        }
+        ++bufferedSamples;
+        return true;
+    }
+
+    void mergeInto(StaticRuntimeTest& target) const {
+        dtUs.mergeInto(target.dtUs);
+        accelNormG.mergeInto(target.accelNormG);
+        accelTrust.mergeInto(target.accelTrust);
+        tempC.mergeInto(target.tempC);
+        gyroAfterRadS.mergeInto(target.gyroAfterRadS);
+        for (uint8_t i = 0u; i < TEMP_BIN_SLOTS; ++i) {
+            const int8_t bin = tempBinIndices[i];
+            if (bin >= 0) tempBins[i].mergeInto(target.tempBins[static_cast<uint8_t>(bin)]);
+        }
+    }
+};
+
+static_assert(sizeof(StaticTestStatsBlock) <= 768u,
+              "Blocked static-test aggregation exceeded its audited RAM budget");
 
 } // namespace tracker

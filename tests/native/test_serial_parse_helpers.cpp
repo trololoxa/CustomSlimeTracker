@@ -1,6 +1,7 @@
 #include "test_common.hpp"
 
 #include "serial/tracker_serial_parse.hpp"
+#include "serial/tracker_serial_commands.hpp"
 
 int main() {
     TestContext ctx;
@@ -30,6 +31,20 @@ int main() {
     CHECK_NEAR(ctx, f, -3.5f, 0.000001f);
     CHECK(ctx, !parseFloat("nan", f));
     CHECK(ctx, !parseFloat("1.0x", f));
+
+    tracker::TrackerTelnetInputFilter telnet;
+    CHECK(ctx, telnet.consume(0xffu));
+    CHECK(ctx, telnet.consume(0xfdu));
+    CHECK(ctx, telnet.consume(0x01u));
+    CHECK(ctx, !telnet.consume(static_cast<uint8_t>('l')));
+    CHECK(ctx, telnet.consume(0xffu));
+    CHECK(ctx, telnet.consume(0xfau));
+    CHECK(ctx, telnet.consume(0x18u));
+    CHECK(ctx, telnet.consume(0x00u));
+    CHECK(ctx, telnet.consume(0xffu));
+    CHECK(ctx, telnet.consume(0xf0u));
+    CHECK(ctx, !telnet.consume(static_cast<uint8_t>('o')));
+    CHECK(ctx, telnet.consume(0u));
 
     return ctx.finish("test_serial_parse_helpers");
 }

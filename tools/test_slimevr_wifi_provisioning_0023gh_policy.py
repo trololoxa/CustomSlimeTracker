@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/serial/tracker_slimevr_serial_compat_commands.cpp"
@@ -123,7 +124,7 @@ def main() -> int:
     require(report, "no tracking hot-path", "hot-path audit conclusion")
 
     cxx = compiler()
-    with tempfile.TemporaryDirectory(prefix="tracker-0023gh-") as tmp_name:
+    with project_temp_directory(ROOT, "tracker-0023gh-") as tmp_name:
         tmp = Path(tmp_name)
         common = [
             cxx,

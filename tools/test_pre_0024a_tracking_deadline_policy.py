@@ -8,8 +8,9 @@ import re
 import runpy
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,7 +47,7 @@ def compiler() -> str:
 
 
 def run(cmd: list[str]) -> None:
-    subprocess.run(cmd, cwd=ROOT, check=True)
+    subprocess.run(cmd, cwd=ROOT, check=True, env=asan_ubsan_environment(ROOT))
 
 
 def compile_run(cxx: str, exe: Path, sources: list[str], flags: list[str]) -> None:
@@ -55,6 +56,7 @@ def compile_run(cxx: str, exe: Path, sources: list[str], flags: list[str]) -> No
         "-I", str(ROOT / "src"),
         "-I", str(ROOT / "tests/native"),
         *[str(ROOT / source) for source in sources],
+        str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
         "-o", str(exe),
     ])
     run([str(exe)])
@@ -118,8 +120,14 @@ def main() -> int:
     for forbidden in ("pollIncoming", "sendHeartbeat", "sendTelemetry", "sendSensorInfo", "wifi_->update"):
         forbid(critical, forbidden, f"noncritical nested work: {forbidden}")
 
-    # Budget is checked before dequeuing another sample after four coherent callbacks.
-    loop = isolate(fifo, "while (chronologicalReady)", "#if TRACKER_HAS_RUNTIME_PROFILER\n    const uint32_t callbackElapsedUs")
+    # Budget is checked before dequeuing another sample after four coherent
+    # callbacks. Locate the loop relative to its stable scheduling/statistics
+    # anchors rather than requiring the old unconditional profiler epilogue.
+    loop_start = fifo.find("while (chronologicalReady)")
+    loop_end = fifo.find("const uint32_t callbackElapsedUs", loop_start)
+    if loop_start < 0 or loop_end < 0:
+        raise SystemExit("FIFO chronological loop/sampled timing epilogue not found")
+    loop = fifo[loop_start:loop_end]
     budget_pos = loop.find("rawCallbacks >= cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE")
     dequeue_pos = loop.find("dequeueRaw(raw, checkStats)")
     if budget_pos < 0 or dequeue_pos < 0 or budget_pos > dequeue_pos:
@@ -129,6 +137,8 @@ def main() -> int:
     require(fifo_h, "rawCallbackTimedSamples", "sampled raw callback timing")
     require(fifo_h, "magCallbackTimeCalls", "mag callback timing")
     require(fifo, "urgentByDepth() || urgentByAge()", "combined urgency")
+    require(fifo, "diagnosticsTimingSampled_ = diagnosticsTimingEnabled_ &&", "dormant profiler timing")
+    require(fifo, "const bool timeRawCallback = diagnosticsTimingSampled_ &&", "sampled callback timing")
 
     # Axis-alignment evidence leaves the chronological 60 Hz callback intact,
     # remains bounded, preserves FIFO order and rejects stale calibration epochs.
@@ -163,7 +173,7 @@ def main() -> int:
     project_sources = [str(path) for path in runner["PROJECT_SOURCES"]]
     base_flags = list(runner["BASE_FLAGS"])
 
-    with tempfile.TemporaryDirectory(prefix="tracker-pre0024a-") as temp_name:
+    with project_temp_directory(ROOT, "tracker-pre0024a-") as temp_name:
         tmp = Path(temp_name)
         compile_run(cxx, tmp / "fifo", [
             "tests/native/test_fifo_runtime_processor.cpp",

@@ -93,11 +93,26 @@ def collect_build_identity(root: Path) -> BuildIdentity:
     if not git_available(root):
         return BuildIdentity(False, "unknown", "unknown", False, "unknown")
 
-    head_proc = _run_git(root, "rev-parse", "--short=8", "HEAD", check=False)
-    head = head_proc.stdout.decode("ascii", errors="replace").strip() if head_proc.returncode == 0 else "unknown"
+    # Embed the immutable object name. An abbreviation can stop being unique
+    # as the repository grows and cannot satisfy a strict capture provenance
+    # contract.
+    head_proc = _run_git(root, "rev-parse", "HEAD", check=False)
+    head = head_proc.stdout.decode("ascii", errors="replace").strip()
+    if head_proc.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40}", head):
+        return BuildIdentity(False, "unknown", "unknown", False, "unknown")
+
     status = _run_git(root, "status", "--porcelain=v1", "--untracked-files=all", check=False)
-    dirty = status.returncode == 0 and bool(status.stdout.strip())
-    worktree = compute_worktree_fingerprint(root)
+    if status.returncode != 0:
+        # A failed status query is not evidence of a clean tree. Keep firmware
+        # builds possible with an explicit unknown identity; release rejects it.
+        return BuildIdentity(False, "unknown", "unknown", False, "unknown")
+
+    dirty = bool(status.stdout.strip())
+    try:
+        worktree = compute_worktree_fingerprint(root)
+    except (OSError, subprocess.SubprocessError):
+        return BuildIdentity(False, "unknown", "unknown", False, "unknown")
+    head = head.lower()
     identity = f"{head}+{worktree}-dirty" if dirty else head
     return BuildIdentity(True, head, worktree, dirty, identity)
 

@@ -57,7 +57,58 @@
 #endif
 #endif // TRACKER_ENABLE_SERIAL_CLI
 
+#if defined(__GNUC__) || defined(__clang__)
+#define TRACKER_SERIAL_NOINLINE __attribute__((noinline))
+#else
+#define TRACKER_SERIAL_NOINLINE
+#endif
+
 namespace tracker {
+
+class TrackerTelnetInputFilter {
+public:
+    void reset() { state_ = State::Data; }
+
+    // Returns true for Telnet negotiation/subnegotiation bytes that must not
+    // enter the ASCII CLI line buffer. Raw TCP clients are unaffected.
+    bool consume(uint8_t value) {
+        switch (state_) {
+            case State::Data:
+                if (value == 0xffu) {
+                    state_ = State::Iac;
+                    return true;
+                }
+                return value == 0u;  // Telnet CR-NUL line ending.
+            case State::Iac:
+                if (value >= 0xfbu && value <= 0xfeu) state_ = State::Option;
+                else if (value == 0xfau) state_ = State::Subnegotiation;
+                else state_ = State::Data;
+                return true;
+            case State::Option:
+                state_ = State::Data;
+                return true;
+            case State::Subnegotiation:
+                if (value == 0xffu) state_ = State::SubnegotiationIac;
+                return true;
+            case State::SubnegotiationIac:
+                state_ = value == 0xf0u ? State::Data : State::Subnegotiation;
+                return true;
+        }
+        state_ = State::Data;
+        return true;
+    }
+
+private:
+    enum class State : uint8_t {
+        Data,
+        Iac,
+        Option,
+        Subnegotiation,
+        SubnegotiationIac,
+    };
+
+    State state_ = State::Data;
+};
 
 class TrackerCommandDispatcher {
 public:
@@ -71,16 +122,24 @@ public:
         ctx_ = &ctx;
         len_ = 0;
         overflow_ = false;
+        telnetFilter_.reset();
     }
 
-    size_t poll(size_t maxBytes = 0) {
+    TRACKER_SERIAL_NOINLINE size_t poll(size_t maxBytes = 0) {
         if (!ctx_ || !ctx_->io) return 0;
 
         size_t consumed = 0;
         Stream& s = *ctx_->io;
         while (s.available() > 0) {
             if (maxBytes > 0 && consumed >= maxBytes) break;
-            const char c = static_cast<char>(s.read());
+            const int raw = s.read();
+            if (raw < 0) break;
+            if (ctx_->origin == TrackerCommandOrigin::RemoteTcp &&
+                telnetFilter_.consume(static_cast<uint8_t>(raw))) {
+                consumed++;
+                continue;
+            }
+            const char c = static_cast<char>(raw);
             feed(c);
             consumed++;
         }
@@ -182,6 +241,9 @@ private:
     char line_[LINE_CAP] = {};
     size_t len_ = 0;
     bool overflow_ = false;
+    TrackerTelnetInputFilter telnetFilter_;
 };
 
 } // namespace tracker
+
+#undef TRACKER_SERIAL_NOINLINE

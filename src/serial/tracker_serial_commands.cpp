@@ -6,6 +6,12 @@ void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int ar
     if (argc <= 0 || !argv || !argv[0]) return;
 
 #if TRACKER_ENABLE_SERIAL_CLI
+    if (ctx.origin == TrackerCommandOrigin::RemoteTcp &&
+        !trackerRemoteDiagnosticCommandAllowed(argc, argv)) {
+        Stream& out = ctx.io ? *ctx.io : Serial;
+        tracker_serial_detail::printErr(out, "remote command not allowed; type help");
+        return;
+    }
 #if TRACKER_ENABLE_SETUP_COMMANDS
     if (tracker_serial_detail::eqIgnoreCase(argv[0], "setup")) {
         trackerSerialDispatchSetupCommand(ctx, argc, argv);

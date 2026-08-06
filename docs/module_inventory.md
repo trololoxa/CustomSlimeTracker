@@ -12,17 +12,25 @@ This inventory is the current ownership map. It is intentionally compact; update
 | `src/config/` | persisted config | Schema, runtime apply/capture/sanitize, NVS store, print helpers | Config changes need docs/tests. |
 | `src/connection/` | hardware/protocol | LSM6DSV, FIFO, sensor-hub, and low-level magnetometer transport | No app/serial dependencies. |
 | `src/core/` | pure core | Math primitives and small shared utilities | Host-test friendly. |
-| `src/runtime/` | runtime controllers | FIFO runtime, sample pipeline, logs, output snapshots, static tests, bias, mag runtime, state | Should expose status/results, not own CLI parsing. |
+| `src/runtime/` | runtime controllers | FIFO runtime, sample pipeline, deferred machine log, output snapshots, low-overhead tests, bias, mag runtime, state | Should expose status/results, not own CLI parsing. |
 | `src/sensor/` | sensor math/models | AHRS, calibration, IMU quality, mag heading/field reliability/yaw correction and axis solving | Prefer pure/host-testable logic. |
 | `src/serial/` | developer CLI | Fixed-buffer parser, command context, domain command handlers, serial stream helpers | Domain commands live in `.cpp`; headers expose API only. |
+| `src/serial/tracker_command_origin.hpp` | command security | USB/TCP origin identity and exact remote diagnostic allowlist | Remote policy is fail-closed before every dispatcher. |
 | `src/network/` | transport | Wi-Fi station management and UDP transport primitives | No AHRS/FIFO logic or SlimeVR packet formatting here. |
+| `src/network/wifi_remote_console_lease.hpp` | transport policy | Host-safe wraparound session lease for bounded half-open cleanup | Renewed by consumed TCP input; no socket dependency. |
 | `src/output/` | protocol output | Host-safe SlimeVR packet writer/protocol helpers | No Wi-Fi state or sensor fusion ownership. |
 | `tools/logs/` | host tools | Existing E0 log summarizer | Human/debug summaries. |
-| `tools/replay/` | host tools | Replay/metrics tooling for machine logs | Added before major tracking changes. |
+| `tools/replay/` | host tools | LOGVER2 metric compatibility plus strict LOGVER3 schema/integrity and golden gates | Positive golden requires a real fixture. |
+| `tools/capture_telnet_log.py` | capture orchestration | Session-bound ProductionDiag static/runtime capture, E1 preflight/validation and pair-consistent SHA-256 manifest | Failed runs are retained only as unique partial diagnostics. |
+| `tools/check_all.py` | acceptance orchestration | Host-only/developer/release modes, bounded subprocesses, clean five-profile release builds and aggregate reporting | `--release` is fail-closed. |
+| `tools/run_standalone_tests.py` | host test runner | Serializes invocation-private native C++ matrices with explicit sanitizer modes | ASan/UBSan and LSan are separate. |
+| `tools/quality_gate_runtime.py` | host test support | Ignored temp roots and sanitizer child environments | Keeps interrupted artifacts below `build/tmp/`. |
+| `tools/build_identity.py` | build provenance | Deterministic Git/worktree identity used by firmware and manifests | Dirty state includes non-ignored untracked files. |
+| `tools/release_manifest.py` | release provenance | Full commit/environment/tool metadata plus SHA-256 and size for build artifacts | Clean identity is mandatory in release mode. |
 | `tools/validate_source_filters.py` | project contract | Checks that concrete PlatformIO exclusions still exist | Runs from `check_all.py`. |
 | `tools/validate_profile_matrix.py` | project contract | Checks all committed environments, default env and product filter semantics | Runs from `check_all.py`. |
 | `tools/validate_documentation.py` | project contract | Checks required docs, local links and stable baseline statements | Runs from `check_all.py`. |
-| `tests/native/` | host tests | Host-safe C++ regression tests | No real Arduino/SPI/NVS/Wi-Fi hardware behavior. |
+| `tests/native/` | host tests | Host-safe C++ regression tests and sanitizer runtime policy | No real Arduino/SPI/NVS/Wi-Fi hardware behavior. |
 | `docs/` | docs | Architecture, testing, CLI, config, replay, tracking pipeline | Docs should describe current code, not stale roadmaps. |
 | `docs/current_implementation.md` | canonical baseline | Short statement of what the `Upgrades` branch actually implements and its known gaps | Takes precedence over historical roadmaps. |
 

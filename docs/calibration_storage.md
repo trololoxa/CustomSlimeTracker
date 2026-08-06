@@ -108,7 +108,7 @@ The record contains a complete config snapshot plus:
 - candidate generation and persisted-write count;
 - sensor signature and CRC.
 
-In Debug and Production, a candidate is first staged in RAM. Staging never
+In Debug, Production and ProductionDiag, a candidate is first staged in RAM. Staging never
 changes active tracking and can be evaluated repeatedly without flash writes.
 Slim keeps the dual-slot active store and migration, but compiles out the
 876-byte RAM candidate cache and interactive candidate API because Slim has no

@@ -6,6 +6,12 @@
 
 #include <cstring>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define TRACKER_APP_NOINLINE __attribute__((noinline))
+#else
+#define TRACKER_APP_NOINLINE
+#endif
+
 #if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
 #include <driver/gpio.h>
 #include <esp_sleep.h>
@@ -70,6 +76,9 @@ void TrackerApp::setup() {
 #endif
 
     Stream& out = *deps_.runtime.out;
+#if !TRACKER_HAS_SERIAL_CONSOLE
+    (void)out;
+#endif
 #if TRACKER_ENABLE_BOOT_BANNER
     out.println();
     out.println("==============================================================================");
@@ -160,7 +169,15 @@ void TrackerApp::loop() {
 
 #if TRACKER_ENABLE_LOOP_TIMING
     RuntimeLoopTimingSample timing;
-    const uint32_t loopStartUs = micros();
+    if (deps_.runtime.runtimeTestRunner != nullptr &&
+        deps_.runtime.runtimeTestRunner->active()) {
+        loopTimingSampled_ =
+            (loopTimingDecimator_++ % TRACKER_DIAGNOSTIC_TIMING_SAMPLE_DIVISOR) == 0u;
+    } else {
+        loopTimingDecimator_ = 0u;
+        loopTimingSampled_ = false;
+    }
+    const uint32_t loopStartUs = loopTimingSampled_ ? micros() : 0u;
     uint32_t sectionStartUs = 0;
 #endif
 
@@ -172,10 +189,12 @@ void TrackerApp::loop() {
     uint32_t profilerSectionStartUs = 0;
 #endif
 
-    bool remoteConsoleWorked = false;
-    bool serialConsoleWorked = false;
+#if TRACKER_HAS_RUNTIME_DIAGNOSTICS
+    updateDiagnosticTimingActivation();
+#endif
+
 #if TRACKER_ENABLE_LOOP_TIMING
-    sectionStartUs = micros();
+    if (loopTimingSampled_) sectionStartUs = micros();
 #endif
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) profilerSectionStartUs = micros();
@@ -188,12 +207,12 @@ void TrackerApp::loop() {
     }
 #endif
 #if TRACKER_ENABLE_LOOP_TIMING
-    timing.fifoUs = micros() - sectionStartUs;
+    if (loopTimingSampled_) timing.fifoUs = micros() - sectionStartUs;
     timing.fifoWorked = fifoWorked;
 #endif
 
 #if TRACKER_ENABLE_LOOP_TIMING
-    sectionStartUs = micros();
+    if (loopTimingSampled_) sectionStartUs = micros();
 #endif
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) profilerSectionStartUs = micros();
@@ -250,7 +269,7 @@ void TrackerApp::loop() {
     }
 #endif
 #if TRACKER_ENABLE_LOOP_TIMING
-    timing.networkUs = micros() - sectionStartUs;
+    if (loopTimingSampled_) timing.networkUs = micros() - sectionStartUs;
     timing.batteryWorked = batteryWorked;
     timing.networkWorked = networkWorked;
     timing.tapWorked = tapWorked;
@@ -311,49 +330,13 @@ void TrackerApp::loop() {
     // Tracking delivery has priority over all diagnostic I/O. CLI command
     // dispatch, telnet socket work and output drains run only after FIFO/AHRS
     // and SlimeVR UDP have been serviced for this loop.
+    const bool consoleWorked = serviceConsoleRuntime(
 #if TRACKER_ENABLE_LOOP_TIMING
-    sectionStartUs = micros();
+        loopTimingSampled_ ? &timing.cliUs : nullptr
+#else
+        nullptr
 #endif
-#if TRACKER_HAS_RUNTIME_PROFILER
-    if (profilerActive) profilerSectionStartUs = micros();
-#endif
-#if TRACKER_HAS_SERIAL_CLI
-    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
-#endif
-#if TRACKER_HAS_RUNTIME_PROFILER
-    if (profilerActive) {
-        profiler->record(RuntimeProfiler::Section::Cli, micros() - profilerSectionStartUs, false, profilerNowMs);
-        profilerSectionStartUs = micros();
-    }
-#endif
-    const TrackingSlackAdmissionInput consoleSlack =
-        trackingSlackAdmissionInput();
-    const bool remoteConsoleAdmitted = trackingOptionalRuntimeAdmitted(
-        consoleSlack, TrackingOptionalServiceClass::Console);
-    remoteConsoleWorked = remoteConsoleAdmitted
-        ? callBool(deps_.callbacks.updateRemoteConsoleRuntime)
-        : false;
-#if TRACKER_HAS_RUNTIME_PROFILER
-    if (profilerActive && !remoteConsoleAdmitted) {
-        profiler->recordOptionalServiceAdmissionSkip(
-            RuntimeProfiler::OptionalService::RemoteConsole);
-    }
-#endif
-#if TRACKER_HAS_RUNTIME_PROFILER
-    if (profilerActive) {
-        profiler->record(RuntimeProfiler::Section::RemoteConsole, micros() - profilerSectionStartUs, remoteConsoleWorked, profilerNowMs);
-        profilerSectionStartUs = micros();
-    }
-#endif
-    serialConsoleWorked = callBool(deps_.callbacks.updateSerialConsoleRuntime);
-#if TRACKER_HAS_RUNTIME_PROFILER
-    if (profilerActive) {
-        profiler->record(RuntimeProfiler::Section::Cli, micros() - profilerSectionStartUs, serialConsoleWorked, profilerNowMs);
-    }
-#endif
-#if TRACKER_ENABLE_LOOP_TIMING
-    timing.cliUs += micros() - sectionStartUs;
-#endif
+    );
 
 #if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
     // Light sleep is deliberately entered after the network state machine has
@@ -366,7 +349,7 @@ void TrackerApp::loop() {
 
 #if TRACKER_HAS_SERIAL_CLI && TRACKER_CLI_SECOND_POLL_ENABLED
 #if TRACKER_ENABLE_LOOP_TIMING
-    sectionStartUs = micros();
+    if (loopTimingSampled_) sectionStartUs = micros();
 #endif
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) profilerSectionStartUs = micros();
@@ -378,14 +361,17 @@ void TrackerApp::loop() {
     }
 #endif
 #if TRACKER_ENABLE_LOOP_TIMING
-    timing.cliUs += micros() - sectionStartUs;
+    if (loopTimingSampled_) timing.cliUs += micros() - sectionStartUs;
 #endif
 #endif
 
     bool heartbeatPrinted = false;
 #if TRACKER_HAS_BOOT_HEARTBEAT
 #if TRACKER_ENABLE_LOOP_TIMING
-    sectionStartUs = micros();
+    if (loopTimingSampled_) sectionStartUs = micros();
+#endif
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) profilerSectionStartUs = micros();
 #endif
     heartbeatPrinted = maybePrintBootHeartbeat(
         *deps_.runtime.out,
@@ -400,25 +386,35 @@ void TrackerApp::loop() {
     );
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) {
-        profiler->record(RuntimeProfiler::Section::Heartbeat, micros() - sectionStartUs, heartbeatPrinted, profilerNowMs);
+        profiler->record(RuntimeProfiler::Section::Heartbeat,
+                         micros() - profilerSectionStartUs,
+                         heartbeatPrinted,
+                         profilerNowMs);
     }
 #endif
 #if TRACKER_ENABLE_LOOP_TIMING
-    timing.heartbeatUs = micros() - sectionStartUs;
+    if (loopTimingSampled_) timing.heartbeatUs = micros() - sectionStartUs;
     timing.heartbeatWorked = heartbeatPrinted;
 #endif
 #endif
 
-    const bool anyWork = sensorRecoveryWorked ||
+    // Machine-log records contain immutable sensor/AHRS snapshots. Serialize
+    // them only after all tracking and console work. Put the out-of-line call
+    // first so short-circuiting never suppresses its bounded service, while
+    // avoiding another loop-lifetime local in this stack-critical function.
+    const bool anyWork =
+#if TRACKER_HAS_MACHINE_LOG
+                         serviceMachineLogRuntimeWithAdmission() ||
+#endif
+                         sensorRecoveryWorked ||
                          fifoWorked ||
-                         serialConsoleWorked ||
+                         consoleWorked ||
                          batteryWorked ||
                          networkWorked ||
                          tapWorked ||
                          ledWorked ||
                          magDeferredWorked ||
                          calibrationAutonomyWorked ||
-                         remoteConsoleWorked ||
                          heartbeatPrinted;
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) profilerSectionStartUs = micros();
@@ -431,7 +427,7 @@ void TrackerApp::loop() {
 #endif
 
 #if TRACKER_ENABLE_LOOP_TIMING
-    timing.loopUs = micros() - loopStartUs;
+    if (loopTimingSampled_) timing.loopUs = micros() - loopStartUs;
     timing.anyWork = anyWork;
     timing.idleYielded = idleYielded;
 #else
@@ -452,9 +448,9 @@ void TrackerApp::loop() {
 
 #if TRACKER_HAS_RUNTIME_TEST
 #if TRACKER_ENABLE_LOOP_TIMING
-    deps_.runtime.runtimeTestRunner->recordLoopTiming(timing);
+    deps_.runtime.runtimeTestRunner->recordLoopTiming(timing, loopTimingSampled_);
 #endif
-    deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);
+    deps_.runtime.runtimeTestRunner->update(millis());
 #endif
 }
 
@@ -727,11 +723,24 @@ bool TrackerApp::callBool(bool (*callback)()) {
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
 bool TrackerApp::motionLightSleepBlocked() const {
     if (!sensorRuntimeReady_ || sensorStartupRecoveryActive_) return true;
+#if TRACKER_HAS_WIFI_REMOTE_CONSOLE
+    // The diagnostic connection protects preflight before `log start`. This
+    // hook also expires a half-open session without depending on optional
+    // socket-service admission.
+    if (deps_.callbacks.remoteConsoleBlocksMotionSleep != nullptr &&
+        deps_.callbacks.remoteConsoleBlocksMotionSleep(millis())) return true;
+#endif
 #if TRACKER_HAS_STATIC_TEST_STATE
     if (deps_.runtime.staticTestRunner != nullptr && deps_.runtime.staticTestRunner->active()) return true;
 #endif
 #if TRACKER_HAS_RUNTIME_TEST_STATE
     if (deps_.runtime.runtimeTestRunner != nullptr && deps_.runtime.runtimeTestRunner->active()) return true;
+#endif
+#if TRACKER_HAS_MACHINE_LOG
+    // Cable-free diagnostics may intentionally run without a SlimeVR server.
+    // A bound log session is active work and must not be suspended by the
+    // ordinary server-absence timeout.
+    if (deps_.runtime.logState != nullptr && deps_.runtime.logState->enabled()) return true;
 #endif
     if (deps_.callbacks.calibrationBlocksMotionSleep != nullptr &&
         deps_.callbacks.calibrationBlocksMotionSleep()) return true;
@@ -912,6 +921,97 @@ void TrackerApp::resumeFromMotionLightSleep() {
 }
 #endif // TRACKER_HAS_MOTION_LIGHT_SLEEP
 
+TRACKER_APP_NOINLINE bool TrackerApp::serviceConsoleRuntime(uint32_t* loopTimingUs) {
+    const uint32_t loopSectionStartUs = loopTimingUs != nullptr ? micros() : 0u;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    RuntimeProfiler* profiler = deps_.runtime.runtimeProfiler;
+    const bool profilerActive = profiler != nullptr && profiler->enabled();
+    const uint32_t profilerNowMs = profilerActive ? millis() : 0u;
+    uint32_t profilerSectionStartUs = profilerActive ? micros() : 0u;
+#endif
+
+#if TRACKER_HAS_SERIAL_CLI
+    deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+#endif
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Cli,
+                         micros() - profilerSectionStartUs,
+                         false,
+                         profilerNowMs);
+        profilerSectionStartUs = micros();
+    }
+#endif
+
+    const TrackingSlackAdmissionInput consoleSlack =
+        trackingSlackAdmissionInput();
+    const bool remoteConsoleAdmitted = trackingOptionalRuntimeAdmitted(
+        consoleSlack, TrackingOptionalServiceClass::Console);
+    const bool remoteConsoleWorked = remoteConsoleAdmitted
+        ? callBool(deps_.callbacks.updateRemoteConsoleRuntime)
+        : false;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive && !remoteConsoleAdmitted) {
+        profiler->recordOptionalServiceAdmissionSkip(
+            RuntimeProfiler::OptionalService::RemoteConsole);
+    }
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::RemoteConsole,
+                         micros() - profilerSectionStartUs,
+                         remoteConsoleWorked,
+                         profilerNowMs);
+        profilerSectionStartUs = micros();
+    }
+#endif
+
+    const bool serialConsoleWorked =
+        callBool(deps_.callbacks.updateSerialConsoleRuntime);
+#if TRACKER_HAS_RUNTIME_PROFILER
+    if (profilerActive) {
+        profiler->record(RuntimeProfiler::Section::Cli,
+                         micros() - profilerSectionStartUs,
+                         serialConsoleWorked,
+                         profilerNowMs);
+    }
+#endif
+    if (loopTimingUs != nullptr) {
+        *loopTimingUs += micros() - loopSectionStartUs;
+    }
+    return remoteConsoleWorked || serialConsoleWorked;
+}
+
+#if TRACKER_HAS_MACHINE_LOG
+TRACKER_APP_NOINLINE bool TrackerApp::serviceMachineLogRuntimeWithAdmission() {
+    if (deps_.callbacks.updateMachineLogRuntime == nullptr) return false;
+    const TrackingSlackAdmissionInput machineLogSlack =
+        trackingSlackAdmissionInput();
+    if (!trackingOptionalRuntimeAdmitted(
+            machineLogSlack, TrackingOptionalServiceClass::Console)) {
+        return false;
+    }
+    return callBool(deps_.callbacks.updateMachineLogRuntime);
+}
+#endif
+
+#if TRACKER_HAS_RUNTIME_DIAGNOSTICS
+TRACKER_APP_NOINLINE void TrackerApp::updateDiagnosticTimingActivation() {
+    bool active = false;
+#if TRACKER_HAS_RUNTIME_PROFILER
+    active = deps_.runtime.runtimeProfiler != nullptr &&
+             deps_.runtime.runtimeProfiler->enabled();
+#endif
+#if TRACKER_HAS_STATIC_TEST_STATE
+    active = active || (deps_.runtime.staticTestRunner != nullptr &&
+                        deps_.runtime.staticTestRunner->active());
+#endif
+#if TRACKER_HAS_RUNTIME_TEST_STATE
+    active = active || (deps_.runtime.runtimeTestRunner != nullptr &&
+                        deps_.runtime.runtimeTestRunner->active());
+#endif
+    deps_.runtime.fifoRuntime->setDiagnosticsTimingEnabled(active);
+}
+#endif
+
 TrackingSlackAdmissionInput TrackerApp::trackingSlackAdmissionInput() const {
     TrackingSlackAdmissionInput input;
     if (deps_.runtime.fifoRuntime != nullptr) {
@@ -971,7 +1071,7 @@ void TrackerApp::serviceRuntimeForBlockingCommand() {
     // Deferred calibration solving/storage intentionally pauses while a
     // blocking setup/calibration command owns the runtime transaction.
 #if TRACKER_HAS_RUNTIME_TEST
-    deps_.runtime.runtimeTestRunner->update(millis(), *deps_.runtime.out);
+    deps_.runtime.runtimeTestRunner->update(millis());
 #endif
 }
 
@@ -1076,7 +1176,12 @@ bool TrackerApp::processFifoRuntime() {
     return worked;
 }
 
+#undef TRACKER_APP_NOINLINE
+
 void TrackerApp::startMagFromConfig(Stream& out) {
+#if !TRACKER_HAS_SERIAL_CONSOLE
+    (void)out;
+#endif
     TrackerConfig& config = *deps_.runtime.config;
     if (!config.data.magCal.driverEnabled) return;
 

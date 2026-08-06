@@ -34,7 +34,10 @@ implemented.
 
 - The boot serial settle delay is Debug-profile only (`TRACKER_ENABLE_BOOT_DELAY`). Production and Slim do not keep the old unconditional `sleep(2)`.
 - `defines.h` is now a compatibility umbrella over `src/build_config/*`; new profile/config defaults should go into the focused build-config headers.
-- `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` is the committed default build/upload environment on the `Upgrades` branch. It is a service environment built from `TRACKER_PROFILE_PRODUCTION` plus the live runtime profiler; Debug, Production and Slim remain separate committed environments.
+- `BOARD_LOLIN_C3_MINI_PRODUCTION` is the committed default build/upload environment. `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` has a distinct profile identity, Production-family cadence and the complete bounded diagnostic surface for explicit cable-free capture.
+- Production compiles the unauthenticated TCP listener out. Debug/ProductionDiag expose only an exact non-persistent remote diagnostic allowlist; log/tests are bound to one session and abort before stream detach.
+- Machine LOGVER3 formatting is deferred out of IMU/magnetometer callbacks into a fixed record queue with one-line-per-service serialization. Static/runtime test completion is compact; immutable full reports are requested later over USB.
+- The strict LOGVER3 schema/chronology/drop gate and unattended TCP capture tool are present. Release remains blocked until a real clean battery-powered, USB-disconnected static fixture and independent golden JSON exist.
 
 ## Current quality gate
 
@@ -389,7 +392,7 @@ The first complete hardware guided-calibration run after 0023gf accepted hard/so
 
 ## pre-0024 hotpath headroom foundation
 
-`pre-0024_hotpath_headroom_foundation` is a standalone performance wave before AHRS `0024`. It makes hardware SPI drain and raw/magnetic callbacks share one absolute FIFO slice budget, reserves an armed pose deadline, replaces full nested network service with a rotation-only tick, spreads the unchanged battery trimmed-mean estimator across bounded ADC services, caches slow Wi-Fi diagnostics, reduces remote-console/LED idle taxes, samples only expensive motion aggregates, and moves runtime-bias/autonomy window finalization outside the 960 Hz callback while preserving exact evidence and update ordering. Fixed-memory DIAG telemetry now reports section percentiles, 10 ms frame headroom, profiler overhead and honest software-only queue/prepared/rotation ages. No raw samples are dropped or reordered; ODR, AHRS math, accel/mag correction cadence, output target rate, protocol 22, calibration models and persistent schemas are unchanged.
+`pre-0024_hotpath_headroom_foundation` is the historical name of the performance wave that preceded the trusted-baseline series. The future AHRS quality wave is renumbered after that series; historical `pre-0024*` filenames remain unchanged. The wave makes hardware SPI drain and raw/magnetic callbacks share one absolute FIFO slice budget, reserves an armed pose deadline, replaces full nested network service with a rotation-only tick, spreads the unchanged battery trimmed-mean estimator across bounded ADC services, caches slow Wi-Fi diagnostics, reduces remote-console/LED idle taxes, samples only expensive motion aggregates, and moves runtime-bias/autonomy window finalization outside the 960 Hz callback while preserving exact evidence and update ordering. Fixed-memory DIAG telemetry now reports section percentiles, 10 ms frame headroom, profiler overhead and honest software-only queue/prepared/rotation ages. No raw samples are dropped or reordered; ODR, AHRS math, accel/mag correction cadence, output target rate, protocol 22, calibration models and persistent schemas are unchanged.
 
 ## pre-0024a tracking deadline hardening
 
@@ -407,3 +410,61 @@ The first complete hardware guided-calibration run after 0023gf accepted hard/so
 ## pre-0024ad network-pressure pacing and recovery hardening
 
 `pre_0024ad_network_pressure_pacing_and_recovery_hardening` addresses a five-hour 13-tracker session that accumulated 28,883 ESP/lwIP TX-pressure failures, 1,261 local UDP rebinds and 815 full session reopens despite zero Wi-Fi disconnects and zero FIFO overrun/full events. Transient pressure now uses bounded 10-80 ms pacing and successful-motion age instead of failure-density recovery: intermittent successes preserve the socket/session, 500 ms without motion can request one local rebind, another 1000 ms without post-rebind success can request full discovery, and 5/10 s cooldowns suppress churn. During capability renegotiation packet-4 acceleration is withheld so reconnect cannot create a 150-datagram/s motion fallback. The unchanged 100 Hz schedule receives a deterministic MAC-derived phase. ODR, FIFO order, hardware timestamps, AHRS, correction cadence, packet layouts, calibration and persistent schemas are unchanged.
+
+## 0024 trusted host baseline and release identity
+
+`0024_trusted_host_baseline_and_release_identity` consolidates the first
+infrastructure wave. Host-policy temporary paths now live below ignored
+`build/tmp/`; predecessor policies no longer recursively re-run earlier
+compilation; aggregate, native-child and PlatformIO subprocesses are bounded;
+interruption/timeout terminates the child process tree; overlapping native
+runners are serialized so `--clean` cannot delete another live build; and the
+native CLI accepts explicit ASan/UBSan and separate LSan modes. GCC's
+implicit leak phase is disabled inside address-sanitized test binaries, so
+ptrace-incompatible LeakSanitizer startup cannot falsify ASan/UBSan results.
+
+The same patch adds `--host-only` and fail-closed `--release` modes, a root
+README and per-environment release manifests containing full Git commit, dirty
+state, environment, UTC time, tool identity, artifact size and SHA-256. Release
+rejects Git-less/dirty source, skip flags, environment subsets, missing tools,
+timeouts, unknown tool identity, empty/stale artifacts and missing
+`firmware.bin`/`firmware.elf`; every release target is cleaned and verified
+artifact-free before compilation. It is intentionally blocked
+in this baseline until the later logging wave supplies the strict LOGVER3 gate,
+clean static fixture and independent golden JSON; the legacy replay cannot make
+a release green. Firmware sources, build profiles, NVS/config/calibration
+formats, network/CLI/wire behavior and tracking runtime are unchanged.
+
+## 0025 cable-free LOGVER3 capture foundation
+
+`0025_cable_free_logver3_capture_foundation` makes Production the committed
+default, compiles the unauthenticated TCP listener out of Production/Slim and
+gives ProductionDiag a distinct identity plus an exact remote diagnostic
+allowlist. Machine logging and runtime/static tests are bound to their
+initiating USB or TCP session; disconnect aborts the producers without falling
+back to another sink. LOGVER3 records are queued in fixed storage and formatted
+only by a slack-admitted background service, while dormant Debug diagnostics,
+runtime timing and static aggregation avoid continuous hot-path overhead.
+
+The same wave adds a strict fail-closed LOGVER3 schema/chronology/drop gate and
+an unattended Telnet capture tool with clean-build, magnetometer and pipeline
+preflight. It deliberately does not add a positive fixture or golden JSON: the
+next acceptance patch requires a real 10-minute battery-powered capture with
+the USB cable physically removed. See
+`docs/0025_cable_free_logver3_capture_foundation_report.md` for the bounded
+RAM/stack contracts, verification record and hardware checkpoint.
+
+## 0025a cable-free diagnostic capture hardening
+
+`0025a_cable_free_diagnostic_capture_hardening` closes the independent review
+findings in 0025: E1 adds deferred one-hertz Wi-Fi/SlimeVR `NET` evidence and an
+immutable post-window `TESTSUM`; static capture rejects UDP/MAG/BIAS health
+faults while runtime capture preserves them with `health_passed=false`; a
+five-second Telnet NOP renews a 30-second firmware session lease that protects
+preflight from sleep and bounds half-open cleanup; logger callbacks reuse the
+single per-sample temp/bias evaluation; and log/manifest candidates are
+prepared together with rollback. Compact E1 field names keep every `LOGFMT`
+below the unchanged 512-byte USB staging limit. UDP remains active, persistent
+state and tracking/protocol semantics are unchanged, and real target/HIL/golden
+evidence remains pending. See
+`docs/0025a_cable_free_diagnostic_capture_hardening_report.md`.

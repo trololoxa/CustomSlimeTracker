@@ -206,6 +206,7 @@ static RuntimeGyroBiasEstimator g_runtimeBias;
 
 #if TRACKER_HAS_MACHINE_LOG
 static MachineLogCounters g_logCounters;
+static MachineLogDeferredRuntime g_machineLogDeferred;
 static uint32_t g_lastBiasLogEmitUs = 0;
 static constexpr uint32_t MACHINE_BIAS_LOG_PERIOD_US = 1000000UL; // 1 Hz: enough for temp/bias tracking and safer for FIFO while logging.
 #endif

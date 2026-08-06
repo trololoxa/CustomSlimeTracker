@@ -5,6 +5,7 @@
 #include "defines.h"
 
 #include "build_config/build_identity.hpp"
+#include "runtime/diagnostic_test_summary.hpp"
 
 namespace tracker {
 
@@ -114,6 +115,7 @@ bool RuntimeTestRunner::start(uint32_t durationMs, uint32_t nowMs, Stream& out) 
 #else
     if (!ready() || active_ || durationMs == 0) return false;
     reset();
+    output_ = &out;
     active_ = true;
     durationMs_ = durationMs;
     startMs_ = nowMs;
@@ -134,23 +136,39 @@ bool RuntimeTestRunner::start(uint32_t durationMs, uint32_t nowMs, Stream& out) 
 #endif
 }
 
-bool RuntimeTestRunner::stop() {
+bool RuntimeTestRunner::stop(Stream& out, bool force) {
 #if !TRACKER_ENABLE_RUNTIME_TEST
     return false;
 #else
     if (!active_) return false;
+    if (!force && output_ != &out) return false;
     stopRequested_ = true;
+    return true;
+#endif
+}
+
+bool RuntimeTestRunner::abortOutput(Stream& out) {
+#if !TRACKER_ENABLE_RUNTIME_TEST
+    (void)out;
+    return false;
+#else
+    if (!active_ || output_ != &out) return false;
+    reset();
     return true;
 #endif
 }
 
 void RuntimeTestRunner::printStatus(Stream& out, uint32_t nowMs) const {
     out.print("runtime_test_active="); out.println(active_ ? "yes" : "no");
+    out.print("runtime_report_ready="); out.println(reportReady_ ? "yes" : "no");
     if (!active_) return;
     const uint32_t elapsed = nowMs - startMs_;
     out.print("runtime_elapsed_s="); out.println(elapsed / 1000UL);
     out.print("runtime_duration_s="); out.println(durationMs_ / 1000UL);
     out.print("runtime_loop_count="); out.println(loopCount_);
+    out.print("runtime_timing_sample_count="); out.println(timingSampleCount_);
+    out.print("runtime_timing_sample_divisor=");
+    out.println((uint32_t)TRACKER_DIAGNOSTIC_TIMING_SAMPLE_DIVISOR);
     out.print("runtime_loop_avg_us="); out.println(loopUs_.mean(), 3);
     out.print("runtime_loop_max_us="); out.println(loopUs_.max);
     out.print("runtime_work_loops="); out.println(workLoopCount_);
@@ -166,18 +184,22 @@ void RuntimeTestRunner::printStatus(Stream& out, uint32_t nowMs) const {
     }
 }
 
-void RuntimeTestRunner::recordLoopTiming(const RuntimeLoopTimingSample& timing) {
+void RuntimeTestRunner::recordLoopTiming(const RuntimeLoopTimingSample& timing,
+                                         bool timingValid) {
 #if TRACKER_ENABLE_RUNTIME_TEST
     if (!active_) return;
     ++loopCount_;
-    loopUs_.push(timing.loopUs);
-    cliUs_.push(timing.cliUs);
-    fifoUs_.push(timing.fifoUs);
-    networkUs_.push(timing.networkUs);
-    heartbeatUs_.push(timing.heartbeatUs);
-    if (timing.loopUs > RUNTIME_TEST_SLOW_LOOP_US) ++slowLoopCount_;
-    if (timing.networkUs > RUNTIME_TEST_SLOW_NETWORK_US) ++slowNetworkCount_;
-    if (timing.fifoUs > RUNTIME_TEST_SLOW_FIFO_US) ++slowFifoCount_;
+    if (timingValid) {
+        ++timingSampleCount_;
+        loopUs_.push(timing.loopUs);
+        cliUs_.push(timing.cliUs);
+        fifoUs_.push(timing.fifoUs);
+        networkUs_.push(timing.networkUs);
+        heartbeatUs_.push(timing.heartbeatUs);
+        if (timing.loopUs > RUNTIME_TEST_SLOW_LOOP_US) ++slowLoopCount_;
+        if (timing.networkUs > RUNTIME_TEST_SLOW_NETWORK_US) ++slowNetworkCount_;
+        if (timing.fifoUs > RUNTIME_TEST_SLOW_FIFO_US) ++slowFifoCount_;
+    }
     if (timing.anyWork) ++workLoopCount_;
     else ++idleCandidateLoopCount_;
     if (timing.fifoWorked) ++fifoWorkCount_;
@@ -193,12 +215,18 @@ void RuntimeTestRunner::recordLoopTiming(const RuntimeLoopTimingSample& timing) 
     }
 #else
     (void)timing;
+    (void)timingValid;
 #endif
 }
 
-void RuntimeTestRunner::update(uint32_t nowMs, Stream& out) {
+void RuntimeTestRunner::update(uint32_t nowMs) {
 #if TRACKER_ENABLE_RUNTIME_TEST
     if (!active_) return;
+    if (output_ == nullptr) {
+        reset();
+        return;
+    }
+    Stream& out = *output_;
     if ((nowMs - lastProgressMs_) >= deps_.progressPeriodMs) {
         pushTempHistory(nowMs);
         printProgress(out, nowMs);
@@ -206,11 +234,10 @@ void RuntimeTestRunner::update(uint32_t nowMs, Stream& out) {
         last_ = makeSnapshot();
     }
     if (stopRequested_ || (nowMs - startMs_) >= durationMs_) {
-        finish(nowMs, out);
+        finish(nowMs);
     }
 #else
     (void)nowMs;
-    (void)out;
 #endif
 }
 
@@ -239,11 +266,16 @@ RuntimeTestRunner::Snapshot RuntimeTestRunner::makeSnapshot() const {
 
 void RuntimeTestRunner::reset() {
     active_ = false;
+    reportReady_ = false;
+    stoppedByCommand_ = false;
+    output_ = nullptr;
     stopRequested_ = false;
     durationMs_ = 0;
     startMs_ = 0;
     lastProgressMs_ = 0;
+    finishedMs_ = 0;
     loopCount_ = 0;
+    timingSampleCount_ = 0;
     slowLoopCount_ = 0;
     slowNetworkCount_ = 0;
     slowFifoCount_ = 0;
@@ -264,6 +296,7 @@ void RuntimeTestRunner::reset() {
     tempHistoryNext_ = 0;
     for (auto& sample : tempHistory_) sample = TempHistorySample{};
     start_ = Snapshot{};
+    end_ = Snapshot{};
     last_ = Snapshot{};
     loopUs_.reset();
     cliUs_.reset();
@@ -331,10 +364,37 @@ void RuntimeTestRunner::printProgress(Stream& out, uint32_t nowMs) const {
     out.print(" sample_rate_hz="); out.println(safeRate(deltaU32(now.runtimeSamples, start_.runtimeSamples), elapsedS), 3);
 }
 
-void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
+void RuntimeTestRunner::finish(uint32_t nowMs) {
+    if (output_ == nullptr) {
+        reset();
+        return;
+    }
+    Stream& out = *output_;
     pushTempHistory(nowMs);
-    const Snapshot end = makeSnapshot();
-    const uint32_t elapsedMs = nowMs - startMs_;
+    end_ = makeSnapshot();
+    finishedMs_ = nowMs;
+    stoppedByCommand_ = stopRequested_;
+    reportReady_ = true;
+    active_ = false;
+    stopRequested_ = false;
+    output_ = nullptr;
+
+    // Completion is deliberately compact. The previous multi-page report was
+    // formatted synchronously in the tracker loop and could starve FIFO/UDP or
+    // overflow a bounded TCP queue. It remains available on demand after the
+    // measured window has closed.
+    out.println("RUNTIME TEST DONE");
+    out.println("# detailed report retained; use: test report runtime");
+}
+
+bool RuntimeTestRunner::printLastReport(Stream& out) const {
+    if (!reportReady_) {
+        out.println("# ERR no completed runtime test report");
+        return false;
+    }
+    const Snapshot& end = end_;
+    const uint32_t nowMs = finishedMs_;
+    const uint32_t elapsedMs = finishedMs_ - startMs_;
     const float durationS = elapsedMs > 0 ? static_cast<float>(elapsedMs) / 1000.0f : 0.0f;
 
     out.println("==============================================================================");
@@ -342,9 +402,12 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.println("==============================================================================");
     printRuntimeBuildConfig(out);
     out.println("------------------------------------------------------------------------------");
-    out.print("stopped_by_command: "); out.println(stopRequested_ ? "yes" : "no");
+    out.print("stopped_by_command: "); out.println(stoppedByCommand_ ? "yes" : "no");
     out.print("duration_s: "); out.println(durationS, 3);
     out.print("loop_count: "); out.println(loopCount_);
+    out.print("timing_sample_count: "); out.println(timingSampleCount_);
+    out.print("timing_sample_divisor: ");
+    out.println((uint32_t)TRACKER_DIAGNOSTIC_TIMING_SAMPLE_DIVISOR);
     out.print("runtime_samples_delta: "); out.println(deltaU32(end.runtimeSamples, start_.runtimeSamples));
     out.print("sample_rate_hz: "); out.println(safeRate(deltaU32(end.runtimeSamples, start_.runtimeSamples), durationS), 3);
     out.print("tracking_recovery_delta: "); out.println(deltaU32(end.recoveryEnterCount, start_.recoveryEnterCount));
@@ -497,10 +560,60 @@ void RuntimeTestRunner::finish(uint32_t nowMs, Stream& out) {
     out.print("slime_tx_other_failures_delta: "); out.println(deltaU32(end.slime.txOtherFailures, start_.slime.txOtherFailures));
     out.print("slime_tx_failure_window_trips_delta: "); out.println(deltaU32(end.slime.txFailureWindowTrips, start_.slime.txFailureWindowTrips));
     out.print("slime_last_udp_send_error_end: "); out.println(end.slime.lastUdpSendError);
-    out.println("RUNTIME TEST DONE");
+    out.println("RUNTIME TEST REPORT END");
     out.println("==============================================================================");
+    return true;
+}
 
-    reset();
+bool RuntimeTestRunner::printLastSummary(Stream& out) const {
+    if (!reportReady_) {
+        out.println("# ERR no completed runtime test summary");
+        return false;
+    }
+
+    DiagnosticTestSummary summary;
+    summary.kind = DiagnosticTestKind::Runtime;
+    summary.durationMs = finishedMs_ - startMs_;
+    summary.stoppedByCommand = stoppedByCommand_;
+    summary.samples = deltaU32(end_.runtimeSamples, start_.runtimeSamples);
+    summary.hwTimestampSamples =
+        deltaU32(end_.fifo.hwTimestampAssigned, start_.fifo.hwTimestampAssigned);
+    summary.fallbackTimestampSamples =
+        deltaU32(end_.fifo.fallbackTimestampAssigned, start_.fifo.fallbackTimestampAssigned);
+    summary.badTimestampSamples =
+        deltaU32(end_.quality.zeroTimestampSamples, start_.quality.zeroTimestampSamples) +
+        deltaU32(end_.quality.nonMonotonicTimestampSamples,
+                 start_.quality.nonMonotonicTimestampSamples);
+    summary.estimatedDroppedSamples =
+        deltaU32(end_.quality.estimatedDroppedSamples, start_.quality.estimatedDroppedSamples);
+    summary.recoveryRequests =
+        deltaU32(end_.quality.fifoRecoveryRequests, start_.quality.fifoRecoveryRequests);
+    summary.fifoOverruns = deltaU32(end_.fifo.overrunEvents, start_.fifo.overrunEvents);
+    summary.fifoFull = deltaU32(end_.fifo.fullEvents, start_.fifo.fullEvents);
+    summary.fifoUnknown = deltaU32(end_.fifo.unknownWords, start_.fifo.unknownWords);
+    summary.networkMetricsValid = true;
+    summary.wifiDisconnects = deltaU32(end_.wifi.disconnects, start_.wifi.disconnects);
+    summary.wifiConnectTimeouts = deltaU32(end_.wifi.connectTimeouts, start_.wifi.connectTimeouts);
+    summary.udpSendFailures = deltaU32(end_.slime.sendFailures, start_.slime.sendFailures);
+    summary.rotationSendFailures =
+        deltaU32(end_.slime.rotationSendFailures, start_.slime.rotationSendFailures);
+    summary.rotationMissedDeadlines =
+        deltaU32(end_.slime.rotationMissedDeadlines, start_.slime.rotationMissedDeadlines);
+    summary.rotationLateEvents =
+        deltaU32(end_.slime.rotationLateEvents, start_.slime.rotationLateEvents);
+    summary.txPressureFailures =
+        deltaU32(end_.slime.txPressureFailures, start_.slime.txPressureFailures);
+    summary.txOtherFailures = deltaU32(end_.slime.txOtherFailures, start_.slime.txOtherFailures);
+    summary.udpRebindSuccesses = deltaU32(
+        end_.slime.udpTransportRebindSuccesses, start_.slime.udpTransportRebindSuccesses);
+    summary.udpRebindFailures = deltaU32(
+        end_.slime.udpTransportRebindFailures, start_.slime.udpTransportRebindFailures);
+    summary.udpFullReopens = deltaU32(
+        end_.slime.udpFullReopenEscalations, start_.slime.udpFullReopenEscalations);
+    summary.tempStartC = tempStartC_;
+    summary.tempEndC = tempEndC_;
+    diagnosticTestPrintSummary(out, summary);
+    return true;
 }
 
 uint32_t RuntimeTestRunner::deltaU32(uint32_t current, uint32_t start) {

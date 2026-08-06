@@ -7,8 +7,9 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -173,7 +174,7 @@ def main() -> int:
     require(report, "207", "recorded setup verification sample-count symptom")
 
     cxx = compiler()
-    with tempfile.TemporaryDirectory(prefix="tracker-0023gg-") as tmp_name:
+    with project_temp_directory(ROOT, "tracker-0023gg-") as tmp_name:
         tmp = Path(tmp_name)
         stack_cxx = stack_compiler(cxx)
         common = [

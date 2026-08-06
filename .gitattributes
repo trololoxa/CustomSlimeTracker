@@ -1,3 +1,5 @@
 # The working tree is intentionally CRLF-heavy. Keep CR-at-EOL valid for
 # whitespace checks without forcing repository-wide line-ending conversion.
 * whitespace=cr-at-eol
+*.json text eol=lf
+*.patch text eol=lf

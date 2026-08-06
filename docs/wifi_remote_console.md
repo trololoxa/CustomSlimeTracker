@@ -1,28 +1,23 @@
-# Wi-Fi remote console
+# Wi-Fi remote diagnostic console
 
-The firmware can expose the normal CLI over a small TCP server for cable-free
-setup and calibration. This is not a separate command set: the remote console
-feeds the same `TrackerSerialCommandInterface` dispatcher that USB Serial uses.
+The TCP console is a cable-free diagnostic transport, not a second privileged
+administration interface. It feeds the normal fixed-buffer command parser, but
+every command is checked by an exact, fail-closed remote allowlist before any
+domain dispatcher or SlimeVR compatibility handler runs.
 
-Defaults:
+Profile contract:
 
-- Debug: enabled.
-- Production: enabled.
-- Slim: disabled and excluded from the source filter.
-- Port: `TRACKER_REMOTE_CONSOLE_PORT`, default `7777`.
-- Per-loop input budget: `TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP`, default `32`
-  in Debug and `16` in Production.
-- Bounded output queue: `TRACKER_REMOTE_CONSOLE_OUTPUT_QUEUE_BYTES`, default
-  `8192` bytes in Debug and Production/ProductionDiag. Telnet is the primary
-  long-report channel, so this is deliberately larger than the USB queue.
-- Atomic record staging: `TRACKER_REMOTE_CONSOLE_OUTPUT_RECORD_BYTES`, default
-  `768` bytes. One overlong line is dropped as a whole.
-- Per-drain output budget: `TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN`,
-  default `128` bytes in Debug and `64` bytes in Production.
-- Output drain cadence: `TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS`,
-  default `4 ms` in Debug and `5 ms` in Production.
+- Debug: listener enabled for development;
+- Production: listener and source unit compiled out;
+- Production Diagnostic: listener enabled for capture/diagnostics;
+- Slim: listener and CLI compiled out;
+- port: `TRACKER_REMOTE_CONSOLE_PORT`, default `7777`;
+- one active client; additional clients receive a bounded busy response;
+- fixed output queue `8192` bytes and atomic record staging `768` bytes in
+  Debug/ProductionDiag;
+- non-blocking socket drain, `128` bytes per admitted drain at a `4 ms` cadence.
 
-Connect from a PC on the same Wi-Fi network:
+Connect from a trusted private network:
 
 ```bash
 nc <tracker-ip> 7777
@@ -34,100 +29,129 @@ or:
 telnet <tracker-ip> 7777
 ```
 
-Typical wireless calibration flow:
+Telnet IAC negotiation, subnegotiation and CR-NUL bytes are filtered before the
+ASCII command buffer. Raw TCP clients continue to use ordinary LF or CRLF.
+
+## Security and command policy
+
+The listener is unauthenticated, so it must never be exposed to an untrusted
+network. The remote policy permits only bounded, non-persistent diagnostics:
 
 ```text
-setup status
-setup calibration
-remote off
+help, version, status, health
+console status|reset, remote status
+perf status|top|tracking, motion status
+log start|finish|summary|reset|off, log rate 1..20
+test static|runtime 1..900, test status|stop
+test summary static|runtime
+mag status|processed|trust
+net/slime/battery/fifo/quality/imu/bias/ahrs status commands
 ```
 
-## Runtime control
+Setup, config/NVS writes, calibration mutation, Wi-Fi credential changes,
+reset, factory reset, reboot, stream mutation and profiler/motion activation are
+USB-only. Unknown or extra arguments fail closed. `test report` is also USB-only
+because a full retained report is a large synchronous diagnostic burst.
 
-The remote console is intentionally runtime-disableable. After calibration, run:
+`remote off`/`remote on` are privileged USB commands. `remote off` closes the
+active client and listener for the current boot without changing NVS.
 
-```text
-remote off
+## Session ownership
+
+Every accepted client receives a monotonically changing non-zero session ID.
+Machine log and static/runtime tests bind to the initiating `Stream`, origin and
+session. Another TCP session cannot stop or rebind them; USB may force-stop a
+diagnostic as the local administrative channel.
+
+On disconnect, the close hook runs before the stream is detached. It aborts
+owned log/tests, releases their stream pointers and records disconnect/shutdown
+drops. There is no fallback to USB and no stale pointer to a detached TCP
+stream.
+
+An active session also blocks motion light sleep, including capture preflight.
+The capture tool sends a Telnet IAC NOP every five seconds; any consumed input
+renews the firmware's 30-second application lease. If the host disappears
+without FIN/RST, lease expiry invokes the same close hook, releases log/test
+ownership and removes the sleep blocker instead of waiting indefinitely for
+the TCP stack. After closure, the normal 60-second SlimeVR-server-absence and
+motion policy resumes. Neither the lease nor capture changes NVS.
+
+## Deferred LOGVER3 output
+
+IMU and magnetometer callbacks enqueue immutable fixed-size records only. E1
+also queues a one-hertz `NET` snapshot from background service after its due
+gate; it never copies Wi-Fi/SlimeVR status from a sensor callback. CSV
+float formatting and `Stream::print` run later, after FIFO/AHRS and SlimeVR work,
+under the optional-service slack gate. At most one complete CSV line is
+serialized per service call. Multi-line Q/FIFO/BIAS/CAL and MAG/MAGR/YAW bundles
+stay at the queue head until complete.
+
+The fixed pipeline exposes:
+
+- producer queue drops and high-water;
+- serialized/enqueued counts;
+- service deferrals;
+- shutdown/disconnect drops;
+- maximum record age;
+- bounded-console complete-line drops.
+
+`log finish` stops producers while allowing queued records to drain. Only after
+`LOGSTAT,PIPELINE` reports `queued=0` and `enqueued=serialized` should the client
+request the final summary and issue `log off`.
+
+After a measured test closes, `test summary static|runtime` emits one compact
+immutable `TESTSUM` CSV row with exact full-rate sensor/FIFO/network deltas.
+The retained multi-page `test report` remains USB-only and outside the measured
+completion path.
+
+## Unattended cable-free capture
+
+Use the host tool rather than manually copying terminal output:
+
+```bash
+python3 tools/capture_telnet_log.py \
+  --host <tracker-ip> \
+  --capture static \
+  --seconds 600 \
+  --rate 20 \
+  --mode full \
+  --output logver3_static_clean_001.log
 ```
 
-This closes the current TCP client and stops the TCP server for the current
-boot. After that the runtime no longer accepts/polls TCP console clients, so it
-does not add normal-loop or Wi-Fi server work. It does not change NVS. USB Serial
-can re-enable it for the current boot with:
+It requires ProductionDiag, a clean full 40-hex commit identity, a valid source
+fingerprint and a live remote session. Static capture additionally requires a
+ready trusted calibrated MAG/yaw path, a calibrated base gyro bias and live
+SlimeVR UDP. It resets counters, starts a session-bound full 20 Hz log and test,
+drains the logger, checks lifecycle/console counters, validates strict LOGVER3
+E1 and promotes the log/manifest pair only after both candidates are ready.
+Failures preserve a unique partial capture.
 
-```text
-remote on
-```
+To retain an already-occurring SlimeVR problem, use `--capture runtime` with
+UDP and the normal server/tracker load left active. Structural corruption still
+fails; network/sensor health problems are saved and reported as
+`health_passed=false`. TCP is not an independent channel: it shares the same
+radio, Wi-Fi association and lwIP buffers with UDP, so a general radio or shared
+memory failure can disconnect both and yield only a partial capture.
 
-Status:
+Power the tracker from its battery and physically disconnect USB before a
+magnetic static-golden run. Moving log traffic from USB to TCP does not remove
+the magnetic influence of a cable that remains attached for power.
 
-```text
-remote status
-```
+## Backpressure acceptance
 
-prints whether the feature is compiled, enabled, listening, connected, the port,
-client/input counters and bounded-output queue counters. The shared command:
+The bounded console commits or drops complete lines; it never glues fragments
+together. A later warning reports dropped records. Tracking always has priority
+over diagnostics.
 
-```text
-console status
-```
+A fixture candidate is invalid if any of these is non-zero:
 
-prints both USB Serial and remote-console output queues together with the active
-drain byte budgets and drain intervals. `console reset` discards stale queued
-or partially staged console text and resets all output counters.
+- `LOGSTAT,BACKPRESSURE`;
+- producer, shutdown or disconnect drops in `LOGSTAT,DROPS`;
+- remote console bytes/records/oversized records/pending warnings;
+- remote capture aborts;
+- remote session lease expirations;
+- FIFO full/overrun/unknown/fallback or unexpected recovery.
 
-## Output backpressure
-
-The TCP client is no longer written directly by command handlers or event logs.
-Output is first copied into a fixed-size ring and drained only after both the
-FIFO/AHRS path and the SlimeVR UDP update. The drain is limited by both a byte
-budget and a time cadence, so a connected telnet client cannot consume every
-high-rate app loop or take priority over RotationData. The TCP drain uses a
-non-blocking socket send rather than `WiFiClient::write()`, because the pinned
-Arduino-ESP32 2.0.x client does not expose a useful `availableForWrite()` value.
-A slow or disconnected client therefore cannot block IMU processing or reduce
-the planned UDP service rate.
-
-The queue is deliberately bounded, but admission is line-atomic. Output is
-staged until newline and then either committed as one complete record or dropped
-as one complete record. Congestion can no longer produce glued fragments such as
-`wifi_disconnmotion status`. After room becomes available the stream emits one
-compact `# WARN console dropped N complete line(s)` marker.
-
-High-rate machine logs remain best-effort. When the queue lacks reserve for a
-record, the producer skips formatting and increments `LOGSTAT,BACKPRESSURE`. A
-capture with queue drops or machine-log backpressure drops is incomplete and
-should not be used as a replay fixture. Normal tracking keeps priority over
-preserving every diagnostic line.
-
-`remote_console_bytes_dropped` counts input/client-disconnect loss, while the
-`remote_console_output_*` fields describe the bounded output queue itself.
-
-## Notes
-
-- Only one TCP client is accepted at a time. Extra clients receive a busy message
-  and are closed.
-- The console is intentionally unauthenticated. Use it only on a trusted private
-  network or compile it out with `-DTRACKER_ENABLE_WIFI_REMOTE_CONSOLE=0`.
-- Blocking setup/calibration commands read from the same active TCP stream. The
-  app does not poll the remote-console parser from the blocking calibration
-  service hook, so prompt input is not stolen recursively.
-- `setup calibration` keeps an already connected Wi-Fi link during the
-  temperature stage. It does not issue a forced `net reconnect` when Wi-Fi is
-  already connected, because that would drop the remote TCP console session.
-
-
-## RAM tuning
-
-The console buffers are independent fixed arrays; they never share the LSM6DSV
-FIFO or runtime IMU sample queues. Current defaults reserve approximately:
-
-```text
-USB Serial queue + record staging: 1536 + 512 bytes in Production
-telnet queue + record staging:     8192 + 768 bytes
-```
-
-The larger telnet queue is intentional because `perf status`, `motion status`
-and `slime debug` are multi-kilobyte bursts. If a future subsystem needs RAM,
-reduce `TRACKER_REMOTE_CONSOLE_OUTPUT_QUEUE_BYTES` and/or the USB queue first; do
-not raise the sustained drain rate, because that can compete with SlimeVR UDP.
+Service deferrals may be non-zero; they are expected when tracking slack is
+temporarily unavailable. The strict gate instead bounds maximum record age and
+requires the pipeline to drain completely.

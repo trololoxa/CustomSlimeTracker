@@ -3,9 +3,9 @@
 
 `validate_source_filters.py` checks whether concrete filter paths exist. This
 script checks the semantic contract represented by `platformio.ini`: all
-committed environments must exist, the committed default must remain the
-wearable Production Diagnostic environment, profile flags must match, and
-product source filters must keep quality-critical tracking/network modules.
+committed environments must exist, normal Production is the safe default,
+profile identities match, and product source filters keep quality-critical
+tracking/network modules.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ PRODUCTION_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION"
 PRODUCTION_DIAG_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG"
 SLIM_ENV = "BOARD_LOLIN_C3_MINI_SLIM"
 
-EXPECTED_DEFAULT_ENVS = (PRODUCTION_DIAG_ENV,)
+EXPECTED_DEFAULT_ENVS = (PRODUCTION_ENV,)
 EXPECTED_ENVIRONMENTS = {
     BASE_ENV,
     DEBUG_ENV,
@@ -46,7 +46,7 @@ EXPECTED_ENVIRONMENTS = {
 EXPECTED_PROFILE_FLAGS = {
     DEBUG_ENV: "TRACKER_PROFILE_DEBUG",
     PRODUCTION_ENV: "TRACKER_PROFILE_PRODUCTION",
-    PRODUCTION_DIAG_ENV: "TRACKER_PROFILE_PRODUCTION",
+    PRODUCTION_DIAG_ENV: "TRACKER_PROFILE_PRODUCTION_DIAG",
     SLIM_ENV: "TRACKER_PROFILE_SLIM",
 }
 
@@ -73,8 +73,12 @@ LIVE_DIAGNOSTIC_SOURCES = {
     "serial/tracker_motion_commands.cpp",
 }
 
-PRODUCTION_REQUIRED_EXCLUDES = PRODUCT_COMMON_REQUIRED_EXCLUDES | LIVE_DIAGNOSTIC_SOURCES
-PRODUCTION_DIAG_REQUIRED_EXCLUDES = PRODUCT_COMMON_REQUIRED_EXCLUDES
+PRODUCTION_REQUIRED_EXCLUDES = PRODUCT_COMMON_REQUIRED_EXCLUDES | LIVE_DIAGNOSTIC_SOURCES | {
+    "network/wifi_remote_console.cpp",
+}
+# ProductionDiag is the complete capture image. Its runtime policy remains
+# production-like, but all bounded diagnostic translation units must link.
+PRODUCTION_DIAG_REQUIRED_EXCLUDES: set[str] = set()
 
 SLIM_REQUIRED_EXCLUDES = PRODUCTION_REQUIRED_EXCLUDES | {
     "config/tracker_config_calibration_capture.cpp",
@@ -290,6 +294,25 @@ def main() -> int:
         errors.append("[platformio] automatic build identity pre-script is missing")
     if not (ROOT / "tools" / "generate_build_identity.py").exists():
         errors.append("[platformio] build identity pre-script path does not exist")
+    if "monitor_speed = 921600" not in platformio_text:
+        errors.append("[platformio] monitor_speed must match firmware USB baud 921600")
+
+    production_diag_match = re.search(
+        rf"^\[env:{re.escape(PRODUCTION_DIAG_ENV)}\]\s*$([\s\S]*?)(?=^\[|\Z)",
+        platformio_text,
+        re.MULTILINE,
+    )
+    if production_diag_match is not None:
+        production_diag_section = production_diag_match.group(1)
+        for flag in (
+            "-DTRACKER_CLI_LEVEL=TRACKER_CLI_LEVEL_FULL",
+            "-DTRACKER_ENABLE_WIFI_REMOTE_CONSOLE=1",
+            "-DTRACKER_ENABLE_MACHINE_LOG=1",
+            "-DTRACKER_ENABLE_STATIC_TEST=1",
+            "-DTRACKER_ENABLE_RUNTIME_TEST=1",
+        ):
+            if flag not in production_diag_section:
+                errors.append(f"{PRODUCTION_DIAG_ENV}: missing capture capability {flag}")
 
     for env, expected in EXPECTED_PROFILE_FLAGS.items():
         actual = profiles.get(env)
@@ -343,7 +366,15 @@ def main() -> int:
                 f"{fifo_basic_control}"
             )
 
-    accidentally_removed_diag = sorted(production_diag_excludes & LIVE_DIAGNOSTIC_SOURCES)
+    diagnostic_capture_sources = LIVE_DIAGNOSTIC_SOURCES | {
+        "network/wifi_remote_console.cpp",
+        "runtime/machine_log_runtime.cpp",
+        "runtime/runtime_test_runner.cpp",
+        "runtime/static_test_runner.cpp",
+        "serial/tracker_output_commands.cpp",
+        "serial/tracker_test_commands.cpp",
+    }
+    accidentally_removed_diag = sorted(production_diag_excludes & diagnostic_capture_sources)
     if accidentally_removed_diag:
         errors.append(
             f"{PRODUCTION_DIAG_ENV}: live diagnostic sources must remain linked:\n  "

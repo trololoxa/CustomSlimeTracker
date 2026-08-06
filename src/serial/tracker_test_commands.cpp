@@ -17,7 +17,7 @@ bool trackerSerialTestIs(const char* a, const char* b) {
 void trackerSerialDispatchTestCommand(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     Stream& out = trackerSerialTestStream(ctx);
     if (argc < 2) {
-        tracker_serial_detail::printErr(out, "usage: test static <seconds>|runtime <seconds>|stop|status");
+        tracker_serial_detail::printErr(out, "usage: test static <seconds>|runtime <seconds>|summary static|runtime|stop|status");
         return;
     }
 
@@ -35,13 +35,64 @@ void trackerSerialDispatchTestCommand(TrackerSerialCommandContext& ctx, int argc
         return;
     }
 
+    if (trackerSerialTestIs(argv[1], "summary")) {
+        if (argc != 3) {
+            tracker_serial_detail::printErr(out, "usage: test summary static|runtime");
+            return;
+        }
+        if (trackerSerialTestIs(argv[2], "static")) {
+            if (!ctx.printStaticTestSummary) {
+                tracker_serial_detail::printErr(out, "static test summary hook not available");
+                return;
+            }
+            (void)ctx.printStaticTestSummary(out, ctx.printStaticTestSummaryUser);
+            return;
+        }
+        if (trackerSerialTestIs(argv[2], "runtime")) {
+            if (!ctx.printRuntimeTestSummary) {
+                tracker_serial_detail::printErr(out, "runtime test summary hook not available");
+                return;
+            }
+            (void)ctx.printRuntimeTestSummary(out, ctx.printRuntimeTestSummaryUser);
+            return;
+        }
+        tracker_serial_detail::printErr(out, "usage: test summary static|runtime");
+        return;
+    }
+
+    if (trackerSerialTestIs(argv[1], "report")) {
+        if (argc != 3) {
+            tracker_serial_detail::printErr(out, "usage: test report static|runtime");
+            return;
+        }
+        if (trackerSerialTestIs(argv[2], "static")) {
+            if (!ctx.printStaticTestReport) {
+                tracker_serial_detail::printErr(out, "static test report hook not available");
+                return;
+            }
+            (void)ctx.printStaticTestReport(out, ctx.printStaticTestReportUser);
+            return;
+        }
+        if (trackerSerialTestIs(argv[2], "runtime")) {
+            if (!ctx.printRuntimeTestReport) {
+                tracker_serial_detail::printErr(out, "runtime test report hook not available");
+                return;
+            }
+            (void)ctx.printRuntimeTestReport(out, ctx.printRuntimeTestReportUser);
+            return;
+        }
+        tracker_serial_detail::printErr(out, "usage: test report static|runtime");
+        return;
+    }
+
     if (trackerSerialTestIs(argv[1], "stop")) {
         bool stopped = false;
+        const bool force = ctx.origin == TrackerCommandOrigin::UsbSerial;
         if (ctx.stopStaticTest) {
-            stopped = ctx.stopStaticTest(ctx.stopStaticTestUser) || stopped;
+            stopped = ctx.stopStaticTest(out, force, ctx.stopStaticTestUser) || stopped;
         }
         if (ctx.stopRuntimeTest) {
-            stopped = ctx.stopRuntimeTest(ctx.stopRuntimeTestUser) || stopped;
+            stopped = ctx.stopRuntimeTest(out, force, ctx.stopRuntimeTestUser) || stopped;
         }
         if (stopped) tracker_serial_detail::printOk(out, "test stop requested");
         else tracker_serial_detail::printErr(out, "no test was running");
@@ -54,8 +105,15 @@ void trackerSerialDispatchTestCommand(TrackerSerialCommandContext& ctx, int argc
             return;
         }
         uint32_t seconds = 0;
-        if (!tracker_serial_detail::parseU32(argv[2], seconds) || seconds == 0 || seconds > 21600UL) {
-            tracker_serial_detail::printErr(out, "invalid duration; expected 1..21600 seconds");
+        const uint32_t maxSeconds =
+            ctx.origin == TrackerCommandOrigin::RemoteTcp ? 900UL : 21600UL;
+        if (!tracker_serial_detail::parseU32(argv[2], seconds) ||
+            seconds == 0 || seconds > maxSeconds) {
+            tracker_serial_detail::printErr(
+                out,
+                ctx.origin == TrackerCommandOrigin::RemoteTcp
+                    ? "invalid remote duration; expected 1..900 seconds"
+                    : "invalid duration; expected 1..21600 seconds");
             return;
         }
 
@@ -64,7 +122,7 @@ void trackerSerialDispatchTestCommand(TrackerSerialCommandContext& ctx, int argc
                 tracker_serial_detail::printErr(out, "static test start hook not available");
                 return;
             }
-            const bool ok = ctx.startStaticTest(seconds * 1000UL, ctx.startStaticTestUser);
+            const bool ok = ctx.startStaticTest(seconds * 1000UL, out, ctx.startStaticTestUser);
             if (ok) tracker_serial_detail::printOk(out, "static test started");
             else tracker_serial_detail::printErr(out, "static test already running");
             return;
@@ -74,7 +132,7 @@ void trackerSerialDispatchTestCommand(TrackerSerialCommandContext& ctx, int argc
             tracker_serial_detail::printErr(out, "runtime test start hook not available");
             return;
         }
-        const bool ok = ctx.startRuntimeTest(seconds * 1000UL, ctx.startRuntimeTestUser);
+        const bool ok = ctx.startRuntimeTest(seconds * 1000UL, out, ctx.startRuntimeTestUser);
         if (ok) tracker_serial_detail::printOk(out, "runtime test started");
         else tracker_serial_detail::printErr(out, "runtime test already running or unavailable");
         return;

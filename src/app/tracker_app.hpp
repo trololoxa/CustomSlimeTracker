@@ -73,6 +73,9 @@ struct TrackerAppRuntimeObjects {
 #if TRACKER_HAS_SERIAL_STREAM_STATE
     TrackerSerialStreamState* streamState = nullptr;
 #endif
+#if TRACKER_HAS_MACHINE_LOG
+    TrackerSerialLogState* logState = nullptr;
+#endif
     TrackerPerfCounters* perf = nullptr;
 #if TRACKER_HAS_RUNTIME_PROFILER
     RuntimeProfiler* runtimeProfiler = nullptr;
@@ -114,6 +117,7 @@ struct TrackerAppCallbacks {
     bool (*rotationDeadlineSlackUs)(uint32_t& outSlackUs) = nullptr;
     bool (*updateMagDeferredRuntime)() = nullptr;
     bool (*updateCalibrationAutonomyRuntime)() = nullptr;
+    bool (*updateMachineLogRuntime)() = nullptr;
     bool (*updateSerialConsoleRuntime)() = nullptr;
     bool (*updateRemoteConsoleRuntime)() = nullptr;
     void (*setupTapRuntime)() = nullptr;
@@ -132,6 +136,7 @@ struct TrackerAppCallbacks {
     // Light-sleep composition hooks. They intentionally do not change
     // persistent/NVS settings: resume reuses the same runtime configuration.
     bool (*serverFoundForMotionSleep)() = nullptr;
+    bool (*remoteConsoleBlocksMotionSleep)(uint32_t nowMs) = nullptr;
     bool (*calibrationBlocksMotionSleep)() = nullptr;
     void (*prepareMotionLightSleepRuntime)() = nullptr;
 #endif
@@ -183,6 +188,13 @@ private:
     void publishHealthState();
     void call(void (*callback)());
     bool processFifoRuntime();
+#if TRACKER_HAS_MACHINE_LOG
+    bool serviceMachineLogRuntimeWithAdmission();
+#endif
+    bool serviceConsoleRuntime(uint32_t* loopTimingUs);
+#if TRACKER_HAS_RUNTIME_DIAGNOSTICS
+    void updateDiagnosticTimingActivation();
+#endif
     TrackingSlackAdmissionInput trackingSlackAdmissionInput() const;
     bool maybeIdleYield(bool anyWork);
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
@@ -203,6 +215,10 @@ private:
     uint32_t nextSensorStartupRecoveryMs_ = 0;
     uint16_t sensorStartupRecoveryAttempts_ = 0;
     char pendingSensorFaultMessage_[64] = {};
+#if TRACKER_ENABLE_LOOP_TIMING
+    uint32_t loopTimingDecimator_ = 0u;
+    bool loopTimingSampled_ = false;
+#endif
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     MotionLightSleepController motionLightSleep_{TRACKER_MOTION_LIGHT_SLEEP_SERVER_ABSENCE_MS};
     bool motionLightSleepManualRequested_ = false;

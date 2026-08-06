@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+from unittest import mock
+
+import check_all as check_all_module
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -11,6 +15,24 @@ ROOT = Path(__file__).resolve().parents[1]
 def require(text: str, needle: str, description: str) -> None:
     if needle not in text:
         raise SystemExit(f"missing {description}: {needle}")
+
+
+def require_non_aborting_aggregation() -> None:
+    """Verify the behavior instead of pinning one subprocess API spelling."""
+    summary = check_all_module.CheckSummary()
+    completed = subprocess.CompletedProcess(["synthetic-policy-failure"], 17)
+    with mock.patch.object(
+        check_all_module,
+        "run_bounded_process",
+        return_value=completed,
+    ):
+        passed = check_all_module.run_checked(
+            summary,
+            ["synthetic-policy-failure"],
+            "synthetic policy failure",
+        )
+    if passed or summary.failures != ["synthetic policy failure (exit=17)"]:
+        raise SystemExit("aggregate runner did not preserve a non-zero child result")
 
 
 def main() -> int:
@@ -27,7 +49,7 @@ def main() -> int:
     require(autonomy_policy, 'buildAccelProposal", 640', "cross-ABI 640-byte accel stack ceiling")
 
     require(check_all, "class CheckSummary", "aggregated check_all summary")
-    require(check_all, "check=False", "non-aborting command execution")
+    require_non_aborting_aggregation()
     require(check_all, "check_all: FAIL (", "final consolidated failure report")
     require(check_all, "test_check_all_aggregation_policy.py", "aggregation self-test")
     require(standalone, "class NativeFailure", "native failure aggregation")

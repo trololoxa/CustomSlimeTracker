@@ -47,7 +47,12 @@ struct MachineLogCounters {
     uint32_t state = 0;
     uint32_t bias = 0;
     uint32_t biasUpdate = 0;
+    uint32_t network = 0;
     uint32_t backpressureDrop = 0;
+    uint32_t producerQueueDrop = 0;
+    uint32_t serviceDeferral = 0;
+    uint32_t shutdownDrop = 0;
+    uint32_t disconnectAbort = 0;
 };
 
 namespace prepared_output_motion_flags {

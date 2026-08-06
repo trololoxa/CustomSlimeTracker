@@ -9,6 +9,14 @@ build
 __pycache__/
 *.py[cod]
 
+# Legacy host-gate artifacts from interrupted GCC/tempfile runs. New tools put
+# the same transient data below ignored build/tmp.
+/cc*.o
+/cc*.s
+/cc*.res
+/cc*.cdtor.c
+/tracker-*-????????/
+
 phase*
 *.zip
 

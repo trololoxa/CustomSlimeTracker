@@ -74,6 +74,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.printLogSummaryUser = hooks.printLogSummaryUser;
     ctx.resetLogCounters = hooks.resetLogCounters;
     ctx.resetLogCountersUser = hooks.resetLogCountersUser;
+    ctx.resetLogPipeline = hooks.resetLogPipeline;
+    ctx.resetLogPipelineUser = hooks.resetLogPipelineUser;
     ctx.printRuntimeGyroBiasStatus = hooks.printRuntimeGyroBiasStatus;
     ctx.printRuntimeGyroBiasStatusUser = hooks.printRuntimeGyroBiasStatusUser;
     ctx.setRuntimeGyroBiasEnabled = hooks.setRuntimeGyroBiasEnabled;
@@ -86,6 +88,10 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.stopStaticTestUser = hooks.stopStaticTestUser;
     ctx.printStaticTestStatus = hooks.printStaticTestStatus;
     ctx.printStaticTestStatusUser = hooks.printStaticTestStatusUser;
+    ctx.printStaticTestSummary = hooks.printStaticTestSummary;
+    ctx.printStaticTestSummaryUser = hooks.printStaticTestSummaryUser;
+    ctx.printStaticTestReport = hooks.printStaticTestReport;
+    ctx.printStaticTestReportUser = hooks.printStaticTestReportUser;
 
     ctx.startRuntimeTest = hooks.startRuntimeTest;
     ctx.startRuntimeTestUser = hooks.startRuntimeTestUser;
@@ -93,6 +99,12 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.stopRuntimeTestUser = hooks.stopRuntimeTestUser;
     ctx.printRuntimeTestStatus = hooks.printRuntimeTestStatus;
     ctx.printRuntimeTestStatusUser = hooks.printRuntimeTestStatusUser;
+    ctx.printRuntimeTestSummary = hooks.printRuntimeTestSummary;
+    ctx.printRuntimeTestSummaryUser = hooks.printRuntimeTestSummaryUser;
+    ctx.printRuntimeTestReport = hooks.printRuntimeTestReport;
+    ctx.printRuntimeTestReportUser = hooks.printRuntimeTestReportUser;
+    ctx.closeCommandSession = hooks.closeCommandSession;
+    ctx.closeCommandSessionUser = hooks.closeCommandSessionUser;
     ctx.setMagRuntimeEnabled = hooks.setMagRuntimeEnabled;
     ctx.setMagRuntimeEnabledUser = hooks.setMagRuntimeEnabledUser;
     ctx.printMagRuntimeStatus = hooks.printMagRuntimeStatus;

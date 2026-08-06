@@ -111,27 +111,44 @@ void trackerSerialDispatchLogCommand(TrackerSerialCommandContext& ctx, int argc,
         tracker_serial_detail::printErr(out, "log state not available");
         return;
     }
+    const bool wasEnabled = ctx.logState->enabled();
 
     if (argc < 2) {
         out.print("log_mode="); out.println(trackerSerialLogModeName(ctx.logState->mode));
         out.print("log_rate_hz="); out.println(ctx.logState->rateHz);
         out.print("log_sequence="); out.println(ctx.logState->sequence);
+        out.print("log_finishing="); out.println(ctx.logState->finishing ? "yes" : "no");
+        out.print("log_owner_origin="); out.println(trackerCommandOriginName(ctx.logState->ownerOrigin));
+        out.print("log_owner_session="); out.println(ctx.logState->ownerSessionId);
         return;
     }
 
+    const bool canControl = !ctx.logState->enabled() || ctx.logState->ownedBy(ctx) ||
+                            ctx.origin == TrackerCommandOrigin::UsbSerial;
+
     if (trackerSerialOutputIs(argv[1], "rate")) {
+        if (!canControl) {
+            tracker_serial_detail::printErr(out, "log is owned by another session");
+            return;
+        }
         if (argc < 3) {
             tracker_serial_detail::printErr(out, "usage: log rate <hz>");
             return;
         }
         uint32_t hz = 0;
-        if (!tracker_serial_detail::parseU32(argv[2], hz) || hz == 0 || hz > 200) {
-            tracker_serial_detail::printErr(out, "invalid log rate; expected 1..200");
+        const uint32_t maxHz = ctx.origin == TrackerCommandOrigin::RemoteTcp ? 20u : 200u;
+        if (!tracker_serial_detail::parseU32(argv[2], hz) || hz == 0 || hz > maxHz) {
+            tracker_serial_detail::printErr(
+                out,
+                ctx.origin == TrackerCommandOrigin::RemoteTcp
+                    ? "invalid remote log rate; expected 1..20"
+                    : "invalid log rate; expected 1..200");
             return;
         }
         ctx.logState->rateHz = static_cast<uint16_t>(hz);
         ctx.logState->lastEmitUs = 0;
         ctx.logState->lastMagEmitUs = 0;
+        ctx.logState->lastNetworkEmitUs = 0;
         tracker_serial_detail::printOk(out, "log rate set");
         return;
     }
@@ -148,19 +165,47 @@ void trackerSerialDispatchLogCommand(TrackerSerialCommandContext& ctx, int argc,
         return;
     }
 
+    if (trackerSerialOutputIs(argv[1], "finish")) {
+        if (!canControl || !ctx.logState->enabled()) {
+            tracker_serial_detail::printErr(
+                out,
+                ctx.logState->enabled()
+                    ? "log is owned by another session"
+                    : "log is not running");
+            return;
+        }
+        ctx.logState->finishing = true;
+        tracker_serial_detail::printOk(out, "log producer stopped; wait for queued=0, then summary/off");
+        return;
+    }
+
     if (trackerSerialOutputIs(argv[1], "reset")) {
+        if (!canControl) {
+            tracker_serial_detail::printErr(out, "log is owned by another session");
+            return;
+        }
         ctx.logState->sequence = 0;
         ctx.logState->lastEmitUs = 0;
         ctx.logState->lastMagEmitUs = 0;
+        ctx.logState->lastNetworkEmitUs = 0;
+        ctx.logState->finishing = false;
+        if (ctx.resetLogPipeline) {
+            ctx.resetLogPipeline(false, ctx.resetLogPipelineUser);
+        }
         if (ctx.resetLogCounters) ctx.resetLogCounters(ctx.resetLogCountersUser);
         tracker_serial_detail::printOk(out, "log counters reset");
         return;
     }
 
     if (trackerSerialOutputIs(argv[1], "off") || trackerSerialOutputIs(argv[1], "stop")) {
-        ctx.logState->mode = TrackerLogMode::Off;
-        ctx.logState->lastEmitUs = 0;
-        ctx.logState->lastMagEmitUs = 0;
+        if (!canControl) {
+            tracker_serial_detail::printErr(out, "log is owned by another session");
+            return;
+        }
+        if (ctx.resetLogPipeline) {
+            ctx.resetLogPipeline(true, ctx.resetLogPipelineUser);
+        }
+        ctx.logState->release();
         tracker_serial_detail::printOk(out, "log stopped");
         return;
     }
@@ -180,17 +225,31 @@ void trackerSerialDispatchLogCommand(TrackerSerialCommandContext& ctx, int argc,
     } else if (trackerSerialParseLogMode(argv[1], mode)) {
         start = (mode != TrackerLogMode::Off);
     } else {
-        tracker_serial_detail::printErr(out, "unknown log command; use off|basic|full|start|stop|rate|header|summary|reset");
+        tracker_serial_detail::printErr(out, "unknown log command; use off|basic|full|start|stop|finish|rate|header|summary|reset");
+        return;
+    }
+
+    if (!canControl) {
+        tracker_serial_detail::printErr(out, "log is owned by another session");
         return;
     }
 
     ctx.logState->mode = mode;
     ctx.logState->lastEmitUs = 0;
     ctx.logState->lastMagEmitUs = 0;
+    ctx.logState->lastNetworkEmitUs = 0;
     if (mode == TrackerLogMode::Off) {
+        if (ctx.resetLogPipeline) {
+            ctx.resetLogPipeline(true, ctx.resetLogPipelineUser);
+        }
+        ctx.logState->release();
         tracker_serial_detail::printOk(out, "log stopped");
         return;
     }
+    if (!wasEnabled && ctx.resetLogPipeline) {
+        ctx.resetLogPipeline(false, ctx.resetLogPipelineUser);
+    }
+    ctx.logState->bind(out, ctx.origin, ctx.sessionId);
 
     out.print("# OK log mode ");
     out.println(trackerSerialLogModeName(mode));

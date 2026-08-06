@@ -45,6 +45,8 @@ using ImuPipelineQualityCallback = void (*)(const ImuQualityResult& quality,
 using ImuPipelineMachineLogCallback = void (*)(const Lsm6dsv::RawSample& raw,
                                                const Lsm6dsv::Sample& calibrated,
                                                const ImuQualityResult& quality,
+                                               const GyroTempCompRuntimeEval& tempEval,
+                                               const Vec3& currentGyroBiasRadS,
                                                void* user);
 using ImuPipelineFifoRecoveryCallback = void (*)(const ImuQualityResult& quality,
                                                  const Lsm6dsv::RawSample& raw,
@@ -104,6 +106,8 @@ struct ImuSamplePipelineDeps {
     Lsm6dsv::Sample* lastScaledSample = nullptr;
     Lsm6dsv::Sample* lastCalibratedSample = nullptr;
     uint32_t* lastImuSampleSequence = nullptr;
+    decltype(RuntimeGyroBiasUpdateDeps::enqueueLog) runtimeBiasLogCallback = nullptr;
+    void* runtimeBiasLogUser = nullptr;
 };
 
 void imuPipelineUpdateLatestTemperature(ImuSamplePipelineDeps& deps);

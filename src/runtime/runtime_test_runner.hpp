@@ -48,10 +48,14 @@ public:
     void begin(const Dependencies& deps);
     bool active() const;
     bool start(uint32_t durationMs, uint32_t nowMs, Stream& out);
-    bool stop();
+    bool stop(Stream& out, bool force = false);
+    bool abortOutput(Stream& out);
     void printStatus(Stream& out, uint32_t nowMs) const;
-    void recordLoopTiming(const RuntimeLoopTimingSample& timing);
-    void update(uint32_t nowMs, Stream& out);
+    bool printLastSummary(Stream& out) const;
+    bool printLastReport(Stream& out) const;
+    bool reportReady() const { return reportReady_; }
+    void recordLoopTiming(const RuntimeLoopTimingSample& timing, bool timingValid);
+    void update(uint32_t nowMs);
 
 public:
     struct Stats {
@@ -81,7 +85,7 @@ private:
     Snapshot makeSnapshot() const;
     void reset();
     void printProgress(Stream& out, uint32_t nowMs) const;
-    void finish(uint32_t nowMs, Stream& out);
+    void finish(uint32_t nowMs);
     static uint32_t deltaU32(uint32_t current, uint32_t start);
     static uint64_t deltaU64(uint64_t current, uint64_t start);
     static float safeRate(uint32_t delta, float durationS);
@@ -96,12 +100,17 @@ private:
     bool computeTempSlope(uint32_t elapsedMs, float& fullSlopeCPerMin, float& recentSlopeCPerMin) const;
 
     Dependencies deps_;
+    Stream* output_ = nullptr;
     bool active_ = false;
+    bool reportReady_ = false;
+    bool stoppedByCommand_ = false;
     bool stopRequested_ = false;
     uint32_t durationMs_ = 0;
     uint32_t startMs_ = 0;
     uint32_t lastProgressMs_ = 0;
+    uint32_t finishedMs_ = 0;
     uint32_t loopCount_ = 0;
+    uint32_t timingSampleCount_ = 0;
     uint32_t slowLoopCount_ = 0;
     uint32_t slowNetworkCount_ = 0;
     uint32_t slowFifoCount_ = 0;
@@ -123,6 +132,7 @@ private:
     uint8_t tempHistoryNext_ = 0;
 
     Snapshot start_;
+    Snapshot end_;
     Snapshot last_;
     Stats loopUs_;
     Stats cliUs_;

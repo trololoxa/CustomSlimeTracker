@@ -58,15 +58,16 @@
 
 
 // TCP remote CLI console. It reuses the serial CLI parser over Wi-Fi for
-// cable-free setup/calibration. Debug and Production enable the feature by
-// default through feature_flags.hpp; Slim keeps it compiled out. Runtime
-// command `remote off` stops the TCP server/client for the current boot.
+// cable-free capture/diagnostics. Debug and the explicit ProductionDiag
+// environment enable it; normal Production and Slim compile it out.
 #ifndef TRACKER_REMOTE_CONSOLE_PORT
 #define TRACKER_REMOTE_CONSOLE_PORT 7777
 #endif
 
 #ifndef TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP
   #if TRACKER_BUILD_IS_DEBUG
+    #define TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP 32
+  #elif TRACKER_BUILD_IS_PRODUCTION_DIAG
     #define TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP 32
   #elif TRACKER_BUILD_IS_PRODUCTION
     #define TRACKER_REMOTE_CONSOLE_BYTES_PER_LOOP 16
@@ -80,7 +81,7 @@
 // RAM headroom; reduce this compile-time value first if a future subsystem needs
 // memory, rather than increasing the drain rate and competing with RotationData.
 #ifndef TRACKER_REMOTE_CONSOLE_OUTPUT_QUEUE_BYTES
-  #if TRACKER_BUILD_IS_DEBUG || TRACKER_BUILD_IS_PRODUCTION
+  #if TRACKER_BUILD_IS_DEBUG || TRACKER_BUILD_IS_PRODUCTION_DIAG
     #define TRACKER_REMOTE_CONSOLE_OUTPUT_QUEUE_BYTES 8192
   #else
     #define TRACKER_REMOTE_CONSOLE_OUTPUT_QUEUE_BYTES 1
@@ -88,7 +89,7 @@
 #endif
 
 #ifndef TRACKER_REMOTE_CONSOLE_OUTPUT_RECORD_BYTES
-  #if TRACKER_BUILD_IS_DEBUG || TRACKER_BUILD_IS_PRODUCTION
+  #if TRACKER_BUILD_IS_DEBUG || TRACKER_BUILD_IS_PRODUCTION_DIAG
     #define TRACKER_REMOTE_CONSOLE_OUTPUT_RECORD_BYTES 768
   #else
     #define TRACKER_REMOTE_CONSOLE_OUTPUT_RECORD_BYTES 1
@@ -96,7 +97,7 @@
 #endif
 
 #ifndef TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN
-  #if TRACKER_BUILD_IS_DEBUG
+  #if TRACKER_BUILD_IS_DEBUG || TRACKER_BUILD_IS_PRODUCTION_DIAG
     #define TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN 128
   #elif TRACKER_BUILD_IS_PRODUCTION
     #define TRACKER_REMOTE_CONSOLE_OUTPUT_BYTES_PER_DRAIN 64
@@ -106,9 +107,9 @@
 #endif
 
 #ifndef TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS
-  #if TRACKER_BUILD_IS_DEBUG
+  #if TRACKER_BUILD_IS_DEBUG || TRACKER_BUILD_IS_PRODUCTION_DIAG
     #define TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS 4UL
-  #elif TRACKER_BUILD_IS_PRODUCTION
+  #elif TRACKER_BUILD_IS_PRODUCTION_FAMILY
     #define TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS 5UL
   #else
     #define TRACKER_REMOTE_CONSOLE_OUTPUT_DRAIN_INTERVAL_MS 0UL
@@ -120,6 +121,14 @@
 // The listening socket is diagnostic-only. Polling it at 20 Hz keeps connect
 // latency bounded without charging server.available() to every tracker loop.
 #define TRACKER_REMOTE_CONSOLE_ACCEPT_POLL_INTERVAL_MS 50UL
+#endif
+
+#ifndef TRACKER_REMOTE_CONSOLE_SESSION_LEASE_MS
+// The host capture tool sends Telnet NOP keepalives every five seconds. If no
+// input can be consumed for this complete window, the capture is already
+// unsuitable as release evidence; release its log/test ownership and sleep
+// blocker instead of relying on the much longer TCP half-open timeout.
+#define TRACKER_REMOTE_CONSOLE_SESSION_LEASE_MS 30000UL
 #endif
 
 // Network/SlimeVR update budget. This does not affect IMU/FIFO/AHRS cadence;
@@ -149,10 +158,8 @@
 #ifndef TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS 20UL
-  #elif TRACKER_BUILD_IS_PRODUCTION
-    #define TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS 10UL
   #else
-    #define TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS 5UL
+    #define TRACKER_SLIMEVR_SERVICE_UPDATE_INTERVAL_MS 10UL
   #endif
 #endif
 
@@ -193,9 +200,7 @@
 #endif
 
 #ifndef TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS
-  #if TRACKER_BUILD_IS_DEBUG
-    #define TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS 0UL
-  #elif TRACKER_BUILD_IS_PRODUCTION
+  #if !TRACKER_BUILD_IS_SLIM
     #define TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS 250UL
   #else
     #define TRACKER_SLIMEVR_RUNTIME_CONFIG_REFRESH_MS 1000UL
@@ -205,11 +210,10 @@
 
 // Live telemetry state is cheaper than a full runtime configure(), but it still
 // reads battery runtime state and may request SensorInfo refreshes when rest
-// calibration changes. Keep Debug immediate, and throttle Product/Slim.
+// calibration changes. Debug uses the same hot-path cadence as ProductionDiag;
+// explicit commands still apply immediately.
 #ifndef TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS
-  #if TRACKER_BUILD_IS_DEBUG
-    #define TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS 0UL
-  #elif TRACKER_BUILD_IS_PRODUCTION
+  #if !TRACKER_BUILD_IS_SLIM
     #define TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS 1000UL
   #else
     #define TRACKER_SLIMEVR_LIVE_STATE_REFRESH_MS 5000UL
@@ -217,44 +221,20 @@
 #endif
 
 #ifndef TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS
-  #if TRACKER_BUILD_IS_DEBUG
-    #define TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS 5000UL
-  #elif TRACKER_BUILD_IS_PRODUCTION
-    #define TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS 15000UL
-  #else
-    #define TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS 15000UL
-  #endif
+#define TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS 15000UL
 #endif
 
 
 #ifndef TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS
-  #if TRACKER_BUILD_IS_DEBUG
-    #define TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS 5000UL
-  #elif TRACKER_BUILD_IS_PRODUCTION
-    #define TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS 15000UL
-  #else
-    #define TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS 15000UL
-  #endif
+#define TRACKER_SLIMEVR_SIGNAL_TELEMETRY_INTERVAL_MS 15000UL
 #endif
 
 #ifndef TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS
-  #if TRACKER_BUILD_IS_DEBUG
-    #define TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS 5000UL
-  #elif TRACKER_BUILD_IS_PRODUCTION
-    #define TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS 15000UL
-  #else
-    #define TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS 15000UL
-  #endif
+#define TRACKER_SLIMEVR_TEMPERATURE_TELEMETRY_INTERVAL_MS 15000UL
 #endif
 
 #ifndef TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS
-  #if TRACKER_BUILD_IS_DEBUG
-    #define TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS 5000UL
-  #elif TRACKER_BUILD_IS_PRODUCTION
-    #define TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS 30000UL
-  #else
-    #define TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS 30000UL
-  #endif
+#define TRACKER_SLIMEVR_BATTERY_TELEMETRY_INTERVAL_MS 30000UL
 #endif
 
 #ifndef TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY

@@ -7,18 +7,23 @@ source code take precedence over historical roadmaps.
 Firmware identity is generated automatically by the PlatformIO pre-build hook
 `tools/generate_build_identity.py`. It never modifies the Git index and writes
 its generated header only under the ignored PlatformIO build directory.
+Successful aggregate target builds also create ignored per-environment JSON
+manifests with the full commit, dirty state, environment, UTC time, PlatformIO
+version and SHA-256/size for emitted firmware artifacts. Release mode refuses
+unknown or dirty source identity, unavailable tool identity, empty artifacts
+and target output that survives the mandatory pre-build clean.
 
 A clean build reports the committed revision:
 
 ```text
-build=BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG git=89cd10ef
+build=BOARD_LOLIN_C3_MINI_PRODUCTION git=89cd10ef89cd10ef89cd10ef89cd10ef89cd10ef
 ```
 
 An uncommitted patch iteration reports both the base commit and a deterministic
 fingerprint of tracked plus non-ignored untracked worktree content:
 
 ```text
-build=BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG git=12ab34cd+7f93a2c1-dirty
+build=BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG git=12ab34cd12ab34cd12ab34cd12ab34cd12ab34cd+7f93a2c1-dirty
 ```
 
 This matches the project workflow where a patch is committed only after its
@@ -42,16 +47,24 @@ The additional `BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK` environment is internal to
 `check_all`: it uses the complete Debug source set with a larger no-OTA app
 partition and is not intended for normal upload.
 
-The committed default is:
+The committed default is the locked-down product image:
 
 ```text
-BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG
+BOARD_LOLIN_C3_MINI_PRODUCTION
 ```
 
-Production Diagnostic uses the Production feature profile plus the live
-`perf`/`motion` profiler. It is the normal wearable diagnostic build, not a
-separate tracking algorithm. The complete local quality gate builds all four
-environments when PlatformIO is available.
+Production Diagnostic has a distinct profile identity and Production-family
+scheduling, but links the complete bounded diagnostic/capture surface. It is an
+explicit service image, not the product default or a separate tracking
+algorithm. The complete target gate builds those four upload
+profiles plus DebugLinkcheck when PlatformIO is available. The
+`check_all.py --host-only` command runs the complete host gate without making a
+target-build claim; `check_all.py --release` additionally requires clean Git
+identity, explicit
+ASan/UBSan and LSan matrices, a strict LOGVER3 static golden gate, all five
+target builds and release manifests. The release interface is intentionally
+blocked until a real clean cable-free LOGVER3 fixture and independent golden
+JSON are added. The strict parser/gate itself is already installed.
 
 ## Runtime tracking pipeline
 
@@ -112,10 +125,14 @@ promotion succeeds. No-op saves skip flash and generation changes.
 
 ## Build/profile behavior
 
-- Debug keeps the full CLI, tests, machine log, streams and live diagnostics.
-- Production keeps user setup/calibration, Wi-Fi remote console, SlimeVR and
-  product telemetry while excluding heavy developer reporters/tests.
-- Production Diagnostic is Production plus `perf` and `motion` live diagnostics.
+- Debug keeps the full CLI, tests, machine log, streams and live diagnostics;
+  dormant timing code does not call timers on every sample/loop, and slow
+  network/config telemetry cadence matches ProductionDiag.
+- Production keeps user setup/calibration, SlimeVR and product telemetry while
+  excluding the TCP listener and heavy developer reporters/tests.
+- Production Diagnostic is the complete cable-free capture image: full
+  diagnostics plus a restricted TCP allowlist, distinct profile identity and
+  Production-family scheduling.
 - Slim assumes valid NVS provisioning/calibration and removes interactive CLI,
   remote console, setup/calibration code, LED and tap runtime while preserving
   the tracking and SlimeVR path.
@@ -127,6 +144,39 @@ python tools/validate_source_filters.py
 python tools/validate_profile_matrix.py
 python tools/validate_documentation.py
 ```
+
+## Cable-free LOGVER3 foundation
+
+Machine-log and test output bind to the initiating USB/TCP stream and remote
+session. Disconnect runs an explicit close hook before detach; owned producers
+abort and never fall back to USB. Production compiles the TCP listener out,
+while Debug/ProductionDiag apply an exact non-persistent diagnostic allowlist
+before all command dispatchers.
+
+IMU/mag/runtime-bias callbacks enqueue fixed immutable records. Background
+service serializes at most one complete CSV line per admitted loop after
+tracking/network work. `test runtime` samples section timing at 1/16 cadence;
+`test static` aggregates expensive moments in bounded 64-sample blocks. Both
+retain immutable results and emit only a compact completion marker from the
+measured path; full reports are explicitly requested later over USB.
+
+`tools/capture_telnet_log.py` performs ProductionDiag/clean-identity and
+magnetometer preflight, runs a full 20 Hz static session, drains the pipeline,
+executes the strict LOGVER3 schema/chronology/drop gate and writes a SHA-256
+manifest. Release is still blocked because no real positive fixture or reviewed
+golden thresholds can be produced without the hardware run.
+
+0025a upgrades this to LOGVER3 E1. A deferred one-hertz `NET` frame makes
+Wi-Fi/SlimeVR send, deadline and recovery state visible, while an explicitly
+requested post-window `TESTSUM` carries exact test deltas. Static capture
+requires semantically ready MAG/BIAS/UDP state and fails closed; runtime capture
+preserves a structurally valid failing session with `health_passed=false`.
+Accepted TCP sessions protect preflight from motion sleep and use a five-second
+host keepalive plus 30-second firmware lease to bound half-open cleanup. The
+logger reuses the pipeline's existing temp/bias evaluation, and log/manifest
+candidates are prepared as one hash-bound generation before promotion. The tool
+does not enable or persist MAG/bias/yaw settings, and TCP remains subject to the
+same radio/lwIP failures as SlimeVR UDP.
 
 ## SlimeVR protocol currently implemented
 

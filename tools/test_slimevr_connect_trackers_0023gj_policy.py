@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMANDS_HPP = ROOT / "src/serial/tracker_slimevr_commands.hpp"
@@ -125,7 +126,7 @@ def main() -> int:
     require(report, "fresh `SensorInfo`", "fresh registration contract")
 
     cxx = compiler()
-    with tempfile.TemporaryDirectory(prefix="tracker-0023gj-") as tmp_name:
+    with project_temp_directory(ROOT, "tracker-0023gj-") as tmp_name:
         tmp = Path(tmp_name)
         common = [
             cxx,

@@ -67,7 +67,7 @@ explicitly guarded.
 ## Serial stream state
 
 `TRACKER_HAS_SERIAL_STREAM_STATE` is intentionally broader than
-`TRACKER_HAS_SERIAL_STREAM`. Debug and Production can still need the lightweight
+`TRACKER_HAS_SERIAL_STREAM`. Debug, Production and ProductionDiag can still need the lightweight
 `TrackerSerialStreamState` for CLI/config compatibility or boot heartbeat even
 when the local serial stream backend is disabled. Slim has no console, CLI,
 serial stream or boot heartbeat, so this state is not instantiated there.

@@ -74,7 +74,7 @@ bool WifiRemoteConsoleRuntime::update(bool wifiConnected,
                 candidate.stop();
                 ++rejectedClients_;
             } else {
-                acceptClient(candidate);
+                acceptClient(candidate, nowMs);
             }
             worked = true;
         }
@@ -90,7 +90,15 @@ bool WifiRemoteConsoleRuntime::update(bool wifiConnected,
             const size_t consumed = cli_.poll(maxInputBytesPerUpdate);
             if (consumed > 0u) {
                 bytesIn_ += static_cast<uint32_t>(consumed);
+                sessionLease_.noteActivity(nowMs);
                 worked = true;
+            }
+
+            if (sessionLease_.expired(
+                    nowMs, TRACKER_REMOTE_CONSOLE_SESSION_LEASE_MS)) {
+                ++leaseExpirations_;
+                stopClient();
+                return true;
             }
 
             const bool drainDue = clientStream_.hasPending() &&
@@ -106,6 +114,21 @@ bool WifiRemoteConsoleRuntime::update(bool wifiConnected,
     }
 
     return worked;
+#endif
+}
+
+bool WifiRemoteConsoleRuntime::sessionBlocksMotionSleep(uint32_t nowMs) {
+#if !TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    (void)nowMs;
+    return false;
+#else
+    if (!clientConnected_) return false;
+    if (sessionLease_.expired(nowMs, TRACKER_REMOTE_CONSOLE_SESSION_LEASE_MS)) {
+        ++leaseExpirations_;
+        stopClient();
+        return false;
+    }
+    return true;
 #endif
 }
 
@@ -192,6 +215,11 @@ WifiRemoteConsoleStatus WifiRemoteConsoleRuntime::status() const {
     s.droppedClients = droppedClients_;
     s.bytesIn = bytesIn_;
     s.bytesDropped = bytesDropped_;
+    s.activeSessionId = activeSessionId_;
+    s.captureAborts = captureAborts_;
+    s.leaseTimeoutMs = TRACKER_REMOTE_CONSOLE_SESSION_LEASE_MS;
+    s.leaseAgeMs = sessionLease_.ageMs(millis());
+    s.leaseExpirations = leaseExpirations_;
     s.acceptPolls = acceptPolls_;
     s.acceptPollSkips = acceptPollSkips_;
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
@@ -205,6 +233,8 @@ void WifiRemoteConsoleRuntime::resetOutputState() {
     clientStream_.resetOutputState();
 #endif
     bytesDropped_ = 0u;
+    captureAborts_ = 0u;
+    leaseExpirations_ = 0u;
     lastOutputDrainMs_ = 0u;
     lastAcceptPollMs_ = 0u;
     acceptPollScheduled_ = false;
@@ -225,6 +255,11 @@ void WifiRemoteConsoleRuntime::printStatus(Stream& out) const {
     out.print("remote_console_dropped_clients="); out.println(s.droppedClients);
     out.print("remote_console_bytes_in="); out.println(s.bytesIn);
     out.print("remote_console_bytes_dropped="); out.println(s.bytesDropped);
+    out.print("remote_console_active_session="); out.println(s.activeSessionId);
+    out.print("remote_console_capture_aborts="); out.println(s.captureAborts);
+    out.print("remote_console_lease_timeout_ms="); out.println(s.leaseTimeoutMs);
+    out.print("remote_console_lease_age_ms="); out.println(s.leaseAgeMs);
+    out.print("remote_console_lease_expirations="); out.println(s.leaseExpirations);
     out.print("remote_console_accept_polls="); out.println(s.acceptPolls);
     out.print("remote_console_accept_poll_skips="); out.println(s.acceptPollSkips);
     printBoundedDuplexStreamStatus(out, "remote_console_output", s.output);
@@ -252,6 +287,15 @@ void WifiRemoteConsoleRuntime::stopServer() {
 }
 
 void WifiRemoteConsoleRuntime::stopClient() {
+    if (clientConnected_ && clientContext_.io != nullptr &&
+        clientContext_.closeCommandSession != nullptr) {
+        if (clientContext_.closeCommandSession(clientContext_.origin,
+                                               clientContext_.sessionId,
+                                               *clientContext_.io,
+                                               clientContext_.closeCommandSessionUser)) {
+            ++captureAborts_;
+        }
+    }
     bytesDropped_ += static_cast<uint32_t>(clientStream_.discardPending());
     lastOutputDrainMs_ = 0u;
     clientStream_.detach(false);
@@ -262,10 +306,12 @@ void WifiRemoteConsoleRuntime::stopClient() {
         ++droppedClients_;
     }
     clientConnected_ = false;
+    activeSessionId_ = 0u;
+    sessionLease_.reset();
     clientContext_ = TrackerSerialCommandContext{};
 }
 
-void WifiRemoteConsoleRuntime::acceptClient(WiFiClient& candidate) {
+void WifiRemoteConsoleRuntime::acceptClient(WiFiClient& candidate, uint32_t nowMs) {
     client_ = candidate;
 #if defined(ARDUINO_ARCH_ESP32)
     client_.setNoDelay(true);
@@ -275,6 +321,12 @@ void WifiRemoteConsoleRuntime::acceptClient(WiFiClient& candidate) {
     lastOutputDrainMs_ = 0u;
     clientContext_ = baseContext_;
     clientContext_.io = &clientStream_;
+    clientContext_.origin = TrackerCommandOrigin::RemoteTcp;
+    ++nextSessionId_;
+    if (nextSessionId_ == 0u) ++nextSessionId_;
+    activeSessionId_ = nextSessionId_;
+    sessionLease_.begin(nowMs);
+    clientContext_.sessionId = activeSessionId_;
     clientContext_.commandOutputNeedsExplicitFlush = true;
     clientContext_.lastCommandOutputFlushMs = 0u;
     cli_.begin(clientContext_);

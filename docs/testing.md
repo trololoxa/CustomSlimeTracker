@@ -36,7 +36,18 @@ NVS/Preferences, Serial output, or CPU timing on the ESP32-C3.
 
 ## Running the local quality gate
 
-The convenience entrypoint is:
+The explicit, complete host-only entrypoint is:
+
+```bash
+python tools/check_all.py --clean --host-only
+```
+
+It runs native tests, all project validators, every policy test and the replay
+gates, then reports `host-verified, target build not verified`. It cannot be
+combined with host coverage-reducing skip flags or a PlatformIO subset.
+
+The normal developer entrypoint may also build targets when PlatformIO is
+available:
 
 ```bash
 python tools/check_all.py --clean
@@ -48,11 +59,30 @@ On Linux/macOS/WSL/Git Bash you can also use:
 tools/check_all.sh --clean
 ```
 
-The script always runs native tests unless `--skip-native` is passed. It also runs the source-filter, profile-matrix and documentation contract validators, plus Python tool smoke tests unless `--skip-tool-smoke` is passed. When `pio`/`platformio` is available, the default gate builds Debug, Production, Production Diagnostic and Slim. If PlatformIO is not installed, ESP32 builds are skipped by default so host-only development machines can still run the native gate. To make missing PlatformIO a failure, use:
+The script always runs native tests unless `--skip-native` is passed. It also runs the source-filter, profile-matrix and documentation contract validators, plus Python tool smoke tests unless `--skip-tool-smoke` is passed. When `pio`/`platformio` is available, the default gate builds Debug, DebugLinkcheck, Production, Production Diagnostic and Slim and creates SHA-256 manifests. If PlatformIO is not installed, ESP32 builds are skipped by default so host-only development machines can still run the native gate. A run using any `--skip-*` option is a partial development check, not acceptance evidence. To make missing PlatformIO a failure, use:
 
 ```bash
 python tools/check_all.py --require-pio
 ```
+
+The release entrypoint is stricter:
+
+```bash
+python tools/check_all.py --release
+```
+
+It requires an available, clean Git identity; forbids all `--skip-*` options and
+environment subsets; runs normal, ASan/UBSan and separate LSan native matrices;
+requires the installed strict LOGVER3 parser/gate plus a real clean static
+fixture and independent golden JSON; cleans and then builds all five target environments; verifies the
+clean removed prior firmware artifacts; requires non-empty `firmware.bin` and
+`firmware.elf` plus a known PlatformIO version; and writes one manifest per
+environment. Release preflight deliberately fails until the real LOGVER3
+fixture and golden JSON are installed. A source archive without `.git`, a dirty tree, a missing
+compiler/fixture/PlatformIO executable, a timeout or a missing artifact is a
+failure. The parser/gate are installed by the cable-free capture foundation;
+release preflight remains deliberately blocked only because the real hardware
+fixture and reviewed golden JSON do not yet exist.
 
 If PlatformIO is installed but not on `PATH`, pass it explicitly:
 
@@ -96,11 +126,21 @@ From the project root:
 python tools/run_standalone_tests.py --clean
 ```
 
-The runner compiles host-safe project `.cpp` files once into object files, then compiles and links every `tests/native/test_*.cpp` as a separate executable into:
+The runner compiles host-safe project `.cpp` files once into object files, then
+compiles and links every `tests/native/test_*.cpp` as a separate executable into
+an invocation-private directory below:
 
 ```text
 build/native_tests/
 ```
+
+The private `run-*` directory prevents a compiler child left by an interrupted
+older invocation from truncating a newer gate's objects or executables. Each
+test is executed immediately after its link/output validation; failures are
+still accumulated and do not prevent later tests from compiling or running. A
+cross-platform file lock serializes native runners, so `--clean` never removes
+a different live invocation. Non-clean focused runs retain at most the current
+and most recent prior `run-*` directory.
 
 It uses `CXX` when set, otherwise tries `g++`, `clang++`, then `c++`. Keeping project sources as reusable objects avoids recompiling AHRS/quality/mag logic for every single native test executable.
 
@@ -109,12 +149,29 @@ Examples:
 ```bash
 CXX=clang++ python tools/run_standalone_tests.py --clean
 python tools/run_standalone_tests.py --build-only
-python tools/run_standalone_tests.py --extra-cxxflag -fsanitize=undefined
+python tools/run_standalone_tests.py --extra-cxxflag -Werror
+python tools/run_standalone_tests.py --sanitizer undefined
+python tools/run_standalone_tests.py --sanitizer address-undefined
+python tools/run_standalone_tests.py --sanitizer leak
 ```
 
+`--extra-cxxflag=-Werror` and the separated form above are both accepted. Each
+compile, link and executable has a configurable timeout (`--timeout-s`, default
+180 seconds). ASan/UBSan binaries explicitly disable GCC's implicit leak phase;
+LSan is a separate gate so a ptrace/debugger limitation cannot be mistaken for
+an address/undefined-behavior defect or silently hide a real leak. Run the LSan
+command only on a compatible unsupervised host.
+
+All Python and compiler temporary paths are placed below ignored `build/tmp/`.
+An interrupted gate may leave data there, but it must not create `cc*.o`,
+`cc*.s` or `tracker-*` directories in the repository root. The aggregate runner
+also bounds validators/policies/replay, the native suite and each PlatformIO
+build with separate timeouts. Timeout and user interruption terminate the
+complete POSIX process group or Windows process tree before control returns.
+
 The native test compiler flags intentionally mirror the diagnostic firmware
-warning profile. The committed default firmware environment is
-`BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG`, but host tests stay independent from that
+warning profile. The committed default firmware environment is locked-down
+`BOARD_LOLIN_C3_MINI_PRODUCTION`; host tests stay independent from that
 selection. Tool smokes also verify deterministic Git/worktree identity generation
 and PlatformIO build-result classification:
 
@@ -122,6 +179,23 @@ and PlatformIO build-result classification:
 python tools/test_build_identity.py
 python tools/test_check_all_policy.py
 ```
+
+To create a manifest for artifacts outside the aggregate PlatformIO flow:
+
+```bash
+python tools/release_manifest.py \
+  --environment BOARD_LOLIN_C3_MINI_PRODUCTION \
+  --artifact .pio/build/BOARD_LOLIN_C3_MINI_PRODUCTION/firmware.bin \
+  --artifact .pio/build/BOARD_LOLIN_C3_MINI_PRODUCTION/firmware.elf \
+  --toolchain platformio=6.1.18 \
+  --output build/release/production.json \
+  --require-clean
+```
+
+`SOURCE_DATE_EPOCH` makes the manifest timestamp reproducible. Artifact paths
+must resolve inside the repository; hashes are full SHA-256 values. Writing the
+manifest below ignored `build/` prevents the output itself from dirtying the
+next source-identity check.
 
 The warning flags remain:
 
@@ -181,26 +255,24 @@ transport.
 The host gate covers phase-locked rotation deadlines, jitter/late-loop catch-up,
 `millis()` wraparound, complete-record admission/drop behavior, oversized-line
 rejection, ring wrap, partial drains, drop-warning insertion, reset semantics,
-stalled sinks and empty-drain no-op behavior. Compile-only coverage includes the
-machine-log producer backpressure path.
-Only one hardware test is required for this patch:
+stalled sinks and empty-drain no-op behavior. Native executable coverage now
+includes session ownership, Telnet filtering, deferred diagnostic completion,
+blocked-static numerical equivalence and machine-log producer/backpressure
+behavior.
 
-```text
-perf on
-# perf status now reports calibration_0022 and calibration_0023 separately
-motion on
-tap log on
-# generate several minutes of USB/telnet diagnostic output
-console status
-perf tracking
-```
+The hardware checkpoint for the cable-free capture foundation is:
 
-Acceptance requires `fifo_overrun_delta=0`, `fifo_full_delta=0`, no tracking
-recovery caused by output, and a stable effective rotation deadline rate.
-`serial_output_bytes_dropped`, `remote_console_output_bytes_dropped` or a non-zero
-`LOGSTAT,BACKPRESSURE` means diagnostic data was intentionally omitted. These
-must not coincide with FIFO loss or a reduced steady-state RotationData rate.
-Do not request additional static/motion captures solely for this patch.
+1. Debug, diagnostics off.
+2. Debug, `test runtime 600`, log off.
+3. ProductionDiag, `log full 20 Hz`, no static test.
+4. ProductionDiag, `log full 20 Hz` plus `test static 600`.
+
+Run the final candidate from battery with USB physically disconnected. Use
+`tools/capture_telnet_log.py`; it performs clean-identity/magnetometer preflight,
+session-bound capture, pipeline drain, strict validation and manifest writing.
+Acceptance requires 19..21 Hz Q, zero FIFO faults/recovery and every producer,
+pipeline, disconnect and console drop counter at zero. Service deferrals may be
+non-zero, but maximum record age must remain within the strict bound.
 
 ## Build identity and `check_all` policy
 
@@ -452,44 +524,51 @@ replay-driven AHRS regression tests from saved machine logs
 
 ## Replay/metrics from machine logs
 
-For tracking changes, collect a machine-readable E0 log and score it on the host:
-
-```text
-log full
-log header
-test static 120
-log summary
-log off
-```
-
-Then run:
+LOGVER2 remains a compatibility input for the existing metric replay:
 
 ```bash
 python tools/replay/replay_machine_log.py tracker.log --pretty
 ```
 
-Replay gates should use machine-readable frames only. Human `status`/`health` output is useful for inspection, but should not become a regression input format. `tools/check_all.py` runs a small replay smoke test against `tests/fixtures/e0_static_smoke.log` so the replay parser itself stays usable. Full magnetometer replay fixtures should include `MAGR` rows, which are emitted only by `log full`.
+New release evidence must be LOGVER3. Human `status`/`health` output is useful
+for inspection but is not a regression format. `tools/check_all.py` keeps the
+legacy smoke/baseline gates and separately runs strict LOGVER3 contract tests.
+Full captures require `MAGR`, emitted only by `log full`.
 
-## Replay baseline capture smoke sequence
+## Strict cable-free static capture
 
-For a log that is useful as a replay fixture, capture machine log output rather
-than human-readable status text:
+Build and flash a clean `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` image, power the
+tracker from battery and disconnect USB. Then run:
 
-```text
-setup status
-log reset
-log full
-log rate 20
-log header
-test static 600
-log summary
-log off
+```bash
+python3 tools/capture_telnet_log.py \
+  --host <tracker-ip> \
+  --seconds 600 \
+  --rate 20 \
+  --mode full \
+  --output logver3_static_clean_001.log
 ```
 
-During `test static 600`, keep the tracker still for the first and last two
-minutes. In the middle, gently rotate it through several orientations if you
-want the same file to exercise mag/yaw and accel gating. Do not disconnect or
-change serial baud during capture.
+The tracker remains stationary for the complete golden candidate. The host tool
+requires a clean full commit identity, validates magnetometer runtime,
+calibration/alignment and current trust, resets log/console counters, owns one
+TCP session, drains the deferred pipeline and writes both the capture and a
+SHA-256 manifest using atomic file replacement. The requested capture path is
+promoted only after strict validation succeeds. Any disconnect, malformed frame, sequence/timestamp
+fault, FIFO recovery, drop or out-of-range Q rate fails the candidate. Failed
+runs are retained only as uniquely named partial diagnostics.
+
+Validate an already captured candidate again with:
+
+```bash
+python3 tools/replay/strict_logver3_gate.py \
+  --log logver3_static_clean_001.log \
+  --output logver3_static_clean_001.validation.json
+```
+
+Do not create the release golden JSON until the real capture has passed and its
+thresholds have been reviewed independently. A synthetic positive log would
+only test the parser and is not hardware evidence.
 
 ## Magnetometer replay capture smoke sequence
 
@@ -546,7 +625,8 @@ fifo stats
 quality stats
 ```
 
-The runtime test reports:
+After the compact `RUNTIME TEST DONE` marker, request the retained detailed
+report over USB with `test report runtime`. The report contains:
 
 - loop/CLI/FIFO/network/heartbeat section timing;
 - max and average loop costs;
@@ -628,7 +708,10 @@ hardware apply or NVS save must restore the previous config. `perf tracking` rep
 classified recovery causes so reconfiguration can be distinguished from
 FIFO/timestamp faults.
 
-Use `test stop` to finish early. `test status` prints both static and runtime test status.
+Use `test stop` to finish early. `test status` prints both static and runtime
+status. Completion never formats the large report in the loop/sample hot path;
+`test report static|runtime` prints the immutable retained snapshot later and is
+intentionally USB-only.
 
 ### RC1 serial provisioning compatibility
 
@@ -676,8 +759,9 @@ The native gate also compiles production-only translation units that cannot be l
 
 After flashing `c3-6dsv-fifo-coherency` in ProductionDiag, use `fifo status`,
 `motion status`, and `perf tracking`. `motion status` already contains the full
-FIFO and quality correlation blocks; `fifo stats` and `quality stats` belong to
-the Full Debug CLI and are intentionally not compiled into ProductionDiag.
+FIFO and quality correlation blocks. The complete ProductionDiag image also
+links `fifo stats` and `quality stats`; the restricted TCP policy exposes them
+read-only, while reset/reconfiguration remains privileged USB work.
 Normal operation should keep gyro-only and pair-mismatch counters at zero or
 extremely rare values. Isolated component
 loss may increment them, but must not request FIFO recovery, stop gyro
@@ -1124,7 +1208,51 @@ Run `python3 tools/test_pre_0024ab_hotpath_transform_cache_policy.py`. The polic
 
 Run `python3 tools/test_pre_0024ac_imu_hotpath_slack_policy.py`. The policy requires exactly one lightweight temperature-compensation evaluation in the main IMU sample path, shared current-bias use for calibration/quality/runtime-bias evidence, and a stream-mode check before the disabled serial path reads `micros()`. It locks FIFO/rotation-slack admission for optional services, permits at most one completed background worker per ordinary loop, requires fixed-memory 1/64 sampled IMU-stage telemetry and optional-service admission-skip counters, and forbids sample-history loss or AHRS/output-cadence changes. Focused native tests cover temperature snapshot equivalence, runtime-bias overload equivalence, profiler counters and admission boundaries; ASan/UBSan and stack ceilings cover the changed bias, IMU and app-loop boundaries.
 
+The cable-free capture extension keeps the same `TrackerApp::loop` 256-byte
+ceiling. CLI polling is an explicit no-inline bounded parser phase, while
+console and deferred machine-log admission have separate 160/96-byte ceilings;
+the policy rejects re-inlining that would inflate the dormant diagnostic loop.
+
 
 ## pre-0024ad network-pressure pacing/recovery regression
 
 Run `python3 tools/test_pre_0024ad_network_pressure_policy.py`. The policy separates transient `ENOMEM`/`ENOBUFS`/`EAGAIN` pressure from non-pressure socket errors, retains the exact 8-of-32 bitmap as diagnostics only, requires 500 ms without successful motion before a local rebind, and permits full discovery only after a failed 1000 ms post-rebind interval or an equivalent stale-server failure. Rebind/full-reopen cooldowns, stable episode closure, explicit timestamp-validity state, background-control backoff, rotation-only capability negotiation, deterministic MAC phase distribution and all new diagnostics are source-gated. Native tests prove intermittent pressure does not churn the socket/session, local rebind preserves bundle negotiation, reconnect does not emit packet-4 acceleration before negotiation, and failed recovery remains fail-closed. Optimized, ASan/UBSan and stack-usage gates cover the changed runtime.
+
+## 0024 trusted host baseline/release identity regression
+
+Run `python3 tools/test_quality_gate_runtime.py`,
+`python3 tools/test_release_manifest.py`,
+`python3 tools/test_run_standalone_tests_policy.py` and
+`python3 tools/test_check_all_aggregation_policy.py`. The regressions cover
+repository-local temporary paths, sanitizer option ownership, dash-prefixed
+compiler flags, stable timeout exit 124, strict host/release mode conflicts,
+dirty release rejection, full commit identity, SHA-256/size records,
+reproducible timestamps, atomic manifest rewrites and malformed toolchain
+metadata, failed Git-status fail-closed behavior, empty/unknown artifact
+rejection, serialized native cleans and clean-before-build target ordering. The
+aggregate host gate additionally proves every historical policy
+runs once and the seven ptrace-affected ASan/UBSan policies complete without an
+implicit LSan phase.
+
+## 0025a diagnostic capture regression
+
+Run `python3 tools/test_0025a_diagnostic_capture_policy.py`,
+`python3 tools/test_logver3_contract.py` and
+`python3 tools/test_capture_telnet_log.py`. The 0025a diagnostic capture policy
+requires the 30-second firmware TCP lease/five-second Telnet NOP, preflight
+sleep blocking and disconnect cleanup; deferred one-hertz `NET` plus exact
+post-window `TESTSUM`; static fail-closed versus runtime health-reporting
+semantics; semantic MAG/BIAS validation; pair-consistent capture/manifest
+promotion; and 512-byte USB declaration bounds. Native tests cover lease
+wraparound, test-summary deferral/immutability, remote ownership and bounded
+machine-log serialization. The pre-0024ac policy additionally rejects duplicate
+temperature/current-bias work in the diagnostic IMU callback.
+
+Hardware acceptance requires two separate 10-minute ProductionDiag captures
+with SlimeVR UDP left enabled: `--capture static` on a motionless,
+battery-powered, USB-disconnected tracker for a golden candidate, and
+`--capture runtime` while reproducing the in-game UDP problem. A structurally
+valid runtime log with `health_passed=false` is expected diagnostic evidence,
+not a failed capture. After each run verify normal sleep after TCP closes and
+the existing 60-second no-server/no-motion interval; flash ordinary Production
+after diagnosis.

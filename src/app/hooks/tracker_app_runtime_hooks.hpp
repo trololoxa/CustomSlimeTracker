@@ -157,9 +157,30 @@ static void pipelineUpdateTrackingRecoveryCallback(const ImuQualityResult& quali
 static void pipelineEmitMachineLogFrameCallback(const Lsm6dsv::RawSample& raw,
                                                 const Lsm6dsv::Sample& calibrated,
                                                 const ImuQualityResult& quality,
+                                                const GyroTempCompRuntimeEval& tempEval,
+                                                const Vec3& currentGyroBiasRadS,
                                                 void* user) {
     (void)user;
-    emitMachineLogFrame(raw, calibrated, quality);
+    emitMachineLogFrame(
+        raw, calibrated, quality, tempEval, currentGyroBiasRadS);
+}
+
+static bool pipelineEnqueueRuntimeBiasLog(uint64_t timestampUs,
+                                          float temperatureC,
+                                          const Vec3& residualDps,
+                                          const Vec3& stdDps,
+                                          const Vec3& deltaDps,
+                                          const Vec3& trimDps,
+                                          uint32_t flags,
+                                          void* user) {
+    (void)user;
+    return g_machineLogDeferred.enqueueBiasUpdate(timestampUs,
+                                                   temperatureC,
+                                                   residualDps,
+                                                   stdDps,
+                                                   deltaDps,
+                                                   trimDps,
+                                                   flags);
 }
 #endif
 
@@ -242,6 +263,10 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
 #if TRACKER_HAS_RUNTIME_PROFILER
     deps.runtimeProfiler = &g_runtimeProfiler;
 #endif
+#if TRACKER_HAS_MACHINE_LOG
+    deps.runtimeBiasLogCallback = pipelineEnqueueRuntimeBiasLog;
+    deps.runtimeBiasLogUser = nullptr;
+#endif
     return deps;
 }
 
@@ -261,10 +286,8 @@ static bool finalizeRuntimeBiasWindow() {
         pipeline.gyroTempComp,
         pipeline.ahrs,
         pipeline.trackingState.recoveryActive(),
-        pipeline.logState != nullptr && pipeline.logState->enabled(),
-        pipeline.logState != nullptr ? &pipeline.logState->sequence : nullptr,
-        pipeline.logCounters,
-        &pipeline.out
+        pipeline.runtimeBiasLogCallback,
+        pipeline.runtimeBiasLogUser
     };
     return runtimeBiasFinalizePendingWindow(deps);
 }
@@ -965,6 +988,16 @@ static bool updateSerialConsoleRuntime() {
 }
 #endif
 
+#if TRACKER_HAS_MACHINE_LOG
+static bool updateMachineLogRuntime() {
+    const bool networkQueued = g_machineLogDeferred.enqueueNetwork(
+        g_lastSampleTimestampUs, g_wifiManager, g_slimevrRuntime);
+    const bool serialized =
+        g_machineLogDeferred.service(TRACKER_MACHINE_LOG_LINES_PER_SERVICE);
+    return networkQueued || serialized;
+}
+#endif
+
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
 static bool updateRemoteConsoleRuntime() {
     return g_wifiRemoteConsole.update(
@@ -1026,6 +1059,12 @@ static bool updateNetworkRuntime() {
 static bool serverFoundForMotionLightSleep() {
     return g_slimevrRuntime.serverFound();
 }
+
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+static bool remoteConsoleBlocksMotionLightSleep(uint32_t nowMs) {
+    return g_wifiRemoteConsole.sessionBlocksMotionSleep(nowMs);
+}
+#endif
 
 static void prepareMotionLightSleepRuntime() {
     // Do not call g_magRuntime.setEnabled(false, ...): that would mutate the
@@ -1156,6 +1195,9 @@ static TrackerAppDeps makeTrackerAppDeps() {
 #if TRACKER_HAS_SERIAL_STREAM_STATE
     deps.runtime.streamState = &g_streamState;
 #endif
+#if TRACKER_HAS_MACHINE_LOG
+    deps.runtime.logState = &g_logState;
+#endif
     deps.runtime.perf = &g_perf;
 #if TRACKER_HAS_RUNTIME_PROFILER
     deps.runtime.runtimeProfiler = &g_runtimeProfiler;
@@ -1197,6 +1239,9 @@ static TrackerAppDeps makeTrackerAppDeps() {
 #if TRACKER_HAS_CALIBRATION_AUTONOMY
     deps.callbacks.updateCalibrationAutonomyRuntime = updateCalibrationAutonomyRuntime;
 #endif
+#if TRACKER_HAS_MACHINE_LOG
+    deps.callbacks.updateMachineLogRuntime = updateMachineLogRuntime;
+#endif
 #if TRACKER_HAS_SERIAL_CONSOLE
     deps.callbacks.updateSerialConsoleRuntime = updateSerialConsoleRuntime;
 #endif
@@ -1221,6 +1266,9 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.callbacks.detachFifoInterrupt = appDetachFifoInterruptCallback;
 #if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
     deps.callbacks.serverFoundForMotionSleep = serverFoundForMotionLightSleep;
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+    deps.callbacks.remoteConsoleBlocksMotionSleep = remoteConsoleBlocksMotionLightSleep;
+#endif
 #if TRACKER_HAS_CALIBRATION_AUTONOMY
     deps.callbacks.calibrationBlocksMotionSleep = calibrationBlocksMotionLightSleep;
 #endif

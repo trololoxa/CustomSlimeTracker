@@ -94,6 +94,9 @@ struct TrackerCommandRuntimeHooks {
     decltype(TrackerSerialCommandContext::resetLogCounters) resetLogCounters = nullptr;
     void* resetLogCountersUser = nullptr;
 
+    decltype(TrackerSerialCommandContext::resetLogPipeline) resetLogPipeline = nullptr;
+    void* resetLogPipelineUser = nullptr;
+
     decltype(TrackerSerialCommandContext::printRuntimeGyroBiasStatus) printRuntimeGyroBiasStatus = nullptr;
     void* printRuntimeGyroBiasStatusUser = nullptr;
 
@@ -111,6 +114,10 @@ struct TrackerCommandRuntimeHooks {
 
     decltype(TrackerSerialCommandContext::printStaticTestStatus) printStaticTestStatus = nullptr;
     void* printStaticTestStatusUser = nullptr;
+    decltype(TrackerSerialCommandContext::printStaticTestSummary) printStaticTestSummary = nullptr;
+    void* printStaticTestSummaryUser = nullptr;
+    decltype(TrackerSerialCommandContext::printStaticTestReport) printStaticTestReport = nullptr;
+    void* printStaticTestReportUser = nullptr;
 
     decltype(TrackerSerialCommandContext::startRuntimeTest) startRuntimeTest = nullptr;
     void* startRuntimeTestUser = nullptr;
@@ -120,6 +127,13 @@ struct TrackerCommandRuntimeHooks {
 
     decltype(TrackerSerialCommandContext::printRuntimeTestStatus) printRuntimeTestStatus = nullptr;
     void* printRuntimeTestStatusUser = nullptr;
+    decltype(TrackerSerialCommandContext::printRuntimeTestSummary) printRuntimeTestSummary = nullptr;
+    void* printRuntimeTestSummaryUser = nullptr;
+    decltype(TrackerSerialCommandContext::printRuntimeTestReport) printRuntimeTestReport = nullptr;
+    void* printRuntimeTestReportUser = nullptr;
+
+    decltype(TrackerSerialCommandContext::closeCommandSession) closeCommandSession = nullptr;
+    void* closeCommandSessionUser = nullptr;
 
     decltype(TrackerSerialCommandContext::setMagRuntimeEnabled) setMagRuntimeEnabled = nullptr;
     void* setMagRuntimeEnabledUser = nullptr;

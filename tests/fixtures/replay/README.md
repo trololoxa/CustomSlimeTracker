@@ -1,8 +1,8 @@
 # Replay fixtures
 
-This directory stores machine-readable E0 serial logs used by the host replay
-quality gate. These files are intentionally captured from real firmware instead
-of being synthetic unit-test data.
+This directory stores machine-readable E0 logs used by the compatibility replay
+gate. Real captures are required; synthetic text belongs only in parser unit
+tests.
 
 ## baseline_replay_001.log
 
@@ -31,10 +31,11 @@ Important characteristics:
 - some motion is present, so accel trust may temporarily drop during the log;
 - expected diagnostic yaw drift is below 2 deg/min for this fixture.
 
-This fixture is meant to catch parser/tooling regressions and major firmware log
-format regressions. It is not a golden promise that yaw correction is active.
-A future fixture with mag reference + yaw apply enabled should be added
-separately.
+This LOGVER2 fixture catches compatibility parser/tooling regressions. It is not
+a strict LOGVER3 golden and cannot satisfy release preflight. The future
+`logver3_static_golden.log` must come from the unattended ProductionDiag TCP
+capture with clean identity, battery power and USB physically disconnected;
+its JSON thresholds must be reviewed independently.
 
 
 ## Future magnetometer fixtures

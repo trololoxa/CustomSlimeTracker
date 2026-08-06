@@ -123,6 +123,28 @@ void magStatusPrintProcessed(Stream& out, const MagStatusReporterDeps& deps) {
     out.print("reject_norm_too_high="); out.println(s.rejectedNormTooHigh);
     out.print("reject_stale_process_time="); out.println(s.rejectedStale);
     out.print("reject_zero_norm="); out.println(s.rejectedZeroNorm);
+
+    // Compact cross-layer preflight state for unattended capture. Keeping a
+    // final marker lets the host wait for one internally consistent snapshot
+    // rather than splicing values from several large reports.
+    const MagHeadingSample* heading = deps.lastHeading;
+    const MagFieldReliabilityOutput* field = deps.lastFieldReliability;
+    const MagHeadingReferenceState* ref = deps.headingRef;
+    const MagYawCorrectionOutput* yaw = deps.lastYawCorrection;
+    out.print("heading_valid="); out.println(heading && heading->valid ? "yes" : "no");
+    out.print("field_state=");
+    out.println(field ? MagFieldReliabilityMonitor::stateName(field->state) : "unavailable");
+    out.print("field_trusted_for_yaw=");
+    out.println(field && field->trustedForYaw ? "yes" : "no");
+    out.print("field_flags=0x"); out.println(field ? field->flags : 0u, HEX);
+    out.print("field_reference_valid=");
+    out.println(field && field->referenceValid ? "yes" : "no");
+    out.print("mag_ref_valid="); out.println(ref && ref->valid ? "yes" : "no");
+    out.print("yaw_enabled="); out.println(deps.yawConfig.enabled ? "yes" : "no");
+    out.print("yaw_apply_enabled="); out.println(deps.yawConfig.applyEnabled ? "yes" : "no");
+    out.print("yaw_gate_open="); out.println(yaw && yaw->gateOpen ? "yes" : "no");
+    out.print("yaw_apply_allowed="); out.println(yaw && yaw->applyAllowed ? "yes" : "no");
+    out.println("mag_preflight_complete=yes");
 }
 
 void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {

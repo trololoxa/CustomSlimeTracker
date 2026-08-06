@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +35,8 @@ def main() -> int:
     require(testing, "0023ga cross-ABI guided-axis stack regression", "testing entry")
     require(report, "1056 bytes", "recorded MSYS2 failure")
 
-    subprocess.run([sys.executable, str(ROOT / "tools/test_calibration_0023g_policy.py")], check=True)
+    # Predecessors are independent entries in check_all.py. Re-running them
+    # here made the aggregate gate quadratic and added no coverage.
     print("# calibration_0023ga_policy: PASS")
     return 0
 

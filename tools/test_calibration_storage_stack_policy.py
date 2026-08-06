@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -88,7 +89,7 @@ def main() -> int:
     if "trackerApplyCalibrationCandidateToConfig(composed, candidateSnapshot)" not in prepare:
         raise SystemExit("prepareCandidatePromotion must use heap-backed in-place composition")
 
-    with tempfile.TemporaryDirectory(prefix="tracker-stack-policy-") as tmp:
+    with project_temp_directory(ROOT, "tracker-stack-policy-") as tmp:
         tmp_path = Path(tmp)
         cxx = compiler()
         common = [

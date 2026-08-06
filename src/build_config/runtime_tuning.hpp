@@ -9,7 +9,7 @@
 #ifndef TRACKER_CLI_BYTES_PER_LOOP
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_CLI_BYTES_PER_LOOP 0
-  #elif TRACKER_BUILD_IS_PRODUCTION
+  #elif TRACKER_BUILD_IS_PRODUCTION_FAMILY
     #define TRACKER_CLI_BYTES_PER_LOOP 16
   #else
     #define TRACKER_CLI_BYTES_PER_LOOP 32
@@ -21,11 +21,7 @@
 #endif
 
 #ifndef TRACKER_CLI_SECOND_POLL_ENABLED
-  #if TRACKER_BUILD_IS_DEBUG
-    #define TRACKER_CLI_SECOND_POLL_ENABLED 1
-  #else
-    #define TRACKER_CLI_SECOND_POLL_ENABLED 0
-  #endif
+#define TRACKER_CLI_SECOND_POLL_ENABLED 0
 #endif
 
 // Bounded asynchronous USB console output. Serial is primarily used by the
@@ -35,7 +31,7 @@
 #ifndef TRACKER_SERIAL_OUTPUT_QUEUE_BYTES
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_SERIAL_OUTPUT_QUEUE_BYTES 1
-  #elif TRACKER_BUILD_IS_PRODUCTION
+  #elif TRACKER_BUILD_IS_PRODUCTION_FAMILY
     #define TRACKER_SERIAL_OUTPUT_QUEUE_BYTES 1536
   #else
     #define TRACKER_SERIAL_OUTPUT_QUEUE_BYTES 2048
@@ -53,7 +49,7 @@
 #ifndef TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN 0
-  #elif TRACKER_BUILD_IS_PRODUCTION
+  #elif TRACKER_BUILD_IS_PRODUCTION_FAMILY
     #define TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN 48
   #else
     #define TRACKER_SERIAL_OUTPUT_BYTES_PER_DRAIN 64
@@ -63,7 +59,7 @@
 #ifndef TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS
   #if TRACKER_BUILD_IS_SLIM
     #define TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS 0UL
-  #elif TRACKER_BUILD_IS_PRODUCTION
+  #elif TRACKER_BUILD_IS_PRODUCTION_FAMILY
     #define TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS 4UL
   #else
     #define TRACKER_SERIAL_OUTPUT_DRAIN_INTERVAL_MS 2UL
@@ -114,6 +110,32 @@
 
 #ifndef TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS
 #define TRACKER_IDLE_YIELD_EVERY_N_IDLE_LOOPS 16UL
+#endif
+
+// Debug/ProductionDiag keep timing code linked, but inactive diagnostics must
+// not charge micros() calls to every IMU sample or loop. Active tests sample
+// timing at this fixed cadence; event/fault counters remain exact.
+#ifndef TRACKER_DIAGNOSTIC_TIMING_SAMPLE_DIVISOR
+#define TRACKER_DIAGNOSTIC_TIMING_SAMPLE_DIVISOR 16UL
+#endif
+
+#ifndef TRACKER_STATIC_TEST_STATS_BLOCK_SAMPLES
+#define TRACKER_STATIC_TEST_STATS_BLOCK_SAMPLES 64UL
+#endif
+
+#ifndef TRACKER_MACHINE_LOG_QUEUE_RECORDS
+#define TRACKER_MACHINE_LOG_QUEUE_RECORDS 12u
+#endif
+
+#ifndef TRACKER_MACHINE_LOG_LINES_PER_SERVICE
+#define TRACKER_MACHINE_LOG_LINES_PER_SERVICE 1u
+#endif
+
+#ifndef TRACKER_MACHINE_LOG_NETWORK_PERIOD_US
+// Cumulative Wi-Fi/SlimeVR counters are copied in background service, never in
+// an IMU or magnetic callback. One hertz is enough to localize a pressure
+// episode while keeping network telemetry negligible beside 20 Hz sensor rows.
+#define TRACKER_MACHINE_LOG_NETWORK_PERIOD_US 1000000UL
 #endif
 
 // Optional runtime work is admitted only when the sensor queues are empty and

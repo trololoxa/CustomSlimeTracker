@@ -39,7 +39,25 @@ const char* trackerSerialSystemStreamModeName(TrackerStreamMode mode) {
     return "unknown";
 }
 
-void trackerSerialPrintHelp(Stream& out) {
+void trackerSerialPrintHelp(Stream& out, TrackerCommandOrigin origin) {
+    if (origin == TrackerCommandOrigin::RemoteTcp) {
+        out.println("==============================================================================");
+        out.println("TRACKER REMOTE DIAGNOSTIC COMMANDS (NON-PERSISTENT)");
+        out.println("  help | ? | version | status | health");
+        out.println("  console status | reset | remote status");
+        out.println("  perf status | top | tracking [reset]");
+        out.println("  motion status");
+        out.println("  log [basic|full|off] | start [basic|full] | rate <hz>");
+        out.println("  log header | finish | summary | reset | stop");
+        out.println("  test static <seconds> | runtime <seconds> | status | stop");
+        out.println("  mag status | processed | trust");
+        out.println("  net status | slime status | battery status");
+        out.println("  fifo status|stats | quality stats | imu status");
+        out.println("  bias status | ahrs status|config");
+        out.println("# Persistent config, calibration, setup, reset and reboot are USB-only.");
+        out.println("==============================================================================");
+        return;
+    }
     out.println("==============================================================================");
     out.println("TRACKER SERIAL COMMANDS");
     out.print("# build_profile=");
@@ -197,6 +215,7 @@ void trackerSerialPrintHelp(Stream& out) {
 #endif
 #if TRACKER_ENABLE_TEST_COMMANDS
     out.println("  test static <seconds> | test runtime <seconds> | test stop | test status");
+    out.println("  test report static|runtime          (after the measured window)");
     out.println("  # replay baseline: log full; log rate 20; log header; test static 600; log summary; log off");
 #endif
 #endif
@@ -388,7 +407,7 @@ bool trackerSerialDispatchSystemCommand(TrackerSerialCommandContext& ctx, int ar
     Stream& out = trackerSerialSystemStream(ctx);
 
     if (trackerSerialSystemIs(argv[0], "help") || trackerSerialSystemIs(argv[0], "?")) {
-        trackerSerialPrintHelp(out);
+        trackerSerialPrintHelp(out, ctx.origin);
         return true;
     }
 
@@ -485,6 +504,8 @@ bool trackerSerialDispatchSystemCommand(TrackerSerialCommandContext& ctx, int ar
         out.print("firmware_version="); out.println(trackerBuildFirmwareVersion());
         out.print("slimevr_firmware_version="); out.println(trackerBuildSlimeVRFirmwareVersion());
         out.print("build_date_utc="); out.println(trackerBuildDateUtc());
+        out.print("command_origin="); out.println(trackerCommandOriginName(ctx.origin));
+        out.print("command_session="); out.println(ctx.sessionId);
         return true;
     }
 

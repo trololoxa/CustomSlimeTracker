@@ -4,26 +4,56 @@ Replay is the host-side way to compare tracking behavior between firmware versio
 
 ## What replay uses
 
-The current replay gate uses **machine-readable E0 serial logs** emitted by the firmware:
+The compatibility replay gate uses machine-readable E0 logs. New release
+evidence must use strict LOGVER3 captured by the ProductionDiag TCP session:
 
 ```text
-log full
-log header
-test static 120
-log summary
-log off
+python3 tools/capture_telnet_log.py --host <tracker-ip> --seconds 600 \
+  --capture static --rate 20 --mode full --output logver3_static_clean_001.log
 ```
 
 The important lines are CSV-like frames announced by `LOGFMT`:
 
 ```text
-Q,FIFO,CAL,BIAS,BIASUPD,MAG,MAGR,YAW,STATE,LOGSUM,LOGSTAT,TEMPBIN
+Q,FIFO,CAL,BIAS,BIASUPD,MAG,MAGR,YAW,STATE,NET,TESTSUM,LOGSUM,LOGSTAT,TEMPBIN
 ```
 
-Human CLI/status text is intentionally ignored. Replay should depend on stable machine-readable frames only.
-The `LOGVER` row also carries `build_profile`, `pio_env` and `git` fields. The
-parser exposes them under the JSON `logver` object so replay artifacts remain
-traceable to both committed and intermediate dirty builds.
+The compatibility replay ignores human CLI/status text. The strict capture gate
+also consumes the compact completion marker and final console counters, and
+rejects any `# ERR` line; numeric replay metrics still depend only on stable
+machine-readable frames.
+The `LOGVER` row carries `build_profile`, `pio_env` and `git` fields. Strict
+capture requires ProductionDiag and a clean full 40-hex commit; dirty and
+abbreviated identities fail closed.
+
+## Strict LOGVER3 integrity gate
+
+Run the structural gate directly with:
+
+```bash
+python3 tools/replay/strict_logver3_gate.py \
+  --log logver3_static_clean_001.log \
+  --capture static \
+  --output logver3_static_clean_001.validation.json
+```
+
+It validates the exact `LOGFMT` schema and field counts, finite numeric values,
+unquoted CSV, known frame/stat types, contiguous global sequence, ordered
+Q/FIFO/BIAS/CAL and MAG/MAGR/YAW bundles, monotonic timestamps, quaternion norm,
+duration and observed Q rate. It also requires hardware timestamps, zero
+FIFO/drop/recovery/backpressure/console-abort counters, a completely drained
+deferred pipeline and bounded maximum record age.
+
+LOGVER3 E1 adds one-hertz cumulative `NET` chronology and one exact immutable
+post-window `TESTSUM`. Static validation fails closed on UDP deadlines/sends,
+MAG trust/heading/field semantics, missing calibrated BIAS state, test-window
+fault deltas or a remote lease expiration. Runtime diagnosis uses
+`--capture runtime`: schema, chronology, loss and complete drain remain strict,
+but observed sensor/network health faults are retained in `health_failures`
+with `health_passed=false` so the problem log is not discarded.
+
+LOGVER2 remains a compatibility input for `replay_machine_log.py`; it is never
+accepted by the strict LOGVER3 gate.
 
 ## Current replay level
 
@@ -101,12 +131,13 @@ python tools/replay/replay_machine_log.py logs/mag_sweep.log \
 Human `mag status`/`mag cal status` output remains useful for inspection, but
 should not become replay input.
 
-## Future replay levels
+## Replay levels
 
 1. **Metric replay**: parse logs and compare counters/stats. This exists now.
-2. **Golden comparison**: compare a new summary JSON against a saved baseline with tolerances.
-3. **Algorithm replay**: feed recorded calibrated samples into host-safe AHRS/mag/bias modules and compare output. This requires logging enough calibrated/raw data and keeping the algorithm modules host-safe.
-4. **Scenario library**: static desk, hand motion, magnetic disturbance, FIFO stress, warm-up/temperature sweep.
+2. **Strict capture integrity**: exact LOGVER3 schema/chronology/drop/provenance gate. This exists now.
+3. **Golden comparison**: bind one real fixture SHA-256 to independently reviewed metric thresholds. The code exists; the first real fixture is still pending hardware capture.
+4. **Algorithm replay**: feed recorded calibrated samples into host-safe AHRS/mag/bias modules and compare output. This requires logging enough calibrated/raw data and keeping the algorithm modules host-safe.
+5. **Scenario library**: static desk, hand motion, magnetic disturbance, FIFO stress, warm-up/temperature sweep.
 
 ## Why this matters
 
@@ -119,17 +150,11 @@ not from human `status` output. Use `log full` so the replay parser receives
 `Q`, `FIFO`, `CAL`, `BIAS`, `MAG`, `MAGR`, `YAW`, `STATE`, `LOGSUM`, and `LOGSTAT`
 frames when those systems are active. `MAGR` is emitted only in `log full` mode.
 
-Recommended baseline sequence:
+Recommended baseline command (battery powered, USB physically disconnected):
 
-```text
-setup status
-log reset
-log full
-log rate 20
-log header
-test static 600
-log summary
-log off
+```bash
+python3 tools/capture_telnet_log.py --host <tracker-ip> --seconds 600 \
+  --capture static --rate 20 --mode full --output logver3_static_clean_001.log
 ```
 
 The resulting serial capture is the input for:
@@ -167,13 +192,13 @@ Warnings about missing yaw application are expected for this fixture. Add a
 separate fixture later when testing mag reference + yaw correction apply.
 
 
-## LOGVER 3 magnetic fields
+## LOGVER3 magnetic fields
 
-Patch 0022 keeps existing machine-log columns stable and appends magnetic
-reliability data. `MAG` adds world dip, field state/trust/flags and norm/dip/heading
+LOGVER3 E1 keeps the E0 magnetic additions from patch 0022 and enforces them as
+an exact schema. `MAG` contains world dip, field state/trust/flags and norm/dip/heading
 reference errors. `YAW` adds normal/reacquisition mode, pending/active state,
 stable-field duration and magnetic heading rate. In 0022a the logged
 `field_heading_rate_deg_s` is the filtered signed-rate magnitude used by
 reacquisition rather than the instantaneous two-sample derivative; CLI status
-prints both values. `tools/logs/parse_e0_log.py` reads these fields when present
-and remains compatible with LOGVER 2 captures.
+prints both values. `tools/logs/parse_e0_log.py` remains compatible with LOGVER2;
+`strict_logver3_gate.py` is intentionally not.

@@ -5,11 +5,12 @@ import contextlib
 import io
 import shutil
 import subprocess
-import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
+import build_identity as build_identity_module
 from build_identity import (
     FIRMWARE_FEATURE_VERSION,
     collect_build_identity,
@@ -18,12 +19,13 @@ from build_identity import (
     slimevr_firmware_version,
     write_if_changed,
 )
+from quality_gate_runtime import project_temp_directory
 
 
 @unittest.skipUnless(shutil.which("git"), "git executable is required")
 class BuildIdentityTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = project_temp_directory(Path(__file__).resolve().parents[1], "tracker-build-identity-")
         self.root = Path(self.tmp.name)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.invalid"], check=True)
@@ -42,6 +44,7 @@ class BuildIdentityTests(unittest.TestCase):
     def test_clean_and_dirty_identity(self) -> None:
         clean = collect_build_identity(self.root)
         self.assertTrue(clean.available)
+        self.assertRegex(clean.head, r"^[0-9a-f]{40}$")
         self.assertFalse(clean.dirty)
         self.assertEqual(clean.identity, clean.head)
 
@@ -64,6 +67,17 @@ class BuildIdentityTests(unittest.TestCase):
         untracked = collect_build_identity(self.root)
         self.assertTrue(untracked.dirty)
         self.assertNotEqual(untracked.worktree, clean.worktree)
+
+    def test_failed_git_status_is_unknown_not_clean(self) -> None:
+        completed = [
+            subprocess.CompletedProcess([], 0, stdout=b"true\n", stderr=b""),
+            subprocess.CompletedProcess([], 0, stdout=b"1234abcd\n", stderr=b""),
+            subprocess.CompletedProcess([], 128, stdout=b"", stderr=b"status failed"),
+        ]
+        with mock.patch.object(build_identity_module, "_run_git", side_effect=completed):
+            identity = collect_build_identity(self.root)
+        self.assertFalse(identity.available)
+        self.assertEqual(identity.identity, "unknown")
 
     def test_generated_header_is_stable(self) -> None:
         identity = collect_build_identity(self.root)

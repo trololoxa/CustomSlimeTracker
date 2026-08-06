@@ -15,7 +15,7 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 
-DEFAULT_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG"
+DEFAULT_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION"
 COMMITTED_ENVS = (
     "BOARD_LOLIN_C3_MINI_DEBUG",
     "BOARD_LOLIN_C3_MINI_PRODUCTION",
@@ -38,6 +38,7 @@ REQUIRED_DOCS = (
     "testing.md",
     "tracking_pipeline.md",
 )
+REQUIRED_ROOT_FILES = ("README.md", ".gitignore", ".gitattributes")
 
 LOCAL_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
@@ -55,7 +56,10 @@ def strip_link_target(raw: str) -> str:
 
 def check_local_links(errors: list[str]) -> int:
     checked = 0
-    for doc in sorted(DOCS.glob("*.md")):
+    markdown_files = [ROOT / "README.md", *sorted(DOCS.glob("*.md"))]
+    for doc in markdown_files:
+        if not doc.is_file():
+            continue
         text = doc.read_text(encoding="utf-8")
         for match in LOCAL_LINK_RE.finditer(text):
             raw = match.group(1).strip()
@@ -83,6 +87,10 @@ def main() -> int:
         if not (DOCS / name).is_file():
             errors.append(f"missing required documentation file: docs/{name}")
 
+    for name in REQUIRED_ROOT_FILES:
+        if not (ROOT / name).is_file():
+            errors.append(f"missing required root project file: {name}")
+
     checked_links = check_local_links(errors)
 
     # Documentation meaning is reviewed with the code change. Automated checks
@@ -95,7 +103,10 @@ def main() -> int:
             print(error, file=sys.stderr)
         return 1
 
-    print(f"# validate_documentation: OK ({len(REQUIRED_DOCS)} required docs, {checked_links} local links)")
+    print(
+        f"# validate_documentation: OK ({len(REQUIRED_DOCS)} required docs, "
+        f"{len(REQUIRED_ROOT_FILES)} root files, {checked_links} local links)"
+    )
     return 0
 
 

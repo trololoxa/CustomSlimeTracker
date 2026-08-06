@@ -133,10 +133,8 @@ bool imuPipelineUpdateRuntimeGyroBiasEstimator(ImuSamplePipelineDeps& deps,
         deps.gyroTempComp,
         deps.ahrs,
         deps.trackingState.recoveryActive(),
-        deps.logState != nullptr && deps.logState->enabled(),
-        deps.logState != nullptr ? &deps.logState->sequence : nullptr,
-        deps.logCounters,
-        &deps.out
+        deps.runtimeBiasLogCallback,
+        deps.runtimeBiasLogUser
     };
     return runtimeBiasUpdateEstimator(
         biasDeps, scaled, calibrated, quality, timestampUs,
@@ -175,8 +173,11 @@ bool imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
             deps.ahrs, quality, micros());
     }
 #endif
-    if (deps.callbacks.emitMachineLogFrame != nullptr) {
-        deps.callbacks.emitMachineLogFrame(raw, calibrated, quality, deps.callbacks.user);
+    if (deps.callbacks.emitMachineLogFrame != nullptr &&
+        (deps.logState == nullptr || deps.logState->accepting())) {
+        deps.callbacks.emitMachineLogFrame(
+            raw, calibrated, quality, tempEval, currentGyroBiasRadS,
+            deps.callbacks.user);
     }
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (deps.motionDiagnostics != nullptr && deps.motionDiagnostics->enabled()) {
@@ -215,7 +216,7 @@ bool imuPipelineEmitPerSampleOutputs(ImuSamplePipelineDeps& deps,
             imuPipelineMakeSensorFrameCalibratedSample(deps, scaled);
 #if TRACKER_HAS_STATIC_TEST
         if (staticTestCaptureActive) {
-            deps.staticTestRunner->updateSample(sensorFrameCalibrated, quality, deps.out);
+            deps.staticTestRunner->updateSample(sensorFrameCalibrated, quality);
         }
 #endif
 #if TRACKER_HAS_CALIBRATION_UI
@@ -257,7 +258,10 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
     }
 #endif
 #if TRACKER_HAS_HOTPATH_PERF
-    const uint32_t sampleProcessStartUs = micros();
+    const bool measureSampleProcess = deps.fifoRuntime != nullptr &&
+        deps.fifoRuntime->diagnosticsTimingEnabled() &&
+        (deps.runtimeSamples % TRACKER_DIAGNOSTIC_TIMING_SAMPLE_DIVISOR) == 0u;
+    const uint32_t sampleProcessStartUs = measureSampleProcess ? micros() : 0u;
 #endif
 
     imuPipelineUpdateLatestTemperature(deps);
@@ -332,8 +336,10 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
         }
 
 #if TRACKER_HAS_HOTPATH_PERF
-        const uint32_t processUs = micros() - sampleProcessStartUs;
-        imuPipelineRecordSampleProcessTime(deps, processUs);
+        if (measureSampleProcess) {
+            const uint32_t processUs = micros() - sampleProcessStartUs;
+            imuPipelineRecordSampleProcessTime(deps, processUs);
+        }
 #endif
         return FifoRuntimeSampleResult::FifoRecovered;
     }
@@ -412,8 +418,10 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
 #endif
 
 #if TRACKER_HAS_HOTPATH_PERF
-    const uint32_t processUs = micros() - sampleProcessStartUs;
-    imuPipelineRecordSampleProcessTime(deps, processUs);
+    if (measureSampleProcess) {
+        const uint32_t processUs = micros() - sampleProcessStartUs;
+        imuPipelineRecordSampleProcessTime(deps, processUs);
+    }
 #endif
     return deferredBiasWindowReady
         ? FifoRuntimeSampleResult::YieldRequested

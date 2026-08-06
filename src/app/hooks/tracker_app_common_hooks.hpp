@@ -30,6 +30,15 @@ static void resetLogCountersHook(void* user) {
 #endif
 }
 
+static void resetLogPipelineHook(bool countPendingAsDropped, void* user) {
+    (void)user;
+#if TRACKER_ENABLE_MACHINE_LOG
+    g_machineLogDeferred.reset(countPendingAsDropped);
+#else
+    (void)countPendingAsDropped;
+#endif
+}
+
 static void emitMachineLogHeader(Stream& out, void* user) {
     (void)user;
 #if TRACKER_ENABLE_MACHINE_LOG
@@ -41,7 +50,7 @@ static void emitMachineLogHeader(Stream& out, void* user) {
 
 static void emitLogStateEvent(const char* state, const char* reason, uint64_t tUs, uint32_t flags, float confidence) {
 #if TRACKER_ENABLE_MACHINE_LOG
-    machineLogEmitStateEvent(appConsoleOutput(), g_logState, g_logCounters, state, reason, tUs, flags, confidence);
+    (void)g_machineLogDeferred.enqueueState(state, reason, tUs, flags, confidence);
 #else
     (void)state;
     (void)reason;
@@ -111,14 +120,6 @@ static TrackerBootstrapDeps makeTrackerBootstrapDeps() {
 static bool setRuntimeSpiFrequency(uint32_t hz, void* user) {
     (void)user;
     return trackerBootstrapSetRuntimeSpiFrequency(g_config, lsmBus, hz);
-}
-
-static Vec3 currentGyroBiasRadS(float tempC) {
-    return runtimeBiasCurrentGyroBiasRadS(g_runtimeBias, g_imuCal, g_gyroTempComp, tempC);
-}
-
-static uint32_t gyroBiasRuntimeFlags(float tempC) {
-    return runtimeBiasGyroBiasRuntimeFlags(g_runtimeBias, g_gyroTempComp, tempC);
 }
 
 static void printRuntimeGyroBiasStatus(Stream& out, void* user) {

@@ -7,8 +7,9 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -71,6 +72,7 @@ def compile_runtime(cxx: str, exe: Path, extra: list[str]) -> None:
             "-I", str(ROOT / "src"),
             "-I", str(ROOT / "tests/native"),
             str(ROOT / "tests/native/test_slimevr_output_runtime.cpp"),
+            str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
             str(ROOT / "src/runtime/slimevr_output_runtime.cpp"),
             str(ROOT / "src/output/slimevr_packet_writer.cpp"),
             str(ROOT / "src/network/wifi_manager.cpp"),
@@ -79,7 +81,7 @@ def compile_runtime(cxx: str, exe: Path, extra: list[str]) -> None:
         ],
         check=True,
     )
-    subprocess.run([str(exe)], check=True)
+    subprocess.run([str(exe)], check=True, env=asan_ubsan_environment(ROOT))
 
 
 def main() -> int:
@@ -198,7 +200,7 @@ def main() -> int:
     require(report, "253 times", "tracker 2 suppression evidence")
 
     cxx = compiler()
-    with tempfile.TemporaryDirectory(prefix="tracker-0023gl-") as tmp_name:
+    with project_temp_directory(ROOT, "tracker-0023gl-") as tmp_name:
         tmp = Path(tmp_name)
         compile_runtime(cxx, tmp / "test_runtime", ["-O2", "-Wall", "-Wextra", "-Werror"])
         compile_runtime(
