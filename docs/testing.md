@@ -268,7 +268,7 @@ The hardware checkpoint for the cable-free capture foundation is:
 4. ProductionDiag, `log full 20 Hz` plus `test static 600`.
 
 Run the final candidate from battery with USB physically disconnected. Use
-`tools/capture_telnet_log.py`; it performs clean-identity/magnetometer preflight,
+`tools/capture_telnet_log.py`; it performs known clean-or-dirty identity and magnetometer preflight,
 session-bound capture, pipeline drain, strict validation and manifest writing.
 Acceptance requires 19..21 Hz Q, zero FIFO faults/recovery and every producer,
 pipeline, disconnect and console drop counter at zero. Service deferrals may be
@@ -550,7 +550,8 @@ python3 tools/capture_telnet_log.py \
 ```
 
 The tracker remains stationary for the complete golden candidate. The host tool
-requires a clean full commit identity, validates magnetometer runtime,
+requires a known full base commit plus a valid worktree fingerprint; clean and
+dirty ProductionDiag builds are accepted and recorded in the manifest. It validates magnetometer runtime,
 calibration/alignment and current trust, resets log/console counters, owns one
 TCP session, drains the deferred pipeline and writes both the capture and a
 SHA-256 manifest using atomic file replacement. The requested capture path is
@@ -710,8 +711,7 @@ FIFO/timestamp faults.
 
 Use `test stop` to finish early. `test status` prints both static and runtime
 status. Completion never formats the large report in the loop/sample hot path;
-`test report static|runtime` prints the immutable retained snapshot later and is
-intentionally USB-only.
+`test report static|runtime` prints the immutable retained snapshot later over USB or TCP.
 
 ### RC1 serial provisioning compatibility
 
@@ -760,8 +760,7 @@ The native gate also compiles production-only translation units that cannot be l
 After flashing `c3-6dsv-fifo-coherency` in ProductionDiag, use `fifo status`,
 `motion status`, and `perf tracking`. `motion status` already contains the full
 FIFO and quality correlation blocks. The complete ProductionDiag image also
-links `fifo stats` and `quality stats`; the restricted TCP policy exposes them
-read-only, while reset/reconfiguration remains privileged USB work.
+links `fifo stats` and `quality stats`; TCP and USB expose the same status, reset and reconfiguration commands compiled into that profile.
 Normal operation should keep gyro-only and pair-mismatch counters at zero or
 extremely rare values. Isolated component
 loss may increment them, but must not request FIFO recovery, stop gyro
@@ -1234,6 +1233,17 @@ aggregate host gate additionally proves every historical policy
 runs once and the seven ptrace-affected ASan/UBSan policies complete without an
 implicit LSan phase.
 
+## 0025b remote CLI transport parity regression
+
+Run `python3 tools/test_0025b_remote_cli_transport_parity_policy.py`,
+`python3 tools/test_capture_telnet_log.py` and the native suite. The policy
+forbids an origin allowlist or remote-only error path, requires common help,
+1..200 Hz logging, 1..21600-second tests and force-stop behavior over USB/TCP,
+accepts dirty capture identity only when `build_git` exactly matches
+`<head>+<worktree>-dirty`, and retains the ProductionDiag compact/full config
+print translation-unit guard. The 30-second lease, Telnet filtering, fixed
+queues, disconnect cleanup and Production/Slim source exclusion remain intact.
+
 ## 0025a diagnostic capture regression
 
 Run `python3 tools/test_0025a_diagnostic_capture_policy.py`,
@@ -1244,7 +1254,7 @@ sleep blocking and disconnect cleanup; deferred one-hertz `NET` plus exact
 post-window `TESTSUM`; static fail-closed versus runtime health-reporting
 semantics; semantic MAG/BIAS validation; pair-consistent capture/manifest
 promotion; and 512-byte USB declaration bounds. Native tests cover lease
-wraparound, test-summary deferral/immutability, remote ownership and bounded
+wraparound, test-summary deferral/immutability, transport-parity command limits, session cleanup and bounded
 machine-log serialization. The pre-0024ac policy additionally rejects duplicate
 temperature/current-bias work in the diagnostic IMU callback.
 
@@ -1256,3 +1266,116 @@ valid runtime log with `health_passed=false` is expected diagnostic evidence,
 not a failed capture. After each run verify normal sleep after TCP closes and
 the existing 60-second no-server/no-motion interval; flash ordinary Production
 after diagnosis.
+
+
+## 0025c magnetic stationary-field recovery regression
+
+Run `python3 tools/test_mag_heading_reliability_policy.py` and the native
+`test_mag_heading_reliability` suite. The regression first reproduces the old
+false latch when magnetic north and AHRS yaw jump together, then proves the new
+AHRS-yaw-removed field signal remains trusted. A second scenario latches a real
+same-norm directional disturbance, accumulates five degrees of AHRS yaw drift
+while correction is fail-closed, removes the disturbance and requires
+`disturbed -> recovering -> trusted` through the stored pre-jump stationary field
+baseline. A physical-motion scenario proves that relative return is invalidated
+and cannot accept a shifted environment. Existing 5/9/12/19-degree disturbance,
+slow-drift, 2 deg/s correction, physical-rotation, holdout and solver tests remain
+unchanged.
+
+Hardware acceptance: in ProductionDiag, obtain `field_state=trusted`, create and
+remove a directional disturbance while the tracker remains still, and require
+`field_stationary_heading_returns_via_stationary_field` to increment if world yaw
+drifted beyond 2.5 degrees. Trust must return after approximately 1.2 seconds plus
+5 seconds. Repeat with physical motion during the disturbance; the relative return
+count must not increment, and recovery must wait for the absolute field or an
+explicit `mag heading clear`. Require zero FIFO overrun/full and no tracking
+recovery entry throughout.
+
+
+## 0026 magnetic horizontal trust and motion packet modes
+
+Focused host regression:
+
+```bash
+python3 tools/run_standalone_tests.py --clean --extra-cxxflag=-Werror
+```
+
+The magnetic suite must prove that a calibrated field near norm 444, dip -70.5
+degrees and horizontal norm 149 becomes trusted after reference acquisition,
+that ordinary four-degree high-dip wobble does not latch a stationary field jump,
+and that a larger discontinuity still enters disturbed state. Yaw correction and
+auto-reference must use the same adaptive horizontal thresholds.
+
+Config/runtime tests must prove that the 756-byte blob size is unchanged, all
+unmarked historical `packetFormat` values migrate to quaternion-only, all three
+modes round-trip through transactional config storage, and runtime emits exactly:
+
+- packet 17 only for `quaternion`;
+- packet 100 with inner 17+4 when `bundle` is negotiated, otherwise 17+4 fallback;
+- packet 23 for `packet23`;
+- packet 17 when acceleration is invalid in either acceleration policy.
+
+Target acceptance must compare `slime status`, packet counters and server TPS for
+each persisted mode across reboot. Magnetic acceptance must hold the tracker still
+in the previously failing high-dip location, require non-zero horizontal trust and
+`field_trusted_for_yaw=yes`, then introduce/remove a directional disturbance and
+verify bounded recovery without repeated stationary-jump relatching.
+
+
+## 0026a motion policy and magnetic reliability hardening
+
+Focused host acceptance additionally requires:
+
+- `slime motion-mode` to persist only its authoritative motion-policy field while
+  unrelated RAM-only `outputRateHz` / local-output edits remain unsaved;
+- missing domain wiring or an NVS transaction failure to leave both active config
+  and runtime policy unchanged;
+- config/runtime to use one canonical `SlimeVRMotionPacketPolicy` type, while
+  `SlimeVRMotionPacketMode` remains the separate negotiated/fallback result;
+- an observable high-dip field to scale the legacy heading-step thresholds, so a
+  step above the historical fixed 8-degree soft threshold can remain trusted when
+  it is below the geometry-adjusted threshold;
+- a below-floor/near-vertical horizontal component to skip directional step/jump
+  classification and remain fail-closed for yaw;
+- at least a 30-minute deterministic synthetic high-dip run with bounded norm,
+  dip, heading noise and slow AHRS yaw drift to produce no false disturbed/latch,
+  followed by a real directional disturbance and bounded recovery.
+
+Downgrade/old-firmware round trips are intentionally not an acceptance target for
+this product. Target/HIL acceptance from 0026 remains required before release.
+
+## 0026b hot-path optimization
+
+Run `python3 tools/test_0026b_hotpath_optimization_policy.py`. The policy requires
+production magnetic/yaw callbacks to use lightweight input views, forbids the old
+large aggregate copies, requires mathematically equivalent squared high-dip
+threshold comparisons with no `sqrt` in the field-reliability callback, and locks
+the quaternion-only packet-17 branch before acceleration conversion. It compiles
+`-O2` and `-Os` stack-usage probes for the changed production boundaries.
+
+Behavioral acceptance keeps the complete 0026a magnetic regression, including the
+30-minute deterministic high-dip/noise/recovery case. A deterministic 120,000-step
+before/after replay over high dip, bounded noise, repeated real field jumps/removals
+and motion windows must produce the same `state`, `flags`, `trustedForYaw` and
+stationary-jump latch on every step. Motion-output regression must retain identical
+packet mode/fallback behavior; quaternion-only must not evaluate acceleration
+conversion.
+
+Target acceptance is performance evidence rather than new functional behavior:
+compare the same ProductionDiag firmware/config/hardware workload before and after
+0026b using `perf tracking reset`, a 30-minute focused run and the project long-run
+matrix. Require unchanged sample/output rates, zero new FIFO/recovery/drop deltas,
+and compare P50/P95/P99/max callback/loop timing plus stack/high-water evidence.
+Host microbenchmarks are not a substitute for this target gate.
+
+## 0026d host quality-gate portability
+
+Run `python3 tools/test_0026d_host_quality_gate_portability_policy.py` plus the
+normal `check_all` host gate. Focused policies must probe sanitizer *link*
+support before adding ASan/UBSan flags. A compatible Linux runner must continue
+to execute sanitizer variants; a MinGW/MSYS2 compiler without libasan/libubsan
+must print an explicit sanitizer SKIP while still compiling and running the
+ordinary behavioral regression. The magnetic reliability policy must track the
+post-0026b lightweight-view expression, no-heap UDP policies must inspect code
+rather than comments, and predecessor stack gates must not contradict successor
+cross-ABI contracts.

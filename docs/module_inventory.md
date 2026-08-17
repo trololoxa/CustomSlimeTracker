@@ -11,9 +11,9 @@ This inventory is the current ownership map. It is intentionally compact; update
 | `src/app/hooks/` | composition glue | Connect app singletons to runtime/serial callbacks | Include-only by design; wiring only. |
 | `src/config/` | persisted config | Schema, runtime apply/capture/sanitize, NVS store, print helpers | Config changes need docs/tests. |
 | `src/connection/` | hardware/protocol | LSM6DSV, FIFO, sensor-hub, and low-level magnetometer transport | No app/serial dependencies. |
-| `src/core/` | pure core | Math primitives and small shared utilities | Host-test friendly. |
+| `src/core/` | pure core | Math primitives, small shared utilities, and canonical transport-independent policy types such as `slimevr_motion_policy.hpp` | Host-test friendly; do not duplicate persisted/runtime policy enums across layers. |
 | `src/runtime/` | runtime controllers | FIFO runtime, sample pipeline, deferred machine log, output snapshots, low-overhead tests, bias, mag runtime, state | Should expose status/results, not own CLI parsing. |
-| `src/sensor/` | sensor math/models | AHRS, calibration, IMU quality, mag heading/field reliability/yaw correction and axis solving | Prefer pure/host-testable logic. |
+| `src/sensor/` | sensor math/models | AHRS, calibration, IMU quality, mag heading/shared horizontal trust/field reliability/yaw correction and axis solving | Prefer pure/host-testable logic. |
 | `src/serial/` | developer CLI | Fixed-buffer parser, command context, domain command handlers, serial stream helpers | Domain commands live in `.cpp`; headers expose API only. |
 | `src/serial/tracker_command_origin.hpp` | command security | USB/TCP origin identity and exact remote diagnostic allowlist | Remote policy is fail-closed before every dispatcher. |
 | `src/network/` | transport | Wi-Fi station management and UDP transport primitives | No AHRS/FIFO logic or SlimeVR packet formatting here. |

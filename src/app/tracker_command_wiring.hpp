@@ -103,6 +103,9 @@ struct TrackerCommandRuntimeHooks {
     decltype(TrackerSerialCommandContext::setRuntimeGyroBiasEnabled) setRuntimeGyroBiasEnabled = nullptr;
     void* setRuntimeGyroBiasEnabledUser = nullptr;
 
+    decltype(TrackerSerialCommandContext::setSlimeVRMotionPacketPolicy) setSlimeVRMotionPacketPolicy = nullptr;
+    void* setSlimeVRMotionPacketPolicyUser = nullptr;
+
     decltype(TrackerSerialCommandContext::resetRuntimeGyroBiasEstimator) resetRuntimeGyroBiasEstimator = nullptr;
     void* resetRuntimeGyroBiasEstimatorUser = nullptr;
 

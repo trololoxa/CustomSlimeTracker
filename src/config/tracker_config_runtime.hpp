@@ -27,6 +27,9 @@ public:
     void updateCrc();
     void sanitize();
 
+    SlimeVRMotionPacketPolicy slimevrMotionPacketPolicy() const;
+    void setSlimeVRMotionPacketPolicy(SlimeVRMotionPacketPolicy policy);
+
     Lsm6dsv::Config makeLsmConfig() const;
     Lsm6dsvFifoReader::Config makeFifoConfig() const;
     Ahrs6DofConfig makeAhrsConfig() const;

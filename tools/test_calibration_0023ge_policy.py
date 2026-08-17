@@ -133,7 +133,10 @@ def main() -> int:
         require_limit(usage, "dispatchDueMagCallbacks", 256)
         require_limit(usage, "MagRuntimeController::processRawSample", 1024)
         require_limit(usage, "MagRuntimeProcessor::process", 256)
-        require_limit(usage, "MagCalibrationCollector::compute", 1536)
+        # 0023gk is the final owner of this cross-ABI fit frame and retains the
+        # 1792-byte ceiling. Do not let the older 0023ge gate contradict the
+        # successor contract when the same source is compiled under MSYS2.
+        require_limit(usage, "MagCalibrationCollector::compute", 1792)
         require_limit(usage, "replaceFitFromAccumulator", 512)
 
     print("# calibration_0023ge_policy: PASS")

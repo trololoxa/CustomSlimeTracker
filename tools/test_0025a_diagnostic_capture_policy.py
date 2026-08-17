@@ -34,7 +34,6 @@ def main() -> int:
     pipeline = read("src/runtime/imu_sample_pipeline.cpp")
     capture = read("tools/capture_telnet_log.py")
     validator = read("tools/replay/logver3_contract.py")
-    origin = read("src/serial/tracker_command_origin.hpp")
     tests = read("tools/test_capture_telnet_log.py") + read("tools/test_logver3_contract.py")
     testing = read("docs/testing.md")
     project = read("docs/project_status.md")
@@ -77,7 +76,6 @@ def main() -> int:
     require(pipeline, "tempEval, currentGyroBiasRadS", "shared bias/temp values")
     forbid(pipeline, "gyroTempComp.snapshot", "extra logger snapshot in IMU path")
 
-    require(origin, 'is(argv[1], "summary")', "remote-safe summary allowlist")
     require(capture, 'choices=("static", "runtime")', "static/runtime capture modes")
     require(capture, "promote_validated_capture_bundle", "pair-consistent promotion")
     require(capture, "Attempt both restorations independently", "independent rollback")

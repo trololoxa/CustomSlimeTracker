@@ -23,6 +23,8 @@ inline void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("crc=0x"); out.println(cfg.data.crc32, HEX);
     out.print("spi_hz="); out.println(cfg.data.hardware.spiHz);
     out.print("output_rate_hz="); out.println(cfg.data.output.outputRateHz);
+    out.print("slimevr_motion_mode=");
+    out.println(slimevrMotionPacketPolicyName(cfg.slimevrMotionPacketPolicy()));
     out.print("gyro_bias_valid="); out.println(cfg.data.gyroCal.biasValid ? "yes" : "no");
     out.print("accel_cal_valid="); out.println(cfg.data.accelCal.valid ? "yes" : "no");
     out.print("mag_driver_enabled="); out.println(cfg.data.magCal.driverEnabled ? "yes" : "no");

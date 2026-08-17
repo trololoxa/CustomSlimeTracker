@@ -43,6 +43,7 @@ struct MagStatusReporterDeps {
 
     MagRuntimeConfig runtimeConfig;
     MagYawCorrectionConfig yawConfig;
+    MagFieldReliabilityConfig fieldReliabilityConfig;
 };
 
 float magStatusHeadingErrorToReferenceRad(const MagHeadingReferenceState& ref,

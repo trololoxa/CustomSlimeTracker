@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "defines.h"
+#include "core/slimevr_motion_policy.hpp"
 #include "network/udp_transport.hpp"
 #include "network/wifi_manager.hpp"
 #include "output/slimevr_packet_writer.hpp"
@@ -35,6 +36,7 @@ enum class SlimeVROutputState : uint8_t {
 const char* slimevrOutputStateName(SlimeVROutputState state);
 
 enum class SlimeVRMotionPacketMode : uint8_t {
+    Rotation17Only,
     SeparateRotation17Accel4,
     Bundle100Rotation17Accel4,
     ExperimentalRotationAcceleration23,
@@ -92,6 +94,8 @@ struct SlimeVROutputRuntimeConfig {
     uint32_t discoveryIntervalMs = 1000;
     uint16_t rotationRateHz = 100;
     uint8_t incomingPacketsPerUpdate = 4;
+    SlimeVRMotionPacketPolicy motionPacketPolicy =
+        SlimeVRMotionPacketPolicy::QuaternionOnly;
 
     // magSupported means the firmware can expose a magnetometer-backed yaw
     // path. magEnabled means the server/runtime currently allows using it.
@@ -177,6 +181,8 @@ struct SlimeVROutputRuntimeStatus {
     bool serverBundleSupported = false;
     bool serverCompactBundleSupported = false;
     bool bundledMotionEnabled = false;
+    SlimeVRMotionPacketPolicy motionPacketPolicy =
+        SlimeVRMotionPacketPolicy::QuaternionOnly;
     SlimeVRMotionPacketMode motionPacketMode = SlimeVRMotionPacketMode::SeparateRotation17Accel4;
     uint16_t fallbackAccelerationRateHz = TRACKER_SLIMEVR_FALLBACK_ACCEL_RATE_HZ;
     uint32_t accelerationSkippedInvalid = 0;
@@ -336,6 +342,9 @@ public:
                SlimeVRRotationSoftwareAgeSinkFn rotationSoftwareAgeSink = nullptr,
                void* rotationSoftwareAgeSinkUser = nullptr);
     void configure(const SlimeVROutputRuntimeConfig& config);
+    // Apply only the motion wire policy without restarting discovery/session
+    // state or touching unrelated runtime configuration.
+    void setMotionPacketPolicy(SlimeVRMotionPacketPolicy policy);
     void updateLiveState(bool latestTemperatureValid,
                          float latestTemperatureC,
                          bool latestBatteryValid,
@@ -485,6 +494,8 @@ private:
     uint32_t discoveryIntervalMs_ = 1000;
     uint16_t rotationRateHz_ = 100;
     uint8_t incomingPacketsPerUpdate_ = 4;
+    SlimeVRMotionPacketPolicy motionPacketPolicy_ =
+        SlimeVRMotionPacketPolicy::QuaternionOnly;
 
     bool magSupportEnabled_ = false;
     bool magEnabled_ = false;
@@ -667,7 +678,7 @@ private:
     uint32_t bundleToSeparateTransitions_ = 0;
     uint32_t separateToBundleTransitions_ = 0;
     uint32_t accelerationSuppressedDuringNegotiation_ = 0;
-    SlimeVRMotionPacketMode lastObservedMotionPacketMode_ = SlimeVRMotionPacketMode::SeparateRotation17Accel4;
+    SlimeVRMotionPacketMode lastObservedMotionPacketMode_ = SlimeVRMotionPacketMode::Rotation17Only;
     bool lastObservedMotionPacketModeValid_ = false;
     uint16_t rotationPhaseOffsetMs_ = 0;
     bool rotationPhaseOffsetValid_ = false;

@@ -130,12 +130,12 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 |---|---|---:|---|
 | `stream off|heartbeat|raw|scaled|quat|debug` | Set serial stream mode | Runtime | Also updates config runtime fields where supported. |
 | `stream rate <hz>` | Set stream rate | Runtime | May be saved through config save. |
-| `log off|basic|full|start|stop` | Control session-bound machine log | Runtime | Used by host replay/metrics tooling. `log full` also emits `MAGR` raw/calibrated/body magnetometer vectors. TCP is capped at 20 Hz. |
+| `log off|basic|full|start|stop` | Control session-bound machine log | Runtime | Used by host replay/metrics tooling. `log full` also emits `MAGR` raw/calibrated/body magnetometer vectors. USB and TCP use the same command and rate contract. |
 | `log finish` | Stop producers but retain/drain the deferred queue | Runtime | Wait for `LOGSTAT,PIPELINE` queued `0` and equal enqueued/serialized before summary/off. |
-| `log rate <hz>` | Set machine-log rate | Runtime | USB accepts 1..200 Hz; TCP accepts 1..20 Hz. A quality fixture uses full 20 Hz. |
+| `log rate <hz>` | Set machine-log rate | Runtime | USB and TCP accept 1..200 Hz. A quality fixture uses full 20 Hz. |
 | `log header` | Emit LOGVER/LOGFMT header | No | Use before captures intended for replay. |
 | `log summary` | Emit compact runtime summary | No | Human/agent diagnostic helper. |
-| `log reset` | Reset log counters and deferred pipeline | Runtime | Does not reset firmware runtime. Only the owning session, or USB, may control an active log. |
+| `log reset` | Reset log counters and deferred pipeline | Runtime | Does not reset firmware runtime. Any connected CLI transport may control or rebind an active log; owner metadata remains for output routing and disconnect cleanup. |
 | `output mode debug` | Select local serial debug output | Runtime/config | Does not affect SlimeVR UDP. |
 | `output mode binary` | Return `NOT_IMPLEMENTED` | No | Custom binary backend is still reserved. |
 | `output rate <hz>` | Set local serial output rate | Runtime/config | SlimeVR has its own `slime rate <hz>` command. |
@@ -147,18 +147,18 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 | Command | Effect | Persisted | Notes |
 |---|---|---:|---|
 | `test status` | Print static-test and runtime-test status | No | Runtime test status is shown when the hook is available. |
-| `test static <seconds>` | Low-overhead IMU/FIFO stationary observer | No | Exact fault/timestamp counters, block-aggregated statistics and deferred completion. TCP duration is capped at 900 s. |
-| `test runtime <seconds>` | Sampled full firmware runtime/load observer | No | Existing counters remain exact; section timers sample 1/16 loops. TCP duration is capped at 900 s. |
-| `test stop` | Stop active static/runtime test | No | Only the owner can stop over TCP; USB may force-stop. Completion prints a compact marker. |
-| `test summary static|runtime` | Print one immutable compact `TESTSUM` CSV row | No | Available after completion over USB or the owning TCP session; contains exact measured-window counters without the multi-page report. |
-| `test report static|runtime` | Print the retained detailed report | No | Available only after completion and intentionally USB-only. It never runs from the measured sample/loop hot path. |
+| `test static <seconds>` | Low-overhead IMU/FIFO stationary observer | No | Exact fault/timestamp counters, block-aggregated statistics and deferred completion. USB and TCP accept 1..21600 s. |
+| `test runtime <seconds>` | Sampled full firmware runtime/load observer | No | Existing counters remain exact; section timers sample 1/16 loops. USB and TCP accept 1..21600 s. |
+| `test stop` | Stop active static/runtime test | No | Any connected CLI transport may force-stop the active test. Completion prints a compact marker. |
+| `test summary static|runtime` | Print one immutable compact `TESTSUM` CSV row | No | Available after completion over USB or TCP; contains exact measured-window counters without the multi-page report. |
+| `test report static|runtime` | Print the retained detailed report | No | Available after completion over USB or TCP. It never runs from the measured sample/loop hot path. |
 
 ## Network / SlimeVR
 
 | Command | Effect | Persisted | Notes |
 |---|---|---:|---|
 | `remote status` | Print Wi-Fi TCP console state | No | Shows enabled/listening/client/counter state. |
-| `remote off` / `remote on` | Disable/enable the TCP diagnostic listener for the current boot | No | Privileged USB-only control; use `remote off` after cable-free diagnostics. |
+| `remote off` / `remote on` | Disable/enable the TCP diagnostic listener for the current boot | No | Available from USB or TCP. `remote off` closes the active TCP client/listener for the current boot. |
 | `net status` | Print Wi-Fi config/runtime status | No | Shows NVS load state, IP, RSSI, MAC, reconnect counters. |
 | `net print` | Print network config | No | Password is not revealed. |
 | `net set ssid <ssid> [save]` | Set Wi-Fi SSID | Optional | Use 2.4 GHz SSID for ESP32-C3. |
@@ -177,6 +177,7 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 | `slime stop` | Stop SlimeVR output runtime | Runtime | Does not erase saved Wi-Fi/config. |
 | `slime reconnect` | Restart SlimeVR discovery/session | Runtime | Useful after server restart or network changes. |
 | `slime rate <hz>` | Set SlimeVR `RotationData` rate | Runtime/config | Stored in the existing outputRateHz field for compatibility, but not tied to local serial output. |
+| `slime motion-mode quaternion\|bundle\|packet23` | Select and persist SlimeVR motion packet policy | Yes/Runtime | Persists only the motion-policy field; unrelated RAM-only config edits are not committed. `quaternion` sends packet 17 only and is the default; `bundle` uses negotiated packet 100 with packet 17 + packet 4, falling back to separate 17/4; `packet23` sends RotationAndAcceleration packet 23. Applied without restarting the discovered session. |
 | `slime counters reset` | Reset SlimeVR counters | Runtime | Does not restart Wi-Fi. |
 | `slime action yaw|full|mounting|pause` | Send SlimeVR UserAction packet 21 | Runtime | Server-side reset/pause action; does not alter local AHRS calibration. |
 | `slime tap-action off|yaw|full|mounting|pause [save]` | Map physical tap aggregation to UserAction | Runtime/network config | Defaults to `off`; `save` persists through the transactional network-config store. |
@@ -186,19 +187,19 @@ The default board mapping is `TRACKER_STATUS_LED_PIN=8` and `TRACKER_STATUS_LED_
 
 ### Wi-Fi remote console
 
-Debug and the explicit ProductionDiag image expose a restricted diagnostic CLI
-over TCP. Production and Slim compile the listener out. The port is
-`TRACKER_REMOTE_CONSOLE_PORT` (`7777` by default):
+Debug and the explicit ProductionDiag image expose the same command dispatcher
+over TCP that their USB CLI uses. Production and Slim compile the listener out.
+The port is `TRACKER_REMOTE_CONSOLE_PORT` (`7777` by default):
 
 ```bash
 nc <tracker-ip> 7777
 ```
 
-Remote commands pass an exact fail-closed allowlist before dispatch. Persistent
-config/setup/calibration/network changes, reset/reboot and other mutations are
-USB-only. TCP supports bounded status/performance inspection plus session-bound
-`log` and `test` control; a disconnect aborts those producers without falling
-back to USB. Both transports use fixed-size, byte-budgeted output queues. See
+Remote commands pass directly through the profile's normal dispatcher: setup,
+config/calibration/network mutation, reset/reboot, reports and diagnostic control
+have the same availability as USB in that build. A disconnect still aborts
+producers bound to the closing session without falling back to USB. Both
+transports use fixed-size, byte-budgeted output queues. See
 `docs/wifi_remote_console.md` for the complete policy and unattended capture.
 
 SlimeVR UDP is independent from the local `output`/`stream` commands. `slime start` leaves serial `Q,...` output off and reads prepared quaternion snapshots directly.
@@ -217,8 +218,7 @@ That command scans visible networks, asks for a numbered selection and password,
 
 These commands are compiled only when `TRACKER_ENABLE_RUNTIME_PROFILER=1`
 (Debug and ProductionDiag). Production and Slim exclude the profiler/motion
-source files. Profiler/motion activation is USB-only; the restricted TCP console
-may inspect their bounded status without mutating them.
+source files. Profiler/motion activation and inspection use the same command contract over USB and TCP.
 
 FIFO tuning behavior: apply `fifo watermark` while the tracker is stationary. A successful live hardware reconfigure intentionally enters controlled recovery, so output resumes after the short stationary tilt capture. A failed apply or NVS save restores the previous config and hardware settings.
 
@@ -287,8 +287,8 @@ promotion contracts.
 | `test runtime <seconds>` | Start sampled full loop/network runtime test | Runtime | Measures Wi-Fi/SlimeVR/FIFO/quality deltas without permanent loop timers. |
 | `test status` | Print static/runtime test status | No | Inspection only. |
 | `test stop` | Stop current static/runtime test | Runtime | Leaves an immutable completed snapshot when usable samples exist. |
-| `test summary static|runtime` | Print compact immutable E1 completion evidence | No | Remote-safe after completion; exact measured-window counters. |
-| `test report static|runtime` | Print retained detailed result | No | Run after the measured window; USB-only. |
+| `test summary static|runtime` | Print compact immutable E1 completion evidence | No | Available over USB or TCP after completion; exact measured-window counters. |
+| `test report static|runtime` | Print retained detailed result | No | Run after the measured window over USB or TCP. |
 
 ## Guided setup commands
 
@@ -442,9 +442,12 @@ are not silently invalidated by this hotfix.
 `mag heading` and `mag yaw status` additionally expose stationary heading-window
 delta/rate, discontinuity-latch state, training/validation interval and window
 counts, validation winner consistency, normalized separation, observable angular
-motion, and deferred-service reject reasons. Hardware FIFO unread-word and
-rotation-deadline-slack diagnostics explain why a pending solve/stage action was
-deferred. No new mutation command is added; candidate lifecycle remains explicit.
+motion, and deferred-service reject reasons. The stationary field diagnostics now
+include `field_stationary_signal_yaw_deg`, the stored latch reference/error, whether
+physical motion invalidated relative return, and separate world/relative return
+counters. Hardware FIFO unread-word and rotation-deadline-slack diagnostics explain
+why a pending solve/stage action was deferred. No new mutation command is added;
+candidate lifecycle remains explicit.
 
 ## 0023gd magnetic calibration diagnostics
 

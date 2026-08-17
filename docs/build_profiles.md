@@ -64,7 +64,7 @@ Production keeps a compact config/network summary for service checks.
 `BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG` is the explicit wearable stress-test and
 capture build. It keeps Production-family runtime cadence while compiling the
 full CLI, static/runtime tests, machine log, detailed reporters, profiler,
-motion diagnostics and bounded TCP console.
+motion diagnostics and bounded TCP transport for the same command dispatcher.
 
 Use it for ankle/thermal/TPS diagnostics:
 
@@ -72,18 +72,18 @@ Use it for ankle/thermal/TPS diagnostics:
 pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG -t upload
 ```
 
-Then connect over USB for privileged work or TCP for the read-only/runtime
-diagnostic allowlist. Example cable-free capture:
+Then connect over USB or TCP; both expose the same commands compiled into ProductionDiag. Example cable-free capture:
 
 ```bash
 python3 tools/capture_telnet_log.py --host <tracker-ip> --seconds 600 \
   --rate 20 --mode full --output logver3_static_clean_001.log
 ```
 
-The remote allowlist permits status/performance inspection plus bounded
-`log`/`test` control, but rejects setup, persistence, calibration, network
-mutation, reset and reboot. Detailed retained test reports are USB-only; TCP
-receives compact progress/completion markers during measured windows.
+TCP has no origin-specific allowlist: setup, persistence, calibration, network
+mutation, reset/reboot, full reports and diagnostic control match USB. `log rate`
+accepts 1..200 Hz and static/runtime tests accept 1..21600 seconds on either
+transport. The listener remains unauthenticated and is therefore a trusted-network
+service-image feature only.
 
 Safety note: profiler and motion diagnostic objects are optional diagnostic sinks.
 The application no longer treats missing profiler/motion pointers as a boot-blocking

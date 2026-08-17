@@ -4,6 +4,7 @@
 
 #include "core/math.hpp"
 #include "sensor/mag_heading.hpp"
+#include "sensor/mag_horizontal_trust.hpp"
 #include "sensor/mag_runtime.hpp"
 
 namespace tracker {
@@ -30,11 +31,15 @@ enum MagFieldReliabilityFlags : uint32_t {
     MAG_FIELD_FLAG_HEADING_STEP_HARD = 1u << 8,
     MAG_FIELD_FLAG_RECOVERY_PENDING = 1u << 9,
     MAG_FIELD_FLAG_ENVIRONMENT_CHANGED = 1u << 10,
-    // A short-window world-heading discontinuity while gyro/accel say the
-    // tracker is stationary.  Unlike ordinary yaw drift, this is latched
-    // until the field returns near the established reference (or the user
-    // explicitly restarts acquisition).
+    // A short-window magnetic-direction discontinuity while gyro/accel say
+    // the tracker is stationary. AHRS yaw is removed from the detection signal
+    // so an internal yaw correction/reset cannot create a false field jump.
+    // The latch clears only after a proven return or explicit reacquisition.
     MAG_FIELD_FLAG_STATIONARY_HEADING_JUMP = 1u << 11,
+    // Environmental norm/dip may be stable while the horizontal component is
+    // too weak for a reliable yaw observation. This closes yaw use without
+    // declaring the whole magnetic environment disturbed.
+    MAG_FIELD_FLAG_HORIZONTAL_UNOBSERVABLE = 1u << 12,
 };
 
 struct MagFieldReliabilityConfig {
@@ -53,6 +58,13 @@ struct MagFieldReliabilityConfig {
     float stationaryAccelTrustMin = 0.80f;
     float headingStepSoftDeg = 8.0f;
     float headingStepHardDeg = 20.0f;
+
+    // User-configured absolute yaw thresholds are upper caps. The acquired
+    // field reference can lower them for high-dip environments.
+    float horizontalNormBad = 200.0f;
+    float horizontalNormGood = 260.0f;
+    MagHorizontalTrustConfig horizontalTrust;
+    float minimumHeadingTrustForJumpDetection = 0.25f;
 
     // Distinguish an abrupt local-field change from slow gyro yaw drift.
     // The normal yaw controller is rate-limited to 2 deg/s, so the default
@@ -79,6 +91,20 @@ struct MagFieldReliabilityInput {
     uint32_t nowMs = 0;
 };
 
+// Lightweight callback view over already-published coherent snapshots. The
+// owning aggregate above remains convenient for native tests and standalone
+// callers, while the runtime avoids copying both snapshots onto its stack.
+struct MagFieldReliabilityInputView {
+    const MagProcessedSample* mag = nullptr;
+    const MagHeadingSample* heading = nullptr;
+    bool processorTrustedForUse = false;
+    float gyroNormDps = 0.0f;
+    float accelTrust = 0.0f;
+    float horizontalNormBad = 200.0f;
+    float horizontalNormGood = 260.0f;
+    uint32_t nowMs = 0;
+};
+
 struct MagFieldReliabilityOutput {
     bool valid = false;
     bool trustedForYaw = false;
@@ -96,11 +122,28 @@ struct MagFieldReliabilityOutput {
     float referenceHeadingErrorDeg = 0.0f;
     float normRelativeError = 0.0f;
     float dipErrorDeg = 0.0f;
+    // Field-direction motion with AHRS yaw removed. This is the signal used
+    // for stationary discontinuity detection so an AHRS yaw correction/reset
+    // cannot masquerade as a local magnetic-field jump.
+    float stationaryFieldYawDeg = 0.0f;
+    float horizontalNorm = 0.0f;
+    float referenceHorizontalNorm = 0.0f;
+    float horizontalTrust = 0.0f;
+    float horizontalEffectiveBad = 0.0f;
+    float horizontalEffectiveGood = 0.0f;
+    // Geometry multiplier is kept squared so the sensor hot path can compare
+    // squared angles/rates without sqrt. Human-readable thresholds are derived
+    // lazily by the CLI reporter.
+    float headingNoiseScaleSquared = 1.0f;
+    float stationaryHeadingJumpRateGyroFloorDegS = 0.0f;
     float headingStepDeg = 0.0f;
     float headingInstantRateDegS = 0.0f;
     float headingRateDegS = 0.0f;
     float stationaryWindowHeadingDeltaDeg = 0.0f;
     float stationaryWindowHeadingRateDegS = 0.0f;
+    float stationaryLatchReferenceFieldYawDeg = 0.0f;
+    float stationaryLatchReferenceErrorDeg = 0.0f;
+    bool stationaryLatchMotionSeen = false;
     bool stationaryHeadingJumpLatched = false;
 };
 
@@ -122,6 +165,8 @@ struct MagFieldReliabilityStats {
     uint32_t stationaryHeadingJumpRejects = 0;
     uint32_t stationaryHeadingJumpsLatched = 0;
     uint32_t stationaryHeadingReturns = 0;
+    uint32_t stationaryHeadingReturnsViaWorld = 0;
+    uint32_t stationaryHeadingReturnsViaStationaryField = 0;
 };
 
 class MagFieldReliabilityMonitor {
@@ -133,18 +178,41 @@ public:
 
     bool update(const MagFieldReliabilityInput& in,
                 const MagFieldReliabilityConfig& cfg,
+                MagFieldReliabilityOutput& out) {
+        const MagFieldReliabilityInputView view{
+            &in.mag,
+            &in.heading,
+            in.processorTrustedForUse,
+            in.gyroNormDps,
+            in.accelTrust,
+            cfg.horizontalNormBad,
+            cfg.horizontalNormGood,
+            in.nowMs,
+        };
+        return update(view, cfg, out);
+    }
+
+    // Hot-path overload: pass existing coherent snapshots by reference instead
+    // of copying them into a large aggregate input object on the callback stack.
+    bool update(const MagFieldReliabilityInputView& in,
+                const MagFieldReliabilityConfig& cfg,
                 MagFieldReliabilityOutput& out);
 
-    const MagFieldReliabilityOutput& last() const { return last_; }
     const MagFieldReliabilityStats& stats() const { return stats_; }
     static const char* stateName(MagFieldReliabilityState state);
 
 private:
     void transition(MagFieldReliabilityState next, uint32_t nowMs);
     void resetAcquisitionAccumulator();
-    void accumulateReferenceSample(const MagFieldReliabilityInput& in);
-    void acquireReferenceFromAccumulator(const MagFieldReliabilityInput& fallback);
-    void adaptReference(const MagFieldReliabilityInput& in,
+    void accumulateReferenceSample(const MagProcessedSample& mag,
+                                   const MagHeadingSample& heading);
+    void acquireReferenceFromAccumulator(const MagProcessedSample& fallbackMag,
+                                         const MagHeadingSample& fallbackHeading,
+                                         uint32_t nowMs);
+    void adaptReference(const MagProcessedSample& mag,
+                        const MagHeadingSample& heading,
+                        float gyroNormDps,
+                        float accelTrust,
                         const MagFieldReliabilityConfig& cfg,
                         uint32_t dtMs);
 
@@ -152,6 +220,7 @@ private:
     bool referenceValid_ = false;
     float referenceNorm_ = 0.0f;
     float referenceDipDeg_ = 0.0f;
+    float referenceHorizontalNorm_ = 0.0f;
     float referenceHeadingYawRad_ = 0.0f;
     uint32_t stateSinceMs_ = 0;
     uint32_t goodSinceMs_ = 0;
@@ -160,24 +229,26 @@ private:
     bool environmentChangedLatched_ = false;
 
     bool havePreviousHeading_ = false;
-    float previousHeadingYawRad_ = 0.0f;
+    float previousStationaryFieldYawRad_ = 0.0f;
     uint32_t previousHeadingMs_ = 0;
     bool headingRateInitialized_ = false;
     float filteredHeadingRateDegS_ = 0.0f;
 
     bool stationaryWindowActive_ = false;
     uint32_t stationaryWindowStartMs_ = 0;
-    float stationaryWindowStartHeadingYawRad_ = 0.0f;
+    float stationaryWindowStartFieldYawRad_ = 0.0f;
     bool stationaryHeadingJumpLatched_ = false;
+    float stationaryLatchReferenceFieldYawRad_ = 0.0f;
+    bool stationaryLatchMotionSeen_ = false;
     uint32_t referenceReturnSinceMs_ = 0;
 
     double acquireNormSum_ = 0.0;
     double acquireDipSum_ = 0.0;
+    double acquireHorizontalNormSum_ = 0.0;
     double acquireHeadingSinSum_ = 0.0;
     double acquireHeadingCosSum_ = 0.0;
     uint32_t acquireSampleCount_ = 0;
 
-    MagFieldReliabilityOutput last_;
     MagFieldReliabilityStats stats_;
 };
 

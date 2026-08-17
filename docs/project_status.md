@@ -468,3 +468,107 @@ below the unchanged 512-byte USB staging limit. UDP remains active, persistent
 state and tracking/protocol semantics are unchanged, and real target/HIL/golden
 evidence remains pending. See
 `docs/0025a_cable_free_diagnostic_capture_hardening_report.md`.
+## 0025b remote CLI transport parity
+
+`0025b_remote_cli_transport_parity` removes the 0025 remote diagnostic
+allowlist and every origin-specific CLI limit. Debug/ProductionDiag TCP now
+uses the same dispatcher/help surface as USB, any connected CLI transport may
+control an active log/test, `log rate` accepts 1..200 Hz, and static/runtime
+tests accept 1..21600 seconds with common force-stop behavior. Session identity,
+lease expiry, Telnet filtering, bounded output queues and disconnect cleanup are
+retained for routing/lifetime safety rather than authorization.
+
+The host capture tool now accepts both clean and dirty ProductionDiag firmware;
+dirty identity is accepted only when `build_git` equals the reported full base
+commit plus the exact worktree fingerprint and `-dirty`, and the manifest keeps
+that identity. Host capture duration matches the firmware/USB range. The patch
+also guards the full config-print translation unit so ProductionDiag can link
+its compact inline implementation when `TRACKER_ENABLE_FULL_CONFIG_PRINT=0`.
+See `docs/0025b_remote_cli_transport_parity_report.md`.
+
+
+## 0025c magnetic stationary-field recovery hardening
+
+`0025c_magnetic_stationary_field_recovery_hardening` fixes a hardware-reproduced
+permanent yaw-trust lockout. The old stationary discontinuity detector measured
+raw magnetic north in the mutable AHRS world-yaw frame, so an AHRS yaw correction
+or reset could falsely latch `STATIONARY_HEADING_JUMP`. Once latched, recovery
+required the world heading to return within 2.5 degrees of the old reference;
+ordinary 6DoF yaw drift accumulated while magnetic correction was disabled and
+could make that return impossible even after the physical disturbance vanished.
+
+The detector and filtered field-rate path now use magnetic north minus AHRS yaw.
+A latch stores the pre-jump stationary field signal. If no physical motion occurs,
+return of that signal may enter the unchanged 1.2-second return and 5-second
+recovery dwells even when world yaw drifted. Any gyro/accel motion invalidates the
+relative shortcut, so a stable shifted field is not adopted as a new environment.
+New CLI counters expose the recovery path. AHRS equations, yaw-correction limits,
+mag calibration, config/NVS schemas, FIFO/network behavior and LOGVER3 layout are
+unchanged. See `docs/0025c_magnetic_stationary_field_recovery_hardening_report.md`.
+
+
+## 0026 magnetic horizontal trust and motion packet modes
+
+`0026_magnetic_horizontal_trust_and_motion_packet_modes` fixes the healthy
+high-dip magnetic field rejected by the fixed 200/260 horizontal gate. Field
+reliability, auto-reference and yaw correction now share reference-relative
+horizontal trust, and stationary discontinuity thresholds scale only while the
+heading remains observable. A weak horizontal component closes yaw fail-closed
+without repeatedly classifying stable norm/dip as a changed environment.
+
+The same patch adds a transactionally persisted `slime motion-mode` policy.
+`quaternion` (the new default and legacy-migration target) sends packet 17 only;
+`bundle` selects negotiated packet 100 with the existing packet-17/packet-4
+fallback; `packet23` selects the existing RotationAndAcceleration encoder. The
+config blob size, calibration bytes, protocol version, coordinate frame and
+prepared-snapshot contract are unchanged.
+
+
+## 0026a motion policy and magnetic reliability hardening
+
+`0026a_motion_policy_and_magnetic_reliability_hardening` closes review debt left
+inside 0026 without changing its public three-mode behavior. The persisted SlimeVR
+motion policy now has one canonical core enum shared by config and runtime, while
+the effective negotiated wire mode remains a separate runtime concept. The CLI
+uses an app/domain hook that transactionally saves only the motion-policy field
+from the authoritative NVS generation and then applies only that runtime field;
+RAM-only changes to output rate or local output state are not implicitly saved.
+
+Magnetic horizontal-observability tuning is carried by typed config rather than
+hidden helper constants. The same high-dip geometry scale now protects both the
+stationary discontinuity detector and the legacy heading-step soft/hard gates,
+and directional step gates are skipped while heading is unobservable. Regression
+coverage includes a 30-minute synthetic high-dip/noise run, near-vertical
+fail-closed behavior, legacy-step-gate scaling, real disturbance latching and
+bounded return/recovery. Downgrade compatibility is intentionally out of scope by
+product decision; forward operation and same-version reboot persistence remain
+unchanged.
+
+## 0026b hot-path optimization
+
+`0026b_hotpath_optimization` removes avoidable execution/stack overhead introduced
+by 0026/0026a without changing magnetic decisions or SlimeVR packet semantics.
+Magnetic field/yaw callbacks pass lightweight coherent snapshot views instead of
+copying large aggregate inputs. The field monitor no longer keeps a duplicate final
+output, and auto-reference consumes the runtime-owned reliability snapshot directly.
+High-dip threshold decisions use equivalent squared comparisons so `sqrt` leaves the
+sample callback and is retained only for diagnostic formatting. Quaternion-only
+output returns after packet 17 before acceleration unit conversion; acceleration
+modes keep one shared conversion and the existing encoders.
+
+Host decision replay is bit-for-bit identical at the state/flag/trust/latch level
+for 120,000 deterministic updates. Nested host stack estimates improve materially;
+target timing/HIL remains pending, so the patch is a host-verified optimization
+candidate rather than a claimed ESP32-C3 performance result.
+
+## 0026d host quality-gate portability and policy sync
+
+`0026d_host_quality_gate_portability_and_policy_sync` fixes host-gate failures
+revealed by Windows/MSYS2 after 0026c without changing firmware runtime code.
+Focused sanitizer gates now probe compiler/linker runtime availability, prefer
+ASan+UBSan, fall back to UBSan, and explicitly skip only the sanitizer variant
+when neither library is linkable. Stale source-policy text is synchronized with
+the 0026b lightweight magnetic input view; UDP no-heap scans ignore comments;
+and older stack policies use the final successor-owned cross-ABI ceilings rather
+than Linux-only near-zero margins. Production behavior, packet/config formats,
+magnetic decisions and target cadence remain unchanged.

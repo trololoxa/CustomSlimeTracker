@@ -28,19 +28,28 @@ void MagYawCorrectionController::markApplied(float correctionStepDeg) {
     last_.applied = true;
 }
 
-bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,
+bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
                                         const MagYawCorrectionConfig& cfg,
                                         MagYawCorrectionOutput& out) {
+    if (in.mag == nullptr || in.heading == nullptr) {
+        out = MagYawCorrectionOutput{};
+        out.nowMs = in.nowMs;
+        addReject(out, MAG_YAW_REJECT_NONFINITE);
+        last_ = out;
+        return false;
+    }
+    const MagProcessedSample& mag = *in.mag;
+    const MagHeadingSample& heading = *in.heading;
     out = MagYawCorrectionOutput{};
     out.valid = true;
     out.nowMs = in.nowMs;
-    out.horizontalNorm = in.heading.horizontalNorm;
+    out.horizontalNorm = heading.horizontalNorm;
     out.gyroNormDps = in.gyroNormDps;
     out.accelTrust = in.accelTrust;
     out.fieldStableMs = in.fieldStableMs;
     out.magneticHeadingRateDegS = in.magneticHeadingRateDegS;
-    out.magSeq = in.mag.seq;
-    out.magTimestampUs = in.mag.t_us;
+    out.magSeq = mag.seq;
+    out.magTimestampUs = mag.t_us;
 
     expireCooldownIfNeeded(in.nowMs);
     out.dtMs = stats_.updates > 0 ? in.nowMs - lastUpdateMs_ : 0u;
@@ -49,17 +58,29 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,
 
     if (!cfg.enabled) addReject(out, MAG_YAW_REJECT_DISABLED);
     if (!in.referenceValid) addReject(out, MAG_YAW_REJECT_NO_REFERENCE);
-    if (!in.heading.valid) addReject(out, MAG_YAW_REJECT_HEADING_INVALID);
+    if (!heading.valid) addReject(out, MAG_YAW_REJECT_HEADING_INVALID);
     if (!in.magTrustedForUse || !in.fieldReliable) addReject(out, MAG_YAW_REJECT_MAG_NOT_TRUSTED);
     if (in.magRejectFlagsForUse & MAG_REJECT_STALE) addReject(out, MAG_YAW_REJECT_MAG_STALE);
 
-    out.magAgeMs = MagRuntimeProcessor::ageMsForUse(in.mag, in.nowMs);
+    out.magAgeMs = MagRuntimeProcessor::ageMsForUse(mag, in.nowMs);
     if (out.magAgeMs > cfg.maxMagAgeMs) addReject(out, MAG_YAW_REJECT_MAG_STALE);
 
-    out.horizontalTrust = rampUp(in.heading.horizontalNorm,
-                                 cfg.horizontalNormBad,
-                                 cfg.horizontalNormGood);
-    if (!tracker::isFinite(in.heading.horizontalNorm) || out.horizontalTrust <= 0.0f) {
+    if (in.horizontalTrustValid) {
+        out.horizontalTrust = in.horizontalTrust;
+        out.horizontalReferenceNorm = in.horizontalReferenceNorm;
+        out.horizontalEffectiveBad = in.horizontalEffectiveBad;
+        out.horizontalEffectiveGood = in.horizontalEffectiveGood;
+    } else {
+        // Preserve the standalone/controller API for callers that do not own
+        // field reliability. Without a field reference there is no adaptive
+        // geometry to share, so use only the configured absolute legacy ramp.
+        out.horizontalReferenceNorm = 0.0f;
+        out.horizontalEffectiveBad = cfg.horizontalNormBad;
+        out.horizontalEffectiveGood = cfg.horizontalNormGood;
+        out.horizontalTrust = rampUp(
+            heading.horizontalNorm, cfg.horizontalNormBad, cfg.horizontalNormGood);
+    }
+    if (!tracker::isFinite(out.horizontalTrust) || out.horizontalTrust <= 0.0f) {
         addReject(out, MAG_YAW_REJECT_HORIZONTAL_BAD);
     }
 
@@ -79,8 +100,8 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,
 
     bool innovationLarge = false;
     bool reacquireEligible = false;
-    if (in.referenceValid && in.heading.valid) {
-        out.errorRad = wrapPi(in.heading.magneticNorthWorldYawRad - in.referenceWorldYawRad);
+    if (in.referenceValid && heading.valid) {
+        out.errorRad = wrapPi(heading.magneticNorthWorldYawRad - in.referenceWorldYawRad);
         out.errorDeg = out.errorRad * MATH_RAD_TO_DEG;
         const float absErr = std::fabs(out.errorDeg);
         stats_.lastAbsErrorDeg = absErr;

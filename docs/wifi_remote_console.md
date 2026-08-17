@@ -1,9 +1,8 @@
-# Wi-Fi remote diagnostic console
+# Wi-Fi remote CLI console
 
-The TCP console is a cable-free diagnostic transport, not a second privileged
-administration interface. It feeds the normal fixed-buffer command parser, but
-every command is checked by an exact, fail-closed remote allowlist before any
-domain dispatcher or SlimeVR compatibility handler runs.
+The TCP console is a cable-free transport for the same profile-specific CLI
+that is available over USB. It feeds the normal fixed-buffer command parser and
+the same dispatcher without an origin-specific allowlist or privilege split.
 
 Profile contract:
 
@@ -34,34 +33,31 @@ ASCII command buffer. Raw TCP clients continue to use ordinary LF or CRLF.
 
 ## Security and command policy
 
-The listener is unauthenticated, so it must never be exposed to an untrusted
-network. The remote policy permits only bounded, non-persistent diagnostics:
+The listener is unauthenticated. Anyone who can reach the port can run every
+command compiled into that image, including setup, NVS/config/calibration and
+network mutation, reset, reboot, stream/output control and detailed reports.
+Use Debug/ProductionDiag only on a trusted isolated network; Production and Slim
+still compile the listener out.
+
+USB and TCP share the same command bounds:
 
 ```text
-help, version, status, health
-console status|reset, remote status
-perf status|top|tracking, motion status
-log start|finish|summary|reset|off, log rate 1..20
-test static|runtime 1..900, test status|stop
-test summary static|runtime
-mag status|processed|trust
-net/slime/battery/fifo/quality/imu/bias/ahrs status commands
+log rate 1..200 Hz
+test static|runtime 1..21600 seconds
 ```
 
-Setup, config/NVS writes, calibration mutation, Wi-Fi credential changes,
-reset, factory reset, reboot, stream mutation and profiler/motion activation are
-USB-only. Unknown or extra arguments fail closed. `test report` is also USB-only
-because a full retained report is a large synchronous diagnostic burst.
-
-`remote off`/`remote on` are privileged USB commands. `remote off` closes the
-active client and listener for the current boot without changing NVS.
+`help` prints the same profile-specific command surface on both transports and
+includes the current origin in the banner. `remote off`/`remote on` are also
+available over either transport; issuing `remote off` through TCP intentionally
+closes the connection that carried the command.
 
 ## Session ownership
 
 Every accepted client receives a monotonically changing non-zero session ID.
 Machine log and static/runtime tests bind to the initiating `Stream`, origin and
-session. Another TCP session cannot stop or rebind them; USB may force-stop a
-diagnostic as the local administrative channel.
+session for output routing and disconnect cleanup. Any connected CLI transport
+may stop, reconfigure or rebind an active diagnostic; there is no USB-only
+administrative override.
 
 On disconnect, the close hook runs before the stream is detached. It aborts
 owned log/tests, releases their stream pointers and records disconnect/shutdown
@@ -101,8 +97,7 @@ request the final summary and issue `log off`.
 
 After a measured test closes, `test summary static|runtime` emits one compact
 immutable `TESTSUM` CSV row with exact full-rate sensor/FIFO/network deltas.
-The retained multi-page `test report` remains USB-only and outside the measured
-completion path.
+The retained multi-page `test report` is available over USB or TCP and remains outside the measured completion path.
 
 ## Unattended cable-free capture
 
@@ -118,10 +113,12 @@ python3 tools/capture_telnet_log.py \
   --output logver3_static_clean_001.log
 ```
 
-It requires ProductionDiag, a clean full 40-hex commit identity, a valid source
-fingerprint and a live remote session. Static capture additionally requires a
+It requires ProductionDiag, a known full 40-hex base commit, a valid source
+fingerprint and a live remote session. Clean and dirty builds are accepted; a
+dirty build must report the exact `<head>+<worktree>-dirty` identity, which is
+preserved in the manifest. Static capture additionally requires a
 ready trusted calibrated MAG/yaw path, a calibrated base gyro bias and live
-SlimeVR UDP. It resets counters, starts a session-bound full 20 Hz log and test,
+SlimeVR UDP. It resets counters, starts a full 20 Hz log and test (1..21600 seconds),
 drains the logger, checks lifecycle/console counters, validates strict LOGVER3
 E1 and promotes the log/manifest pair only after both candidates are ready.
 Failures preserve a unique partial capture.

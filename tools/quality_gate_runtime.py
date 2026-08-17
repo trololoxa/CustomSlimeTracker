@@ -110,6 +110,58 @@ def asan_ubsan_environment(
     return env
 
 
+def strongest_supported_sanitizer_flags(
+    cxx: str,
+    root: Path,
+) -> tuple[str, tuple[str, ...]]:
+    """Return the strongest sanitizer set this compiler can compile *and link*.
+
+    MinGW/MSYS2 toolchains commonly accept ``-fsanitize=...`` at compile time
+    while lacking the corresponding libasan/libubsan link runtimes. Quality
+    gates must treat that as an environment limitation, not a firmware defect.
+    Prefer the historical ASan+UBSan gate, fall back to UBSan, and return
+    ``("none", ())`` only when neither runtime is linkable.
+    """
+    candidates: tuple[tuple[str, tuple[str, ...]], ...] = (
+        (
+            "address-undefined",
+            (
+                "-fsanitize=address,undefined",
+                "-fno-sanitize-recover=undefined",
+                "-fno-omit-frame-pointer",
+            ),
+        ),
+        (
+            "undefined",
+            (
+                "-fsanitize=undefined",
+                "-fno-sanitize-recover=undefined",
+                "-fno-omit-frame-pointer",
+            ),
+        ),
+    )
+
+    with project_temp_directory(root, "sanitizer-probe-") as raw:
+        temp = Path(raw)
+        source = temp / "probe.cpp"
+        executable = temp / ("probe.exe" if os.name == "nt" else "probe")
+        source.write_text("int main() { return 0; }\n", encoding="utf-8")
+        env = quality_gate_environment(root, scope="sanitizer-probe")
+        for name, flags in candidates:
+            executable.unlink(missing_ok=True)
+            probe = subprocess.run(
+                [cxx, "-std=c++20", str(source), *flags, "-o", str(executable)],
+                cwd=root,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if probe.returncode == 0 and executable.is_file():
+                return name, flags
+    return "none", ()
+
+
 def lsan_environment(
     root: Path,
     *,

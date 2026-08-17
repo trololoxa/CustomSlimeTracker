@@ -90,6 +90,14 @@ public:
     // either generation is authoritative.
     bool save(TrackerConfig& config,
               TrackerCalibrationProvenance provenance = TrackerCalibrationProvenance::Unknown);
+    // Persist only the SlimeVR motion packet policy relative to the
+    // authoritative stored config. Unrelated unsaved runtime edits in
+    // activeConfig are deliberately not committed. On success only the same
+    // field is updated in activeConfig.
+    bool saveSlimeVRMotionPacketPolicy(
+        TrackerConfig& activeConfig,
+        SlimeVRMotionPacketPolicy policy,
+        TrackerCalibrationProvenance provenance = TrackerCalibrationProvenance::Manual);
     bool erase();
     bool exists();
 

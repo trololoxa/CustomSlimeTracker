@@ -20,7 +20,42 @@ from capture_telnet_log import (
     main,
     promote_validated_capture,
     promote_validated_capture_bundle,
+    validate_firmware_identity,
 )
+
+
+class CaptureIdentityTests(unittest.TestCase):
+    def base_identity(self) -> dict[str, str]:
+        head = "a" * 40
+        worktree = "1a2b3c4d"
+        return {
+            "build_profile": "ProductionDiag",
+            "build_pio_env": "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG",
+            "build_git": head,
+            "build_git_head": head,
+            "build_worktree": worktree,
+            "build_dirty": "no",
+            "command_origin": "remote_tcp",
+            "command_session": "7",
+        }
+
+    def test_clean_identity_is_accepted(self) -> None:
+        self.assertEqual(validate_firmware_identity(self.base_identity()), 7)
+
+    def test_dirty_identity_is_accepted_and_fingerprint_bound(self) -> None:
+        identity = self.base_identity()
+        identity["build_dirty"] = "yes"
+        identity["build_git"] = (
+            f'{identity["build_git_head"]}+{identity["build_worktree"]}-dirty'
+        )
+        self.assertEqual(validate_firmware_identity(identity), 7)
+
+    def test_dirty_identity_with_mismatched_fingerprint_is_rejected(self) -> None:
+        identity = self.base_identity()
+        identity["build_dirty"] = "yes"
+        identity["build_git"] = f'{identity["build_git_head"]}+deadbeef-dirty'
+        with self.assertRaisesRegex(CaptureError, "expected identity"):
+            validate_firmware_identity(identity)
 
 
 class CapturePromotionTests(unittest.TestCase):

@@ -10,7 +10,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
+from quality_gate_runtime import (
+    asan_ubsan_environment,
+    project_temp_directory,
+    strongest_supported_sanitizer_flags,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -175,14 +179,20 @@ def main() -> int:
 
     with project_temp_directory(ROOT, "tracker-pre0024a-") as temp_name:
         tmp = Path(temp_name)
+        sanitizer_name, sanitizer_flags = strongest_supported_sanitizer_flags(cxx, ROOT)
+        fifo_flags = ["-O1", "-g", "-Wall", "-Wextra", "-Werror"]
+        if sanitizer_flags:
+            print(f"# pre-0024a sanitizer={sanitizer_name}")
+            fifo_flags.extend(sanitizer_flags)
+        else:
+            print("# pre-0024a sanitizer: SKIP (toolchain cannot link ASan/UBSan)")
         compile_run(cxx, tmp / "fifo", [
             "tests/native/test_fifo_runtime_processor.cpp",
             "src/runtime/fifo_runtime_processor.cpp",
             "src/connection/lsm6dsv_fifo.cpp",
             "src/connection/lsm6dsv_driver.cpp",
             "src/sensor/imu_quality.cpp",
-        ], ["-O1", "-g", "-Wall", "-Wextra", "-Werror",
-            "-fsanitize=address,undefined", "-fno-omit-frame-pointer"])
+        ], fifo_flags)
 
         # Full runtime linkage proves the actual deferred-controller boundary,
         # including config-store types and magnetic processing components.

@@ -23,7 +23,9 @@ static void testDefaultSchemaHeader(TestContext& ctx) {
     CHECK(ctx, blob.schemas.ahrs == tracker_config_detail::SCHEMA_AHRS_VERSION);
     CHECK(ctx, blob.schemas.magYaw == tracker_config_detail::SCHEMA_MAG_YAW_VERSION);
     CHECK(ctx, blob.hardware.spiHz == tracker_config_detail::DEFAULT_SPI_HZ);
-    CHECK(ctx, blob.output.packetFormat == 0);
+    CHECK(ctx, blob.output.packetFormat ==
+        (tracker_config_detail::OUTPUT_PACKET_MODE_MARKER |
+         static_cast<uint8_t>(SlimeVRMotionPacketPolicy::QuaternionOnly)));
     CHECK(ctx, blob.reservedDevice.reservedDeviceName[0] == '\0');
 }
 

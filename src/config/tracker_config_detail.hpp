@@ -28,6 +28,15 @@ static constexpr uint16_t SCHEMA_QUALITY_VERSION = 1;
 static constexpr uint16_t SCHEMA_OUTPUT_VERSION = 2;
 static constexpr uint16_t SCHEMA_FRAME_VERSION = 1;
 
+// TrackerOutputConfig::packetFormat was a deprecated byte that sanitization
+// previously forced to zero. Reuse it without changing the 756-byte blob. The
+// high marker bit distinguishes the new persisted SlimeVR motion-mode meaning
+// from every historical packetFormat value, which migrates to quaternion-only.
+static constexpr uint8_t OUTPUT_PACKET_MODE_MARKER = 0x80u;
+static constexpr uint8_t OUTPUT_PACKET_MODE_VALUE_MASK = 0x03u;
+static constexpr uint8_t OUTPUT_PACKET_MODE_ALLOWED_MASK =
+    OUTPUT_PACKET_MODE_MARKER | OUTPUT_PACKET_MODE_VALUE_MASK;
+
 // Reuse TrackerAhrsRuntimeConfigPersisted::reserved without changing the
 // persistent config blob size. Bit 0 means the production runtime should start
 // the cautious stationary gyro-bias estimator once base gyro/temp/accel

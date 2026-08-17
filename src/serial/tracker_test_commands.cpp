@@ -87,7 +87,7 @@ void trackerSerialDispatchTestCommand(TrackerSerialCommandContext& ctx, int argc
 
     if (trackerSerialTestIs(argv[1], "stop")) {
         bool stopped = false;
-        const bool force = ctx.origin == TrackerCommandOrigin::UsbSerial;
+        constexpr bool force = true;
         if (ctx.stopStaticTest) {
             stopped = ctx.stopStaticTest(out, force, ctx.stopStaticTestUser) || stopped;
         }
@@ -105,15 +105,10 @@ void trackerSerialDispatchTestCommand(TrackerSerialCommandContext& ctx, int argc
             return;
         }
         uint32_t seconds = 0;
-        const uint32_t maxSeconds =
-            ctx.origin == TrackerCommandOrigin::RemoteTcp ? 900UL : 21600UL;
+        constexpr uint32_t maxSeconds = 21600UL;
         if (!tracker_serial_detail::parseU32(argv[2], seconds) ||
             seconds == 0 || seconds > maxSeconds) {
-            tracker_serial_detail::printErr(
-                out,
-                ctx.origin == TrackerCommandOrigin::RemoteTcp
-                    ? "invalid remote duration; expected 1..900 seconds"
-                    : "invalid duration; expected 1..21600 seconds");
+            tracker_serial_detail::printErr(out, "invalid duration; expected 1..21600 seconds");
             return;
         }
 

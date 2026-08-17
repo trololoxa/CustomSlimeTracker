@@ -5,6 +5,7 @@
 
 namespace tracker {
 
+#if TRACKER_ENABLE_FULL_CONFIG_PRINT
 
 void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.println("==============================================================================");
@@ -193,7 +194,9 @@ void printTrackerConfigSummary(Stream& out, const TrackerConfig& cfg) {
     out.print("serialDebugEnabled="); out.println(cfg.data.output.serialDebugEnabled ? "yes" : "no");
     out.print("quaternionOutputEnabled="); out.println(cfg.data.output.quaternionOutputEnabled ? "yes" : "no");
     out.print("outputRateHz="); out.println(cfg.data.output.outputRateHz);
-    out.print("packetFormat="); out.println(cfg.data.output.packetFormat);
+    out.print("slimevrMotionMode=");
+    out.println(slimevrMotionPacketPolicyName(cfg.slimevrMotionPacketPolicy()));
+    out.print("packetFormatEncoded=0x"); out.println(cfg.data.output.packetFormat, HEX);
 
     out.println("-- network storage --");
     out.print("networkNvsNamespace="); out.println(tracker_network_detail::NVS_NAMESPACE);
@@ -225,5 +228,7 @@ void printTrackerNetworkConfigSummary(Stream& out, const TrackerNetworkConfig& c
     out.println("==============================================================================");
 }
 
+
+#endif // TRACKER_ENABLE_FULL_CONFIG_PRINT
 
 } // namespace tracker

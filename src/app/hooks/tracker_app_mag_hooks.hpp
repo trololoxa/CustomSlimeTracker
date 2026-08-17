@@ -300,6 +300,7 @@ static MagStatusReporterDeps makeMagStatusReporterDeps() {
     deps.calibrationCollector = &g_magCalCollector;
     deps.runtimeConfig = makeMagRuntimeConfig();
     deps.yawConfig = makeMagYawCorrectionConfig();
+    deps.fieldReliabilityConfig = g_magRuntime.fieldReliabilityConfig();
     return deps;
 }
 

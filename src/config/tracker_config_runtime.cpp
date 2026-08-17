@@ -10,6 +10,40 @@
 
 namespace tracker {
 
+namespace {
+
+bool validSlimeVRMotionPacketPolicyValue(uint8_t value) {
+    return value <= static_cast<uint8_t>(SlimeVRMotionPacketPolicy::RotationAcceleration23);
+}
+
+uint8_t encodeSlimeVRMotionPacketPolicy(SlimeVRMotionPacketPolicy policy) {
+    return static_cast<uint8_t>(tracker_config_detail::OUTPUT_PACKET_MODE_MARKER |
+        (static_cast<uint8_t>(policy) & tracker_config_detail::OUTPUT_PACKET_MODE_VALUE_MASK));
+}
+
+} // namespace
+
+
+SlimeVRMotionPacketPolicy TrackerConfig::slimevrMotionPacketPolicy() const {
+    const uint8_t encoded = data.output.packetFormat;
+    if ((encoded & tracker_config_detail::OUTPUT_PACKET_MODE_MARKER) == 0u ||
+        (encoded & static_cast<uint8_t>(~tracker_config_detail::OUTPUT_PACKET_MODE_ALLOWED_MASK)) != 0u) {
+        return SlimeVRMotionPacketPolicy::QuaternionOnly;
+    }
+    const uint8_t value = encoded & tracker_config_detail::OUTPUT_PACKET_MODE_VALUE_MASK;
+    if (!validSlimeVRMotionPacketPolicyValue(value)) {
+        return SlimeVRMotionPacketPolicy::QuaternionOnly;
+    }
+    return static_cast<SlimeVRMotionPacketPolicy>(value);
+}
+
+void TrackerConfig::setSlimeVRMotionPacketPolicy(SlimeVRMotionPacketPolicy policy) {
+    const uint8_t value = static_cast<uint8_t>(policy);
+    data.output.packetFormat = encodeSlimeVRMotionPacketPolicy(
+        validSlimeVRMotionPacketPolicyValue(value) ? policy : SlimeVRMotionPacketPolicy::QuaternionOnly);
+    updateCrc();
+}
+
 void TrackerConfig::resetDefaults() {
     data = TrackerConfigBlob{};
     updateCrc();
@@ -409,9 +443,20 @@ void TrackerConfig::sanitize() {
 
     if (data.output.outputRateHz == 0) data.output.outputRateHz = cfg::OUTPUT_RATE_HZ;
     if (data.output.outputRateHz > cfg::OUTPUT_RATE_HZ_MAX) data.output.outputRateHz = cfg::OUTPUT_RATE_HZ_MAX;
-    // packetFormat is kept only for backward compatibility with old configs.
-    // SlimeVR UDP is controlled by `slime`/network runtime, not by output mode.
-    if (data.output.packetFormat != 0) data.output.packetFormat = 0;
+    const uint8_t packetModeValue = data.output.packetFormat &
+        tracker_config_detail::OUTPUT_PACKET_MODE_VALUE_MASK;
+    const bool packetModeMarked =
+        (data.output.packetFormat & tracker_config_detail::OUTPUT_PACKET_MODE_MARKER) != 0u;
+    const bool packetModeReservedBitsClear =
+        (data.output.packetFormat &
+         static_cast<uint8_t>(~tracker_config_detail::OUTPUT_PACKET_MODE_ALLOWED_MASK)) == 0u;
+    if (!packetModeMarked || !packetModeReservedBitsClear ||
+        !validSlimeVRMotionPacketPolicyValue(packetModeValue)) {
+        // Every historical packetFormat value is unmarked. Do not reinterpret
+        // old local-output values as packet 23 or acceleration output.
+        data.output.packetFormat = encodeSlimeVRMotionPacketPolicy(
+            SlimeVRMotionPacketPolicy::QuaternionOnly);
+    }
 
     updateCrc();
 }

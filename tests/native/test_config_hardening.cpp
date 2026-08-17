@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_detail.hpp"
@@ -57,7 +58,9 @@ static void testSanitizeRepairsInvalidRuntimeValues(TestContext& ctx) {
     CHECK_NEAR(ctx, cfg.data.fifo.samplePeriodUsOverride, 0.0f, 1.0e-6f);
 
     CHECK(ctx, cfg.data.output.outputRateHz != 0);
-    CHECK(ctx, cfg.data.output.packetFormat == 0);
+    CHECK(ctx, cfg.data.output.packetFormat ==
+               static_cast<uint8_t>(tracker_config_detail::OUTPUT_PACKET_MODE_MARKER |
+                                    static_cast<uint8_t>(SlimeVRMotionPacketPolicy::QuaternionOnly)));
 
     CHECK(ctx, cfg.data.quality.largeGapFactor > 1.0f);
     CHECK(ctx, cfg.data.quality.accelNormOutlierMinG > 0.0f);
@@ -300,6 +303,37 @@ static void testMagAxisSanitizePreservesContinuousProperRotation(TestContext& ct
     CHECK_NEAR(ctx, cfg.data.magCal.magToImu.determinant(), 1.0f, 1.0e-4f);
 }
 
+
+static void testSlimeVRMotionModePersistenceAndLegacyMigration(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+    CHECK(ctx, cfg.slimevrMotionPacketPolicy() == SlimeVRMotionPacketPolicy::QuaternionOnly);
+
+    for (SlimeVRMotionPacketPolicy mode : {
+             SlimeVRMotionPacketPolicy::QuaternionOnly,
+             SlimeVRMotionPacketPolicy::BundleRotation17Acceleration4,
+             SlimeVRMotionPacketPolicy::RotationAcceleration23}) {
+        cfg.setSlimeVRMotionPacketPolicy(mode);
+        cfg.sanitize();
+        CHECK(ctx, cfg.validate());
+        CHECK(ctx, cfg.slimevrMotionPacketPolicy() == mode);
+        CHECK(ctx, (cfg.data.output.packetFormat &
+                    tracker_config_detail::OUTPUT_PACKET_MODE_MARKER) != 0u);
+    }
+
+    // Historical packetFormat values were local-output selectors without the
+    // marker bit. None may be reinterpreted as acceleration output after update.
+    for (uint8_t legacy : {0u, 1u, 2u, 0x7fu, 0xc0u, 0xffu}) {
+        TrackerConfig old = cfg;
+        old.data.output.packetFormat = legacy;
+        old.updateCrc();
+        CHECK(ctx, old.validate());
+        old.sanitize();
+        CHECK(ctx, old.validate());
+        CHECK(ctx, old.slimevrMotionPacketPolicy() == SlimeVRMotionPacketPolicy::QuaternionOnly);
+    }
+}
+
 static void testFullCalibrationClearAlsoClearsFrame(TestContext& ctx) {
     TrackerConfig cfg;
     cfg.resetDefaults();
@@ -328,6 +362,7 @@ int main() {
     testOversizedTemperatureSlopeIsInvalidated(ctx);
     testSanitizeClearsEvidenceForMissingModels(ctx);
     testMagAxisSanitizePreservesContinuousProperRotation(ctx);
+    testSlimeVRMotionModePersistenceAndLegacyMigration(ctx);
     testFullCalibrationClearAlsoClearsFrame(ctx);
     return ctx.finish("test_config_hardening");
 }

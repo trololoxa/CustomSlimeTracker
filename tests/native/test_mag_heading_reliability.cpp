@@ -10,7 +10,8 @@
 
 using namespace tracker;
 
-static MagFieldReliabilityInput makeFieldInput(uint32_t ms, float yawDeg, float dipDeg, float norm) {
+static MagFieldReliabilityInput makeFieldInput(
+    uint32_t ms, float yawDeg, float dipDeg, float norm, float ahrsYawDeg = 0.0f) {
     MagFieldReliabilityInput in;
     in.nowMs = ms;
     in.processorTrustedForUse = true;
@@ -24,7 +25,11 @@ static MagFieldReliabilityInput makeFieldInput(uint32_t ms, float yawDeg, float 
     in.mag.t_us = static_cast<uint64_t>(ms) * 1000ULL;
     in.heading.valid = true;
     in.heading.dipDeg = dipDeg;
+    in.heading.horizontalNorm = magHorizontalNormFromField(norm, dipDeg);
     in.heading.magneticNorthWorldYawRad = yawDeg * MATH_DEG_TO_RAD;
+    in.heading.currentAhrsYawRad = ahrsYawDeg * MATH_DEG_TO_RAD;
+    in.heading.yawInnovationRad = wrapPi(
+        in.heading.magneticNorthWorldYawRad - in.heading.currentAhrsYawRad);
     return in;
 }
 
@@ -80,6 +85,208 @@ static void testFieldReliabilityFailsClosedAcrossChangedEnvironment(TestContext&
     CHECK_NEAR(ctx, out.referenceNorm, 500.0f, 0.5f);
 }
 
+
+static void testHighDipHealthyFieldUsesAdaptiveHorizontalTrust(TestContext& ctx) {
+    MagFieldReliabilityConfig cfg;
+    cfg.acquireStableMs = 500u;
+    MagFieldReliabilityMonitor monitor;
+    MagFieldReliabilityOutput out;
+
+    constexpr float kNorm = 443.87f;
+    constexpr float kDipDeg = -70.45f;
+    monitor.update(makeFieldInput(1u, 0.0f, kDipDeg, kNorm), cfg, out);
+    monitor.update(makeFieldInput(601u, 0.0f, kDipDeg, kNorm), cfg, out);
+    // One post-acquisition sample evaluates observability against the newly
+    // established reference rather than the conservative bootstrap limits.
+    monitor.update(makeFieldInput(618u, 0.0f, kDipDeg, kNorm), cfg, out);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Trusted);
+    CHECK(ctx, out.trustedForYaw);
+    CHECK(ctx, out.horizontalNorm > 145.0f && out.horizontalNorm < 152.0f);
+    CHECK(ctx, out.horizontalEffectiveBad < out.horizontalNorm);
+    CHECK(ctx, out.horizontalEffectiveGood < out.horizontalNorm);
+    CHECK_NEAR(ctx, out.horizontalTrust, 1.0f, 1.0e-5f);
+    CHECK(ctx, (out.flags & MAG_FIELD_FLAG_HORIZONTAL_UNOBSERVABLE) == 0u);
+    CHECK(ctx, magHeadingNoiseScale(out.headingNoiseScaleSquared) > 1.0f);
+
+    // A four-degree one-shot wobble is below the inclination-scaled
+    // discontinuity threshold and must not repeatedly poison the field state.
+    monitor.update(makeFieldInput(635u, 4.0f, kDipDeg, kNorm), cfg, out);
+    CHECK(ctx, !out.stationaryHeadingJumpLatched);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Trusted);
+
+    // A real larger field jump remains fail-closed.
+    monitor.update(makeFieldInput(652u, 10.0f, kDipDeg, kNorm), cfg, out);
+    CHECK(ctx, out.stationaryHeadingJumpLatched);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Disturbed);
+}
+
+static void testHighDipLegacyHeadingStepGateScalesWithObservability(TestContext& ctx) {
+    MagFieldReliabilityConfig cfg;
+    cfg.acquireStableMs = 500u;
+    // Isolate the legacy per-sample soft/hard gate from the newer stationary
+    // discontinuity latch. The nine-degree step is above the historical fixed
+    // 8-degree soft threshold but below the high-dip scaled threshold.
+    cfg.stationaryHeadingJumpMinDeg = 20.0f;
+    cfg.stationaryHeadingJumpRateDegS = 100.0f;
+
+    MagFieldReliabilityMonitor monitor;
+    MagFieldReliabilityOutput out;
+    constexpr float kNorm = 443.87f;
+    constexpr float kDipDeg = -70.45f;
+    monitor.update(makeFieldInput(1u, 0.0f, kDipDeg, kNorm), cfg, out);
+    monitor.update(makeFieldInput(601u, 0.0f, kDipDeg, kNorm), cfg, out);
+    monitor.update(makeFieldInput(618u, 0.0f, kDipDeg, kNorm), cfg, out);
+    CHECK(ctx, out.trustedForYaw);
+    const float headingScale = magHeadingNoiseScale(out.headingNoiseScaleSquared);
+    CHECK(ctx, cfg.headingStepSoftDeg * headingScale > cfg.headingStepSoftDeg);
+    CHECK(ctx, cfg.headingStepHardDeg * headingScale > cfg.headingStepHardDeg);
+
+    monitor.update(makeFieldInput(635u, 9.0f, kDipDeg, kNorm), cfg, out);
+    CHECK(ctx, (out.flags & MAG_FIELD_FLAG_HEADING_STEP_SOFT) == 0u);
+    CHECK(ctx, (out.flags & MAG_FIELD_FLAG_HEADING_STEP_HARD) == 0u);
+    CHECK(ctx, !out.stationaryHeadingJumpLatched);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Trusted);
+}
+
+static void testUnobservableHorizontalHeadingSkipsDirectionalStepGate(TestContext& ctx) {
+    MagFieldReliabilityConfig cfg;
+    cfg.acquireStableMs = 500u;
+    MagFieldReliabilityMonitor monitor;
+    MagFieldReliabilityOutput out;
+    constexpr float kNorm = 443.87f;
+    constexpr float kDipDeg = -70.45f;
+    monitor.update(makeFieldInput(1u, 0.0f, kDipDeg, kNorm), cfg, out);
+    monitor.update(makeFieldInput(601u, 0.0f, kDipDeg, kNorm), cfg, out);
+    monitor.update(makeFieldInput(618u, 0.0f, kDipDeg, kNorm), cfg, out);
+    CHECK(ctx, out.trustedForYaw);
+
+    auto unobservable = makeFieldInput(635u, 12.0f, kDipDeg, kNorm);
+    unobservable.heading.horizontalNorm = 15.0f;
+    monitor.update(unobservable, cfg, out);
+    CHECK(ctx, out.horizontalTrust == 0.0f);
+    CHECK(ctx, (out.flags & MAG_FIELD_FLAG_HORIZONTAL_UNOBSERVABLE) != 0u);
+    CHECK(ctx, (out.flags & MAG_FIELD_FLAG_HEADING_STEP_SOFT) == 0u);
+    CHECK(ctx, (out.flags & MAG_FIELD_FLAG_HEADING_STEP_HARD) == 0u);
+    CHECK(ctx, !out.stationaryHeadingJumpLatched);
+    CHECK(ctx, !out.trustedForYaw);
+}
+
+static void testNearVerticalFieldRemainsFailClosedForYaw(TestContext& ctx) {
+    MagFieldReliabilityConfig cfg;
+    cfg.acquireStableMs = 500u;
+    MagFieldReliabilityMonitor monitor;
+    MagFieldReliabilityOutput out;
+    constexpr float kNorm = 443.87f;
+    constexpr float kDipDeg = -88.0f; // horizontal component ~15.5, below absolute floor
+    monitor.update(makeFieldInput(1u, 0.0f, kDipDeg, kNorm), cfg, out);
+    monitor.update(makeFieldInput(601u, 0.0f, kDipDeg, kNorm), cfg, out);
+    monitor.update(makeFieldInput(618u, 0.0f, kDipDeg, kNorm), cfg, out);
+    CHECK(ctx, out.referenceValid);
+    CHECK(ctx, out.horizontalEffectiveBad >= cfg.horizontalTrust.absoluteBadFloor);
+    CHECK(ctx, out.horizontalTrust == 0.0f);
+    CHECK(ctx, !out.trustedForYaw);
+    CHECK(ctx, (out.flags & MAG_FIELD_FLAG_HORIZONTAL_UNOBSERVABLE) != 0u);
+
+    // Directional noise from an effectively vertical field is not evidence of
+    // an environmental heading jump; yaw simply remains unavailable.
+    monitor.update(makeFieldInput(635u, 25.0f, kDipDeg, kNorm), cfg, out);
+    CHECK(ctx, !out.stationaryHeadingJumpLatched);
+    CHECK(ctx, (out.flags & MAG_FIELD_FLAG_HEADING_STEP_HARD) == 0u);
+    CHECK(ctx, !out.trustedForYaw);
+}
+
+static void testThirtyMinuteHighDipNoiseAndDisturbanceRecovery(TestContext& ctx) {
+    MagFieldReliabilityConfig cfg;
+    cfg.acquireStableMs = 500u;
+    cfg.referenceReturnStableMs = 300u;
+    cfg.recoverStableMs = 500u;
+
+    MagFieldReliabilityMonitor monitor;
+    MagFieldReliabilityOutput out;
+    constexpr float kNorm = 443.87f;
+    constexpr float kDipDeg = -70.45f;
+    monitor.update(makeFieldInput(1u, 0.0f, kDipDeg, kNorm), cfg, out);
+    monitor.update(makeFieldInput(601u, 0.0f, kDipDeg, kNorm), cfg, out);
+    monitor.update(makeFieldInput(618u, 0.0f, kDipDeg, kNorm), cfg, out);
+    CHECK(ctx, out.trustedForYaw);
+
+    static constexpr float kJitterDeg[] = {-1.2f, 0.4f, 1.1f, -0.6f, 0.8f, -0.3f, 0.2f};
+    uint32_t nowMs = 635u;
+    float ahrsYawDeg = 0.0f;
+    const uint32_t samples = (30u * 60u * 1000u) / 17u;
+    for (uint32_t i = 0; i < samples; ++i) {
+        ahrsYawDeg += 0.00017f; // ~0.01 deg/s 6DoF yaw drift
+        const float localYawDeg = kJitterDeg[i % (sizeof(kJitterDeg) / sizeof(kJitterDeg[0]))];
+        const float norm = kNorm * (1.0f + (static_cast<int>(i % 9u) - 4) * 0.0008f);
+        const float dip = kDipDeg + (static_cast<int>(i % 7u) - 3) * 0.05f;
+        monitor.update(makeFieldInput(nowMs, ahrsYawDeg + localYawDeg, dip, norm, ahrsYawDeg), cfg, out);
+        nowMs += 17u;
+    }
+    CHECK(ctx, out.state == MagFieldReliabilityState::Trusted);
+    CHECK(ctx, out.trustedForYaw);
+    CHECK(ctx, !out.stationaryHeadingJumpLatched);
+    CHECK(ctx, monitor.stats().enteredDisturbed == 0u);
+
+    // A real local-field direction jump still latches after the long clean run.
+    monitor.update(makeFieldInput(nowMs, ahrsYawDeg + 12.0f, kDipDeg, kNorm, ahrsYawDeg), cfg, out);
+    CHECK(ctx, out.stationaryHeadingJumpLatched);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Disturbed);
+    nowMs += 17u;
+
+    // The original body-relative field returns while the tracker remains still.
+    for (uint32_t i = 0; i < 24u; ++i) {
+        monitor.update(makeFieldInput(nowMs, ahrsYawDeg, kDipDeg, kNorm, ahrsYawDeg), cfg, out);
+        nowMs += 17u;
+    }
+    CHECK(ctx, !out.stationaryHeadingJumpLatched);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Recovering);
+    for (uint32_t i = 0; i < 36u; ++i) {
+        monitor.update(makeFieldInput(nowMs, ahrsYawDeg, kDipDeg, kNorm, ahrsYawDeg), cfg, out);
+        nowMs += 17u;
+    }
+    CHECK(ctx, out.state == MagFieldReliabilityState::Trusted);
+    CHECK(ctx, out.trustedForYaw);
+}
+
+static void testYawGateUsesSameAdaptiveHorizontalTrust(TestContext& ctx) {
+    MagYawCorrectionController controller;
+    MagYawCorrectionConfig cfg;
+    cfg.applyEnabled = true;
+
+    MagYawCorrectionInput in;
+    in.nowMs = 1000u;
+    in.mag.valid = true;
+    in.mag.trusted = true;
+    in.mag.receivedMs = 1000u;
+    in.mag.seq = 1u;
+    in.heading.valid = true;
+    in.heading.horizontalNorm = 148.5f;
+    in.heading.magneticNorthWorldYawRad = 0.0f;
+    in.referenceValid = true;
+    in.referenceWorldYawRad = 0.0f;
+    in.magTrustedForUse = true;
+    in.gyroNormDps = 0.2f;
+    in.accelTrust = 1.0f;
+    in.fieldReliable = true;
+    in.fieldStableMs = 10000u;
+    const MagHorizontalTrustResult horizontal = evaluateMagHorizontalTrust(
+        in.heading.horizontalNorm, cfg.horizontalNormBad, cfg.horizontalNormGood,
+        443.87f, -70.45f, MagHorizontalTrustConfig{});
+    in.horizontalTrustValid = horizontal.valid;
+    in.horizontalTrust = horizontal.trust;
+    in.horizontalReferenceNorm = magHorizontalNormFromField(443.87f, -70.45f);
+    in.horizontalEffectiveBad = horizontal.effectiveBad;
+    in.horizontalEffectiveGood = horizontal.effectiveGood;
+
+    MagYawCorrectionOutput out;
+    CHECK(ctx, controller.update(in, cfg, out));
+    CHECK(ctx, out.gateOpen);
+    CHECK(ctx, out.applyAllowed);
+    CHECK(ctx, (out.rejectFlags & MAG_YAW_REJECT_HORIZONTAL_BAD) == 0u);
+    CHECK_NEAR(ctx, out.horizontalTrust, 1.0f, 1.0e-5f);
+    CHECK(ctx, out.horizontalEffectiveGood < out.horizontalNorm);
+}
+
 static void testModerateStationaryHeadingJumpStaysFailClosed(TestContext& ctx) {
     for (float shiftDeg : {5.0f, 9.0f, 12.0f, 19.0f}) {
         MagFieldReliabilityConfig cfg;
@@ -106,6 +313,85 @@ static void testModerateStationaryHeadingJumpStaysFailClosed(TestContext& ctx) {
         CHECK(ctx, !out.trustedForYaw);
         CHECK(ctx, out.stationaryHeadingJumpLatched);
     }
+}
+
+
+static void testAhrsYawFrameJumpDoesNotMasqueradeAsFieldJump(TestContext& ctx) {
+    MagFieldReliabilityConfig cfg;
+    cfg.acquireStableMs = 500;
+    MagFieldReliabilityMonitor monitor;
+    MagFieldReliabilityOutput out;
+    monitor.update(makeFieldInput(1u, 0.0f, 55.0f, 500.0f, 0.0f), cfg, out);
+    monitor.update(makeFieldInput(601u, 0.0f, 55.0f, 500.0f, 0.0f), cfg, out);
+    CHECK(ctx, out.trustedForYaw);
+
+    // An AHRS yaw correction/reset rotates magnetic north in the chosen world
+    // frame by the same amount, while the actual body-relative field is unchanged.
+    monitor.update(makeFieldInput(618u, 12.0f, 55.0f, 500.0f, 12.0f), cfg, out);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Trusted);
+    CHECK(ctx, out.trustedForYaw);
+    CHECK(ctx, !out.stationaryHeadingJumpLatched);
+    CHECK_NEAR(ctx, out.headingStepDeg, 0.0f, 1.0e-4f);
+}
+
+static void testStationaryFieldReturnRecoversAfterAhrsYawDrift(TestContext& ctx) {
+    MagFieldReliabilityConfig cfg;
+    cfg.acquireStableMs = 500;
+    cfg.referenceReturnStableMs = 300;
+    cfg.recoverStableMs = 500;
+    MagFieldReliabilityMonitor monitor;
+    MagFieldReliabilityOutput out;
+    monitor.update(makeFieldInput(1u, 0.0f, 55.0f, 500.0f, 0.0f), cfg, out);
+    monitor.update(makeFieldInput(601u, 0.0f, 55.0f, 500.0f, 0.0f), cfg, out);
+    CHECK(ctx, out.trustedForYaw);
+
+    // A real same-norm local field shift latches.
+    monitor.update(makeFieldInput(618u, 9.0f, 55.0f, 500.0f, 0.0f), cfg, out);
+    CHECK(ctx, out.stationaryHeadingJumpLatched);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Disturbed);
+
+    // While correction is fail-closed, ordinary 6DoF yaw drift changes the world
+    // heading but leaves the stationary body-relative field signal unchanged.
+    monitor.update(makeFieldInput(2000u, 14.0f, 55.0f, 500.0f, 5.0f), cfg, out);
+    CHECK(ctx, out.stationaryHeadingJumpLatched);
+
+    // Remove the disturbance. World heading is now five degrees from the old
+    // reference, so the old implementation could never recover; the invariant
+    // stationary field has returned exactly to its pre-jump baseline.
+    monitor.update(makeFieldInput(2100u, 5.0f, 55.0f, 500.0f, 5.0f), cfg, out);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Disturbed);
+    CHECK(ctx, out.stationaryLatchReferenceErrorDeg <= cfg.referenceReturnDeg);
+    monitor.update(makeFieldInput(2501u, 5.0f, 55.0f, 500.0f, 5.0f), cfg, out);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Recovering);
+    CHECK(ctx, !out.stationaryHeadingJumpLatched);
+    monitor.update(makeFieldInput(3102u, 5.0f, 55.0f, 500.0f, 5.0f), cfg, out);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Trusted);
+    CHECK(ctx, out.trustedForYaw);
+    CHECK(ctx, monitor.stats().stationaryHeadingReturnsViaStationaryField == 1u);
+}
+
+static void testStationaryFieldShortcutDisablesAfterPhysicalMotion(TestContext& ctx) {
+    MagFieldReliabilityConfig cfg;
+    cfg.acquireStableMs = 500;
+    cfg.referenceReturnStableMs = 200;
+    MagFieldReliabilityMonitor monitor;
+    MagFieldReliabilityOutput out;
+    monitor.update(makeFieldInput(1u, 0.0f, 55.0f, 500.0f), cfg, out);
+    monitor.update(makeFieldInput(601u, 0.0f, 55.0f, 500.0f), cfg, out);
+    monitor.update(makeFieldInput(618u, 9.0f, 55.0f, 500.0f), cfg, out);
+    CHECK(ctx, out.stationaryHeadingJumpLatched);
+
+    MagFieldReliabilityInput moving = makeFieldInput(700u, 9.0f, 55.0f, 500.0f);
+    moving.gyroNormDps = 20.0f;
+    monitor.update(moving, cfg, out);
+    CHECK(ctx, out.stationaryLatchMotionSeen);
+
+    // Matching the old body-relative value is no longer sufficient after motion;
+    // only the absolute world-field reference may clear the latch.
+    monitor.update(makeFieldInput(900u, 5.0f, 55.0f, 500.0f, 5.0f), cfg, out);
+    monitor.update(makeFieldInput(1201u, 5.0f, 55.0f, 500.0f, 5.0f), cfg, out);
+    CHECK(ctx, out.state == MagFieldReliabilityState::Disturbed);
+    CHECK(ctx, out.stationaryHeadingJumpLatched);
 }
 
 static void testStationaryJumpAtWindowBoundaryStillLatches(TestContext& ctx) {
@@ -983,7 +1269,16 @@ static void testDynamicAxisSolverKeepsPureRotationConstraint(TestContext& ctx) {
 int main() {
     TestContext ctx;
     testFieldReliabilityFailsClosedAcrossChangedEnvironment(ctx);
+    testHighDipHealthyFieldUsesAdaptiveHorizontalTrust(ctx);
+    testHighDipLegacyHeadingStepGateScalesWithObservability(ctx);
+    testUnobservableHorizontalHeadingSkipsDirectionalStepGate(ctx);
+    testNearVerticalFieldRemainsFailClosedForYaw(ctx);
+    testThirtyMinuteHighDipNoiseAndDisturbanceRecovery(ctx);
+    testYawGateUsesSameAdaptiveHorizontalTrust(ctx);
     testModerateStationaryHeadingJumpStaysFailClosed(ctx);
+    testAhrsYawFrameJumpDoesNotMasqueradeAsFieldJump(ctx);
+    testStationaryFieldReturnRecoversAfterAhrsYawDrift(ctx);
+    testStationaryFieldShortcutDisablesAfterPhysicalMotion(ctx);
     testStationaryJumpAtWindowBoundaryStillLatches(ctx);
     testSlowStationaryYawDriftRemainsCorrectable(ctx);
     testFastButPlausibleYawDriftDoesNotSelfLatch(ctx);

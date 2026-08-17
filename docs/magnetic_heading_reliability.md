@@ -29,26 +29,29 @@ trusted -> suspect -> disturbed -> recovering -> trusted
 ```
 
 The monitor compares field norm and world-frame dip with a slowly adapted
-reference and observes sudden heading changes while the tracker is stationary.
-0022b keeps a short stationary heading anchor and latches cumulative changes that
-are faster than both plausible gyro drift and the normal 2 deg/s yaw-correction
-limit. This catches stable 5-19 degree local field jumps that previously cleared
-the ordinary one-sample suspect gate. The latch is disabled during actual motion
-by the gyro/accel stationary gate and clears only after a stable return near the
-established reference or an explicit reference restart. Reference acquisition
-averages a stable window instead of copying one sample.
-Heading rate used by reacquisition is a signed low-pass estimate, not the raw
-derivative of two adjacent 60 Hz samples, so ordinary QMC jitter cannot reset the
-reacquisition dwell forever.
+reference and observes sudden magnetic-direction changes while the tracker is
+stationary. The stationary discontinuity signal is `magnetic north world yaw -
+AHRS yaw`, so a bounded magnetic yaw correction or an AHRS yaw-frame reset rotates
+both terms together and cannot masquerade as a local field jump. 0022b keeps a
+short stationary anchor and latches cumulative changes that are faster than both
+plausible gyro drift and the normal 2 deg/s yaw-correction limit. This catches
+stable 5-19 degree local field jumps that previously cleared the ordinary
+one-sample suspect gate. The latch is disabled during actual motion by the
+gyro/accel stationary gate. Reference acquisition averages a stable window instead
+of copying one sample. Heading rate used by reacquisition is a signed low-pass
+estimate of the same AHRS-yaw-removed field signal, so ordinary QMC jitter or an
+internal yaw correction cannot reset the reacquisition dwell forever.
 
-A stable field whose heading abruptly changes away from the established reference
-remains fail-closed after the long environment dwell. It is reported with
-`environment_changed` and is not made yaw-trusted while the old reference remains.
-Returning to the original field enters the normal recovery dwell. To deliberately
-accept a genuinely new environment, explicitly clear/reacquire the heading
-reference. This is conservative by design: with one IMU and one magnetometer,
-field-direction change during body motion and accumulated yaw drift are not always
-physically distinguishable.
+A stable field whose direction abruptly changes away from the established
+reference remains fail-closed after the long environment dwell. It is reported
+with `environment_changed` and is not made yaw-trusted while the old reference
+remains. Returning to the original field enters the normal recovery dwell. If the
+tracker has remained stationary since the latch, return may also be proven against
+the stored pre-jump body-relative field signal; this prevents a permanent lockout
+when ordinary 6DoF yaw drift accumulates while magnetic correction is disabled.
+Any detected physical motion disables that shortcut, leaving only the absolute
+world-field return or an explicit clear/reacquire. A stable shifted field is never
+automatically adopted as a new environment.
 
 Yaw correction is allowed only in the trusted state. Ordinary correction keeps
 the strict innovation limit. A larger finite yaw error enters a separate
@@ -167,6 +170,39 @@ cal candidate promote
 cal candidate discard
 ```
 
+## High-dip horizontal observability
+
+Yaw observability depends on the horizontal component of the local magnetic
+field, not on total field norm alone. The old fixed `200/260` horizontal gate
+rejected a healthy hardware field with norm about 444 and dip about -70.5 degrees,
+whose physically consistent horizontal component was only about 149.
+
+After the field reference is acquired, one shared pure helper derives the
+reference horizontal norm from reference norm and dip. Persisted absolute
+`horizontalNormBad/Good` values remain conservative upper caps. A typed
+`MagHorizontalTrustConfig` supplies the adaptive reference fractions, absolute
+SNR floors and heading-noise scale bounds; the algorithm contains no second hidden
+copy of those tuning constants. The default policy lowers thresholds to 35% and
+65% of the local reference with absolute floors of 20 and 40. The same result is
+used by field reliability, auto-reference and yaw correction, preventing those
+three gates from disagreeing.
+
+Stationary heading-jump detection is disabled when horizontal trust is below
+0.25. In observable high-dip fields the shared geometry scale multiplies both the
+stationary jump angle/rate gates and the older per-sample heading-step soft/hard
+gates. The scale is the square root of total-field to horizontal-field ratio,
+clamped by the typed policy (default 1..2). Directional heading-step gates are not
+evaluated at all while heading is unobservable. This prevents high-inclination
+heading noise from repeatedly entering suspect/disturbed state through a legacy
+gate after the newer jump detector has already declared the direction unreliable.
+Real larger discontinuities remain fail-closed. Low horizontal observability sets
+`HORIZONTAL_UNOBSERVABLE`; it closes magnetic yaw use without falsely declaring
+norm/dip environment corruption.
+
+CLI diagnostics expose current/reference horizontal norm, effective bad/good
+thresholds, horizontal trust, effective stationary jump angle/rate, and the
+effective heading-step soft/hard thresholds.
+
 ## Diagnostics
 
 `mag heading` and `mag yaw status` expose:
@@ -196,9 +232,11 @@ with older logs.
    three seconds. Require `field_state=trusted` and `field_trusted=yes`.
 3. Introduce and remove nearby same-norm directional disturbances of 5, 9, 12,
    19 and more than 20 degrees while still. Every abrupt stationary shift must
-   latch fail-closed; normal recovery is allowed only after the original field
-   returns or the reference is explicitly cleared. Then rotate the tracker
-   physically and verify the stationary latch does not fire.
+   latch fail-closed. The original field must recover after the normal dwell even
+   if AHRS yaw drifted while the tracker remained still. Repeat after physical
+   motion and require the body-relative shortcut to stay disabled until the
+   absolute world field returns or the reference is explicitly cleared. Also
+   inject an AHRS-only yaw-frame step and verify it never latches as a field jump.
 4. Create a yaw error beyond the normal innovation limit and keep the tracker
    still. Ordinary QMC jitter must not prevent `reacquire_pending` from becoming
    `reacquire_active`; correction must remain within printed rate/step limits.

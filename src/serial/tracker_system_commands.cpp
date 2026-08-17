@@ -40,24 +40,6 @@ const char* trackerSerialSystemStreamModeName(TrackerStreamMode mode) {
 }
 
 void trackerSerialPrintHelp(Stream& out, TrackerCommandOrigin origin) {
-    if (origin == TrackerCommandOrigin::RemoteTcp) {
-        out.println("==============================================================================");
-        out.println("TRACKER REMOTE DIAGNOSTIC COMMANDS (NON-PERSISTENT)");
-        out.println("  help | ? | version | status | health");
-        out.println("  console status | reset | remote status");
-        out.println("  perf status | top | tracking [reset]");
-        out.println("  motion status");
-        out.println("  log [basic|full|off] | start [basic|full] | rate <hz>");
-        out.println("  log header | finish | summary | reset | stop");
-        out.println("  test static <seconds> | runtime <seconds> | status | stop");
-        out.println("  mag status | processed | trust");
-        out.println("  net status | slime status | battery status");
-        out.println("  fifo status|stats | quality stats | imu status");
-        out.println("  bias status | ahrs status|config");
-        out.println("# Persistent config, calibration, setup, reset and reboot are USB-only.");
-        out.println("==============================================================================");
-        return;
-    }
     out.println("==============================================================================");
     out.println("TRACKER SERIAL COMMANDS");
     out.print("# build_profile=");
@@ -67,7 +49,9 @@ void trackerSerialPrintHelp(Stream& out, TrackerCommandOrigin origin) {
     out.print(" git=");
     out.print(trackerBuildIdentityString());
     out.print(" cli_level=");
-    out.println(trackerCliLevelName());
+    out.print(trackerCliLevelName());
+    out.print(" origin=");
+    out.println(trackerCommandOriginName(origin));
     out.println("==============================================================================");
     out.println("[core]");
     out.println("  help | ?");

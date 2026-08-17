@@ -9,7 +9,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
+from quality_gate_runtime import (
+    asan_ubsan_environment,
+    project_temp_directory,
+    strongest_supported_sanitizer_flags,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -158,7 +162,8 @@ def main() -> int:
     forbid(runtime, "udpReopenSuppressedRecentRx", "RX-liveness recovery suppression")
     forbid(runtime, "TRACKER_SLIMEVR_SEND_FAILURE_REOPEN_THRESHOLD", "legacy consecutive-only recovery")
     forbid(runtime, "std::vector", "heap-backed TX outcome history")
-    forbid(runtime, "new ", "heap allocation in TX recovery")
+    runtime_code = re.sub(r"//.*?$|/\*.*?\*/", "", runtime, flags=re.MULTILINE | re.DOTALL)
+    forbid(runtime_code, "new ", "heap allocation in TX recovery")
 
     for needle, label in (
         ("sendsAfterFirstPressure", "no-extra-send backoff regression"),
@@ -203,11 +208,16 @@ def main() -> int:
     with project_temp_directory(ROOT, "tracker-0023gl-") as tmp_name:
         tmp = Path(tmp_name)
         compile_runtime(cxx, tmp / "test_runtime", ["-O2", "-Wall", "-Wextra", "-Werror"])
-        compile_runtime(
-            cxx,
-            tmp / "test_runtime_san",
-            ["-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer"],
-        )
+        sanitizer_name, sanitizer_flags = strongest_supported_sanitizer_flags(cxx, ROOT)
+        if sanitizer_flags:
+            print(f"# 0023gl sanitizer={sanitizer_name}")
+            compile_runtime(
+                cxx,
+                tmp / "test_runtime_san",
+                ["-O1", "-g", *sanitizer_flags],
+            )
+        else:
+            print("# 0023gl sanitizer: SKIP (toolchain cannot link ASan/UBSan)")
         subprocess.run(
             [
                 cxx, "-std=c++20", "-O2", "-fstack-usage",

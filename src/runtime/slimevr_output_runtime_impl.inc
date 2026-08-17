@@ -92,9 +92,10 @@ bool parseShortSensorInfoAck(const uint8_t* data, size_t len, uint8_t& sensorId,
 
 const char* slimevrMotionPacketModeName(SlimeVRMotionPacketMode mode) {
     switch (mode) {
+        case SlimeVRMotionPacketMode::Rotation17Only: return "rotation_17_only";
         case SlimeVRMotionPacketMode::SeparateRotation17Accel4: return "rotation_17_plus_accel_4_fallback";
         case SlimeVRMotionPacketMode::Bundle100Rotation17Accel4: return "bundle_100_rotation_17_accel_4";
-        case SlimeVRMotionPacketMode::ExperimentalRotationAcceleration23: return "experimental_rotation_acceleration_23";
+        case SlimeVRMotionPacketMode::ExperimentalRotationAcceleration23: return "rotation_acceleration_23";
     }
     return "unknown";
 }
@@ -188,6 +189,7 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
                                std::strncmp(deviceName_, config.deviceName ? config.deviceName : "", sizeof(deviceName_)) != 0;
 
     const bool rotationRateChanged = rotationRateHz_ != config.rotationRateHz;
+    const bool motionPacketPolicyChanged = motionPacketPolicy_ != config.motionPacketPolicy;
 
     enabled_ = config.enabled;
     discoveryEnabled_ = config.discoveryEnabled;
@@ -200,6 +202,7 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
     rotationRateHz_ = config.rotationRateHz == 0 ? ROTATION_RATE_HZ_DEFAULT : config.rotationRateHz;
     if (rotationRateHz_ > ROTATION_RATE_HZ_MAX) rotationRateHz_ = ROTATION_RATE_HZ_MAX;
     incomingPacketsPerUpdate_ = config.incomingPacketsPerUpdate == 0 ? 1u : config.incomingPacketsPerUpdate;
+    motionPacketPolicy_ = config.motionPacketPolicy;
     magSupportEnabled_ = config.magSupportEnabled;
     magEnabled_ = config.magEnabled;
     if (!magSupportEnabled_) magEnabled_ = false;
@@ -230,7 +233,7 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
     if (configChanged) {
         resetConnectionState(true);
     } else {
-        if (rotationRateChanged) {
+        if (rotationRateChanged || motionPacketPolicyChanged) {
             rotationPhaseOffsetValid_ = false;
             resetRotationDeadline();
             resetFallbackAccelerationDeadline();
@@ -241,6 +244,18 @@ void SlimeVROutputRuntime::configure(const SlimeVROutputRuntimeConfig& config) {
     }
 }
 
+
+void SlimeVROutputRuntime::setMotionPacketPolicy(SlimeVRMotionPacketPolicy policy) {
+    if (!slimevrMotionPacketPolicyValid(policy)) {
+        policy = SlimeVRMotionPacketPolicy::QuaternionOnly;
+    }
+    if (motionPacketPolicy_ == policy) return;
+
+    motionPacketPolicy_ = policy;
+    rotationPhaseOffsetValid_ = false;
+    resetRotationDeadline();
+    resetFallbackAccelerationDeadline();
+}
 
 void SlimeVROutputRuntime::updateLiveState(bool latestTemperatureValid,
                                            float latestTemperatureC,
@@ -669,13 +684,15 @@ SlimeVROutputRuntimeStatus SlimeVROutputRuntime::status() const {
     s.featureFlagsSent = featureFlagsSent_;
     s.featureFlagsSendFailures = featureFlagsSendFailures_;
     s.compactMotionAvailable = true;
-    s.compactMotionEnabled = TRACKER_SLIMEVR_USE_COMPACT_MOTION_PACKET != 0;
+    s.compactMotionEnabled = motionPacketPolicy_ ==
+        SlimeVRMotionPacketPolicy::RotationAcceleration23;
     s.bundleNegotiationEnabled = TRACKER_SLIMEVR_ENABLE_BUNDLE_NEGOTIATION != 0;
     s.serverFeatureFlagsAvailable = serverFeatureFlagsAvailable_;
     s.featureNegotiationState = featureNegotiationState_;
     s.featureFlagsRequestAttempts = featureFlagsRequestAttempts_;
     s.serverBundleSupported = serverFeatureEnabled(SLIMEVR_SERVER_FEATURE_PROTOCOL_BUNDLE_SUPPORT);
     s.serverCompactBundleSupported = serverFeatureEnabled(SLIMEVR_SERVER_FEATURE_PROTOCOL_BUNDLE_COMPACT_SUPPORT);
+    s.motionPacketPolicy = motionPacketPolicy_;
     s.motionPacketMode = motionPacketMode();
     s.bundledMotionEnabled = s.motionPacketMode == SlimeVRMotionPacketMode::Bundle100Rotation17Accel4;
     s.fallbackAccelerationRateHz = TRACKER_SLIMEVR_FALLBACK_ACCEL_RATE_HZ;
@@ -1532,15 +1549,19 @@ void SlimeVROutputRuntime::maybeRecordRotationSuppressedByError(uint32_t nowMs) 
 }
 
 SlimeVRMotionPacketMode SlimeVROutputRuntime::motionPacketMode() const {
-#if TRACKER_SLIMEVR_USE_COMPACT_MOTION_PACKET
-    return SlimeVRMotionPacketMode::ExperimentalRotationAcceleration23;
-#else
-    if (TRACKER_SLIMEVR_ENABLE_BUNDLE_NEGOTIATION != 0 &&
-        serverFeatureEnabled(SLIMEVR_SERVER_FEATURE_PROTOCOL_BUNDLE_SUPPORT)) {
-        return SlimeVRMotionPacketMode::Bundle100Rotation17Accel4;
+    switch (motionPacketPolicy_) {
+        case SlimeVRMotionPacketPolicy::QuaternionOnly:
+            return SlimeVRMotionPacketMode::Rotation17Only;
+        case SlimeVRMotionPacketPolicy::RotationAcceleration23:
+            return SlimeVRMotionPacketMode::ExperimentalRotationAcceleration23;
+        case SlimeVRMotionPacketPolicy::BundleRotation17Acceleration4:
+            if (TRACKER_SLIMEVR_ENABLE_BUNDLE_NEGOTIATION != 0 &&
+                serverFeatureEnabled(SLIMEVR_SERVER_FEATURE_PROTOCOL_BUNDLE_SUPPORT)) {
+                return SlimeVRMotionPacketMode::Bundle100Rotation17Accel4;
+            }
+            return SlimeVRMotionPacketMode::SeparateRotation17Accel4;
     }
-    return SlimeVRMotionPacketMode::SeparateRotation17Accel4;
-#endif
+    return SlimeVRMotionPacketMode::Rotation17Only;
 }
 
 bool SlimeVROutputRuntime::serverFeatureEnabled(uint8_t bit) const {
@@ -1735,12 +1756,37 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
     const uint8_t accuracy = accuracyFromConfidence(snapshot.confidence);
     const SlimeVRMotionPacketMode mode = motionPacketMode();
     noteMotionPacketMode(mode);
+
+    // Quaternion-only and invalid-acceleration paths never need an SI accel
+    // conversion. Keeping this branch before accelerationWireMps2FromDeviceG()
+    // makes the new default mode strictly cheaper than the old bundle path.
+    if (mode == SlimeVRMotionPacketMode::Rotation17Only ||
+        !snapshot.linearAccelerationValid) {
+        const SlimeVRPacketWriteResult rotationPacket = writer_.writeRotationData(
+            packetBuffer_, sizeof(packetBuffer_), sensorId_, snapshot.q, accuracy,
+            SlimeVRRotationDataType::Normal
+        );
+        if (sendPacket(rotationPacket, serverEndpoint_, PacketPurpose::Rotation) != PacketSendResult::Sent) return;
+        recordDeliveredRotation();
+
+        if (mode == SlimeVRMotionPacketMode::Rotation17Only) return;
+
+        ++accelerationSkippedInvalid_;
+        const uint8_t reasons = snapshot.linearAccelerationInvalidFlags;
+        if ((reasons & prepared_output_motion_flags::CONFIGURATION_NOT_READY) != 0u) ++accelerationSkippedConfiguration_;
+        if ((reasons & prepared_output_motion_flags::ACCEL_COMPONENT_MISSING) != 0u) ++accelerationSkippedComponentMissing_;
+        if ((reasons & prepared_output_motion_flags::PAIR_COHERENCY_DEGRADED) != 0u) ++accelerationSkippedPairDegraded_;
+        if ((reasons & prepared_output_motion_flags::ACCEL_SATURATED) != 0u) ++accelerationSkippedSaturated_;
+        if ((reasons & prepared_output_motion_flags::NON_FINITE) != 0u) ++accelerationSkippedNonFinite_;
+        if (reasons == prepared_output_motion_flags::NONE) ++accelerationSkippedOther_;
+        return;
+    }
+
     const Vec3 accelerationMps2 = slimevr_motion_frame::accelerationWireMps2FromDeviceG(
         snapshot.linearAccelerationDeviceG
     );
 
-    if (snapshot.linearAccelerationValid &&
-        mode == SlimeVRMotionPacketMode::ExperimentalRotationAcceleration23) {
+    if (mode == SlimeVRMotionPacketMode::ExperimentalRotationAcceleration23) {
         const SlimeVRPacketWriteResult motionPacket = writer_.writeRotationAndAcceleration(
             packetBuffer_, sizeof(packetBuffer_), sensorId_, snapshot.q, accelerationMps2
         );
@@ -1751,8 +1797,7 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         return;
     }
 
-    if (snapshot.linearAccelerationValid &&
-        mode == SlimeVRMotionPacketMode::Bundle100Rotation17Accel4) {
+    if (mode == SlimeVRMotionPacketMode::Bundle100Rotation17Accel4) {
         const SlimeVRPacketWriteResult bundlePacket = writer_.writeRotationAccelerationBundle(
             packetBuffer_, sizeof(packetBuffer_), sensorId_, snapshot.q, accuracy,
             accelerationMps2, SlimeVRRotationDataType::Normal
@@ -1764,26 +1809,14 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         return;
     }
 
-    // Negotiation fallback and hard-invalid acceleration both preserve packet
-    // 17 pose delivery. Only valid acceleration is rate-limited to packet 4.
+    // Negotiation fallback preserves packet 17 pose delivery and rate-limits
+    // the paired packet 4 acceleration from the same prepared snapshot.
     const SlimeVRPacketWriteResult rotationPacket = writer_.writeRotationData(
         packetBuffer_, sizeof(packetBuffer_), sensorId_, snapshot.q, accuracy,
         SlimeVRRotationDataType::Normal
     );
     if (sendPacket(rotationPacket, serverEndpoint_, PacketPurpose::Rotation) != PacketSendResult::Sent) return;
     recordDeliveredRotation();
-
-    if (!snapshot.linearAccelerationValid) {
-        ++accelerationSkippedInvalid_;
-        const uint8_t reasons = snapshot.linearAccelerationInvalidFlags;
-        if ((reasons & prepared_output_motion_flags::CONFIGURATION_NOT_READY) != 0u) ++accelerationSkippedConfiguration_;
-        if ((reasons & prepared_output_motion_flags::ACCEL_COMPONENT_MISSING) != 0u) ++accelerationSkippedComponentMissing_;
-        if ((reasons & prepared_output_motion_flags::PAIR_COHERENCY_DEGRADED) != 0u) ++accelerationSkippedPairDegraded_;
-        if ((reasons & prepared_output_motion_flags::ACCEL_SATURATED) != 0u) ++accelerationSkippedSaturated_;
-        if ((reasons & prepared_output_motion_flags::NON_FINITE) != 0u) ++accelerationSkippedNonFinite_;
-        if (reasons == prepared_output_motion_flags::NONE) ++accelerationSkippedOther_;
-        return;
-    }
 
     if (!fallbackAccelerationAllowed()) {
         ++accelerationSuppressedDuringNegotiation_;

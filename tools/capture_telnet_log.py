@@ -41,6 +41,44 @@ class CaptureValidationError(CaptureError):
         super().__init__(f"strict LOGVER3 validation failed: {detail}")
 
 
+def validate_firmware_identity(identity: dict[str, str]) -> int:
+    required_identity = {
+        "build_profile": "ProductionDiag",
+        "build_pio_env": "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG",
+    }
+    for key, expected in required_identity.items():
+        if identity.get(key) != expected:
+            raise CaptureError(f"{key}={identity.get(key)!r}, expected {expected!r}")
+
+    git_head = identity.get("build_git_head", "")
+    worktree = identity.get("build_worktree", "")
+    build_git = identity.get("build_git", "")
+    build_dirty = identity.get("build_dirty")
+    if not GIT_RE.fullmatch(git_head):
+        raise CaptureError("build_git_head is unknown or not a full commit")
+    if not WORKTREE_RE.fullmatch(worktree):
+        raise CaptureError("build_worktree is not an 8-hex source fingerprint")
+    if build_dirty == "no":
+        expected_build_git = git_head
+    elif build_dirty == "yes":
+        expected_build_git = f"{git_head}+{worktree}-dirty"
+    else:
+        raise CaptureError(f"build_dirty={build_dirty!r}, expected 'yes' or 'no'")
+    if build_git != expected_build_git:
+        raise CaptureError(
+            f"build_git={build_git!r}, expected identity {expected_build_git!r}"
+        )
+    if identity.get("command_origin") != "remote_tcp":
+        raise CaptureError("version response did not originate from remote_tcp")
+    try:
+        command_session = int(identity.get("command_session", "0"), 10)
+    except ValueError as exc:
+        raise CaptureError("command_session is not an integer") from exc
+    if command_session <= 0:
+        raise CaptureError("command_session is not a live non-zero session")
+    return command_session
+
+
 class CaptureSocket:
     def __init__(self, host: str, port: int, max_bytes: int) -> None:
         self.socket = socket.create_connection((host, port), timeout=10.0)
@@ -341,13 +379,13 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--max-capture-mib", type=int, default=64)
+    parser.add_argument("--max-capture-mib", type=int, default=512)
     args = parser.parse_args()
 
     if not 1 <= args.port <= 65535:
         parser.error("--port must be 1..65535")
-    if not 60 <= args.seconds <= 900:
-        parser.error("--seconds must be 60..900 for remote capture")
+    if not 1 <= args.seconds <= 21600:
+        parser.error("--seconds must be 1..21600")
     if args.max_capture_mib <= 0:
         parser.error("--max-capture-mib must be positive")
     output = args.output.resolve()
@@ -378,28 +416,7 @@ def main() -> int:
 
         command("version", "command_session=")
         identity = key_values(transport.lines)
-        required_identity = {
-            "build_profile": "ProductionDiag",
-            "build_pio_env": "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG",
-            "build_dirty": "no",
-        }
-        for key, expected in required_identity.items():
-            if identity.get(key) != expected:
-                raise CaptureError(f"{key}={identity.get(key)!r}, expected {expected!r}")
-        if not GIT_RE.fullmatch(identity.get("build_git_head", "")):
-            raise CaptureError("build_git_head is unknown or not a full clean commit")
-        if identity.get("build_git") != identity.get("build_git_head"):
-            raise CaptureError("clean build_git identity does not equal build_git_head")
-        if not WORKTREE_RE.fullmatch(identity.get("build_worktree", "")):
-            raise CaptureError("build_worktree is not an 8-hex source fingerprint")
-        if identity.get("command_origin") != "remote_tcp":
-            raise CaptureError("version response did not originate from remote_tcp")
-        try:
-            command_session = int(identity.get("command_session", "0"), 10)
-        except ValueError as exc:
-            raise CaptureError("command_session is not an integer") from exc
-        if command_session <= 0:
-            raise CaptureError("command_session is not a live non-zero session")
+        command_session = validate_firmware_identity(identity)
 
         mag_runtime = key_values(command("mag status", "mag_hub_error="))
         preflight["mag_runtime"] = mag_runtime

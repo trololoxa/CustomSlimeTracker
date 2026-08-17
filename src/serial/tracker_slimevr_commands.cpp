@@ -85,6 +85,27 @@ bool serialSlimeSetConfigFlag(uint8_t sensorId, uint16_t configType, bool enable
     );
 }
 
+bool parseMotionMode(const char* text, SlimeVRMotionPacketPolicy& mode) {
+    if (tracker_serial_detail::eqIgnoreCase(text, "quaternion") ||
+        tracker_serial_detail::eqIgnoreCase(text, "quat") ||
+        tracker_serial_detail::eqIgnoreCase(text, "quaternion-only")) {
+        mode = SlimeVRMotionPacketPolicy::QuaternionOnly;
+        return true;
+    }
+    if (tracker_serial_detail::eqIgnoreCase(text, "bundle") ||
+        tracker_serial_detail::eqIgnoreCase(text, "quat+accel") ||
+        tracker_serial_detail::eqIgnoreCase(text, "rotation17+accel4")) {
+        mode = SlimeVRMotionPacketPolicy::BundleRotation17Acceleration4;
+        return true;
+    }
+    if (tracker_serial_detail::eqIgnoreCase(text, "packet23") ||
+        tracker_serial_detail::eqIgnoreCase(text, "23")) {
+        mode = SlimeVRMotionPacketPolicy::RotationAcceleration23;
+        return true;
+    }
+    return false;
+}
+
 SlimeVROutputRuntimeConfig makeConfigFromNetwork(TrackerSerialCommandContext& ctx, const TrackerNetworkConfig& net, uint16_t rotationRateHz) {
     SlimeVROutputRuntimeConfig cfg;
     cfg.enabled = true;
@@ -101,6 +122,8 @@ SlimeVROutputRuntimeConfig makeConfigFromNetwork(TrackerSerialCommandContext& ct
         cfg.rotationRateHz = TRACKER_SLIMEVR_OUTPUT_RATE_HZ_MAX;
     }
     cfg.incomingPacketsPerUpdate = TRACKER_SLIMEVR_INCOMING_PACKETS_PER_UPDATE;
+    cfg.motionPacketPolicy = ctx.config ? ctx.config->slimevrMotionPacketPolicy() :
+        SlimeVRMotionPacketPolicy::QuaternionOnly;
     cfg.setConfigFlag = serialSlimeSetConfigFlag;
     cfg.setConfigFlagUser = &ctx;
     cfg.telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
@@ -154,6 +177,7 @@ void printSlimeStatusBrief(TrackerSerialCommandContext& ctx,
     out.print("server_port="); out.println(s.serverPort);
     out.print("protocol_version="); out.println(s.protocolVersion);
     printMotionFrameContract(ctx, out, s);
+    out.print("motion_packet_policy="); out.println(slimevrMotionPacketPolicyName(s.motionPacketPolicy));
     out.print("motion_packet_mode="); out.println(slimevrMotionPacketModeName(s.motionPacketMode));
     out.print("packet23_available="); out.println(s.compactMotionAvailable ? "yes" : "no");
     out.print("packet23_enabled="); out.println(s.compactMotionEnabled ? "yes" : "no");
@@ -289,6 +313,7 @@ void printSlimeDebug(TrackerSerialCommandContext& ctx,
     out.print("sensor_info_ack_config=0x"); out.println(s.sensorInfoAckConfig, HEX);
     out.print("sensor_info_ack_rest_calibration="); out.println(yn(s.sensorInfoAckRestCalibration));
     out.print("heartbeat_sent="); out.println(s.heartbeatSent);
+    out.print("motion_packet_policy="); out.println(slimevrMotionPacketPolicyName(s.motionPacketPolicy));
     out.print("motion_packet_mode="); out.println(slimevrMotionPacketModeName(s.motionPacketMode));
     out.print("packet23_available="); out.println(s.compactMotionAvailable ? "yes" : "no");
     out.print("packet23_enabled="); out.println(s.compactMotionEnabled ? "yes" : "no");
@@ -433,6 +458,7 @@ void printHelp(Stream& out) {
     out.println("slime stop");
     out.println("slime reconnect");
     out.println("slime rate <hz>");
+    out.println("slime motion-mode quaternion|bundle|packet23");
     out.println("slime action yaw|full|mounting|pause");
     out.println("slime tap-action off|yaw|full|mounting|pause [save]");
     out.println("slime counters reset");
@@ -535,13 +561,47 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             return true;
         }
         ctx.config->data.output.outputRateHz = static_cast<uint16_t>(hz);
-        ctx.config->data.output.packetFormat = 0;
         ctx.config->updateCrc();
         if (ctx.networkConfig) {
             ctx.networkConfig->sanitize();
             ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, static_cast<uint16_t>(hz)));
         }
         tracker_serial_detail::printOk(out, "SlimeVR rotation rate set");
+        return true;
+    }
+
+    if (tracker_serial_detail::eqIgnoreCase(argv[1], "motion-mode") ||
+        tracker_serial_detail::eqIgnoreCase(argv[1], "motion_mode") ||
+        tracker_serial_detail::eqIgnoreCase(argv[1], "packet-mode")) {
+        if (argc != 3) {
+            tracker_serial_detail::printErr(
+                out, "usage: slime motion-mode quaternion|bundle|packet23");
+            return true;
+        }
+        if (!ctx.setSlimeVRMotionPacketPolicy) {
+            tracker_serial_detail::printErr(out, "SlimeVR motion-mode control unavailable");
+            return true;
+        }
+
+        SlimeVRMotionPacketPolicy mode = SlimeVRMotionPacketPolicy::QuaternionOnly;
+        if (!parseMotionMode(argv[2], mode)) {
+            tracker_serial_detail::printErr(
+                out, "invalid motion mode; expected quaternion|bundle|packet23");
+            return true;
+        }
+
+        if (!ctx.setSlimeVRMotionPacketPolicy(mode, ctx.setSlimeVRMotionPacketPolicyUser)) {
+            out.print("# ERR SlimeVR motion mode save/apply failed");
+            if (ctx.configStore) {
+                out.print(": ");
+                out.print(ctx.configStore->lastErrorName());
+            }
+            out.println();
+            return true;
+        }
+
+        out.print("# OK SlimeVR motion mode saved mode=");
+        out.println(slimevrMotionPacketPolicyName(mode));
         return true;
     }
 

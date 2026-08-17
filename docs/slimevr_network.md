@@ -102,9 +102,10 @@ Outgoing packets currently used:
 Handshake / discovery
 SensorInfo
 FeatureFlags packet 22
-Bundle packet 100 containing packet 17 then packet 4, when negotiated
 RotationData packet 17
-Acceleration packet 4 fallback
+Bundle packet 100 containing packet 17 then packet 4, when selected and negotiated
+Acceleration packet 4 fallback for bundle mode on servers without bundle support
+RotationAndAcceleration packet 23, when explicitly selected
 HeartBeat
 PingPong response
 AcknowledgeConfigChange
@@ -116,8 +117,9 @@ SignalStrength
 Temperature
 ```
 
-Packet 23 remains compiled as an explicitly experimental encoder but is disabled
-by default. It is not selected merely because the server reports bundle support.
+Packet 23 remains compiled but is never selected implicitly. The persisted motion
+policy defaults and all unmarked historical configs migrate to packet-17-only
+quaternion output. Use `slime motion-mode` to select bundle or packet 23 explicitly.
 
 Incoming packets currently handled:
 
@@ -143,11 +145,25 @@ The firmware intentionally does not send periodic dummy `MagnetometerAccuracy`
 packets. Packet 18 should only be emitted if a real mag-calibration/accuracy
 workflow starts using it.
 
-### Negotiated motion transport
+### Persisted motion transport policy
 
-After discovery, firmware sends packet 22 with its firmware FeatureFlags. Server
-FeatureFlags bit 0 means `PROTOCOL_BUNDLE_SUPPORT`. Only after receiving that bit
-does runtime select:
+`slime motion-mode quaternion|bundle|packet23` selects the motion wire policy and
+transactionally persists only that field in the authoritative main tracker config.
+The command does not implicitly save unrelated RAM-only edits such as `slime rate`
+or local serial-output state. Runtime application updates only the motion policy and
+does not restart/reconfigure the discovered SlimeVR session. The default is:
+
+```text
+motion_packet_policy=quaternion_only
+motion_packet_mode=rotation_17_only
+```
+
+`quaternion` sends float32 packet 17 only. It does not emit packet 4, packet 23 or
+a motion bundle even if acceleration is available and the server supports bundles.
+
+`bundle` sends one prepared quaternion/linear-acceleration snapshot through the
+existing negotiated path. After server FeatureFlags bit 0 confirms
+`PROTOCOL_BUNDLE_SUPPORT`, one UDP datagram contains:
 
 ```text
 outer packet 100
@@ -155,47 +171,34 @@ outer packet 100
   inner packet 4:  float32 SI linear acceleration
 ```
 
-The inner order is rotation first and acceleration second. Both values come from
-one prepared snapshot, packet 100 uses one outer packet number and one UDP
-datagram, and no Q15/Q7 quantization is introduced. Battery, temperature, RSSI,
-heartbeat, SensorInfo, ping/pong, tap, errors and config acknowledgements remain
-separate service/control packets.
+If the server does not negotiate bundle support, the same selected policy falls
+back to packet 17 at pose rate plus coherent packet 4 at
+`TRACKER_SLIMEVR_FALLBACK_ACCEL_RATE_HZ` (default 50 Hz). Hard-invalid
+acceleration always degrades to packet 17 rather than suppressing rotation.
 
-A server that does not answer FeatureFlags, or answers without bundle bit 0,
-uses the compatibility path:
+`packet23` explicitly selects the existing compact RotationAndAcceleration packet
+23 encoder. It carries one Q15 quaternion and one Q7 acceleration vector from the
+same prepared snapshot. The selection is not inferred from bundle FeatureFlags.
+If acceleration is invalid, runtime uses packet 17 for that snapshot.
 
-```text
-packet 17 at configured pose rate
-packet 4 at TRACKER_SLIMEVR_FALLBACK_ACCEL_RATE_HZ (default 50 Hz)
-```
-
-Step mounting receives real callback timestamps and does not require a fixed
-100 Hz acceleration cadence. The fallback preserves coherent samples while
-reducing pose datagram pressure from 200 to 150 datagrams per second at a 100 Hz
-rotation rate.
-
-`TRACKER_SLIMEVR_USE_COMPACT_MOTION_PACKET=1` is an explicit experimental
-override for packet 23. The normal build keeps it at zero because packet 23 has
-no legacy capability bit that proves a specific beta server parser actually
-accepts it. Diagnostics therefore show both availability and use:
+The selected policy and effective mode are distinct diagnostics. For example, a
+bundle selection on an older server reports:
 
 ```text
-packet23_available=yes
-packet23_enabled=no
-motion_packet_mode=bundle_100_rotation_17_accel_4
-```
-
-or, on an older server:
-
-```text
+motion_packet_policy=bundle_100_rotation_17_accel_4
 motion_packet_mode=rotation_17_plus_accel_4_fallback
-fallback_acceleration_rate_hz=50
 ```
+
+All three policies preserve protocol 22, the same device-frame convention and
+packet-number/session ownership. Changing policy resets only motion deadlines; it
+does not tear down an already discovered server session. Battery, temperature,
+RSSI, heartbeat, SensorInfo, ping/pong, tap, errors and config acknowledgements
+remain separate service/control packets.
 
 `send_failures` counts failed physical datagrams. A failed packet-100 motion
 bundle increments `bundled_motion_send_failures` and both logical
-`rotation_send_failures` and `acceleration_send_failures`. A failed experimental
-packet 23 uses `compact_motion_send_failures` instead.
+`rotation_send_failures` and `acceleration_send_failures`. A failed packet 23
+uses `compact_motion_send_failures`.
 
 UDP TX pressure is handled independently from inbound session liveness. An
 ESP-IDF/lwIP `ENOMEM`, `ENOBUFS` or `EAGAIN` result enters a bounded 20–160 ms

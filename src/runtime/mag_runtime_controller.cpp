@@ -106,20 +106,34 @@ MagHeadingConfig MagRuntimeController::headingConfig() const {
     return c;
 }
 
+MagRuntimeController::YawEnableState MagRuntimeController::yawEnableState() const {
+    YawEnableState state;
+    if (!deps_.config) return state;
+
+    const auto& y = deps_.config->data.magYaw;
+    const bool accelCalReady = accelReady();
+    state.recoveryActive = isRecoveryActive();
+    const bool recoverySafe = !state.recoveryActive;
+    state.enabled = y.controllerEnabled &&
+                    deps_.config->data.magCal.driverEnabled &&
+                    deps_.config->data.magCal.calibrationValid &&
+                    accelCalReady &&
+                    recoverySafe;
+    state.applyEnabled = y.applyEnabled && accelCalReady && recoverySafe;
+    return state;
+}
+
 MagYawCorrectionConfig MagRuntimeController::yawConfig() const {
+    return yawConfig(yawEnableState());
+}
+
+MagYawCorrectionConfig MagRuntimeController::yawConfig(const YawEnableState& enableState) const {
     MagYawCorrectionConfig c;
     if (!deps_.config) return c;
 
     const auto& y = deps_.config->data.magYaw;
-    const bool accelCalReady = accelReady();
-    const bool recoverySafe = !isRecoveryActive();
-
-    c.enabled = y.controllerEnabled &&
-                deps_.config->data.magCal.driverEnabled &&
-                deps_.config->data.magCal.calibrationValid &&
-                accelCalReady &&
-                recoverySafe;
-    c.applyEnabled = y.applyEnabled && accelCalReady && recoverySafe;
+    c.enabled = enableState.enabled;
+    c.applyEnabled = enableState.applyEnabled;
 
     c.maxInnovationDeg = y.maxInnovationDeg;
     c.maxMagAgeMs = y.maxMagAgeMs;
@@ -146,8 +160,9 @@ MagYawCorrectionConfig MagRuntimeController::yawConfig() const {
     return c;
 }
 
-MagFieldReliabilityConfig MagRuntimeController::fieldReliabilityConfig() const {
-    return MagFieldReliabilityConfig{};
+const MagFieldReliabilityConfig& MagRuntimeController::fieldReliabilityConfig() const {
+    static const MagFieldReliabilityConfig defaults{};
+    return defaults;
 }
 
 float MagRuntimeController::headingErrorToReferenceRad(const MagHeadingSample& heading) const {
@@ -641,16 +656,27 @@ TRACKER_MAG_RUNTIME_NOINLINE void MagRuntimeController::updateFieldReliabilitySn
     float accelTrust,
     bool processorTrustedForUse,
     MagFieldReliabilityOutput& reliability) {
-    reliability = MagFieldReliabilityOutput{};
     if (deps_.fieldReliability) {
-        MagFieldReliabilityInput fieldIn;
-        fieldIn.mag = *deps_.lastProcessed;
-        fieldIn.heading = *deps_.lastHeading;
-        fieldIn.processorTrustedForUse = processorTrustedForUse;
-        fieldIn.gyroNormDps = gyroNormDps;
-        fieldIn.accelTrust = accelTrust;
-        fieldIn.nowMs = nowMs;
-        deps_.fieldReliability->update(fieldIn, fieldReliabilityConfig(), reliability);
+        const MagFieldReliabilityConfig& fieldCfg = fieldReliabilityConfig();
+        const float horizontalNormBad = deps_.config
+            ? deps_.config->data.magYaw.horizontalNormBad
+            : fieldCfg.horizontalNormBad;
+        const float horizontalNormGood = deps_.config
+            ? deps_.config->data.magYaw.horizontalNormGood
+            : fieldCfg.horizontalNormGood;
+        const MagFieldReliabilityInputView fieldIn{
+            deps_.lastProcessed,
+            deps_.lastHeading,
+            processorTrustedForUse,
+            gyroNormDps,
+            accelTrust,
+            horizontalNormBad,
+            horizontalNormGood,
+            nowMs,
+        };
+        deps_.fieldReliability->update(fieldIn, fieldCfg, reliability);
+    } else {
+        reliability = MagFieldReliabilityOutput{};
     }
     if (deps_.lastFieldReliability && deps_.lastFieldReliability != &reliability) {
         *deps_.lastFieldReliability = reliability;
@@ -663,23 +689,31 @@ TRACKER_MAG_RUNTIME_NOINLINE void MagRuntimeController::updateYawCorrectionSnaps
     float accelTrust,
     bool magTrustedForUse,
     uint32_t magRejectFlagsForUse,
-    const MagFieldReliabilityOutput& reliability) {
-    MagYawCorrectionInput yawIn;
-    yawIn.mag = *deps_.lastProcessed;
-    yawIn.heading = *deps_.lastHeading;
-    yawIn.referenceValid = deps_.headingRef && deps_.headingRef->valid;
-    yawIn.referenceWorldYawRad = deps_.headingRef ? deps_.headingRef->worldYawRad : 0.0f;
-    yawIn.magTrustedForUse = magTrustedForUse;
-    yawIn.magRejectFlagsForUse = magRejectFlagsForUse;
-    yawIn.gyroNormDps = gyroNormDps;
-    yawIn.accelTrust = accelTrust;
-    yawIn.fieldReliable = reliability.trustedForYaw;
-    yawIn.fieldStableMs = reliability.stableMs;
-    yawIn.magneticHeadingRateDegS = reliability.headingRateDegS;
-    yawIn.nowMs = nowMs;
+    const MagFieldReliabilityOutput& reliability,
+    const YawEnableState& yawEnable) {
+    const MagYawCorrectionConfig yawCfg = yawConfig(yawEnable);
+    const MagYawCorrectionInputView yawIn{
+        deps_.lastProcessed,
+        deps_.lastHeading,
+        deps_.headingRef && deps_.headingRef->valid,
+        deps_.headingRef ? deps_.headingRef->worldYawRad : 0.0f,
+        magTrustedForUse,
+        magRejectFlagsForUse,
+        gyroNormDps,
+        accelTrust,
+        reliability.trustedForYaw,
+        reliability.stableMs,
+        reliability.referenceValid,
+        reliability.horizontalTrust,
+        reliability.referenceHorizontalNorm,
+        reliability.horizontalEffectiveBad,
+        reliability.horizontalEffectiveGood,
+        reliability.headingRateDegS,
+        nowMs,
+    };
 
     MagYawCorrectionOutput& yawOut = *deps_.lastYawCorrection;
-    deps_.yawCorrection->update(yawIn, yawConfig(), yawOut);
+    deps_.yawCorrection->update(yawIn, yawCfg, yawOut);
 
     if (applyYawCorrectionToAhrs(yawOut)) {
         yawOut.applied = true;
@@ -690,8 +724,8 @@ TRACKER_MAG_RUNTIME_NOINLINE void MagRuntimeController::updateYawCorrectionSnaps
 TRACKER_MAG_RUNTIME_NOINLINE void MagRuntimeController::processRawSample(
     const Lsm6dsvFifoReader::MagRawSample& mag) {
     if (!deps_.state || !deps_.processor || !deps_.headingEstimator ||
-        !deps_.lastProcessed || !deps_.lastHeading || !deps_.lastYawCorrection ||
-        !deps_.ahrs || !deps_.yawCorrection) {
+        !deps_.lastProcessed || !deps_.lastHeading || !deps_.lastFieldReliability ||
+        !deps_.lastYawCorrection || !deps_.ahrs || !deps_.yawCorrection) {
         return;
     }
 
@@ -727,10 +761,7 @@ TRACKER_MAG_RUNTIME_NOINLINE void MagRuntimeController::processRawSample(
     const uint32_t magRejectFlagsForUse =
         MagRuntimeProcessor::rejectFlagsForUse(processed, magCfg, nowMs);
 
-    MagFieldReliabilityOutput fallbackReliability;
-    MagFieldReliabilityOutput& reliability = deps_.lastFieldReliability
-        ? *deps_.lastFieldReliability
-        : fallbackReliability;
+    MagFieldReliabilityOutput& reliability = *deps_.lastFieldReliability;
     updateFieldReliabilitySnapshot(nowMs,
                                    gyroNormDps,
                                    accelTrust,
@@ -738,14 +769,16 @@ TRACKER_MAG_RUNTIME_NOINLINE void MagRuntimeController::processRawSample(
                                    reliability);
     const bool magTrustedForUse = processorTrustedForUse && reliability.trustedForYaw;
 
+    const YawEnableState yawEnable = yawEnableState();
     (void)enqueueAxisAlignmentEvidence(nowMs);
-    updateAutoReference(nowMs, gyroNormDps, accelTrust, magTrustedForUse);
+    updateAutoReference(nowMs, gyroNormDps, accelTrust, magTrustedForUse, reliability, yawEnable);
     updateYawCorrectionSnapshot(nowMs,
                                 gyroNormDps,
                                 accelTrust,
                                 magTrustedForUse,
                                 magRejectFlagsForUse,
-                                reliability);
+                                reliability,
+                                yawEnable);
 
     if (deps_.callbacks.emitMagFrame) {
         deps_.callbacks.emitMagFrame(processed,
@@ -1363,10 +1396,12 @@ bool MagRuntimeController::stageAxisAlignmentCandidate(
 void MagRuntimeController::updateAutoReference(uint32_t nowMs,
 float gyroNormDps,
 float accelTrust,
-bool magTrustedForUse) {
+bool magTrustedForUse,
+const MagFieldReliabilityOutput& reliability,
+const YawEnableState& yawEnable) {
     if (!deps_.headingAutoRef) return;
     if (!deps_.headingAutoRef->enabled) return;
-    if (isRecoveryActive()) {
+    if (yawEnable.recoveryActive) {
         deps_.headingAutoRef->resetCandidate();
         return;
     }
@@ -1376,21 +1411,19 @@ bool magTrustedForUse) {
         return;
     }
 
-    const MagYawCorrectionConfig yawCfg = yawConfig();
-
     uint32_t reject = 0;
 
-    if (!yawCfg.enabled || !yawCfg.applyEnabled) reject |= 1u << 0;
+    if (!yawEnable.enabled || !yawEnable.applyEnabled) reject |= 1u << 0;
     if (!deps_.lastHeading || !deps_.lastHeading->valid) reject |= 1u << 1;
     if (!magTrustedForUse) reject |= 1u << 2;
     if (!tracker::isFinite(gyroNormDps) || gyroNormDps > 1.5f) reject |= 1u << 3;
     if (!tracker::isFinite(accelTrust) || accelTrust < 0.90f) reject |= 1u << 4;
 
-    const float hTrust = (deps_.lastHeading != nullptr)
-        ? rampUp(deps_.lastHeading->horizontalNorm, yawCfg.horizontalNormBad, yawCfg.horizontalNormGood)
-        : 0.0f;
+    const float hTrust = reliability.horizontalTrust;
 
-    if (!tracker::isFinite(hTrust) || hTrust < 0.25f) reject |= 1u << 5;
+    if (!reliability.referenceValid || !tracker::isFinite(hTrust) || hTrust < 0.25f) {
+        reject |= 1u << 5;
+    }
 
     deps_.headingAutoRef->lastRejectFlags = reject;
     deps_.headingAutoRef->lastGyroNormDps = gyroNormDps;

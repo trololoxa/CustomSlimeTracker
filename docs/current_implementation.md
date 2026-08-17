@@ -131,7 +131,7 @@ promotion succeeds. No-op saves skip flash and generation changes.
 - Production keeps user setup/calibration, SlimeVR and product telemetry while
   excluding the TCP listener and heavy developer reporters/tests.
 - Production Diagnostic is the complete cable-free capture image: full
-  diagnostics plus a restricted TCP allowlist, distinct profile identity and
+  diagnostics plus TCP/USB command parity, distinct profile identity and
   Production-family scheduling.
 - Slim assumes valid NVS provisioning/calibration and removes interactive CLI,
   remote console, setup/calibration code, LED and tap runtime while preserving
@@ -150,8 +150,8 @@ python tools/validate_documentation.py
 Machine-log and test output bind to the initiating USB/TCP stream and remote
 session. Disconnect runs an explicit close hook before detach; owned producers
 abort and never fall back to USB. Production compiles the TCP listener out,
-while Debug/ProductionDiag apply an exact non-persistent diagnostic allowlist
-before all command dispatchers.
+while Debug/ProductionDiag feed USB and TCP into the same profile-specific
+command dispatcher with the same command, rate and duration limits.
 
 IMU/mag/runtime-bias callbacks enqueue fixed immutable records. Background
 service serializes at most one complete CSV line per admitted loop after
@@ -160,8 +160,8 @@ tracking/network work. `test runtime` samples section timing at 1/16 cadence;
 retain immutable results and emit only a compact completion marker from the
 measured path; full reports are explicitly requested later over USB.
 
-`tools/capture_telnet_log.py` performs ProductionDiag/clean-identity and
-magnetometer preflight, runs a full 20 Hz static session, drains the pipeline,
+`tools/capture_telnet_log.py` performs ProductionDiag/known-identity and
+magnetometer preflight, accepts clean or fingerprinted dirty builds, runs a full 20 Hz static session for 1..21600 seconds, drains the pipeline,
 executes the strict LOGVER3 schema/chronology/drop gate and writes a SHA-256
 manifest. Release is still blocked because no real positive fixture or reviewed
 golden thresholds can be produced without the hardware run.
@@ -273,14 +273,18 @@ intact. External/manual FIFO resets explicitly discard any local pre-reset batch
 
 ### Motion output and new server features
 
-Valid motion snapshots use negotiated packet-100 output when the server
-advertises bundle support. The bundle contains float32 packet 17 followed by
-float32 packet 4 from one prepared snapshot. Hard-invalid acceleration falls
-back to rotation-only packet 17; rotation is never suppressed only because
-motion acceleration is unavailable. Servers without bundle support receive
-packet 17 at pose rate and coherent packet 4 at a 50 Hz fallback rate. Packet 23
-remains an explicitly disabled experimental compile-time option. Internal
-acceleration remains in `g` and is converted to SI `m/s^2` at the packet
+Motion output has a persisted three-mode policy with one canonical shared policy
+type used by config and runtime. The `slime motion-mode` setter persists only this
+field from the authoritative NVS generation, so unrelated RAM-only edits cannot
+hitchhike into storage. The default and migration target is packet-17-only
+quaternion output. `bundle` selects the previous
+packet-100 path: a negotiated bundle contains float32 packet 17 followed by
+float32 packet 4 from one prepared snapshot, while servers without bundle
+support receive packet 17 at pose rate and coherent packet 4 at 50 Hz.
+`packet23` explicitly selects the existing Q15/Q7 RotationAndAcceleration
+encoder. Hard-invalid acceleration falls back to packet 17 in acceleration
+modes; rotation is never suppressed only because acceleration is unavailable.
+Internal acceleration remains in `g` and is converted at the selected packet
 boundary. The handshake uses protocol 22, so the server accepts corrected
 device-frame acceleration without the historical extra -90 degree local-Z
 correction. Rotation and acceleration therefore share the same local basis and
@@ -378,9 +382,33 @@ remain readable; newly generated/setup/manual mappings must be proper rotations.
 
 ### 0022b magnetic proof and field-jump behavior
 
-The active magnetic runtime now treats abrupt stationary direction changes as a
+The active magnetic runtime treats abrupt stationary direction changes as a
 latched environment discontinuity, not as a transient suspect sample. Candidate
 axis solving uses independent training/validation temporal windows and
 rate-normalized confidence. Deferred candidate work requires actual hardware FIFO
 slack and rotation-output deadline slack. Active calibration remains unchanged
 until explicit candidate promotion.
+
+### 0025c magnetic field recovery hardening
+
+Stationary field-jump detection now removes AHRS yaw from its direction signal.
+An AHRS yaw correction/reset therefore cannot create a false magnetic disturbance.
+When a real disturbance was latched and the tracker remained physically still,
+the original field may recover against the stored pre-jump stationary signal even
+after 6DoF yaw drift moved the world-heading value outside the old 2.5-degree
+return window. Any detected motion invalidates that relative shortcut. Norm/dip
+gates, the 1.2-second return dwell, the 5-second recovery dwell and explicit new-
+environment acquisition remain fail-closed and unchanged.
+
+### 0026b hot-path ownership
+
+The production magnetic reliability and yaw-correction callbacks consume lightweight
+views of the already-owned processed magnetic/heading snapshots rather than copying
+those snapshots into aggregate callback inputs. The runtime-owned field result is the
+single published copy used by auto-reference/yaw; the monitor does not retain another
+full output snapshot. High-dip threshold decisions compare positive squared scale
+factors, preserving the 0026a thresholds while avoiding a per-sample square root;
+status reporting derives the human-readable scale lazily.
+Quaternion-only motion output exits after packet 17 before acceleration unit
+conversion. These are execution/stack optimizations only: field/yaw decisions,
+packet bytes, fallback policy, persistent settings and calibration state are unchanged.

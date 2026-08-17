@@ -86,8 +86,34 @@ struct MagYawCorrectionInput {
     float accelTrust = 0.0f;
     bool fieldReliable = false;
     uint32_t fieldStableMs = 0;
+    bool horizontalTrustValid = false;
+    float horizontalTrust = 0.0f;
+    float horizontalReferenceNorm = 0.0f;
+    float horizontalEffectiveBad = 0.0f;
+    float horizontalEffectiveGood = 0.0f;
     float magneticHeadingRateDegS = 0.0f;
 
+    uint32_t nowMs = 0;
+};
+
+struct MagYawCorrectionInputView {
+    const MagProcessedSample* mag = nullptr;
+    const MagHeadingSample* heading = nullptr;
+
+    bool referenceValid = false;
+    float referenceWorldYawRad = 0.0f;
+    bool magTrustedForUse = false;
+    uint32_t magRejectFlagsForUse = MAG_REJECT_NONE;
+    float gyroNormDps = 0.0f;
+    float accelTrust = 0.0f;
+    bool fieldReliable = false;
+    uint32_t fieldStableMs = 0;
+    bool horizontalTrustValid = false;
+    float horizontalTrust = 0.0f;
+    float horizontalReferenceNorm = 0.0f;
+    float horizontalEffectiveBad = 0.0f;
+    float horizontalEffectiveGood = 0.0f;
+    float magneticHeadingRateDegS = 0.0f;
     uint32_t nowMs = 0;
 };
 
@@ -111,6 +137,9 @@ struct MagYawCorrectionOutput {
 
     float horizontalNorm = 0.0f;
     float horizontalTrust = 0.0f;
+    float horizontalReferenceNorm = 0.0f;
+    float horizontalEffectiveBad = 0.0f;
+    float horizontalEffectiveGood = 0.0f;
 
     float gyroNormDps = 0.0f;
     float gyroTrust = 0.0f;
@@ -188,6 +217,31 @@ public:
     void markApplied(float correctionStepDeg);
 
     bool update(const MagYawCorrectionInput& in,
+                const MagYawCorrectionConfig& cfg,
+                MagYawCorrectionOutput& out) {
+        const MagYawCorrectionInputView view{
+            &in.mag,
+            &in.heading,
+            in.referenceValid,
+            in.referenceWorldYawRad,
+            in.magTrustedForUse,
+            in.magRejectFlagsForUse,
+            in.gyroNormDps,
+            in.accelTrust,
+            in.fieldReliable,
+            in.fieldStableMs,
+            in.horizontalTrustValid,
+            in.horizontalTrust,
+            in.horizontalReferenceNorm,
+            in.horizontalEffectiveBad,
+            in.horizontalEffectiveGood,
+            in.magneticHeadingRateDegS,
+            in.nowMs,
+        };
+        return update(view, cfg, out);
+    }
+
+    bool update(const MagYawCorrectionInputView& in,
                 const MagYawCorrectionConfig& cfg,
                 MagYawCorrectionOutput& out);
 

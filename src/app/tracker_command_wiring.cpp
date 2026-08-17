@@ -80,6 +80,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.printRuntimeGyroBiasStatusUser = hooks.printRuntimeGyroBiasStatusUser;
     ctx.setRuntimeGyroBiasEnabled = hooks.setRuntimeGyroBiasEnabled;
     ctx.setRuntimeGyroBiasEnabledUser = hooks.setRuntimeGyroBiasEnabledUser;
+    ctx.setSlimeVRMotionPacketPolicy = hooks.setSlimeVRMotionPacketPolicy;
+    ctx.setSlimeVRMotionPacketPolicyUser = hooks.setSlimeVRMotionPacketPolicyUser;
     ctx.resetRuntimeGyroBiasEstimator = hooks.resetRuntimeGyroBiasEstimator;
     ctx.resetRuntimeGyroBiasEstimatorUser = hooks.resetRuntimeGyroBiasEstimatorUser;
     ctx.startStaticTest = hooks.startStaticTest;

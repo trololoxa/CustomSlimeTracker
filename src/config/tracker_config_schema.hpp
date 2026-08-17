@@ -4,6 +4,7 @@
 
 #include "defines.h"
 #include "core/math.hpp"
+#include "core/slimevr_motion_policy.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/accel_6pos_calibration.hpp"
@@ -272,10 +273,11 @@ struct TrackerOutputConfig {
     bool quaternionOutputEnabled = false;
     uint16_t outputRateHz = cfg::OUTPUT_RATE_HZ;
 
-    // Deprecated legacy field. SlimeVR UDP is controlled by the `slime`/network
-    // runtime, not by the local serial output backend. Sanitization forces this
-    // field to 0 so old configs with packetFormat=2 do not bind output to UDP.
-    uint8_t packetFormat = 0;
+    // Persisted SlimeVR motion mode, encoded with OUTPUT_PACKET_MODE_MARKER.
+    // Unmarked historical values migrate fail-closed to quaternion-only. The
+    // byte is reused in place, so config size/calibration storage stay stable.
+    uint8_t packetFormat = tracker_config_detail::OUTPUT_PACKET_MODE_MARKER |
+                           static_cast<uint8_t>(SlimeVRMotionPacketPolicy::QuaternionOnly);
 };
 
 struct TrackerConfigBlob {

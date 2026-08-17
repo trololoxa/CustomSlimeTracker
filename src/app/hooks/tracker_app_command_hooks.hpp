@@ -37,6 +37,11 @@ static bool requestMotionLightSleepHook(void* user) {
 
 static bool serviceNonCliRuntimeHook(void* user);
 
+static bool setSlimeVRMotionPacketPolicyHook(
+    SlimeVRMotionPacketPolicy policy,
+    void* user
+);
+
 #if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
 static RuntimeStatusReporterDeps makeRuntimeStatusReporterDeps() {
     RuntimeStatusReporterDeps deps;
@@ -505,6 +510,7 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     hooks.printRuntimeGyroBiasStatus = printRuntimeGyroBiasStatus;
     hooks.setRuntimeGyroBiasEnabled = setRuntimeGyroBiasEnabled;
     hooks.resetRuntimeGyroBiasEstimator = resetRuntimeGyroBiasEstimator;
+    hooks.setSlimeVRMotionPacketPolicy = setSlimeVRMotionPacketPolicyHook;
 #if TRACKER_ENABLE_STATIC_TEST
     hooks.startStaticTest = startStaticTestHook;
     hooks.stopStaticTest = stopStaticTestHook;

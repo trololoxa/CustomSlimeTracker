@@ -1177,6 +1177,37 @@ bool TrackerConfigStore::save(TrackerConfig& config,
                         nullptr, nullptr, provenance);
 }
 
+bool TrackerConfigStore::saveSlimeVRMotionPacketPolicy(
+    TrackerConfig& activeConfig,
+    SlimeVRMotionPacketPolicy policy,
+    TrackerCalibrationProvenance provenance) {
+    if (!slimevrMotionPacketPolicyValid(policy)) {
+        lastError_ = TrackerConfigError::CrcOrValidationFailed;
+        return false;
+    }
+
+    auto persisted = makeScratch<TrackerConfig>(lastError_);
+    if (!persisted) return false;
+
+    if (!verify(*persisted)) {
+        if (lastError_ != TrackerConfigError::NotFound) return false;
+        // No authoritative active slot exists yet. Persist a clean default
+        // baseline rather than accidentally committing unrelated RAM-only
+        // edits. Those edits remain explicit config-save responsibilities.
+        persisted->resetDefaults();
+        lastError_ = TrackerConfigError::None;
+    }
+
+    persisted->setSlimeVRMotionPacketPolicy(policy);
+    if (!save(*persisted, provenance)) return false;
+
+    // The storage transaction is committed and verified. Update only the
+    // corresponding active-runtime field; preserve every other RAM-only edit.
+    activeConfig.setSlimeVRMotionPacketPolicy(policy);
+    lastError_ = TrackerConfigError::None;
+    return true;
+}
+
 bool TrackerConfigStore::clearUncommittedActiveArtifactsForLegacyRecovery() {
     auto scratch = makeScratch<ResolveActiveScratch>(lastError_);
     if (!scratch) return false;

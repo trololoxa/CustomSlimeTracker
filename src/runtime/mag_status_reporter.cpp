@@ -1,5 +1,7 @@
 #include "runtime/mag_status_reporter.hpp"
 
+#include <algorithm>
+
 namespace tracker {
 
 
@@ -228,12 +230,36 @@ void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {
         out.print("field_dip_error_deg="); out.println(f.dipErrorDeg, 6);
         out.print("field_reference_heading_yaw_deg="); out.println(f.referenceHeadingYawDeg, 6);
         out.print("field_reference_heading_error_deg="); out.println(f.referenceHeadingErrorDeg, 6);
+        out.print("field_stationary_signal_yaw_deg="); out.println(f.stationaryFieldYawDeg, 6);
+        out.print("field_horizontal_norm="); out.println(f.horizontalNorm, 6);
+        out.print("field_reference_horizontal_norm="); out.println(f.referenceHorizontalNorm, 6);
+        out.print("field_horizontal_effective_bad_good=");
+        out.print(f.horizontalEffectiveBad, 6); out.print(','); out.println(f.horizontalEffectiveGood, 6);
+        out.print("field_horizontal_trust="); out.println(f.horizontalTrust, 6);
+        const float headingNoiseScale = magHeadingNoiseScale(f.headingNoiseScaleSquared);
+        const MagFieldReliabilityConfig& fieldCfg = deps.fieldReliabilityConfig;
+        const float stationaryJumpThresholdDeg =
+            fieldCfg.stationaryHeadingJumpMinDeg * headingNoiseScale;
+        const float stationaryJumpRateThresholdDegS = std::max(
+            fieldCfg.stationaryHeadingJumpRateDegS * headingNoiseScale,
+            f.stationaryHeadingJumpRateGyroFloorDegS);
+        const float headingStepSoftThresholdDeg = fieldCfg.headingStepSoftDeg * headingNoiseScale;
+        const float headingStepHardThresholdDeg = fieldCfg.headingStepHardDeg * headingNoiseScale;
+        out.print("field_stationary_jump_threshold_deg="); out.println(stationaryJumpThresholdDeg, 6);
+        out.print("field_stationary_jump_rate_threshold_deg_s=");
+        out.println(stationaryJumpRateThresholdDegS, 6);
+        out.print("field_heading_step_threshold_soft_hard_deg=");
+        out.print(headingStepSoftThresholdDeg, 6); out.print(',');
+        out.println(headingStepHardThresholdDeg, 6);
         out.print("field_heading_step_deg="); out.println(f.headingStepDeg, 6);
         out.print("field_heading_instant_rate_deg_s="); out.println(f.headingInstantRateDegS, 6);
         out.print("field_heading_rate_deg_s="); out.println(f.headingRateDegS, 6);
         out.print("field_stationary_window_delta_deg="); out.println(f.stationaryWindowHeadingDeltaDeg, 6);
         out.print("field_stationary_window_rate_deg_s="); out.println(f.stationaryWindowHeadingRateDegS, 6);
         out.print("field_stationary_heading_jump_latched="); out.println(f.stationaryHeadingJumpLatched ? "yes" : "no");
+        out.print("field_stationary_latch_reference_yaw_deg="); out.println(f.stationaryLatchReferenceFieldYawDeg, 6);
+        out.print("field_stationary_latch_reference_error_deg="); out.println(f.stationaryLatchReferenceErrorDeg, 6);
+        out.print("field_stationary_latch_motion_seen="); out.println(f.stationaryLatchMotionSeen ? "yes" : "no");
         if (deps.fieldReliability) {
             const auto& fs = deps.fieldReliability->stats();
             out.print("field_state_transitions="); out.println(fs.stateTransitions);
@@ -244,6 +270,8 @@ void magStatusPrintHeading(Stream& out, const MagStatusReporterDeps& deps) {
             out.print("field_stationary_heading_jump_rejects="); out.println(fs.stationaryHeadingJumpRejects);
             out.print("field_stationary_heading_jumps_latched="); out.println(fs.stationaryHeadingJumpsLatched);
             out.print("field_stationary_heading_returns="); out.println(fs.stationaryHeadingReturns);
+            out.print("field_stationary_heading_returns_via_world="); out.println(fs.stationaryHeadingReturnsViaWorld);
+            out.print("field_stationary_heading_returns_via_stationary_field="); out.println(fs.stationaryHeadingReturnsViaStationaryField);
         }
     }
 
@@ -365,6 +393,9 @@ void magStatusPrintYawCorrection(Stream& out, const MagStatusReporterDeps& deps)
     out.print("mag_age_ms="); out.println(y.magAgeMs);
     out.print("dt_ms="); out.println(y.dtMs);
     out.print("horizontal_norm="); out.println(y.horizontalNorm, 6);
+    out.print("horizontal_reference_norm="); out.println(y.horizontalReferenceNorm, 6);
+    out.print("horizontal_effective_bad_good=");
+    out.print(y.horizontalEffectiveBad, 6); out.print(','); out.println(y.horizontalEffectiveGood, 6);
     out.print("horizontal_trust="); out.println(y.horizontalTrust, 6);
     out.print("gyro_norm_dps="); out.println(y.gyroNormDps, 6);
     out.print("gyro_trust="); out.println(y.gyroTrust, 6);

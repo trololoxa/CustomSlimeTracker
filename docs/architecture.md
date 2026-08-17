@@ -802,6 +802,7 @@ marked as orphaned.
 Pure sensor-domain logic is split into:
 
 ```text
+sensor/mag_horizontal_trust.hpp shared pure local-field heading observability policy
 sensor/mag_field_reliability.*  temporal field reference, disturbance and recovery
 sensor/mag_axis_alignment.*     proper-rotation gyro/mag solver and bounded collector
 sensor/mag_yaw_correction.*     normal and large-error yaw correction gates

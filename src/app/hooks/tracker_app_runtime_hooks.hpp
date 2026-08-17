@@ -464,6 +464,23 @@ static bool slimevrSetConfigFlagHook(uint8_t sensorId, uint16_t configType, bool
     return setMagYawCorrectionApplyEnabledHook(enabled, true, nullptr);
 }
 
+static bool setSlimeVRMotionPacketPolicyHook(SlimeVRMotionPacketPolicy policy, void* user) {
+    (void)user;
+    if (!slimevrMotionPacketPolicyValid(policy)) return false;
+
+    // Persist only this policy relative to the authoritative NVS generation.
+    // RAM-only edits to output rate/local output remain unsaved by design.
+    if (!g_configStore.saveSlimeVRMotionPacketPolicy(
+            g_config, policy, TrackerCalibrationProvenance::Manual)) {
+        return false;
+    }
+
+    // Runtime application is deliberately field-local: do not restart the
+    // discovered session or reconfigure unrelated network/runtime state.
+    g_slimevrRuntime.setMotionPacketPolicy(policy);
+    return true;
+}
+
 static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
     SlimeVROutputRuntimeConfig cfg;
     cfg.enabled = enabled;
@@ -487,6 +504,7 @@ static SlimeVROutputRuntimeConfig makeAppSlimeVRRuntimeConfig(bool enabled) {
         cfg.rotationRateHz = cfg::OUTPUT_RATE_HZ;
     }
     cfg.incomingPacketsPerUpdate = TRACKER_SLIMEVR_INCOMING_PACKETS_PER_UPDATE;
+    cfg.motionPacketPolicy = g_config.slimevrMotionPacketPolicy();
     cfg.signalTelemetryEnabled = (TRACKER_SLIMEVR_ENABLE_SIGNAL_TELEMETRY != 0);
     cfg.temperatureTelemetryEnabled = (TRACKER_SLIMEVR_ENABLE_TEMPERATURE_TELEMETRY != 0);
     cfg.telemetryIntervalMs = TRACKER_SLIMEVR_TELEMETRY_INTERVAL_MS;
@@ -532,6 +550,8 @@ struct AppSlimeVRRuntimeStaticConfigCache {
     uint32_t discoveryIntervalMs = 0;
     uint16_t rotationRateHz = 0;
     uint8_t incomingPacketsPerUpdate = 0;
+    SlimeVRMotionPacketPolicy motionPacketPolicy =
+        SlimeVRMotionPacketPolicy::QuaternionOnly;
     bool magSupportEnabled = false;
     bool magEnabled = false;
     bool signalTelemetryEnabled = false;
@@ -570,6 +590,7 @@ static bool appSlimeVRRuntimeStaticConfigMatches(const SlimeVROutputRuntimeConfi
            g_slimeRuntimeStaticConfigCache.discoveryIntervalMs == cfg.discoveryIntervalMs &&
            g_slimeRuntimeStaticConfigCache.rotationRateHz == cfg.rotationRateHz &&
            g_slimeRuntimeStaticConfigCache.incomingPacketsPerUpdate == cfg.incomingPacketsPerUpdate &&
+           g_slimeRuntimeStaticConfigCache.motionPacketPolicy == cfg.motionPacketPolicy &&
            g_slimeRuntimeStaticConfigCache.magSupportEnabled == cfg.magSupportEnabled &&
            g_slimeRuntimeStaticConfigCache.magEnabled == cfg.magEnabled &&
            g_slimeRuntimeStaticConfigCache.signalTelemetryEnabled == cfg.signalTelemetryEnabled &&
@@ -600,6 +621,7 @@ static void appSlimeVRRuntimeStaticConfigCapture(const SlimeVROutputRuntimeConfi
     g_slimeRuntimeStaticConfigCache.discoveryIntervalMs = cfg.discoveryIntervalMs;
     g_slimeRuntimeStaticConfigCache.rotationRateHz = cfg.rotationRateHz;
     g_slimeRuntimeStaticConfigCache.incomingPacketsPerUpdate = cfg.incomingPacketsPerUpdate;
+    g_slimeRuntimeStaticConfigCache.motionPacketPolicy = cfg.motionPacketPolicy;
     g_slimeRuntimeStaticConfigCache.magSupportEnabled = cfg.magSupportEnabled;
     g_slimeRuntimeStaticConfigCache.magEnabled = cfg.magEnabled;
     g_slimeRuntimeStaticConfigCache.signalTelemetryEnabled = cfg.signalTelemetryEnabled;

@@ -226,6 +226,9 @@ int main() {
     cfg.localPort = 6969;
     cfg.discoveryIntervalMs = 1000;
     cfg.rotationRateHz = 100;
+    // Preserve the historical bundle-capable baseline for the broad protocol
+    // regression. Product defaults are independently tested as quaternion-only.
+    cfg.motionPacketPolicy = SlimeVRMotionPacketPolicy::BundleRotation17Acceleration4;
     cfg.magSupportEnabled = true;
     cfg.magEnabled = true;
     cfg.latestTemperatureValid = true;
@@ -1322,6 +1325,47 @@ int main() {
     manualRt.update(1020u);
     CHECK(ctx, manualRt.status().serverFound);
     CHECK(ctx, manualRt.status().serverIpv4 == manualUdp.resolvedIpv4);
+
+    // Runtime policy is explicit and may change without tearing down the
+    // discovered session. Quaternion-only must never emit acceleration.
+    manualCfg.motionPacketPolicy = SlimeVRMotionPacketPolicy::QuaternionOnly;
+    manualRt.configure(manualCfg);
+    manualSnapshots.snapshot.sequence += 1u;
+    const size_t quaternionOnlyBegin = manualUdp.sent.size();
+    manualRt.update(1201u);
+    CHECK(ctx, manualRt.status().motionPacketPolicy ==
+               SlimeVRMotionPacketPolicy::QuaternionOnly);
+    CHECK(ctx, manualRt.status().motionPacketMode ==
+               SlimeVRMotionPacketMode::Rotation17Only);
+    bool quaternionOnlyRotation = false;
+    bool quaternionOnlyAcceleration = false;
+    for (size_t i = quaternionOnlyBegin; i < manualUdp.sent.size(); ++i) {
+        if (manualUdp.sent[i].data.size() < 4u) continue;
+        const uint8_t type = manualUdp.sent[i].data[3];
+        quaternionOnlyRotation |= type == static_cast<uint8_t>(SlimeVRSendPacketType::RotationData);
+        quaternionOnlyAcceleration |= type == static_cast<uint8_t>(SlimeVRSendPacketType::Accel) ||
+                                      type == static_cast<uint8_t>(SlimeVRSendPacketType::RotationAndAcceleration) ||
+                                      type == static_cast<uint8_t>(SlimeVRSendPacketType::Bundle);
+    }
+    CHECK(ctx, quaternionOnlyRotation);
+    CHECK(ctx, !quaternionOnlyAcceleration);
+
+    manualCfg.motionPacketPolicy = SlimeVRMotionPacketPolicy::RotationAcceleration23;
+    manualRt.configure(manualCfg);
+    manualSnapshots.snapshot.sequence += 1u;
+    const size_t packet23Begin = manualUdp.sent.size();
+    manualRt.update(1221u);
+    CHECK(ctx, manualRt.status().motionPacketMode ==
+               SlimeVRMotionPacketMode::ExperimentalRotationAcceleration23);
+    bool sawPacket23 = false;
+    for (size_t i = packet23Begin; i < manualUdp.sent.size(); ++i) {
+        if (manualUdp.sent[i].data.size() >= 4u &&
+            manualUdp.sent[i].data[3] ==
+                static_cast<uint8_t>(SlimeVRSendPacketType::RotationAndAcceleration)) {
+            sawPacket23 = true;
+        }
+    }
+    CHECK(ctx, sawPacket23);
 
     FakeUdp failedResolveUdp;
     failedResolveUdp.resolveResult = false;

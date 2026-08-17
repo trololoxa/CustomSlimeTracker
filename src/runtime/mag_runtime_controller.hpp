@@ -102,6 +102,8 @@ struct MagRuntimeControllerDeps {
 
     MagProcessedSample* lastProcessed = nullptr;
     MagHeadingSample* lastHeading = nullptr;
+    // Required sample-path publication target; production/app wiring and native
+    // MagRuntimeController fixtures provide it together with the other `last*` outputs.
     MagFieldReliabilityOutput* lastFieldReliability = nullptr;
     MagYawCorrectionOutput* lastYawCorrection = nullptr;
 
@@ -127,7 +129,7 @@ public:
     const MagRuntimeConfig& runtimeConfig() const;
     MagHeadingConfig headingConfig() const;
     MagYawCorrectionConfig yawConfig() const;
-    MagFieldReliabilityConfig fieldReliabilityConfig() const;
+    const MagFieldReliabilityConfig& fieldReliabilityConfig() const;
 
     float headingErrorToReferenceRad(const MagHeadingSample& heading) const;
     float headingErrorToReferenceDeg(const MagHeadingSample& heading) const;
@@ -185,17 +187,27 @@ private:
                                         float accelTrust,
                                         bool processorTrustedForUse,
                                         MagFieldReliabilityOutput& reliability);
+    struct YawEnableState {
+        bool enabled = false;
+        bool applyEnabled = false;
+        bool recoveryActive = false;
+    };
+    YawEnableState yawEnableState() const;
+    MagYawCorrectionConfig yawConfig(const YawEnableState& enableState) const;
     void updateYawCorrectionSnapshot(uint32_t nowMs,
                                      float gyroNormDps,
                                      float accelTrust,
                                      bool magTrustedForUse,
                                      uint32_t magRejectFlagsForUse,
-                                     const MagFieldReliabilityOutput& reliability);
+                                     const MagFieldReliabilityOutput& reliability,
+                                     const YawEnableState& yawEnable);
 
     void updateAutoReference(uint32_t nowMs,
                              float gyroNormDps,
                              float accelTrust,
-                             bool magTrustedForUse);
+                             bool magTrustedForUse,
+                             const MagFieldReliabilityOutput& reliability,
+                             const YawEnableState& yawEnable);
     struct AxisAlignmentEvidence {
         uint32_t nowMs = 0;
         Vec3 gyroSensorRadS = Vec3::zero();

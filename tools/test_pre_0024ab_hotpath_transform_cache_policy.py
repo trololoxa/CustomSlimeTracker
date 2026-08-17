@@ -9,7 +9,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
+from quality_gate_runtime import (
+    asan_ubsan_environment,
+    project_temp_directory,
+    strongest_supported_sanitizer_flags,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -127,17 +131,22 @@ def main() -> int:
         ])
         run([str(tmp / "frame_cache")])
 
-        sanitizer = ["-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
-                     "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
-                     "-I", str(ROOT / "src"), "-I", str(ROOT / "tests/native")]
-        run([
-            cxx, *sanitizer,
-            str(ROOT / "tests/native/policy_pre_0024ab_frame_cache.cpp"),
-            str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
-            str(ROOT / "src/sensor/mag_runtime.cpp"),
-            "-o", str(tmp / "frame_cache_sanitized"),
-        ])
-        run([str(tmp / "frame_cache_sanitized")])
+        sanitizer_name, sanitizer_flags = strongest_supported_sanitizer_flags(cxx, ROOT)
+        if sanitizer_flags:
+            print(f"# pre-0024ab sanitizer={sanitizer_name}")
+            sanitizer = ["-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
+                         *sanitizer_flags,
+                         "-I", str(ROOT / "src"), "-I", str(ROOT / "tests/native")]
+            run([
+                cxx, *sanitizer,
+                str(ROOT / "tests/native/policy_pre_0024ab_frame_cache.cpp"),
+                str(ROOT / "tests/native/sanitizer_runtime_options.cpp"),
+                str(ROOT / "src/sensor/mag_runtime.cpp"),
+                "-o", str(tmp / "frame_cache_sanitized"),
+            ])
+            run([str(tmp / "frame_cache_sanitized")])
+        else:
+            print("# pre-0024ab sanitizer: SKIP (toolchain cannot link ASan/UBSan)")
 
         run([
             cxx, *common,

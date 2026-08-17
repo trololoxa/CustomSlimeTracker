@@ -123,26 +123,15 @@ void trackerSerialDispatchLogCommand(TrackerSerialCommandContext& ctx, int argc,
         return;
     }
 
-    const bool canControl = !ctx.logState->enabled() || ctx.logState->ownedBy(ctx) ||
-                            ctx.origin == TrackerCommandOrigin::UsbSerial;
-
     if (trackerSerialOutputIs(argv[1], "rate")) {
-        if (!canControl) {
-            tracker_serial_detail::printErr(out, "log is owned by another session");
-            return;
-        }
         if (argc < 3) {
             tracker_serial_detail::printErr(out, "usage: log rate <hz>");
             return;
         }
         uint32_t hz = 0;
-        const uint32_t maxHz = ctx.origin == TrackerCommandOrigin::RemoteTcp ? 20u : 200u;
+        constexpr uint32_t maxHz = 200u;
         if (!tracker_serial_detail::parseU32(argv[2], hz) || hz == 0 || hz > maxHz) {
-            tracker_serial_detail::printErr(
-                out,
-                ctx.origin == TrackerCommandOrigin::RemoteTcp
-                    ? "invalid remote log rate; expected 1..20"
-                    : "invalid log rate; expected 1..200");
+            tracker_serial_detail::printErr(out, "invalid log rate; expected 1..200");
             return;
         }
         ctx.logState->rateHz = static_cast<uint16_t>(hz);
@@ -166,12 +155,8 @@ void trackerSerialDispatchLogCommand(TrackerSerialCommandContext& ctx, int argc,
     }
 
     if (trackerSerialOutputIs(argv[1], "finish")) {
-        if (!canControl || !ctx.logState->enabled()) {
-            tracker_serial_detail::printErr(
-                out,
-                ctx.logState->enabled()
-                    ? "log is owned by another session"
-                    : "log is not running");
+        if (!ctx.logState->enabled()) {
+            tracker_serial_detail::printErr(out, "log is not running");
             return;
         }
         ctx.logState->finishing = true;
@@ -180,10 +165,6 @@ void trackerSerialDispatchLogCommand(TrackerSerialCommandContext& ctx, int argc,
     }
 
     if (trackerSerialOutputIs(argv[1], "reset")) {
-        if (!canControl) {
-            tracker_serial_detail::printErr(out, "log is owned by another session");
-            return;
-        }
         ctx.logState->sequence = 0;
         ctx.logState->lastEmitUs = 0;
         ctx.logState->lastMagEmitUs = 0;
@@ -198,10 +179,6 @@ void trackerSerialDispatchLogCommand(TrackerSerialCommandContext& ctx, int argc,
     }
 
     if (trackerSerialOutputIs(argv[1], "off") || trackerSerialOutputIs(argv[1], "stop")) {
-        if (!canControl) {
-            tracker_serial_detail::printErr(out, "log is owned by another session");
-            return;
-        }
         if (ctx.resetLogPipeline) {
             ctx.resetLogPipeline(true, ctx.resetLogPipelineUser);
         }
@@ -226,11 +203,6 @@ void trackerSerialDispatchLogCommand(TrackerSerialCommandContext& ctx, int argc,
         start = (mode != TrackerLogMode::Off);
     } else {
         tracker_serial_detail::printErr(out, "unknown log command; use off|basic|full|start|stop|finish|rate|header|summary|reset");
-        return;
-    }
-
-    if (!canControl) {
-        tracker_serial_detail::printErr(out, "log is owned by another session");
         return;
     }
 
@@ -292,7 +264,6 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
             return;
         }
         if (trackerSerialOutputIs(argv[2], "debug")) {
-            ctx.config->data.output.packetFormat = 0;
             ctx.config->data.output.serialDebugEnabled = true;
             ctx.config->data.output.quaternionOutputEnabled = false;
             if (ctx.streamState) {
@@ -318,7 +289,6 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
     if (trackerSerialOutputIs(argv[1], "start")) {
         ctx.config->data.output.quaternionOutputEnabled = true;
         ctx.config->data.output.serialDebugEnabled = false;
-        ctx.config->data.output.packetFormat = 0;
         if (ctx.streamState) {
             ctx.streamState->mode = TrackerStreamMode::Quat;
             ctx.streamState->lastEmitUs = 0;
@@ -332,7 +302,6 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
     if (trackerSerialOutputIs(argv[1], "stop")) {
         ctx.config->data.output.quaternionOutputEnabled = false;
         ctx.config->data.output.serialDebugEnabled = false;
-        ctx.config->data.output.packetFormat = 0;
         if (ctx.streamState) ctx.streamState->mode = TrackerStreamMode::Off;
         ctx.config->updateCrc();
         tracker_serial_detail::printOk(out, "local output stopped");

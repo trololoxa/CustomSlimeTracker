@@ -8,6 +8,7 @@
 // compile a different struct layout (and silently drop optional callbacks).
 #include "defines.h"
 #include "connection/lsm6dsv_driver.hpp"
+#include "core/slimevr_motion_policy.hpp"
 #include "serial/tracker_command_origin.hpp"
 #include "serial/tracker_serial_parse.hpp"
 #include "serial/tracker_serial_print.hpp"
@@ -246,6 +247,9 @@ struct TrackerSerialCommandContext {
 
     bool (*setRuntimeGyroBiasEnabled)(bool enabled, void* user) = nullptr;
     void* setRuntimeGyroBiasEnabledUser = nullptr;
+
+    bool (*setSlimeVRMotionPacketPolicy)(SlimeVRMotionPacketPolicy policy, void* user) = nullptr;
+    void* setSlimeVRMotionPacketPolicyUser = nullptr;
 
     void (*resetRuntimeGyroBiasEstimator)(void* user) = nullptr;
     void* resetRuntimeGyroBiasEstimatorUser = nullptr;

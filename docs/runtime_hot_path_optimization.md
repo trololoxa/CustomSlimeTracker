@@ -342,3 +342,39 @@ UDP reopen so transient TX pressure cannot create a discovery/grace latency gap.
 The tracker configuration CRC is the authoritative runtime revision for immutable sensor-frame data. IMU and magnetic hot paths reuse a previously validated `SensorToDeviceFrame` while that revision is unchanged. Any authoritative configuration mutation must sanitize and call `updateCrc()` before publication; a new revision reconstructs and validates the frame fail-closed. The magnetic controller additionally caches its immutable `MagRuntimeConfig` and returns it by reference, avoiding a per-sample rebuild and large value copy. Standalone processors without an injected cache retain the original validation path.
 
 This optimization does not skip, decimate or reorder samples and does not alter calibration, AHRS, magnetic-yaw or output equations.
+
+## 0026b magnetic and motion-output hot-path cleanup
+
+0026b is a semantics-preserving optimization of the 0026/0026a paths. The magnetic
+field and yaw runtime callbacks pass lightweight pointer/scalar views instead of
+copying the full processed-magnetic and heading aggregates onto each callback stack.
+The field monitor no longer retains/copies a second complete last-output snapshot;
+the runtime-owned output is handed directly to auto-reference and yaw. The public
+aggregate input overloads remain as compatibility wrappers for native callers and
+tests; the production callback uses only the view overloads.
+
+High-dip heading thresholds keep the same geometry. The callback stores the positive
+heading-noise scale squared and performs equivalent squared comparisons, so the
+per-magnetic-sample square root is removed. Human-readable effective thresholds are
+converted back with `sqrt` only while formatting `mag heading` diagnostics. Immutable
+field tuning is shared as a read-only static config; the two persisted horizontal
+norm gates remain explicit scalars in the runtime view and therefore still reflect
+live authoritative config without a per-controller RAM cache.
+
+The quaternion-only SlimeVR path returns after packet 17 before converting linear
+acceleration from g to m/s^2. Acceleration policies still perform exactly one shared
+conversion before the unchanged packet-23/bundle/fallback encoders. Packet bytes,
+packet selection/fallback semantics, output cadence and prepared-snapshot ownership
+are unchanged.
+
+Host `-fstack-usage` evidence against immediate predecessor 0026a, including the
+owning `processRawSample` frame, shows the deepest field chain fall from approximately
+816 to 480 bytes at `-O2` and from 784 to 496 bytes at `-Os`; the yaw chain falls
+from approximately 720 to 368 bytes at `-O2` and 720 to 384 bytes at `-Os`. The core
+field frame itself grows (176 to 224 bytes at `-O2`, 144 to 240 bytes at `-Os`)
+because arithmetic moved into the leaf function, so acceptance is based on the
+smaller complete nested callback peak rather than an isolated frame. A
+120,000-step deterministic before/after decision replay produced an identical
+state/flags/trust/latch stream. Host timing is supporting evidence only; target
+ProductionDiag timing/high-water acceptance remains required before claiming a
+target performance improvement.

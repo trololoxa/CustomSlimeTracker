@@ -9,7 +9,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from quality_gate_runtime import asan_ubsan_environment, project_temp_directory
+from quality_gate_runtime import (
+    asan_ubsan_environment,
+    project_temp_directory,
+    strongest_supported_sanitizer_flags,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -190,14 +194,27 @@ def main() -> int:
             "src/runtime/battery_runtime.cpp",
             "src/runtime/battery_adc_batch_sampler.cpp",
         ], ["-O2", "-Wall", "-Wextra", "-Werror"])
-        compile_run(cxx, tmp, "bias", [
-            "tests/native/test_runtime_bias_controller.cpp",
-            "src/runtime/runtime_gyro_bias_controller.cpp",
-            "src/sensor/ahrs_6dof.cpp",
-            "src/sensor/calibration.cpp",
-            "src/sensor/gyro_temperature_compensation.cpp",
-            "src/sensor/imu_quality.cpp",
-        ], ["-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer"])
+        sanitizer_name, sanitizer_flags = strongest_supported_sanitizer_flags(cxx, ROOT)
+        if sanitizer_flags:
+            print(f"# pre-0024 sanitizer={sanitizer_name}")
+            compile_run(cxx, tmp, "bias", [
+                "tests/native/test_runtime_bias_controller.cpp",
+                "src/runtime/runtime_gyro_bias_controller.cpp",
+                "src/sensor/ahrs_6dof.cpp",
+                "src/sensor/calibration.cpp",
+                "src/sensor/gyro_temperature_compensation.cpp",
+                "src/sensor/imu_quality.cpp",
+            ], ["-O1", "-g", *sanitizer_flags])
+        else:
+            print("# pre-0024 sanitizer: SKIP (toolchain cannot link ASan/UBSan)")
+            compile_run(cxx, tmp, "bias", [
+                "tests/native/test_runtime_bias_controller.cpp",
+                "src/runtime/runtime_gyro_bias_controller.cpp",
+                "src/sensor/ahrs_6dof.cpp",
+                "src/sensor/calibration.cpp",
+                "src/sensor/gyro_temperature_compensation.cpp",
+                "src/sensor/imu_quality.cpp",
+            ], ["-O1", "-g"])
 
         for source in (
             "src/runtime/fifo_runtime_processor.cpp",

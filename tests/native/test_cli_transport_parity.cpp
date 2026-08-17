@@ -85,7 +85,7 @@ int main() {
     context.stopStaticTest = stopTest;
     dispatchStop(context);
     CHECK(ctx, stoppedThrough == &remote);
-    CHECK(ctx, !stoppedForce);
+    CHECK(ctx, stoppedForce);
     CHECK(ctx, stopCalls == 1u);
 
     context.io = &usb;
@@ -98,21 +98,21 @@ int main() {
     TrackerSerialLogState logState;
     context.logState = &logState;
     context.origin = TrackerCommandOrigin::RemoteTcp;
-    dispatch(context, trackerSerialDispatchLogCommand, "log", "rate", "21");
-    CHECK(ctx, logState.rateHz == 20u);
-    dispatch(context, trackerSerialDispatchLogCommand, "log", "rate", "20");
-    CHECK(ctx, logState.rateHz == 20u);
+    dispatch(context, trackerSerialDispatchLogCommand, "log", "rate", "200");
+    CHECK(ctx, logState.rateHz == 200u);
+    dispatch(context, trackerSerialDispatchLogCommand, "log", "rate", "201");
+    CHECK(ctx, logState.rateHz == 200u);
 
     context.startStaticTest = startStaticTest;
-    dispatch(context, trackerSerialDispatchTestCommand, "test", "static", "901");
-    CHECK(ctx, startedDurationMs == 0u);
-    dispatch(context, trackerSerialDispatchTestCommand, "test", "static", "900");
-    CHECK(ctx, startedDurationMs == 900000u);
+    dispatch(context, trackerSerialDispatchTestCommand, "test", "static", "21600");
+    CHECK(ctx, startedDurationMs == 21600000u);
+    dispatch(context, trackerSerialDispatchTestCommand, "test", "static", "21601");
+    CHECK(ctx, startedDurationMs == 21600000u);
 
     context.printStaticTestSummary = printStaticSummary;
     dispatch(context, trackerSerialDispatchTestCommand, "test", "summary", "static");
     CHECK(ctx, summaryCalls == 1u);
     CHECK(ctx, usb.output.find("TESTSUM,static,test") != std::string::npos);
 
-    return ctx.finish("test_command_ownership");
+    return ctx.finish("cli_transport_parity");
 }
