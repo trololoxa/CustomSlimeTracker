@@ -57,6 +57,8 @@ struct TrackerBootstrapDeps {
     size_t calibrationRawBufferCapacity = 0;
     bool (*waitForCalibrationFifoEvent)(uint32_t timeoutMs, void* user) = nullptr;
     void* waitForCalibrationFifoEventUser = nullptr;
+    bool (*serviceCalibrationCapture)(FifoCalibrationService, void*) = nullptr;
+    void* serviceCalibrationCaptureUser = nullptr;
 #endif
     float latestTempC = 25.0f;
 

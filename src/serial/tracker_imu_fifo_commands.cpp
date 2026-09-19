@@ -6,6 +6,7 @@
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/imu_quality.hpp"
+#include "runtime/tracker_health_state.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "serial/tracker_fifo_config_control.hpp"
 #include "serial/tracker_serial_context.hpp"
@@ -106,6 +107,7 @@ void trackerSerialPrintQualityStats(Stream& out, const ImuQualityCounters& qc) {
     out.print("zero_timestamp_samples="); out.println(qc.zeroTimestampSamples);
     out.print("nonmonotonic_timestamp_samples="); out.println(qc.nonMonotonicTimestampSamples);
     out.print("large_gap_samples="); out.println(qc.largeGapSamples);
+    out.print("small_gap_samples="); out.println(qc.smallGapSamples);
     out.print("estimated_dropped_samples="); out.println(qc.estimatedDroppedSamples);
     out.print("fifo_overrun_events="); out.println(qc.fifoOverrunEvents);
     out.print("fifo_full_events="); out.println(qc.fifoFullEvents);
@@ -304,20 +306,36 @@ void trackerSerialDispatchFifoCommand(TrackerSerialCommandContext& ctx, int argc
 
     if (tracker_serial_detail::eqIgnoreCase(argv[1], "reset")) {
         const uint64_t lastTs = ctx.fifo->stats().lastAssignedTimestampUs;
-        const bool ok = ctx.fifo->resetFifo();
-        ctx.fifo->resetTimestampReconstruction(lastTs);
-        if (ctx.quality) {
-            ctx.quality->reset();
-            ctx.quality->syncFifoStats(ctx.fifo->stats());
-        }
-        if (ctx.resetFifoRuntime) ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
-        if (ctx.requestTrackingRecovery) {
-            ctx.requestTrackingRecovery(
+        if (ctx.requestSensorRecovery) {
+            const bool accepted = ctx.requestSensorRecovery(
+                TrackerHealthFaultCode::FifoDiscontinuity,
                 imu_quality_flags::FIFO_RECOVERY_REQUESTED,
-                "manual_fifo_reset",
                 lastTs,
-                ctx.requestTrackingRecoveryUser
-            );
+                "manual_fifo_reset",
+                ctx.requestSensorRecoveryUser);
+            if (accepted) tracker_serial_detail::printOk(out, "fifo reset queued");
+            else tracker_serial_detail::printErr(out, "fifo recovery already active");
+            return;
+        }
+
+        // Host/minimal wiring fallback. Never advance the software epoch when
+        // the verified hardware transaction failed.
+        const bool ok = ctx.fifo->resetFifo();
+        if (ok) {
+            ctx.fifo->resetTimestampReconstruction(lastTs);
+            if (ctx.quality) {
+                ctx.quality->reset();
+                ctx.quality->syncFifoStats(ctx.fifo->stats());
+            }
+            if (ctx.resetFifoRuntime) ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
+            if (ctx.requestTrackingRecovery) {
+                ctx.requestTrackingRecovery(
+                    imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+                    "manual_fifo_reset",
+                    lastTs,
+                    ctx.requestTrackingRecoveryUser
+                );
+            }
         }
         if (ok) tracker_serial_detail::printOk(out, "fifo reset");
         else tracker_serial_detail::printErr(out, "fifo reset failed");

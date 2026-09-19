@@ -170,6 +170,11 @@ void ImuQualityMonitor::evaluateTimestamp(const Lsm6dsv::RawSample& raw,
         q.dtUs = dt64 > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : static_cast<uint32_t>(dt64);
 
         if (expectedDt > 0.0f) {
+            const float smallGapThreshold = expectedDt * cfg_.smallGapFactor;
+            if (cfg_.smallGapFactor > 0.0f &&
+                static_cast<float>(q.dtUs) < smallGapThreshold) {
+                q.flags |= imu_quality_flags::TIMESTAMP_SMALL_GAP;
+            }
             const float gapThreshold = expectedDt * cfg_.largeGapFactor;
             if (static_cast<float>(q.dtUs) > gapThreshold) {
                 q.flags |= imu_quality_flags::TIMESTAMP_LARGE_GAP;
@@ -308,8 +313,7 @@ void ImuQualityMonitor::finalizeDecision(ImuQualityResult& q) {
     if (q.has(imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) && cfg_.requestRecoveryOnTimestampQueueOverflow) {
         requestRecovery(q, imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW);
     }
-    if (q.has(imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW) &&
-        cfg_.requestRecoveryOnCompletedQueueOverflow) {
+    if (q.has(imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW)) {
         requestRecovery(q, imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW);
     }
 
@@ -350,6 +354,7 @@ void ImuQualityMonitor::updateCounters(const ImuQualityResult& q) {
     if (q.has(imu_quality_flags::TIMESTAMP_ZERO)) counters_.zeroTimestampSamples++;
     if (q.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC)) counters_.nonMonotonicTimestampSamples++;
     if (q.has(imu_quality_flags::TIMESTAMP_LARGE_GAP)) counters_.largeGapSamples++;
+    if (q.has(imu_quality_flags::TIMESTAMP_SMALL_GAP)) counters_.smallGapSamples++;
     if (q.has(imu_quality_flags::SAMPLE_DROPPED_BEFORE)) {
         counters_.estimatedDroppedSamples += q.estimatedDroppedBefore;
     }

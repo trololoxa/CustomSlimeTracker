@@ -55,8 +55,8 @@ public:
     void resetDefaults();
     uint32_t computeCrc() const;
     void updateCrc();
-    void sanitize();
     bool validate() const;
+    bool validateSemanticConfig() const;
     SlimeVRUserAction tapUserAction() const;
     void setTapUserAction(SlimeVRUserAction action);
 };
@@ -70,15 +70,19 @@ public:
     const char* lastErrorName() const;
 
     bool load(TrackerNetworkConfig& out);
-    // On success, config becomes the exact sanitized payload written to NVS.
+    // Candidate input is immutable on failure. Strict semantic validation is
+    // performed before write and exact bytes are read back before success.
     // On failure, config is left unchanged.
     bool save(TrackerNetworkConfig& config);
     bool erase();
+    void setWriteInhibited(bool inhibited) { writeInhibited_ = inhibited; }
+    bool writeInhibited() const { return writeInhibited_; }
 
 private:
     const char* ns_ = nullptr;
     const char* key_ = nullptr;
     TrackerConfigError lastError_ = TrackerConfigError::None;
+    bool writeInhibited_ = false;
 };
 
 } // namespace tracker

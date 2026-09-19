@@ -256,8 +256,9 @@ void trackerCalibrationQualityRecomputeOverall(const TrackerConfig& config,
     trackerCalibrationQualityRecomputeOverall(config.data, quality);
 }
 
-void trackerApplyCalibrationCandidateToConfig(TrackerConfig& active,
-                                                const TrackerConfig& candidate) {
+bool trackerApplyCalibrationCandidateToConfig(TrackerConfig& activeOut,
+                                              const TrackerConfig& candidate) {
+    TrackerConfig active = activeOut;
     const bool tempCompEnabled = active.data.gyroCal.tempCompEnabled;
     const bool tempLearningEnabled = active.data.gyroCal.reservedTempLearningEnabled;
 
@@ -285,15 +286,17 @@ void trackerApplyCalibrationCandidateToConfig(TrackerConfig& active,
         !active.data.magCal.axisAlignmentValid) {
         active.data.magYaw.applyEnabled = false;
     }
-    active.sanitize();
+    if (!active.validateSemanticConfig()) return false;
     active.updateCrc();
+    activeOut = active;
+    return true;
 }
 
-TrackerConfig trackerComposeCalibrationCandidate(const TrackerConfig& active,
-                                                 const TrackerConfig& candidate) {
-    TrackerConfig composed = active;
-    trackerApplyCalibrationCandidateToConfig(composed, candidate);
-    return composed;
+bool trackerComposeCalibrationCandidate(const TrackerConfig& active,
+                                        const TrackerConfig& candidate,
+                                        TrackerConfig& outComposed) {
+    outComposed = active;
+    return trackerApplyCalibrationCandidateToConfig(outComposed, candidate);
 }
 
 bool trackerCalibrationModelEqual(const TrackerConfig& a, const TrackerConfig& b) {
@@ -398,6 +401,8 @@ uint32_t trackerConfigSlotRecordCrc(const TrackerConfigSlotRecord& record) {
 bool trackerValidateConfigSlotRecord(const TrackerConfigSlotRecord& record) {
     if (record.magic != tracker_config_storage_detail::SLOT_MAGIC ||
         (record.version != tracker_config_storage_detail::LEGACY_SLOT_VERSION &&
+         record.version != tracker_config_storage_detail::TRANSITIONAL_SLOT_VERSION &&
+         record.version != tracker_config_storage_detail::DEPLOYED_V3_SLOT_VERSION &&
          record.version != tracker_config_storage_detail::SLOT_VERSION) ||
         record.size != sizeof(TrackerConfigSlotRecord) ||
         record.generation == 0 ||
@@ -409,6 +414,16 @@ bool trackerValidateConfigSlotRecord(const TrackerConfigSlotRecord& record) {
     TrackerConfig config;
     config.data = record.payload;
     if (!config.validate()) return false;
+    // Current v4 slots are runtime-authoritative records, not migration input.
+    // A valid envelope/CRC must therefore never bypass semantic admission.
+    // Historical v1 and transitional v2 slots remain structurally readable
+    // only so load() can run their explicit, versioned normalization path.
+    if (record.version == tracker_config_storage_detail::SLOT_VERSION &&
+        !config.validateSemanticConfig()) {
+        return false;
+    }
+    if (record.version == tracker_config_storage_detail::DEPLOYED_V3_SLOT_VERSION &&
+        !trackerNormalizeDeployedV3(config)) return false;
     return trackerSensorSignaturesEqual(record.signature, trackerMakeSensorSignature(config));
 }
 

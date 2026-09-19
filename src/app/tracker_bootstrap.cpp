@@ -33,25 +33,41 @@ void trackerBootstrapEnforceProductCalibrationValidity(TrackerConfig& config) {
 
 void trackerBootstrapApplySpiConfigToTransport(TrackerConfig& config,
                                                       ArduinoLsm6dsvSpiTransport& lsmBus) {
-    config.sanitize();
     lsmBus.setSettings(config.data.hardware.spiHz, config.data.hardware.spiMode);
 }
 
 bool trackerBootstrapSetRuntimeSpiFrequency(TrackerConfig& config,
                                                    ArduinoLsm6dsvSpiTransport& lsmBus,
                                                    uint32_t hz) {
-    config.data.hardware.spiHz = hz;
-    config.sanitize();
-    config.updateCrc();
-    lsmBus.setSettings(config.data.hardware.spiHz, config.data.hardware.spiMode);
+    TrackerConfig candidate = config;
+    candidate.data.hardware.spiHz = hz;
+    if (!candidate.validateSemanticConfig()) return false;
+    candidate.updateCrc();
+    lsmBus.setSettings(candidate.data.hardware.spiHz, candidate.data.hardware.spiMode);
+    config = candidate;
     return true;
 }
 
 bool trackerBootstrapLoadConfigAndApplyRuntime(const TrackerBootstrapDeps& deps) {
     deps.configStore->loadOrDefaults(*deps.config, deps.configLoadedFromNvs);
-    deps.config->sanitize();
+    // Runtime application requires a complete semantic proof after the
+    // storage/default migration paths have finished.
+    if (deps.configStore->lastLoadStatus() ==
+        TrackerConfigLoadStatus::LoadedLegacyReadOnly) {
+        deps.config->sanitize();
+    }
     trackerMigratePerformanceDefaults(*deps.config);
     trackerBootstrapEnforceProductCalibrationValidity(*deps.config);
+    TrackerSemanticConfigError semanticError = TrackerSemanticConfigError::None;
+    if (!deps.config->validateSemanticConfig(&semanticError)) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+        deps.out->print("# ERR config semantic validation failed before apply: ");
+        deps.out->println(trackerSemanticConfigErrorName(semanticError));
+#endif
+        deps.config->resetDefaults();
+        if (deps.configLoadedFromNvs) *deps.configLoadedFromNvs = false;
+        if (!deps.config->validateSemanticConfig()) return false;
+    }
 
     deps.config->applyToImuCalibration(*deps.imuCal);
     deps.config->applyToGyroTempComp(*deps.gyroTempComp);
@@ -77,6 +93,8 @@ bool trackerBootstrapLoadConfigAndApplyRuntime(const TrackerBootstrapDeps& deps)
 #if TRACKER_HAS_SERIAL_STREAM_STATE
     if (deps.streamState != nullptr) {
         deps.streamState->rateHz = deps.config->data.output.outputRateHz;
+        // Local debug streaming is intentionally session-scoped: restoring a
+        // high-rate text stream at boot can starve the diagnostic console.
         deps.streamState->mode = deps.config->data.output.quaternionOutputEnabled
             ? TrackerStreamMode::Quat
             : TrackerStreamMode::Off;
@@ -181,6 +199,8 @@ void trackerBootstrapSetupCalibrationIo(const TrackerBootstrapDeps& deps) {
     deps.calibrationIo->maxDrainRoundsPerEvent = deps.config->data.fifo.maxDrainRoundsPerEvent;
     deps.calibrationIo->waitForFifoEvent = deps.waitForCalibrationFifoEvent;
     deps.calibrationIo->waitUser = deps.waitForCalibrationFifoEventUser;
+    deps.calibrationIo->serviceCapture = deps.serviceCalibrationCapture;
+    deps.calibrationIo->serviceUser = deps.serviceCalibrationCaptureUser;
     deps.calibrationIo->latestTempC = deps.latestTempC;
 #else
     (void)deps;

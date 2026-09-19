@@ -13,7 +13,9 @@ void Accel6PosCalibration::reset() {
 
 bool Accel6PosCalibration::setFace(Face face, const Vec3& meanG, uint32_t samples, const Vec3& varianceG2) {
     const int idx = faceIndex(face);
-    if (idx < 0 || !meanG.isFinite() || samples == 0) {
+    if (idx < 0 || !meanG.isFinite() || !varianceG2.isFinite() ||
+        varianceG2.x < 0.0f || varianceG2.y < 0.0f || varianceG2.z < 0.0f ||
+        samples == 0) {
         return false;
     }
 
@@ -60,6 +62,11 @@ bool Accel6PosCalibration::compute() {
 bool Accel6PosCalibration::compute(const ValidationParams& params) {
     result_ = Result{};
     result_.qualityFlags = accel_cal_quality_flags::OK;
+
+    if (!validationParamsValid(params)) {
+        result_.qualityFlags |= accel_cal_quality_flags::INVALID_VALIDATION_PARAMS;
+        return false;
+    }
 
     if (!hasAllFaces()) {
         result_.qualityFlags |= accel_cal_quality_flags::MISSING_FACE;
@@ -223,7 +230,7 @@ const char* Accel6PosCalibration::faceName(Face face) {
 }
 
 Accel6PosCalibration::Face Accel6PosCalibration::parseFace(const char* s) {
-    if (!s) return Face::Invalid;
+    if (!s || s[0] == '\0' || s[1] == '\0' || s[2] != '\0') return Face::Invalid;
 
     const char a = upper(s[0]);
     const char b = upper(s[1]);
@@ -254,6 +261,8 @@ const char* Accel6PosCalibration::qualityFlagName(uint32_t flag) {
         case accel_cal_quality_flags::AUTO_FACE_AMBIGUOUS:   return "AUTO_FACE_AMBIGUOUS";
         case accel_cal_quality_flags::INDEPENDENT_VALIDATION_FAILED:
             return "INDEPENDENT_VALIDATION_FAILED";
+        case accel_cal_quality_flags::INVALID_VALIDATION_PARAMS:
+            return "INVALID_VALIDATION_PARAMS";
     }
     return "UNKNOWN";
 }
@@ -312,6 +321,21 @@ float Accel6PosCalibration::clamp01(float x) {
     if (x < 0.0f) return 0.0f;
     if (x > 1.0f) return 1.0f;
     return x;
+}
+
+bool Accel6PosCalibration::validationParamsValid(const ValidationParams& p) {
+    return p.minSamplesPerFace > 0u &&
+        isFinite(p.minFaceNormG) && isFinite(p.maxFaceNormG) &&
+        p.minFaceNormG > 0.0f && p.minFaceNormG < p.maxFaceNormG &&
+        isFinite(p.maxFaceStddevG) && p.maxFaceStddevG > 0.0f &&
+        isFinite(p.minExpectedAxisAbsG) && p.minExpectedAxisAbsG > 0.0f &&
+        isFinite(p.minAxisSeparationG) && p.minAxisSeparationG > 0.0f &&
+        isFinite(p.maxAbsBiasG) && p.maxAbsBiasG > 0.0f &&
+        isFinite(p.maxPairCenterResidualG) && p.maxPairCenterResidualG > 0.0f &&
+        isFinite(p.minScale) && isFinite(p.maxScale) &&
+        p.minScale > 0.0f && p.minScale < p.maxScale &&
+        isFinite(p.maxPostCalNormErrorG) && p.maxPostCalNormErrorG > 0.0f &&
+        isFinite(p.maxPostCalAxisResidualG) && p.maxPostCalAxisResidualG > 0.0f;
 }
 
 int Accel6PosCalibration::faceIndex(Face face) {

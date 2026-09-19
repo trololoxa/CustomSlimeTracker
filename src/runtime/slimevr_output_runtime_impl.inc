@@ -1778,7 +1778,16 @@ void SlimeVROutputRuntime::sendRotation(const TrackerPreparedOutputSnapshot& sna
         if ((reasons & prepared_output_motion_flags::PAIR_COHERENCY_DEGRADED) != 0u) ++accelerationSkippedPairDegraded_;
         if ((reasons & prepared_output_motion_flags::ACCEL_SATURATED) != 0u) ++accelerationSkippedSaturated_;
         if ((reasons & prepared_output_motion_flags::NON_FINITE) != 0u) ++accelerationSkippedNonFinite_;
-        if (reasons == prepared_output_motion_flags::NONE) ++accelerationSkippedOther_;
+        constexpr uint8_t knownReasons =
+            prepared_output_motion_flags::CONFIGURATION_NOT_READY |
+            prepared_output_motion_flags::ACCEL_COMPONENT_MISSING |
+            prepared_output_motion_flags::PAIR_COHERENCY_DEGRADED |
+            prepared_output_motion_flags::ACCEL_SATURATED |
+            prepared_output_motion_flags::NON_FINITE;
+        if ((reasons & static_cast<uint8_t>(~knownReasons)) != 0u ||
+            reasons == prepared_output_motion_flags::NONE) {
+            ++accelerationSkippedOther_;
+        }
         return;
     }
 

@@ -150,6 +150,7 @@ const char* TrackerConfigStore::errorName(TrackerConfigError e) {
         case TrackerConfigError::CandidateAlreadyPromoted: return "CandidateAlreadyPromoted";
         case TrackerConfigError::RuntimeCalibrationDiverged: return "RuntimeCalibrationDiverged";
         case TrackerConfigError::RuntimeSensorSignatureDiverged: return "RuntimeSensorSignatureDiverged";
+        case TrackerConfigError::WriteInhibited: return "WriteInhibited";
     }
     return "Unknown";
 }
@@ -158,6 +159,7 @@ const char* TrackerConfigStore::loadStatusName(TrackerConfigLoadStatus status) {
     switch (status) {
         case TrackerConfigLoadStatus::Loaded: return "loaded";
         case TrackerConfigLoadStatus::Migrated: return "migrated";
+        case TrackerConfigLoadStatus::LoadedLegacyReadOnly: return "loaded_legacy_read_only";
         case TrackerConfigLoadStatus::DefaultsNotFound: return "defaults_not_found";
         case TrackerConfigLoadStatus::DefaultsStorageError: return "defaults_storage_error";
         case TrackerConfigLoadStatus::None: break;
@@ -460,7 +462,7 @@ bool TrackerConfigStore::invalidatePreparedSlot(
             trackerValidateConfigSlotRecord(*previous) &&
             previous->generation == prepared.previousSelector.activeGeneration) {
             if (!writeSlotVerified(prepared.targetSlot, *previous)) return false;
-            if (previous->version == tracker_config_storage_detail::SLOT_VERSION) {
+            if (previous->version != tracker_config_storage_detail::LEGACY_SLOT_VERSION) {
                 return writeCommitVerified(prepared.targetSlot, previous->generation);
             }
             return removeCommitMarker(prepared.targetSlot);
@@ -637,13 +639,13 @@ bool TrackerConfigStore::resolveActive(TrackerConfigSlotRecord& outRecord,
             outRecord = selected;
             outSlot = selector.activeSlot;
             outSelector = selector;
-            // The selector is the authority. A v2 commit marker is only the
+            // The selector is the authority. A v2/v3 commit marker is only the
             // recovery proof used when the selector is later lost, so repair it
             // best-effort without rejecting the selected config.
             const bool selectedCommitted = selector.activeSlot == TrackerConfigSlot::A
                 ? aCommitted : bCommitted;
             if (allowRepair && !selectedCommitted &&
-                selected.version == tracker_config_storage_detail::SLOT_VERSION) {
+                selected.version != tracker_config_storage_detail::LEGACY_SLOT_VERSION) {
                 const TrackerConfigError before = lastError_;
                 if (!writeCommitVerified(selector.activeSlot, selected.generation)) {
                     ++commitMarkerRepairFailures_;
@@ -669,10 +671,10 @@ bool TrackerConfigStore::resolveActive(TrackerConfigSlotRecord& outRecord,
 
     if (outSlot == TrackerConfigSlot::None && !selectorValid) {
         if (aCommitted && bCommitted) {
-            const bool bothV2 =
-                a.version == tracker_config_storage_detail::SLOT_VERSION &&
-                b.version == tracker_config_storage_detail::SLOT_VERSION;
-            if (bothV2) {
+            const bool bothUseCommitProof =
+                a.version != tracker_config_storage_detail::LEGACY_SLOT_VERSION &&
+                b.version != tracker_config_storage_detail::LEGACY_SLOT_VERSION;
+            if (bothUseCommitProof) {
                 // Both commit markers prove that both generations passed a
                 // selector switch. Recover the newest committed generation.
                 if (trackerGenerationIsNewer(a.generation, b.generation)) {
@@ -682,12 +684,12 @@ bool TrackerConfigStore::resolveActive(TrackerConfigSlotRecord& outRecord,
                     outRecord = b;
                     outSlot = TrackerConfigSlot::B;
                 }
-            } else if (a.version == tracker_config_storage_detail::SLOT_VERSION) {
-                // A v2 marker is explicit commit proof and is stronger than an
+            } else if (a.version != tracker_config_storage_detail::LEGACY_SLOT_VERSION) {
+                // A v2/v3 marker is explicit commit proof and is stronger than an
                 // ambiguous selector-less v1 record.
                 outRecord = a;
                 outSlot = TrackerConfigSlot::A;
-            } else if (b.version == tracker_config_storage_detail::SLOT_VERSION) {
+            } else if (b.version != tracker_config_storage_detail::LEGACY_SLOT_VERSION) {
                 outRecord = b;
                 outSlot = TrackerConfigSlot::B;
             } else {
@@ -705,11 +707,13 @@ bool TrackerConfigStore::resolveActive(TrackerConfigSlotRecord& outRecord,
         } else if (aCommitted) {
             outRecord = a;
             outSlot = TrackerConfigSlot::A;
-            outUsedFallback = selectorExists || a.version == tracker_config_storage_detail::SLOT_VERSION;
+            outUsedFallback = selectorExists ||
+                a.version != tracker_config_storage_detail::LEGACY_SLOT_VERSION;
         } else if (bCommitted) {
             outRecord = b;
             outSlot = TrackerConfigSlot::B;
-            outUsedFallback = selectorExists || b.version == tracker_config_storage_detail::SLOT_VERSION;
+            outUsedFallback = selectorExists ||
+                b.version != tracker_config_storage_detail::LEGACY_SLOT_VERSION;
         }
     }
 
@@ -763,7 +767,10 @@ bool TrackerConfigStore::saveInternal(TrackerConfig& config,
     if (!scratch) return false;
     TrackerConfig& candidate = scratch->candidate;
     candidate = config;
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) {
+        lastError_ = TrackerConfigError::CrcOrValidationFailed;
+        return false;
+    }
     candidate.updateCrc();
     if (!candidate.validate()) {
         lastError_ = TrackerConfigError::CrcOrValidationFailed;
@@ -782,13 +789,13 @@ bool TrackerConfigStore::saveInternal(TrackerConfig& config,
         selector = TrackerConfigSelectorRecord{};
     }
 
-    bool activeHasDurableV2Commit = false;
-    if (hasActive && activeRecord.version == tracker_config_storage_detail::SLOT_VERSION) {
+    bool activeHasDurableCommit = false;
+    if (hasActive && activeRecord.version != tracker_config_storage_detail::LEGACY_SLOT_VERSION) {
         TrackerConfigCommitRecord activeCommit{};
         bool commitExists = false;
         bool commitReadable = false;
         if (!readCommit(activeSlot, activeCommit, commitExists, commitReadable)) return false;
-        activeHasDurableV2Commit = slotHasCommitAuthority(
+        activeHasDurableCommit = slotHasCommitAuthority(
             activeSlot,
             activeRecord,
             activeCommit,
@@ -799,7 +806,7 @@ bool TrackerConfigStore::saveInternal(TrackerConfig& config,
 
     if (!migration && !promotion && forcedTarget == TrackerConfigSlot::None &&
         switchSelector && qualityOverride == nullptr && hasActive &&
-        activeHasDurableV2Commit &&
+        activeHasDurableCommit &&
         std::memcmp(&activeRecord.payload, &candidate.data, sizeof(candidate.data)) == 0) {
         config = candidate;
         ++noOpSaveCount_;
@@ -930,6 +937,16 @@ bool TrackerConfigStore::inspectStorage(TrackerConfigStorageInfo& info) {
     info.slotA.valid = aExists && aReadable && trackerValidateConfigSlotRecord(a);
     info.slotA.legacyCommitted = info.slotA.valid &&
         a.version == tracker_config_storage_detail::LEGACY_SLOT_VERSION;
+    if (aExists && aReadable) {
+        info.slotA.version = a.version;
+        info.slotA.migrationRequired = info.slotA.valid &&
+            a.version != tracker_config_storage_detail::SLOT_VERSION;
+        scratch->legacy.data = a.payload;
+        if (scratch->legacy.validate()) {
+            info.slotA.semanticValid = scratch->legacy.validateSemanticConfig(
+                &info.slotA.semanticError);
+        }
+    }
     info.slotA.commitMarkerExists = aCommitExists;
     info.slotA.commitMarkerValid = info.slotA.valid && slotHasCommitAuthority(
         TrackerConfigSlot::A, a, aCommit, aCommitExists, aCommitReadable);
@@ -943,6 +960,16 @@ bool TrackerConfigStore::inspectStorage(TrackerConfigStorageInfo& info) {
     info.slotB.valid = bExists && bReadable && trackerValidateConfigSlotRecord(b);
     info.slotB.legacyCommitted = info.slotB.valid &&
         b.version == tracker_config_storage_detail::LEGACY_SLOT_VERSION;
+    if (bExists && bReadable) {
+        info.slotB.version = b.version;
+        info.slotB.migrationRequired = info.slotB.valid &&
+            b.version != tracker_config_storage_detail::SLOT_VERSION;
+        scratch->legacy.data = b.payload;
+        if (scratch->legacy.validate()) {
+            info.slotB.semanticValid = scratch->legacy.validateSemanticConfig(
+                &info.slotB.semanticError);
+        }
+    }
     info.slotB.commitMarkerExists = bCommitExists;
     info.slotB.commitMarkerValid = info.slotB.valid && slotHasCommitAuthority(
         TrackerConfigSlot::B, b, bCommit, bCommitExists, bCommitReadable);
@@ -1097,11 +1124,35 @@ bool TrackerConfigStore::load(TrackerConfig& out) {
     TrackerConfigSlot slot = TrackerConfigSlot::None;
     TrackerConfigSelectorRecord selector{};
     bool fallback = false;
-    if (!resolveActive(*record, slot, selector, fallback)) {
+    if (!resolveActive(*record, slot, selector, fallback, !writeInhibited_)) {
         if (lastError_ != TrackerConfigError::NotFound &&
             lastError_ != TrackerConfigError::CrcOrValidationFailed) {
             lastLoadError_ = lastError_;
             return false;
+        }
+        if (writeInhibited_) {
+            const TrackerConfigError activeError = lastError_;
+            auto legacy = makeScratch<TrackerConfig>(lastError_);
+            if (!legacy) {
+                lastLoadError_ = lastError_;
+                return false;
+            }
+            bool legacyExists = false;
+            if (!readLegacy(*legacy, legacyExists)) {
+                lastLoadError_ = lastError_;
+                return false;
+            }
+            if (!legacyExists) {
+                lastError_ = activeError;
+                lastLoadError_ = lastError_;
+                return false;
+            }
+            out = *legacy;
+            authoritativeApplyPending_ = false;
+            lastLoadStatus_ = TrackerConfigLoadStatus::LoadedLegacyReadOnly;
+            lastLoadError_ = TrackerConfigError::None;
+            lastError_ = TrackerConfigError::None;
+            return true;
         }
         if (!migrateLegacy()) {
             lastLoadError_ = lastError_;
@@ -1115,6 +1166,55 @@ bool TrackerConfigStore::load(TrackerConfig& out) {
     } else {
         lastLoadStatus_ = TrackerConfigLoadStatus::Loaded;
     }
+
+    if (record->version != tracker_config_storage_detail::SLOT_VERSION) {
+        auto migratedSlot = makeScratch<TrackerConfig>(lastError_);
+        if (!migratedSlot) {
+            lastLoadError_ = lastError_;
+            authoritativeApplyPending_ = false;
+            return false;
+        }
+        migratedSlot->data = record->payload;
+        // Normalize only the known representation for the source version.
+        // The source slot stays intact until the inactive v4 is verified.
+        if (record->version == tracker_config_storage_detail::DEPLOYED_V3_SLOT_VERSION) {
+            if (!trackerNormalizeDeployedV3(*migratedSlot)) {
+                lastLoadError_ = lastError_ = TrackerConfigError::CrcOrValidationFailed;
+                authoritativeApplyPending_ = false;
+                return false;
+            }
+        } else {
+            migratedSlot->sanitize();
+            trackerMigratePerformanceDefaults(*migratedSlot);
+        }
+        if (!migratedSlot->validateSemanticConfig()) {
+            lastError_ = TrackerConfigError::CrcOrValidationFailed;
+            lastLoadError_ = lastError_;
+            authoritativeApplyPending_ = false;
+            return false;
+        }
+        if (writeInhibited_) {
+            out = *migratedSlot;
+            authoritativeApplyPending_ = false;
+            lastLoadStatus_ = TrackerConfigLoadStatus::LoadedLegacyReadOnly;
+            lastLoadError_ = TrackerConfigError::None;
+            lastError_ = TrackerConfigError::None;
+            return true;
+        }
+        if (!saveInternal(*migratedSlot, true, false, TrackerConfigSlot::None, true,
+                          nullptr, nullptr,
+                          TrackerCalibrationProvenance::ImportedLegacy)) {
+            lastLoadError_ = lastError_;
+            authoritativeApplyPending_ = false;
+            return false;
+        }
+        if (!resolveActive(*record, slot, selector, fallback)) {
+            lastLoadError_ = lastError_;
+            authoritativeApplyPending_ = false;
+            return false;
+        }
+        lastLoadStatus_ = TrackerConfigLoadStatus::Migrated;
+    }
     out.data = record->payload;
     Preferences legacyProbe;
     bool staleLegacyExists = false;
@@ -1122,7 +1222,7 @@ bool TrackerConfigStore::load(TrackerConfig& out) {
         staleLegacyExists = legacyProbe.isKey(legacyKey_);
         legacyProbe.end();
     }
-    if (staleLegacyExists) (void)cleanupLegacyKey();
+    if (staleLegacyExists && !writeInhibited_) (void)cleanupLegacyKey();
     authoritativeApplyPending_ = true;
     lastLoadError_ = TrackerConfigError::None;
     lastError_ = TrackerConfigError::None;
@@ -1137,6 +1237,21 @@ bool TrackerConfigStore::verify(TrackerConfig& out) {
     bool fallback = false;
     if (!resolveActive(*record, slot, selector, fallback, false)) return false;
     out.data = record->payload;
+    if (record->version != tracker_config_storage_detail::SLOT_VERSION) {
+        if (record->version == tracker_config_storage_detail::DEPLOYED_V3_SLOT_VERSION) {
+            if (!trackerNormalizeDeployedV3(out)) {
+                lastError_ = TrackerConfigError::CrcOrValidationFailed;
+                return false;
+            }
+        } else {
+            out.sanitize();
+            trackerMigratePerformanceDefaults(out);
+        }
+        if (!out.validateSemanticConfig()) {
+            lastError_ = TrackerConfigError::CrcOrValidationFailed;
+            return false;
+        }
+    }
     lastError_ = TrackerConfigError::None;
     return true;
 }
@@ -1173,6 +1288,10 @@ bool TrackerConfigStore::loadOrDefaults(TrackerConfig& out, bool* loadedFromNvs)
 
 bool TrackerConfigStore::save(TrackerConfig& config,
                               TrackerCalibrationProvenance provenance) {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
     return saveInternal(config, false, false, TrackerConfigSlot::None, true,
                         nullptr, nullptr, provenance);
 }
@@ -1270,6 +1389,10 @@ bool TrackerConfigStore::clearUncommittedActiveArtifactsForLegacyRecovery() {
 }
 
 bool TrackerConfigStore::migrateLegacy() {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
     if (authoritativeApplyPending_) {
         ++applyPendingWriteBlocks_;
         lastError_ = TrackerConfigError::ApplyPending;
@@ -1306,8 +1429,17 @@ bool TrackerConfigStore::migrateLegacy() {
         return false;
     }
 
+    // This is the only writable path for the historical raw single-key blob.
+    // Normalize it before strict current-slot admission.
+    legacy->sanitize();
+    trackerMigratePerformanceDefaults(*legacy);
+    if (!legacy->validateSemanticConfig()) {
+        lastError_ = TrackerConfigError::CrcOrValidationFailed;
+        return false;
+    }
+
     if (activeError == TrackerConfigError::CrcOrValidationFailed) {
-        // A failed first migration may leave a fully written but uncommitted v2
+        // A failed first migration may leave a fully written but uncommitted current
         // slot. The still-valid legacy blob is the only authoritative source.
         // Clear only artifacts that are fully readable and have no commit proof.
         if (!clearUncommittedActiveArtifactsForLegacyRecovery()) return false;
@@ -1322,6 +1454,10 @@ bool TrackerConfigStore::migrateLegacy() {
 }
 
 bool TrackerConfigStore::erase() {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
     TrackerConfigSelectorRecord selector{};
     bool selectorExists = false;
     bool selectorReadable = false;
@@ -1545,7 +1681,10 @@ bool TrackerConfigStore::stageCandidate(const TrackerConfig& candidateInput,
     if (!scratch) return false;
     TrackerConfig& candidate = scratch->candidate;
     candidate = candidateInput;
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) {
+        lastError_ = TrackerConfigError::CandidateInvalid;
+        return false;
+    }
     candidate.updateCrc();
     if (!candidate.validate()) {
         lastError_ = TrackerConfigError::CandidateInvalid;
@@ -1657,6 +1796,10 @@ bool TrackerConfigStore::candidateExists(bool& outExists) {
 }
 
 bool TrackerConfigStore::flushCandidate(uint32_t nowMs, bool force) {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
 #if !TRACKER_ENABLE_CALIBRATION_CANDIDATES
     (void)nowMs;
     (void)force;
@@ -1782,6 +1925,10 @@ bool TrackerConfigStore::loadCandidate(TrackerCalibrationCandidateRecord& out) {
 }
 
 bool TrackerConfigStore::discardCandidate() {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
     if (commitUncertainLatched_) {
         lastError_ = TrackerConfigError::CommitUncertain;
         return false;
@@ -1858,6 +2005,10 @@ bool TrackerConfigStore::prepareCandidatePromotion(TrackerPreparedConfigPromotio
                                                    TrackerConfig& outCandidate,
                                                    bool force,
                                                    const TrackerConfig* runtimeCalibration) {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
 #if !TRACKER_ENABLE_CALIBRATION_CANDIDATES
     (void)force;
     out = TrackerPreparedConfigPromotion{};
@@ -1932,10 +2083,16 @@ bool TrackerConfigStore::prepareCandidatePromotion(TrackerPreparedConfigPromotio
         // promotion stack budget even though the persistent records are already
         // off-stack.
         composed = activeConfig;
-        trackerApplyCalibrationCandidateToConfig(composed, candidateSnapshot);
+        if (!trackerApplyCalibrationCandidateToConfig(composed, candidateSnapshot)) {
+            lastError_ = TrackerConfigError::CandidateInvalid;
+            return false;
+        }
     } else {
         composed = candidateSnapshot;
-        composed.sanitize();
+        if (!composed.validateSemanticConfig()) {
+            lastError_ = TrackerConfigError::CandidateInvalid;
+            return false;
+        }
         composed.updateCrc();
     }
 
@@ -1982,80 +2139,12 @@ bool TrackerConfigStore::commitPreparedPromotion(TrackerPreparedConfigPromotion&
     lastError_ = TrackerConfigError::CandidateInvalid;
     return false;
 #else
-    if (commitUncertainLatched_) {
-        lastError_ = TrackerConfigError::CommitUncertain;
-        return false;
-    }
-    if (storageDegradedLatched_) {
-        ++degradedWriteBlocks_;
-        lastError_ = TrackerConfigError::StorageDegraded;
-        return false;
-    }
-    if (authoritativeApplyPending_) {
-        ++applyPendingWriteBlocks_;
-        lastError_ = TrackerConfigError::ApplyPending;
-        return false;
-    }
-    if (!prepared.valid || prepared.targetSlot == TrackerConfigSlot::None || prepared.targetGeneration == 0) {
-        lastError_ = TrackerConfigError::PromotionNotPrepared;
-        return false;
-    }
-
-    auto target = makeScratch<TrackerConfigSlotRecord>(lastError_);
-    if (!target) return false;
-    bool exists = false;
-    bool readable = false;
-    if (!readSlot(prepared.targetSlot, *target, exists, readable) || !exists || !readable ||
-        !trackerValidateConfigSlotRecord(*target) ||
-        target->generation != prepared.targetGeneration) {
-        lastError_ = TrackerConfigError::ReadFailed;
-        return false;
-    }
-
-    // The active generation may not change between prepare and commit.
-    auto current = makeScratch<TrackerConfigSlotRecord>(lastError_);
-    if (!current) return false;
-    TrackerConfigSlot currentSlot = TrackerConfigSlot::None;
-    TrackerConfigSelectorRecord currentSelector{};
-    bool fallback = false;
-    if (prepared.activeGenerationAtPreparation != 0u) {
-        if (!resolveActive(*current, currentSlot, currentSelector, fallback) ||
-            current->generation != prepared.activeGenerationAtPreparation) {
-            lastError_ = TrackerConfigError::CandidateStale;
-            return false;
-        }
-    }
-
-    TrackerConfigSelectorRecord selector = prepared.previousSelector;
-    selector.activeSlot = prepared.targetSlot;
-    selector.activeGeneration = prepared.targetGeneration;
-    selector.successfulActiveWrites += 1u;
-    selector.successfulPromotions += 1u;
-    selector.crc32 = 0;
-    selector.crc32 = trackerConfigSelectorRecordCrc(selector);
-    if (!writeSelectorVerified(selector)) {
-        bool committed = false;
-        const TrackerConfigError initialError = lastError_;
-        if (!reconcileSelectorCommit(selector, prepared.previousSelector, committed)) return false;
-        if (!committed) {
-            lastError_ = initialError;
-            return false;
-        }
-    }
-
-    const TrackerConfigError beforeMarker = lastError_;
-    if (!writeCommitVerified(prepared.targetSlot, prepared.targetGeneration)) {
-        ++commitMarkerRepairFailures_;
-        lastError_ = beforeMarker;
-    }
-
-    outActive.data = target->payload;
-    prepared.valid = false;
+    if (!commitPreparedRecord(prepared, outActive, true)) return false;
     if (ramCandidateValid_) {
         const bool wasPersisted = ramCandidate_.persistedWriteCount != 0u;
         ramCandidate_.version = tracker_config_storage_detail::CANDIDATE_VERSION;
         ramCandidate_.metadata.activeCalibrationRevisionAtCreation =
-            trackerCalibrationPayloadRevision(target->payload);
+            trackerCalibrationPayloadRevision(outActive.data);
         ramCandidate_.metadata.lastComparison = TrackerCalibrationComparisonResult::Promoted;
         ramCandidate_.metadata.comparisonFlags = tracker_calibration_comparison_flags::NONE;
         if (wasPersisted) ++ramCandidate_.persistedWriteCount;
@@ -2078,9 +2167,119 @@ bool TrackerConfigStore::commitPreparedPromotion(TrackerPreparedConfigPromotion&
 #endif
 }
 
+bool TrackerConfigStore::prepareAuthoritativeCommit(
+        TrackerConfig& candidate,
+        TrackerPreparedConfigCommit& out, TrackerCalibrationProvenance provenance) {
+    out = TrackerPreparedConfigCommit{};
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
+    return saveInternal(candidate, false, false, TrackerConfigSlot::None, false,
+                        &out, nullptr, provenance);
+}
+
+bool TrackerConfigStore::commitPreparedRecord(TrackerPreparedConfigCommit& prepared,
+                                              TrackerConfig& outActive,
+                                              bool promotion) {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
+    if (commitUncertainLatched_) {
+        lastError_ = TrackerConfigError::CommitUncertain;
+        return false;
+    }
+    if (storageDegradedLatched_) {
+        ++degradedWriteBlocks_;
+        lastError_ = TrackerConfigError::StorageDegraded;
+        return false;
+    }
+    if (authoritativeApplyPending_) {
+        ++applyPendingWriteBlocks_;
+        lastError_ = TrackerConfigError::ApplyPending;
+        return false;
+    }
+    if (!prepared.valid || prepared.targetSlot == TrackerConfigSlot::None ||
+        prepared.targetGeneration == 0u) {
+        lastError_ = TrackerConfigError::PromotionNotPrepared;
+        return false;
+    }
+
+    auto target = makeScratch<TrackerConfigSlotRecord>(lastError_);
+    if (!target) return false;
+    bool exists = false;
+    bool readable = false;
+    if (!readSlot(prepared.targetSlot, *target, exists, readable) || !exists || !readable ||
+        !trackerValidateConfigSlotRecord(*target) ||
+        target->generation != prepared.targetGeneration) {
+        lastError_ = TrackerConfigError::ReadFailed;
+        return false;
+    }
+
+    auto current = makeScratch<TrackerConfigSlotRecord>(lastError_);
+    if (!current) return false;
+    TrackerConfigSlot currentSlot = TrackerConfigSlot::None;
+    TrackerConfigSelectorRecord currentSelector{};
+    bool fallback = false;
+    if (prepared.activeGenerationAtPreparation != 0u &&
+        (!resolveActive(*current, currentSlot, currentSelector, fallback) ||
+         current->generation != prepared.activeGenerationAtPreparation)) {
+        lastError_ = TrackerConfigError::CandidateStale;
+        return false;
+    }
+
+    TrackerConfigSelectorRecord selector = prepared.previousSelector;
+    selector.activeSlot = prepared.targetSlot;
+    selector.activeGeneration = prepared.targetGeneration;
+    selector.successfulActiveWrites += 1u;
+    if (promotion) selector.successfulPromotions += 1u;
+    selector.crc32 = 0u;
+    selector.crc32 = trackerConfigSelectorRecordCrc(selector);
+    if (!writeSelectorVerified(selector)) {
+        bool committed = false;
+        const TrackerConfigError initialError = lastError_;
+        if (!reconcileSelectorCommit(selector, prepared.previousSelector, committed)) return false;
+        if (!committed) {
+            lastError_ = initialError;
+            return false;
+        }
+    }
+
+    const TrackerConfigError beforeMarker = lastError_;
+    if (!writeCommitVerified(prepared.targetSlot, prepared.targetGeneration)) {
+        ++commitMarkerRepairFailures_;
+        lastError_ = beforeMarker;
+    }
+    outActive.data = target->payload;
+    prepared.valid = false;
+    lastError_ = TrackerConfigError::None;
+    return true;
+}
+
+bool TrackerConfigStore::commitPreparedAuthoritative(
+        TrackerPreparedConfigCommit& prepared,
+        TrackerConfig& outActive) {
+    return commitPreparedRecord(prepared, outActive, false);
+}
+
+bool TrackerConfigStore::abortPreparedAuthoritative(
+        TrackerPreparedConfigCommit& prepared) {
+    const TrackerConfigError before = lastError_;
+    const bool cleaned = invalidatePreparedSlot(prepared);
+    prepared.valid = false;
+    if (!cleaned) return false;
+    lastError_ = before == TrackerConfigError::None ? TrackerConfigError::None : before;
+    return true;
+}
+
 bool TrackerConfigStore::restoreAuthoritativeGeneration(TrackerConfigSlot slot,
                                                         uint32_t generation,
                                                         TrackerConfig& outActive) {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
     if (slot == TrackerConfigSlot::None || generation == 0u) {
         lastError_ = TrackerConfigError::SelectorInvalid;
         return false;
@@ -2111,6 +2310,16 @@ bool TrackerConfigStore::restoreAuthoritativeGeneration(TrackerConfigSlot slot,
         return false;
     }
 
+    auto candidate = makeScratch<TrackerConfig>(lastError_);
+    if (!candidate) return false;
+    candidate->data = record.payload;
+    if ((record.version == tracker_config_storage_detail::DEPLOYED_V3_SLOT_VERSION &&
+         !trackerNormalizeDeployedV3(*candidate)) || !candidate->validateSemanticConfig()) {
+        lastError_ = TrackerConfigError::CandidateInvalid;
+        return false;
+    }
+    candidate->updateCrc();
+
     TrackerConfigSelectorRecord current{};
     bool selectorExists = false;
     bool selectorReadable = false;
@@ -2134,9 +2343,7 @@ bool TrackerConfigStore::restoreAuthoritativeGeneration(TrackerConfigSlot slot,
         }
     }
 
-    outActive.data = record.payload;
-    outActive.sanitize();
-    outActive.updateCrc();
+    outActive = *candidate;
     authoritativeApplyPending_ = true;
     lastError_ = TrackerConfigError::None;
     return true;

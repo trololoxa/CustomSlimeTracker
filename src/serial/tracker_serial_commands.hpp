@@ -4,6 +4,7 @@
 #include <cstddef>
 
 #include "defines.h"
+#include "serial/tracker_command_line_parser.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 #if TRACKER_ENABLE_SERIAL_CLI
@@ -115,7 +116,9 @@ public:
     static void dispatch(TrackerSerialCommandContext& ctx, int argc, char** argv);
 };
 
-template <size_t LINE_CAP = 128, size_t MAX_ARGS = 10>
+// 192 bytes covers the longest supported SET BWIFI command (32-byte SSID and
+// 64-byte password after base64 expansion) without dynamic allocation.
+template <size_t LINE_CAP = 192, size_t MAX_ARGS = 10>
 class TrackerSerialCommandInterface {
 public:
     void begin(TrackerSerialCommandContext& ctx) {
@@ -123,6 +126,10 @@ public:
         len_ = 0;
         overflow_ = false;
         telnetFilter_.reset();
+    }
+
+    void setFactoryResetRecoveryOnly(bool enabled) {
+        if (ctx_) ctx_->factoryResetRecoveryOnly = enabled;
     }
 
     TRACKER_SERIAL_NOINLINE size_t poll(size_t maxBytes = 0) {
@@ -180,63 +187,28 @@ public:
         if (!ctx_ || !line) return;
 
         char* argv[MAX_ARGS] = {};
-        const int argc = tokenize(line, argv, MAX_ARGS);
-        if (argc <= 0) return;
+        const TrackerCommandLineParseResult parsed =
+            trackerParseCommandLine(line, argv, MAX_ARGS);
+        switch (parsed.status) {
+            case TrackerCommandLineParseStatus::Empty:
+                return;
+            case TrackerCommandLineParseStatus::TooManyArguments:
+                tracker_serial_detail::printErr(*ctx_->io, "too many arguments");
+                return;
+            case TrackerCommandLineParseStatus::UnclosedQuote:
+                tracker_serial_detail::printErr(*ctx_->io, "unclosed quote");
+                return;
+            case TrackerCommandLineParseStatus::TrailingCharactersAfterQuote:
+                tracker_serial_detail::printErr(*ctx_->io, "characters after closing quote");
+                return;
+            case TrackerCommandLineParseStatus::Ok:
+                break;
+        }
 
-        TrackerCommandDispatcher::dispatch(*ctx_, argc, argv);
+        TrackerCommandDispatcher::dispatch(*ctx_, static_cast<int>(parsed.argc), argv);
     }
 
 private:
-    static int tokenize(char* line, char** argv, size_t maxArgs) {
-        size_t argc = 0;
-        char* p = line;
-
-        while (*p && argc < maxArgs) {
-            while (*p == ' ' || *p == '\t') ++p;
-            if (*p == '\0') break;
-            if (*p == '#') break;
-
-            char* dst = p;
-            bool quoted = false;
-            if (*p == '"') {
-                quoted = true;
-                ++p;
-                argv[argc++] = dst;
-                while (*p) {
-                    if (*p == '\\' && p[1] != '\0') {
-                        ++p;
-                        *dst++ = *p++;
-                        continue;
-                    }
-                    if (*p == '"') {
-                        ++p;
-                        break;
-                    }
-                    *dst++ = *p++;
-                }
-                *dst = '\0';
-            } else {
-                argv[argc++] = p;
-                while (*p && *p != ' ' && *p != '\t') ++p;
-                if (*p == '\0') break;
-                *p++ = '\0';
-            }
-
-            if (quoted) {
-                while (*p && *p != ' ' && *p != '\t') {
-                    // Treat trailing garbage after a closing quote as part of
-                    // token separation rather than another argument; this keeps
-                    // command parsing deterministic for malformed host input.
-                    ++p;
-                }
-                if (*p == '\0') break;
-                *p++ = '\0';
-            }
-        }
-
-        return static_cast<int>(argc);
-    }
-
     TrackerSerialCommandContext* ctx_ = nullptr;
     char line_[LINE_CAP] = {};
     size_t len_ = 0;

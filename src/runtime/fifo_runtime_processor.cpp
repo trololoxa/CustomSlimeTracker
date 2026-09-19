@@ -17,11 +17,22 @@ void FifoInterruptEventSource::begin(volatile uint32_t* irqCount,
 }
 
 void FifoInterruptEventSource::reset() {
-    lastHandledIrqCount_ = 0;
+    // Rebase to the ISR counter that exists at the start of this software
+    // epoch. Interrupts accumulated before detach/reset/reinit are not fresh
+    // events and must not satisfy the new liveness epoch or trigger a phantom
+    // drain after the route is attached again.
+    uint32_t current = 0u;
+    if (irqCount_ != nullptr) {
+        noInterrupts();
+        current = *irqCount_;
+        interrupts();
+    }
+    lastHandledIrqCount_ = current;
     missedIrqCount_ = 0;
     fallbackEvents_ = 0;
     waitTimeouts_ = 0;
     lastNonblockingStatusPollUs_ = 0;
+    lastEventAtUs_ = 0;
 }
 
 bool FifoInterruptEventSource::consume(uint32_t timeoutMs, uint16_t watermarkWords) {
@@ -38,6 +49,7 @@ bool FifoInterruptEventSource::consume(uint32_t timeoutMs, uint16_t watermarkWor
             const uint32_t delta = current - lastHandledIrqCount_;
             if (delta > 1u) missedIrqCount_ += delta - 1u;
             lastHandledIrqCount_ = current;
+            lastEventAtUs_ = micros();
 #if TRACKER_HAS_HOTPATH_PERF
             if (perf_ != nullptr) perf_->fifoIrqEvents++;
 #endif
@@ -69,6 +81,7 @@ bool FifoInterruptEventSource::consume(uint32_t timeoutMs, uint16_t watermarkWor
     if (fifo_->readStatus(st)) {
         if (st.unreadWords >= watermarkWords || st.overrun || st.full || st.overrunLatched) {
             fallbackEvents_++;
+            lastEventAtUs_ = micros();
 #if TRACKER_HAS_HOTPATH_PERF
             if (perf_ != nullptr) perf_->fifoFallbackEvents++;
 #endif
@@ -90,6 +103,7 @@ uint32_t FifoInterruptEventSource::missedIrqCount() const { return missedIrqCoun
 uint32_t FifoInterruptEventSource::fallbackEvents() const { return fallbackEvents_; }
 uint32_t FifoInterruptEventSource::waitTimeouts() const { return waitTimeouts_; }
 uint32_t FifoInterruptEventSource::lastHandledIrqCount() const { return lastHandledIrqCount_; }
+uint32_t FifoInterruptEventSource::lastEventAtUs() const { return lastEventAtUs_; }
 
 void FifoRuntimeProcessor::begin(FifoInterruptEventSource* eventSource,
                                  Lsm6dsvFifoReader* fifo,
@@ -125,6 +139,8 @@ void FifoRuntimeProcessor::begin(FifoInterruptEventSource* eventSource,
     diagnosticsTimingEnabled_ = false;
     diagnosticsTimingSampled_ = false;
     diagnosticsTimingDecimator_ = 0u;
+    pendingFault_ = FifoRuntimeFault::None;
+    lastHardwareDrainAtUs_ = 0u;
     resetWork();
 }
 
@@ -141,6 +157,9 @@ void FifoRuntimeProcessor::resetWork() {
     drainRoundsRemaining_ = 0;
     lastDispatchedRawTimestampUs_ = 0;
     lastDequeuedQueueAgeUs_ = 0;
+    pendingFault_ = FifoRuntimeFault::None;
+    lastHardwareDrainAtUs_ = 0u;
+    recoveryQuarantined_ = false;
 #if TRACKER_HAS_RUNTIME_PROFILER
     for (uint32_t& queuedAtUs : rawQueueEnqueuedAtUs_) queuedAtUs = 0u;
 #endif
@@ -151,7 +170,7 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
                                    uint8_t maxDrainRoundsPerEvent,
                                    Stream& out,
                                    uint32_t sliceBudgetUs) {
-    if (!ready()) return false;
+    if (!ready() || recoveryQuarantined_) return false;
 
     // This timestamp is part of scheduling correctness, not optional profiling:
     // hardware drain and callbacks share one absolute slice budget in every profile.
@@ -235,8 +254,10 @@ bool FifoRuntimeProcessor::process(uint16_t watermarkWords,
         }
 #endif
         if (sampleResult == FifoRuntimeSampleResult::FifoRecovered) {
-            // Every queued sample predates the hardware reset.
-            resetWork();
+            // The callback only queued recovery. Keep the pre-fault epoch
+            // quarantined until TrackerApp proves the hardware transaction;
+            // resetWork() is the commit point after a successful reset/reinit.
+            recoveryQuarantined_ = true;
             recordElapsed(fifoProcessStartUs);
             return true;
         }
@@ -321,8 +342,11 @@ bool FifoRuntimeProcessor::drainOneRound(uint16_t maxWordsPerDrain, Stream& out)
     if (rawFree == 0u || drainRoundsRemaining_ == 0u) return false;
 
     --drainRoundsRemaining_;
-    const size_t rawCapacity = rawFree < rawDrainBufferCapacity_ ? rawFree : rawDrainBufferCapacity_;
-    const size_t magCapacity = magFree < magDrainBufferCapacity_ ? magFree : magDrainBufferCapacity_;
+    // Drain the hardware fragment into the dedicated staging buffers first.
+    // Limiting this call to queue free space would silently accept a prefix of
+    // the epoch before capacity can be checked.
+    const size_t rawCapacity = rawDrainBufferCapacity_;
+    const size_t magCapacity = magDrainBufferCapacity_;
     const uint16_t configuredMaxWords = maxWordsPerDrain > 0u ? maxWordsPerDrain : 1u;
 
     size_t rawCount = 0;
@@ -333,29 +357,39 @@ bool FifoRuntimeProcessor::drainOneRound(uint16_t maxWordsPerDrain, Stream& out)
                                            configuredMaxWords);
     if (!ok) {
         out.println("# ERR FIFO drain failed");
-        resetWork();
+        ++queueStats_.drainFailures;
+        pendingFault_ = FifoRuntimeFault::DrainFailed;
+        drainActive_ = false;
+        drainRoundsRemaining_ = 0u;
         return true;
     }
 
     const size_t magCount = fifo_->popMagSamples(magDrainBuffer_, magCapacity);
     queueStats_.hardwareDrains++;
+    lastHardwareDrainAtUs_ = micros();
 #if TRACKER_HAS_RUNTIME_PROFILER
     const uint32_t queuedAtUs = diagnosticsTimingSampled_ ? micros() : 0u;
 #else
     const uint32_t queuedAtUs = 0u;
 #endif
 
+    // A hardware drain is one stream epoch fragment. Preflight both queues so
+    // an invariant violation can never publish only the prefix of that batch.
+    if (rawCount > rawFree || magCount > magFree) {
+        if (rawCount > rawFree) ++queueStats_.rawQueueOverflow;
+        if (magCount > magFree) ++queueStats_.magQueueOverflow;
+        ++queueStats_.batchCapacityInvariantFailures;
+        pendingFault_ = FifoRuntimeFault::BatchCapacityInvariant;
+        drainActive_ = false;
+        drainRoundsRemaining_ = 0u;
+        return true;
+    }
+
     for (size_t i = 0; i < rawCount; ++i) {
-        if (!enqueueRaw(rawDrainBuffer_[i], i == 0u, queuedAtUs)) {
-            queueStats_.rawQueueOverflow++;
-            break;
-        }
+        (void)enqueueRaw(rawDrainBuffer_[i], i == 0u, queuedAtUs);
     }
     for (size_t i = 0; i < magCount; ++i) {
-        if (!enqueueMag(magDrainBuffer_[i])) {
-            queueStats_.magQueueOverflow++;
-            break;
-        }
+        (void)enqueueMag(magDrainBuffer_[i]);
     }
 
     if (rawCount == 0u && magCount == 0u) {
@@ -542,6 +576,12 @@ uint32_t FifoRuntimeProcessor::rawQueueSpanUs() const {
 }
 
 const FifoRuntimeQueueStats& FifoRuntimeProcessor::queueStats() const { return queueStats_; }
+
+FifoRuntimeFault FifoRuntimeProcessor::takeFault() {
+    const FifoRuntimeFault fault = pendingFault_;
+    pendingFault_ = FifoRuntimeFault::None;
+    return fault;
+}
 
 bool FifoRuntimeProcessor::ready() const {
     return eventSource_ != nullptr && fifo_ != nullptr &&

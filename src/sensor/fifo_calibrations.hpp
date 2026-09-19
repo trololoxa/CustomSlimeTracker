@@ -8,6 +8,7 @@
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/calibration.hpp"
+#include "sensor/calibration_limits.hpp"
 #include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 
@@ -16,6 +17,8 @@ namespace tracker {
 // ============================================================
 // FIFO-based calibration helpers
 // ============================================================
+
+enum class FifoCalibrationService : uint8_t { Begin, Progress, End };
 
 struct FifoCalibrationIo {
     Lsm6dsv* lsm = nullptr;
@@ -29,13 +32,72 @@ struct FifoCalibrationIo {
     bool (*waitForFifoEvent)(uint32_t timeoutMs, void* user) = nullptr;
     void* waitUser = nullptr;
 
+    // Optional cooperative cancellation. The callback must be non-blocking;
+    // capture loops poll it between bounded FIFO waits/drains.
+    bool (*cancelRequested)(void* user) = nullptr;
+    void* cancelUser = nullptr;
+    // One FIFO owner during direct capture; app services network/console/WDT.
+    bool (*serviceCapture)(FifoCalibrationService event, void* user) = nullptr;
+    void* serviceUser = nullptr;
+    uint32_t (*clockMs)(void* user) = nullptr;
+    void* clockUser = nullptr;
+
     float latestTempC = 25.0f;
 };
 
 struct FifoDrainResult {
     bool ok = false;
     size_t count = 0;
-    uint8_t rounds = 0;
+};
+
+enum class FifoCalibrationCaptureStatus : uint8_t {
+    Idle = 0,
+    Completed,
+    InvalidIo,
+    InvalidRequest,
+    Cancelled,
+    DeadlineExceeded,
+    SensorUnavailable,
+    DrainFailed,
+    SampleBudgetExhausted,
+    QualityRejected,
+};
+
+const char* fifoCalibrationCaptureStatusName(FifoCalibrationCaptureStatus status);
+
+inline bool fifoCalibrationSampleFlagsAcceptable(uint16_t flags) {
+    constexpr uint16_t rejected = Lsm6dsv::FLAG_ACCEL_SATURATED | Lsm6dsv::FLAG_GYRO_SATURATED |
+        Lsm6dsvFifoReader::FIFO_FLAG_STATUS_OVR | Lsm6dsvFifoReader::FIFO_FLAG_STATUS_FULL |
+        Lsm6dsvFifoReader::FIFO_FLAG_UNKNOWN_TAG | Lsm6dsvFifoReader::FIFO_FLAG_ORPHAN_WORDS |
+        Lsm6dsvFifoReader::FIFO_FLAG_TS_FALLBACK;
+    return (flags & rejected) == 0u;
+}
+
+class FifoCalibrationCaptureSession {
+public:
+    FifoCalibrationCaptureSession(FifoCalibrationIo& io, FifoCalibrationCaptureStatus& status,
+                                  uint32_t maximumMs, uint32_t waitMs, uint8_t timeoutLimit);
+    ~FifoCalibrationCaptureSession();
+    FifoCalibrationCaptureSession(const FifoCalibrationCaptureSession&) = delete;
+    FifoCalibrationCaptureSession& operator=(const FifoCalibrationCaptureSession&) = delete;
+    bool check();
+    bool wait();
+    bool service();
+    bool acceptFresh(const Lsm6dsv::RawSample& raw);
+    bool recoverDrain();
+    bool failed() const { return status_ != FifoCalibrationCaptureStatus::Idle; }
+private:
+    uint32_t now() const;
+    FifoCalibrationIo& io_;
+    FifoCalibrationCaptureStatus& status_;
+    uint32_t startedMs_;
+    uint32_t maximumMs_;
+    uint32_t waitMs_;
+    uint64_t lastSampleUs_ = 0u;
+    uint8_t timeoutLimit_;
+    uint8_t timeouts_ = 0u;
+    uint8_t drainRecoveries_ = 0u;
+    bool owned_ = false;
 };
 
 bool fifoCalibrationIoValid(const FifoCalibrationIo& io);
@@ -80,7 +142,7 @@ struct FifoGyroStartupCalibrationParams {
     uint32_t warmupSamples = 64;
     uint32_t resetAfterConsecutiveRejected = 16;
 
-    float maxGyroNormRadS = 3.0f * MATH_DEG_TO_RAD;
+    float maxGyroNormRadS = calibration_limits::GYRO_STARTUP_MAX_NORM_RAD_S;
     float maxAccelNormErrorG = 0.08f;
     // Raw 960 Hz sample noise is allowed to be higher than the final bias
     // uncertainty. Bias quality is primarily proven by standard error of the
@@ -95,6 +157,8 @@ struct FifoGyroStartupCalibrationParams {
     float maxValidationAccelMeanDeltaG = 0.05f;
 
     uint32_t fifoWaitTimeoutMs = 1000;
+    uint32_t maximumCaptureMs = 120000;
+    uint8_t maximumConsecutiveWaitTimeouts = 8;
 };
 
 inline bool fifoGyroVecAbsAtMost(const Vec3& value, float limit) {
@@ -164,6 +228,8 @@ public:
              FifoGyroCalibrationProgressCallback progressCb = nullptr,
              void* progressUser = nullptr);
 
+    FifoCalibrationCaptureStatus lastStatus() const { return lastStatus_; }
+
     static void applyResultToCalibration(const GyroStartupCalibrationResult& result,
                                          ImuCalibration& imuCal,
                                          GyroTempCompensator* tempComp = nullptr,
@@ -179,6 +245,7 @@ private:
                          uint32_t warmupSeen) const;
 
     FifoGyroStartupCalibrationParams params_;
+    FifoCalibrationCaptureStatus lastStatus_ = FifoCalibrationCaptureStatus::Idle;
 };
 
 // ============================================================
@@ -194,6 +261,8 @@ struct FifoAccel6PosCaptureParams {
     float minAccelNormG = 0.75f;
     float maxAccelNormG = 1.25f;
     uint32_t fifoWaitTimeoutMs = 1000;
+    uint32_t maximumCaptureMs = 120000;
+    uint8_t maximumConsecutiveWaitTimeouts = 8;
     // Reset a partially-collected face after this many consecutive moving/invalid samples.
     // This gives the user time to physically move the tracker between sides without
     // blending two stable positions into one face mean.
@@ -257,6 +326,7 @@ public:
 
     bool compute();
     bool applyToImuCalibration(ImuCalibration& imuCal) const;
+    FifoCalibrationCaptureStatus lastStatus() const { return lastStatus_; }
 
 private:
     void publishProgress(FifoAccelCaptureProgressCallback cb,
@@ -267,8 +337,10 @@ private:
     Accel6PosCalibration cal_;
     Accel6PosCapture capture_;
     Accel6PosCalibration::FaceData validationFaces_[6] = {};
+    FifoCalibrationCaptureStatus lastStatus_ = FifoCalibrationCaptureStatus::Idle;
 
     bool captureValidationFace(FifoCalibrationIo& io,
+                               FifoCalibrationCaptureSession& session,
                                Accel6PosCalibration::Face face,
                                Accel6PosCalibration::FaceData& out,
                                FifoAccelCaptureProgressCallback progressCb,

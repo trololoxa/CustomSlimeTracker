@@ -439,7 +439,7 @@ static void resetMagCalibrationHook(void* user) {
     g_magRuntime.resetCalibration();
 }
 
-static bool applyMagCalibrationHook(bool persist, void* user) {
+static bool applyMagCalibrationHook(void* user) {
     (void)user;
-    return g_magRuntime.applyCalibration(persist);
+    return g_magRuntime.applyCalibrationVolatilePreview();
 }

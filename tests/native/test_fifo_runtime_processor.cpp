@@ -15,12 +15,18 @@ using namespace tracker;
 
 namespace {
 
+class SilentTestStream final : public Stream {
+public:
+    std::size_t write(uint8_t) override { return 1u; }
+    std::size_t write(const uint8_t*, std::size_t len) override { return len; }
+};
+
 class FifoTransport final : public Lsm6dsvTransport {
 public:
-    bool read(uint8_t, uint8_t* dst, size_t len) override {
+    bool read(uint8_t reg, uint8_t* dst, size_t len) override {
         if (!dst || len == 0) return false;
         if (len == 1) {
-            dst[0] = 0;
+            dst[0] = registers_[reg];
             return true;
         }
         if (len == 2) {
@@ -30,6 +36,8 @@ public:
             return true;
         }
         if ((len % Lsm6dsvFifoReader::FIFO_WORD_BYTES) != 0u) return false;
+
+        if (failDataRead_) return false;
 
         const size_t count = len / Lsm6dsvFifoReader::FIFO_WORD_BYTES;
         if (readIndex_ + count > words_.size()) return false;
@@ -44,7 +52,11 @@ public:
         return true;
     }
 
-    bool write(uint8_t, const uint8_t*, size_t) override { return true; }
+    bool write(uint8_t reg, const uint8_t* src, size_t len) override {
+        if (!src || len == 0u) return false;
+        registers_[reg] = src[0];
+        return true;
+    }
     void delayMs(uint32_t) override {}
 
     void addSample(int16_t sequence) {
@@ -68,6 +80,7 @@ public:
     size_t remainingWords() const { return words_.size() - readIndex_; }
     uint32_t dataReads() const { return dataReads_; }
     void setDataReadCostUs(uint32_t value) { dataReadCostUs_ = value; }
+    void setFailDataRead(bool value) { failDataRead_ = value; }
 
 private:
     static std::array<uint8_t, Lsm6dsvFifoReader::FIFO_WORD_BYTES> makeWord(
@@ -93,6 +106,8 @@ private:
     size_t readIndex_ = 0;
     uint32_t dataReads_ = 0;
     uint32_t dataReadCostUs_ = 0;
+    bool failDataRead_ = false;
+    std::array<uint8_t, 256> registers_{};
 };
 
 struct CallbackProbe {
@@ -150,7 +165,7 @@ struct Fixture {
     CallbackProbe probe;
     float magPeriodUs = 16667.0f;
     FifoRuntimeProcessor processor;
-    Stream out;
+    SilentTestStream out;
 
     bool begin() {
         Lsm6dsvFifoReader::Config config;
@@ -180,6 +195,36 @@ struct Fixture {
         return true;
     }
 };
+
+void testEventSourceRebasesPreexistingIrqCount(TestContext& ctx) {
+    trackerTestSetMicros(0u);
+    Fixture f;
+    f.irqCount = 7u;
+    CHECK(ctx, f.begin());
+    CHECK(ctx, f.events.lastHandledIrqCount() == 7u);
+    CHECK(ctx, !f.events.consume(0u, 12u));
+
+    trackerTestSetMicros(100u);
+    f.irqCount = 8u;
+    CHECK(ctx, f.events.consume(0u, 12u));
+    CHECK(ctx, f.events.lastHandledIrqCount() == 8u);
+
+    // A successful transactional reset commits a new liveness epoch. The
+    // old event timestamp must not survive and look like fresh progress after
+    // a long blocking operation; IRQs accumulated before detach are rebased.
+    CHECK(ctx, f.events.lastEventAtUs() != 0u);
+    trackerTestSetMicros(1000000u);
+    f.irqCount = 9u;
+    f.events.reset();
+    CHECK(ctx, f.events.lastHandledIrqCount() == 9u);
+    CHECK(ctx, f.events.lastEventAtUs() == 0u);
+    CHECK(ctx, !f.events.consume(0u, 12u));
+
+    trackerTestSetMicros(1000100u);
+    f.irqCount = 10u;
+    CHECK(ctx, f.events.consume(0u, 12u));
+    CHECK(ctx, f.events.lastEventAtUs() == 1000100u);
+}
 
 void testCallbacksAreSlicedAcrossAppPasses(TestContext& ctx) {
     trackerTestSetMicros(0);
@@ -260,6 +305,54 @@ void testExternalResetDropsPendingBatch(TestContext& ctx) {
 
     CHECK(ctx, !f.processor.process(12, 384, 6, f.out));
     CHECK(ctx, f.probe.rawCalls == cfg::FIFO_RUNTIME_MIN_RAW_CALLBACKS_PER_SLICE);
+}
+
+void testDrainFailureRequestsRecoveryWithoutPublishing(TestContext& ctx) {
+    trackerTestSetMicros(0);
+    Fixture f;
+    f.bus.addSample(1);
+    CHECK(ctx, f.begin());
+    f.bus.setFailDataRead(true);
+    f.irqCount = 1u;
+
+    CHECK(ctx, f.processor.process(12u, 384u, 6u, f.out));
+    CHECK(ctx, f.probe.rawCalls == 0u);
+    CHECK(ctx, f.processor.pendingFault() == FifoRuntimeFault::DrainFailed);
+    CHECK(ctx, f.processor.queueStats().drainFailures == 1u);
+    CHECK(ctx, f.processor.takeFault() == FifoRuntimeFault::DrainFailed);
+    CHECK(ctx, f.processor.takeFault() == FifoRuntimeFault::None);
+}
+
+void testWholeBatchCapacityPreflight(TestContext& ctx) {
+    trackerTestSetMicros(0);
+    Fixture f;
+    for (int16_t i = 0; i < 6; ++i) f.bus.addSample(i);
+    CHECK(ctx, f.begin());
+
+    // Rebind the processor with an intentionally tiny queue while retaining a
+    // staging buffer large enough for the complete hardware fragment.
+    f.processor.begin(&f.events,
+                      &f.fifo,
+                      f.raw,
+                      sizeof(f.raw) / sizeof(f.raw[0]),
+                      f.mag,
+                      sizeof(f.mag) / sizeof(f.mag[0]),
+                      f.rawQueue,
+                      f.rawQueueFlags,
+                      4u,
+                      f.magQueue,
+                      sizeof(f.magQueue) / sizeof(f.magQueue[0]),
+                      onRaw,
+                      onMag,
+                      onTime,
+                      &f.probe);
+    f.irqCount = 1u;
+
+    CHECK(ctx, f.processor.process(12u, 384u, 6u, f.out));
+    CHECK(ctx, f.probe.rawCalls == 0u);
+    CHECK(ctx, f.processor.rawQueueDepth() == 0u);
+    CHECK(ctx, f.processor.pendingFault() == FifoRuntimeFault::BatchCapacityInvariant);
+    CHECK(ctx, f.processor.queueStats().batchCapacityInvariantFailures == 1u);
 }
 
 void testMagCallbacksFollowNearestRawTimestamp(TestContext& ctx) {
@@ -400,10 +493,13 @@ void testRamQueueAbsorbsSecondHardwareBurst(TestContext& ctx) {
 
 int main() {
     TestContext ctx;
+    testEventSourceRebasesPreexistingIrqCount(ctx);
     testCallbacksAreSlicedAcrossAppPasses(ctx);
     testHardwareDrainTimeSharesBudgetButPreservesMinimumProgress(ctx);
     testRecoveryDropsRemainderOfPredateBatch(ctx);
     testExternalResetDropsPendingBatch(ctx);
+    testDrainFailureRequestsRecoveryWithoutPublishing(ctx);
+    testWholeBatchCapacityPreflight(ctx);
     testMagCallbacksFollowNearestRawTimestamp(ctx);
     testMagCallbacksRespectCountBudget(ctx);
     testMagCallbacksRespectCooperativeTimeBudget(ctx);

@@ -10,6 +10,8 @@
 #include "runtime/mag_runtime_state.hpp"
 #include "runtime/output_runtime.hpp"
 #include "runtime/runtime_bias_types.hpp"
+#include "runtime/sensor_progress_watchdog.hpp"
+#include "runtime/sensor_recovery_controller.hpp"
 #include "runtime/tracking_state_controller.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/calibration.hpp"
@@ -32,6 +34,8 @@ struct RuntimeStatusReporterDeps {
     const FifoInterruptEventSource* fifoEvents = nullptr;
     const FifoRuntimeProcessor* fifoRuntime = nullptr;
     const Lsm6dsvFifoReader* fifo = nullptr;
+    const SensorProgressWatchdog* sensorProgress = nullptr;
+    const SensorRecoveryController* sensorRecovery = nullptr;
 
     float latestTempC = 0.0f;
     const ImuCalibration* imuCal = nullptr;

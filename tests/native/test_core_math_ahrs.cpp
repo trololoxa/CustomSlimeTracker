@@ -1,5 +1,7 @@
 #include "test_common.hpp"
 
+#include <limits>
+
 #include "core/math.hpp"
 #include "sensor/ahrs_6dof.hpp"
 
@@ -297,6 +299,22 @@ static void testTwoHourStaticTiltRemainsBounded(TestContext& ctx) {
     CHECK_NEAR(ctx, ahrs.quaternion().norm(), 1.0f, 2.0e-5f);
 }
 
+static void testInvalidQuaternionCandidatesAreRejected(TestContext& ctx) {
+    Ahrs6Dof ahrs;
+    CHECK(ctx, ahrs.reset(Quat::identity(), 1000u));
+    const Quat before = ahrs.quaternion();
+
+    CHECK(ctx, !ahrs.setQuaternion(Quat(0.0f, 0.0f, 0.0f, 0.0f)));
+    CHECK(ctx, ahrs.quaternion().w == before.w);
+    CHECK(ctx, ahrs.quaternion().x == before.x);
+    CHECK(ctx, ahrs.stats().invalidQuaternionRejectedCount == 1u);
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK(ctx, !ahrs.reset(Quat(nan, 0.0f, 0.0f, 0.0f), 2000u));
+    CHECK(ctx, ahrs.initialized());
+    CHECK(ctx, ahrs.quaternion().w == before.w);
+}
+
 int main() {
     TestContext ctx;
     testVecMatQuat(ctx);
@@ -308,5 +326,6 @@ int main() {
     testFastGyroIntegrationTwoHours(ctx);
     testTwoHourStaticTiltRemainsBounded(ctx);
     testDecimatedAccelCorrectionConverges(ctx);
+    testInvalidQuaternionCandidatesAreRejected(ctx);
     return ctx.finish("test_core_math_ahrs");
 }

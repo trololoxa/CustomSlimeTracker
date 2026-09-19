@@ -4,6 +4,7 @@
 
 #include "core/math.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
+#include "sensor/calibration_limits.hpp"
 
 namespace tracker {
 
@@ -41,10 +42,10 @@ const char* magCalibrationSolverStageName(MagCalibrationSolverStage stage);
 
 struct MagCalibrationParams {
     uint32_t minSamples = 300;
-    float minAxisRadius = 20.0f;
+    float minAxisRadius = calibration_limits::MAG_MIN_AXIS_RADIUS;
     float minCoverageScore = 0.35f;
     float minDirectionalCoverageScore = 0.65f;
-    float maxAxisRatio = 6.0f;
+    float maxAxisRatio = calibration_limits::MAG_MAX_AXIS_RATIO;
     // Minimum centered, dimensionless ellipsoid-equation sanity ceiling.
     // The effective value cannot be stricter than the geometric gate.
     float maxAlgebraicResidualRms = 0.12f;

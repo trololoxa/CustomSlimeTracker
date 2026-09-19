@@ -31,6 +31,19 @@ namespace tracker {
 
 class Lsm6dsvFifoReader {
 public:
+    // Hardware/queue limits are public contract constants so persisted config
+    // validation cannot drift away from the actual FIFO implementation.
+    static constexpr uint16_t HARDWARE_FIFO_WORD_CAPACITY = 511;
+    static constexpr uint16_t MAX_TIMESTAMP_WAITING_SAMPLES = 95;
+    enum class RecoveryError : uint8_t {
+        None = 0,
+        StopRouteWrite,
+        StopRouteVerify,
+        BypassWrite,
+        BypassVerify,
+        ReconfigureWrite,
+        ReconfigureVerify,
+    };
     static constexpr uint8_t TAG_EMPTY       = 0x00;
     static constexpr uint8_t TAG_GYRO_NC     = 0x01;
     static constexpr uint8_t TAG_ACCEL_NC    = 0x02;
@@ -266,6 +279,9 @@ public:
 
     bool resetFifo();
 
+    RecoveryError lastRecoveryError() const { return lastRecoveryError_; }
+    bool hardwareStateKnown() const { return hardwareStateKnown_; }
+
     bool isConfigured() const;
 
     float samplePeriodUs() const;
@@ -279,6 +295,10 @@ public:
     bool popMagSample(MagRawSample& out);
 
     size_t popMagSamples(MagRawSample* out, size_t capacity);
+
+    // Direct calibration capture owns FIFO while pose is invalid. These
+    // samples cannot be fused against a tilt reference frozen before capture.
+    void discardMagDuringCalibrationCapture() { magHead_ = magTail_ = magCount_ = 0u; }
 
     void resetTimestampReconstruction(uint64_t lastTimestampUs = 0);
 
@@ -319,7 +339,7 @@ private:
     static constexpr uint8_t FUNC_EN_TIMESTAMP = 1u << 6;
 
     static constexpr size_t TIMESTAMP_QUEUE_CAP = 64;
-    static constexpr size_t WAITING_SAMPLE_CAP = 96;
+    static constexpr size_t WAITING_SAMPLE_CAP = MAX_TIMESTAMP_WAITING_SAMPLES + 1u;
     static constexpr size_t COMPLETED_SAMPLE_CAP = 128;
     static constexpr size_t MAG_SAMPLE_CAP = 96;
 
@@ -338,6 +358,18 @@ private:
     static uint8_t odrToBdrNibble(Lsm6dsv::Odr odr);
 
     bool writeReg(uint8_t reg, uint8_t value);
+
+    bool readReg(uint8_t reg, uint8_t& value);
+
+    bool writeAndVerify(uint8_t reg, uint8_t value, uint8_t mask = 0xffu);
+
+    uint8_t configuredFifoCtrl3() const;
+
+    uint8_t configuredFifoCtrl4() const;
+
+    uint8_t configuredInt1Ctrl() const;
+
+    uint8_t configuredInt2Ctrl() const;
 
     bool readWordsToBurstBuffer(uint16_t count);
 
@@ -399,6 +431,8 @@ private:
     const Lsm6dsv& lsm_;
     Config cfg_;
     bool configured_ = false;
+    bool hardwareStateKnown_ = false;
+    RecoveryError lastRecoveryError_ = RecoveryError::None;
 
     FifoWord pendingGyro_;
     FifoWord pendingAccel_;

@@ -120,6 +120,8 @@ void printTrackingPerf(Stream& out, TrackerSerialCommandContext& ctx) {
     out.print("runtime_mag_queue_depth="); out.println(ctx.fifoRuntime ? ctx.fifoRuntime->magQueueDepth() : 0u);
     out.print("runtime_mag_queue_high_water="); out.println(queue.magQueueHighWater);
     out.print("runtime_mag_queue_overflow_delta="); out.println(deltaU32(queue.magQueueOverflow, g_trackingPerfBaseline.queue.magQueueOverflow));
+    out.print("runtime_fifo_drain_failures_delta="); out.println(deltaU32(queue.drainFailures, g_trackingPerfBaseline.queue.drainFailures));
+    out.print("runtime_fifo_batch_capacity_failures_delta="); out.println(deltaU32(queue.batchCapacityInvariantFailures, g_trackingPerfBaseline.queue.batchCapacityInvariantFailures));
     out.print("runtime_mag_chronological_deferrals_delta="); out.println(deltaU32(queue.magChronologicalDeferrals, g_trackingPerfBaseline.queue.magChronologicalDeferrals));
     out.print("runtime_mag_count_deferrals_delta="); out.println(deltaU32(queue.magCallbackCountDeferrals, g_trackingPerfBaseline.queue.magCallbackCountDeferrals));
     out.print("runtime_mag_budget_deferrals_delta="); out.println(deltaU32(queue.magCallbackBudgetDeferrals, g_trackingPerfBaseline.queue.magCallbackBudgetDeferrals));

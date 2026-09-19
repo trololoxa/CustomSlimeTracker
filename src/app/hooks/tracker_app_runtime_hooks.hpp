@@ -8,7 +8,9 @@
 // Runtime sample-processing hooks and final TrackerAppDeps wiring.
 // This file is included by app/tracker_app_hooks.hpp after shared app dependencies.
 
-static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::RawSample& raw) {
+static void maybeRecoverFifo(const ImuQualityResult& quality,
+                             const Lsm6dsv::RawSample& raw,
+                             TrackerApp* app) {
     if (!quality.shouldRequestFifoRecovery) return;
 
     const uint32_t nowMs = millis();
@@ -22,24 +24,12 @@ static void maybeRecoverFifo(const ImuQualityResult& quality, const Lsm6dsv::Raw
 
     const uint64_t ts = raw.t_us != 0 ? raw.t_us : lsmFifo.stats().lastAssignedTimestampUs;
     const bool useSoftRecovery = trackingFifoLossCanUseSoftRecovery(quality);
-    enterTrackingRecovery(quality.flags,
-                          useSoftRecovery ? "fifo_recovery_soft" : "fifo_recovery",
-                          ts);
-    const bool resetOk = lsmFifo.resetFifo();
-    lsmFifo.resetTimestampReconstruction(ts);
-    // The sample that requested recovery already came from a broken pre-reset
-    // stream. Drop prepared output so SlimeVR does not keep receiving a
-    // sequence of stale/faulted quaternions while the FIFO restarts.
-    g_preparedOutput.reset();
-    // Preserve counters, but clear timestamp baselines and recovery latch.
-    // Otherwise the next post-reset hardware timestamps can be compared
-    // against the old pre-reset stream and AHRS may stay effectively frozen.
-    g_quality.resetStreamRecoveryState();
-    g_quality.syncFifoStats(lsmFifo.stats());
-    resetFifoRuntimeCounters();
-
-    if (!resetOk && !trackerConsoleTrackingMessagesSuppressed(millis())) {
-        appConsoleOutput().println("# ERR FIFO reset failed during recovery");
+    if (app != nullptr) {
+        (void)app->requestSensorRecovery(
+            TrackerHealthFaultCode::FifoDiscontinuity,
+            quality.flags,
+            ts,
+            useSoftRecovery ? "fifo_recovery_soft" : "fifo_recovery");
     }
 }
 
@@ -187,8 +177,7 @@ static bool pipelineEnqueueRuntimeBiasLog(uint64_t timestampUs,
 static void pipelineMaybeRecoverFifoCallback(const ImuQualityResult& quality,
                                              const Lsm6dsv::RawSample& raw,
                                              void* user) {
-    (void)user;
-    maybeRecoverFifo(quality, raw);
+    maybeRecoverFifo(quality, raw, static_cast<TrackerApp*>(user));
 }
 
 static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
@@ -199,7 +188,7 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
     callbacks.emitMachineLogFrame = pipelineEmitMachineLogFrameCallback;
 #endif
     callbacks.maybeRecoverFifo = pipelineMaybeRecoverFifoCallback;
-    callbacks.user = nullptr;
+    callbacks.user = &g_app;
 
     ImuSamplePipelineDeps deps{
         lsm,
@@ -259,6 +248,7 @@ static ImuSamplePipelineDeps makeImuSamplePipelineDeps() {
     deps.lastQualityFlags = &g_lastQualityFlags;
     deps.lastImuSampleSequence = &g_lastImuSampleSequence;
     deps.fifoRuntime = &g_fifoRuntime;
+    deps.sensorProgress = &g_app.sensorProgressWatchdog();
     deps.sensorToDeviceFrameCache = &g_sensorToDeviceFrameCache;
 #if TRACKER_HAS_RUNTIME_PROFILER
     deps.runtimeProfiler = &g_runtimeProfiler;
@@ -312,12 +302,25 @@ static void recordRuntimeFifoProcessTime(uint32_t processUs, void* user) {
 #endif
 }
 
+static bool g_fifoInterruptAttached = false;
+
 static void appAttachFifoInterruptCallback() {
+    if (g_fifoInterruptAttached) return;
     attachInterrupt(digitalPinToInterrupt(PIN_LSM_INT1), onFifoInt1, RISING);
+    g_fifoInterruptAttached = true;
 }
 
 static void appDetachFifoInterruptCallback() {
+    if (!g_fifoInterruptAttached) return;
     detachInterrupt(digitalPinToInterrupt(PIN_LSM_INT1));
+    g_fifoInterruptAttached = false;
+}
+
+static bool appOrientationPublicationExpected() {
+    return sensorProgressOrientationExpected(
+        g_ahrs6dof.initialized(),
+        g_trackingState.recoveryActive(),
+        g_trackingState.degradedGyroOutputAllowed());
 }
 
 static bool appSetMagRuntimeEnabledCallback(bool enabled, bool persist) {
@@ -701,8 +704,25 @@ static void publishTrackerHealthState(const TrackerHealthSnapshot& health) {
     g_slimevrRuntime.setTrackerHealth(health);
 }
 
+static void appEnterTrackingRecoveryCallback(uint32_t reasonFlags,
+                                             const char* reason,
+                                             uint64_t timestampUs) {
+    enterTrackingRecovery(reasonFlags, reason, timestampUs);
+}
+
+static void setSafeModeWriteInhibit(bool inhibited) {
+    g_configStore.setWriteInhibited(inhibited);
+    g_networkConfigStore.setWriteInhibited(inhibited);
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    g_calibrationAutonomyStore.setWriteInhibited(inhibited);
+#endif
+}
+
 static void startNetworkRuntimeFromCurrentConfig(bool printStartup) {
-    g_networkConfig.sanitize();
+    if (!g_networkConfig.validateSemanticConfig()) {
+        Serial.println("# ERR network runtime start blocked: invalid semantic config");
+        return;
+    }
 
     g_wifiManager.begin(g_wifiStation);
     g_wifiManager.configure(makeAppWifiManagerConfig());
@@ -1116,7 +1136,10 @@ static void prepareMotionLightSleepRuntime() {
 static void calibrationAutonomyApplyConfigCallback(const TrackerConfig& promoted,
                                                      void* user) {
     (void)user;
-    trackerApplyCalibrationCandidateToConfig(g_config, promoted);
+    if (!trackerApplyCalibrationCandidateToConfig(g_config, promoted)) {
+        Serial.println("# ERR autonomy calibration apply rejected: invalid semantic config");
+        return;
+    }
     g_config.applyToImuCalibration(g_imuCal);
     g_config.applyToGyroTempComp(g_gyroTempComp);
     runtimeBiasReset(g_runtimeBias);
@@ -1239,6 +1262,8 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.runtime.lastHeartbeatMs = &g_lastHeartbeatMs;
     deps.runtime.latestTempC = &g_latestTempC;
     deps.runtime.health = &g_trackerHealth;
+    deps.runtime.bootHealthRecord = &g_bootHealthRecord;
+    deps.runtime.factoryResetCoordinator = &g_factoryResetCoordinator;
 
     deps.callbacks.setupMagRuntimeController = setupMagRuntimeController;
 #if TRACKER_HAS_SERIAL_CLI
@@ -1252,6 +1277,9 @@ static TrackerAppDeps makeTrackerAppDeps() {
     deps.callbacks.resumeNetworkRuntime = resumeNetworkRuntime;
 #endif
     deps.callbacks.publishHealthState = publishTrackerHealthState;
+    deps.callbacks.enterTrackingRecovery = appEnterTrackingRecoveryCallback;
+    deps.callbacks.orientationPublicationExpected = appOrientationPublicationExpected;
+    deps.callbacks.setSafeModeWriteInhibit = setSafeModeWriteInhibit;
     deps.callbacks.updateNetworkRuntime = updateNetworkRuntime;
     deps.callbacks.updateCriticalNetworkRuntime = updateCriticalNetworkRuntime;
     deps.callbacks.criticalNetworkRuntimeDue = criticalNetworkRuntimeDue;

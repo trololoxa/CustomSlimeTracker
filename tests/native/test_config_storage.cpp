@@ -182,7 +182,7 @@ void testCorruptSelectedSlotFallsBack(TestContext& ctx) {
     CHECK(ctx, info.loadFallbacks == 1u);
 }
 
-void testSelectorLossUsesNewestExplicitlyCommittedV2Generation(TestContext& ctx) {
+void testSelectorLossUsesNewestExplicitlyCommittedGeneration(TestContext& ctx) {
     Preferences::clearTestStorage();
     TrackerConfigStore store("cfg_selector", "cfg");
     TrackerConfig first = makeConfig(50);
@@ -851,7 +851,7 @@ void testNoOpSavePreservesGenerationAndCandidate(TestContext& ctx) {
 }
 
 
-void testNoOpSaveUpgradesLegacyV1ActiveSlotToV2(TestContext& ctx) {
+void testLoadUpgradesLegacyV1ActiveSlotToV3(TestContext& ctx) {
     Preferences::clearTestStorage();
     TrackerConfigStore store("cfg_upgrade_v1", "cfg");
     TrackerConfig active = makeConfig(100, 0.60f, true);
@@ -861,15 +861,11 @@ void testNoOpSaveUpgradesLegacyV1ActiveSlotToV2(TestContext& ctx) {
     TrackerConfigStore upgraded("cfg_upgrade_v1", "cfg");
     TrackerConfig loaded;
     CHECK(ctx, upgraded.load(loaded));
+    CHECK(ctx, upgraded.lastLoadStatus() == TrackerConfigLoadStatus::Migrated);
     upgraded.confirmAuthoritativeConfigApplied();
-    TrackerConfigStorageInfo before;
-    CHECK(ctx, upgraded.inspectStorage(before));
-    CHECK(ctx, before.slotA.legacyCommitted);
-    CHECK(ctx, upgraded.save(loaded));
-
     TrackerConfigStorageInfo after;
     CHECK(ctx, upgraded.inspectStorage(after));
-    CHECK(ctx, after.selectedGeneration == before.selectedGeneration + 1u);
+    CHECK(ctx, after.selectedGeneration == 2u);
     const TrackerConfigSlotInfo& selected = after.selectedSlot == TrackerConfigSlot::A
         ? after.slotA : after.slotB;
     CHECK(ctx, selected.valid);
@@ -1243,6 +1239,358 @@ void testGenerationWrapComparison(TestContext& ctx) {
     CHECK(ctx, !trackerGenerationIsNewer(5u, 5u));
 }
 
+bool convertSlotToTransitionalV2(const char* name,
+                                 const char* slotKey,
+                                 bool addHistoricalFields = true) {
+    TrackerConfigSlotRecord record;
+    if (!readStoredRecord(name, slotKey, record)) return false;
+    record.version = tracker_config_storage_detail::TRANSITIONAL_SLOT_VERSION;
+    if (addHistoricalFields) {
+        // These values were valid/persisted before the 0028 semantic contract.
+        // sanitize() has deterministic compatibility rules for each of them.
+        record.payload.output.packetFormat = 0u;
+        record.payload.ahrs.reservedAccelTrustMinNormG = 0.0f;
+        record.payload.ahrs.reservedAccelTrustMaxNormG = 0.0f;
+        record.payload.magYaw.maxInnovationDeg = 0.0f;
+        record.payload.ahrsRuntime.minDtS = 0.0f;
+        record.payload.crc32 = 0u;
+        TrackerConfig payload;
+        payload.data = record.payload;
+        payload.updateCrc();
+        record.payload = payload.data;
+    }
+    record.crc32 = 0;
+    record.crc32 = trackerConfigSlotRecordCrc(record);
+    Preferences::putTestBytes(name, slotKey, &record, sizeof(record));
+    return true;
+}
+
+TrackerConfig makeMagEnabledCalibratedConfig() {
+    TrackerConfig config = makeConfig(100u, 0.95f, true);
+    config.data.hardware.spiHz = 4000000u;
+    config.data.fifo.watermarkWords = 12u;
+    config.data.frame.sensorToDeviceValid = true;
+    config.data.frame.sensorToDevice = Mat3::identity();
+    config.data.magCal.driverEnabled = true;
+    config.data.magCal.calibrationValid = true;
+    config.data.magCal.axisAlignmentValid = true;
+    config.data.magCal.hardIron = Vec3(120.0f, -80.0f, 45.0f);
+    config.data.magCal.softIron = Mat3::diagonal(1.10f, 0.95f, 1.02f);
+    config.data.magCal.magToImu = Mat3::identity();
+    config.data.magCal.expectedFieldNorm = 900.0f;
+    config.data.magCal.minTrustNorm = 450.0f;
+    config.data.magCal.maxTrustNorm = 1600.0f;
+    config.data.magYaw.applyEnabled = true;
+    config.updateCrc();
+    return config;
+}
+
+void testDeployedV3MigrationKeepsCalibrations(TestContext& ctx) {
+    for (unsigned variant = 0u; variant < 5u; ++variant) {
+        Preferences::clearTestStorage();
+        TrackerConfigStore writer("cfg_v3", "cfg");
+        auto good = makeMagEnabledCalibratedConfig();
+        CHECK(ctx, writer.save(good));
+        TrackerConfigSlotRecord record;
+        CHECK(ctx, readStoredRecord("cfg_v3", "cfg_a", record));
+        record.version = tracker_config_storage_detail::DEPLOYED_V3_SLOT_VERSION;
+        TrackerConfig old;
+        old.data = record.payload;
+        old.data.hardware.serialBaud /= 2u;
+        old.data.output.quaternionOutputEnabled = true;
+        old.data.output.serialDebugEnabled = true;
+        old.data.quality.expectedDtUs = 10000.0f;
+        old.updateCrc();
+        CHECK(ctx, old.validate());
+        CHECK(ctx, !old.validateSemanticConfig());
+        record.payload = old.data;
+        record.crc32 = trackerConfigSlotRecordCrc(record);
+        Preferences::putTestBytes("cfg_v3", "cfg_a", &record, sizeof(record));
+        const auto oldBytes = Preferences::getTestBytes("cfg_v3", "cfg_a");
+        const auto selector = Preferences::getTestBytes("cfg_v3", "cfg_s");
+        TrackerConfigStore reader("cfg_v3", "cfg");
+        if (variant == 1u) reader.setWriteInhibited(true);
+        if (variant == 2u) Preferences::setGetFailuresForKey("cfg_v3", "cfg_b", 1u);
+        if (variant == 3u) Preferences::setPutLimitForKey("cfg_v3", "cfg_b", 0u);
+        if (variant == 4u) Preferences::setPutLimitForKey("cfg_v3", "cfg_s", 0u);
+        TrackerConfig loaded;
+        if (variant < 2u) {
+            CHECK(ctx, reader.load(loaded));
+            CHECK(ctx, loaded.validateSemanticConfig());
+            CHECK(ctx, loaded.data.hardware.serialBaud == cfg::SERIAL_BAUD);
+            CHECK(ctx, !loaded.data.output.serialDebugEnabled);
+            CHECK(ctx, loaded.data.output.quaternionOutputEnabled);
+            CHECK(ctx, loaded.data.quality.expectedDtUs == 0.0f);
+            CHECK(ctx, loaded.data.magCal.driverEnabled);
+            CHECK(ctx, trackerCalibrationModelEqual(good, loaded));
+            CHECK(ctx, std::memcmp(&good.data.magCal, &loaded.data.magCal, sizeof(good.data.magCal)) == 0);
+            CHECK(ctx, Preferences::getTestBytes("cfg_v3", "cfg_a") == oldBytes);
+            if (variant == 1u) {
+                CHECK(ctx, reader.lastLoadStatus() == TrackerConfigLoadStatus::LoadedLegacyReadOnly);
+                CHECK(ctx, Preferences::getTestBytes("cfg_v3", "cfg_s") == selector);
+                CHECK(ctx, Preferences::getTestBytes("cfg_v3", "cfg_b").empty());
+            } else {
+                CHECK(ctx, readStoredRecord("cfg_v3", "cfg_b", record));
+                CHECK(ctx, record.version == tracker_config_storage_detail::SLOT_VERSION);
+                const auto committed = Preferences::getTestBytes("cfg_v3", "cfg_s");
+                TrackerConfigStore rebooted("cfg_v3", "cfg");
+                CHECK(ctx, rebooted.load(loaded));
+                CHECK(ctx, Preferences::getTestBytes("cfg_v3", "cfg_s") == committed);
+            }
+        } else {
+            CHECK(ctx, !reader.load(loaded));
+            CHECK(ctx, Preferences::getTestBytes("cfg_v3", "cfg_a") == oldBytes);
+            if (variant != 4u) CHECK(ctx, Preferences::getTestBytes("cfg_v3", "cfg_s") == selector);
+            // A torn selector is repaired from committed old-good authority.
+            Preferences::setPutLimitForKey("cfg_v3", "cfg_s", 4096u);
+            Preferences::setPutLimitForKey("cfg_v3", "cfg_b", 4096u);
+            TrackerConfigStore rebooted("cfg_v3", "cfg");
+            CHECK(ctx, rebooted.load(loaded));
+            CHECK(ctx, trackerCalibrationModelEqual(good, loaded));
+            CHECK(ctx, loaded.data.magCal.driverEnabled);
+        }
+    }
+    // Versioned normalization never repairs a broken calibration matrix.
+    Preferences::clearTestStorage();
+    auto invalid = makeMagEnabledCalibratedConfig();
+    invalid.data.accelCal.scale = Mat3{};
+    invalid.data.accelCal.scale.m[0][0] = 0.0f;
+    invalid.updateCrc();
+    CHECK(ctx, !trackerNormalizeDeployedV3(invalid));
+}
+
+void testSafeModeWriteInhibit(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore store("cfg_safe_mode", "cfg");
+    TrackerConfig config = makeConfig(100u);
+    store.setWriteInhibited(true);
+    CHECK(ctx, !store.save(config));
+    CHECK(ctx, store.lastError() == TrackerConfigError::WriteInhibited);
+    CHECK(ctx, !store.erase());
+    CHECK(ctx, store.lastError() == TrackerConfigError::WriteInhibited);
+    store.setWriteInhibited(false);
+    CHECK(ctx, store.save(config));
+}
+
+void testSafeModeLoadPerformsNoRepairOrMigrationWrites(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfig legacy = makeConfig(73u);
+    Preferences::putTestBytes("cfg_safe_legacy", "cfg", &legacy.data, sizeof(legacy.data));
+
+    TrackerConfigStore legacyReader("cfg_safe_legacy", "cfg");
+    legacyReader.setWriteInhibited(true);
+    TrackerConfig loaded;
+    CHECK(ctx, legacyReader.load(loaded));
+    CHECK(ctx, loaded.data.output.outputRateHz == 73u);
+    CHECK(ctx, legacyReader.lastLoadStatus() ==
+                   TrackerConfigLoadStatus::LoadedLegacyReadOnly);
+    CHECK(ctx, !Preferences::getTestBytes("cfg_safe_legacy", "cfg").empty());
+    CHECK(ctx, Preferences::getTestBytes("cfg_safe_legacy", "cfg_a").empty());
+    CHECK(ctx, Preferences::getTestBytes("cfg_safe_legacy", "cfg_s").empty());
+
+    Preferences::clearTestStorage();
+    Preferences::setPutLimitForKey("cfg_safe_repair", "cfg_ac", 0u);
+    TrackerConfigStore writer("cfg_safe_repair", "cfg");
+    TrackerConfig active = makeConfig(81u);
+    CHECK(ctx, writer.save(active));
+    CHECK(ctx, Preferences::getTestBytes("cfg_safe_repair", "cfg_ac").empty());
+
+    TrackerConfigStore activeReader("cfg_safe_repair", "cfg");
+    activeReader.setWriteInhibited(true);
+    CHECK(ctx, activeReader.load(loaded));
+    CHECK(ctx, loaded.data.output.outputRateHz == 81u);
+    CHECK(ctx, Preferences::getTestBytes("cfg_safe_repair", "cfg_ac").empty());
+}
+
+void testTransitionalV2MigratesWithoutLosingMagOrCalibration(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore writer("cfg_v2_compat", "cfg");
+    TrackerConfig active = makeMagEnabledCalibratedConfig();
+    CHECK(ctx, active.validateSemanticConfig());
+    CHECK(ctx, writer.save(active));
+    CHECK(ctx, convertSlotToTransitionalV2("cfg_v2_compat", "cfg_a"));
+
+    TrackerConfigSlotRecord source;
+    CHECK(ctx, readStoredRecord("cfg_v2_compat", "cfg_a", source));
+    CHECK(ctx, source.version == tracker_config_storage_detail::TRANSITIONAL_SLOT_VERSION);
+    CHECK(ctx, trackerValidateConfigSlotRecord(source));
+    TrackerConfig preMigration;
+    preMigration.data = source.payload;
+    CHECK(ctx, !preMigration.validateSemanticConfig());
+
+    TrackerConfigStore rebooted("cfg_v2_compat", "cfg");
+    TrackerConfig loaded;
+    CHECK(ctx, rebooted.load(loaded));
+    CHECK(ctx, rebooted.lastLoadStatus() == TrackerConfigLoadStatus::Migrated);
+    CHECK(ctx, loaded.validateSemanticConfig());
+    CHECK(ctx, loaded.data.hardware.spiHz == 4000000u);
+    CHECK(ctx, loaded.data.fifo.watermarkWords == 12u);
+    CHECK(ctx, loaded.data.gyroCal.biasValid);
+    CHECK(ctx, loaded.data.accelCal.valid);
+    CHECK(ctx, loaded.data.frame.sensorToDeviceValid);
+    CHECK(ctx, loaded.data.magCal.driverEnabled);
+    CHECK(ctx, loaded.data.magCal.calibrationValid);
+    CHECK(ctx, loaded.data.magCal.axisAlignmentValid);
+    CHECK(ctx, loaded.data.magYaw.applyEnabled);
+    CHECK(ctx, loaded.data.magCal.hardIron.x == active.data.magCal.hardIron.x);
+    CHECK(ctx, loaded.data.magCal.expectedFieldNorm == active.data.magCal.expectedFieldNorm);
+    CHECK(ctx, trackerCalibrationModelEqual(loaded, active));
+    CHECK(ctx, trackerCalibrationEvidenceEqual(loaded, active));
+    CHECK(ctx, (loaded.data.output.packetFormat &
+                tracker_config_detail::OUTPUT_PACKET_MODE_MARKER) != 0u);
+
+    TrackerConfigStorageInfo info;
+    CHECK(ctx, rebooted.inspectStorage(info));
+    CHECK(ctx, info.selectedGeneration == 2u);
+    const TrackerConfigSlotInfo& selected = info.selectedSlot == TrackerConfigSlot::A
+        ? info.slotA : info.slotB;
+    const TrackerConfigSlotInfo& oldGood = info.selectedSlot == TrackerConfigSlot::A
+        ? info.slotB : info.slotA;
+    CHECK(ctx, selected.version == tracker_config_storage_detail::SLOT_VERSION);
+    CHECK(ctx, selected.semanticValid);
+    CHECK(ctx, !selected.migrationRequired);
+    CHECK(ctx, selected.commitMarkerValid);
+    CHECK(ctx, oldGood.version == tracker_config_storage_detail::TRANSITIONAL_SLOT_VERSION);
+    CHECK(ctx, oldGood.migrationRequired);
+}
+
+void testTransitionalV2ReadOnlyMigrationIsVolatileAndPreservesSource(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore writer("cfg_v2_read_only", "cfg");
+    TrackerConfig active = makeMagEnabledCalibratedConfig();
+    CHECK(ctx, writer.save(active));
+    CHECK(ctx, convertSlotToTransitionalV2("cfg_v2_read_only", "cfg_a"));
+    const auto sourceBefore = Preferences::getTestBytes("cfg_v2_read_only", "cfg_a");
+
+    TrackerConfigStore reader("cfg_v2_read_only", "cfg");
+    reader.setWriteInhibited(true);
+    TrackerConfig loaded;
+    CHECK(ctx, reader.load(loaded));
+    CHECK(ctx, reader.lastLoadStatus() == TrackerConfigLoadStatus::LoadedLegacyReadOnly);
+    CHECK(ctx, loaded.validateSemanticConfig());
+    CHECK(ctx, loaded.data.magCal.driverEnabled);
+    CHECK(ctx, loaded.data.magCal.calibrationValid);
+    CHECK(ctx, loaded.data.magYaw.applyEnabled);
+    CHECK(ctx, Preferences::getTestBytes("cfg_v2_read_only", "cfg_a") == sourceBefore);
+    CHECK(ctx, Preferences::getTestBytes("cfg_v2_read_only", "cfg_b").empty());
+}
+
+void testInterruptedTransitionalV2MigrationKeepsOldGood(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore writer("cfg_v2_interrupted", "cfg");
+    TrackerConfig active = makeMagEnabledCalibratedConfig();
+    CHECK(ctx, writer.save(active));
+    CHECK(ctx, convertSlotToTransitionalV2("cfg_v2_interrupted", "cfg_a"));
+    const auto oldGood = Preferences::getTestBytes("cfg_v2_interrupted", "cfg_a");
+    Preferences::setGetFailuresForKey("cfg_v2_interrupted", "cfg_b", 1u);
+
+    TrackerConfigStore interrupted("cfg_v2_interrupted", "cfg");
+    TrackerConfig loaded;
+    CHECK(ctx, !interrupted.load(loaded));
+    CHECK(ctx, interrupted.lastError() == TrackerConfigError::ReadFailed);
+    CHECK(ctx, Preferences::getTestBytes("cfg_v2_interrupted", "cfg_a") == oldGood);
+
+    TrackerConfigStore rebooted("cfg_v2_interrupted", "cfg");
+    CHECK(ctx, rebooted.load(loaded));
+    CHECK(ctx, rebooted.lastLoadStatus() == TrackerConfigLoadStatus::Migrated);
+    CHECK(ctx, loaded.data.magCal.driverEnabled);
+    CHECK(ctx, loaded.data.magCal.calibrationValid);
+    CHECK(ctx, loaded.data.magYaw.applyEnabled);
+    CHECK(ctx, Preferences::getTestBytes("cfg_v2_interrupted", "cfg_a") == oldGood);
+}
+
+void testTransitionalV2ImpossibleCalibrationStillFailsClosed(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore writer("cfg_v2_impossible", "cfg");
+    TrackerConfig active = makeMagEnabledCalibratedConfig();
+    CHECK(ctx, writer.save(active));
+    CHECK(ctx, convertSlotToTransitionalV2("cfg_v2_impossible", "cfg_a", false));
+
+    TrackerConfigSlotRecord record;
+    CHECK(ctx, readStoredRecord("cfg_v2_impossible", "cfg_a", record));
+    TrackerConfig impossible;
+    impossible.data = record.payload;
+    impossible.data.accelCal.scale = Mat3::diagonal(100.0f, 1.0f, 1.0f);
+    impossible.updateCrc();
+    record.payload = impossible.data;
+    record.crc32 = 0u;
+    record.crc32 = trackerConfigSlotRecordCrc(record);
+    Preferences::putTestBytes("cfg_v2_impossible", "cfg_a", &record, sizeof(record));
+
+    TrackerConfigStore rebooted("cfg_v2_impossible", "cfg");
+    TrackerConfig loaded;
+    CHECK(ctx, !rebooted.load(loaded));
+    CHECK(ctx, rebooted.lastError() == TrackerConfigError::CrcOrValidationFailed);
+    CHECK(ctx, Preferences::getTestBytes("cfg_v2_impossible", "cfg_b").empty());
+}
+
+void testRollbackFailureDoesNotApplyOutput(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore store("cfg_rb_output", "cfg");
+    auto old = makeConfig(50u);
+    auto active = makeConfig(100u);
+    CHECK(ctx, store.save(old));
+    CHECK(ctx, store.save(active));
+    const auto before = active.data;
+    Preferences::setPutLimitForKey("cfg_rb_output", "cfg_s", 0u);
+    CHECK(ctx, !store.restoreAuthoritativeGeneration(TrackerConfigSlot::A, 1u, active));
+    CHECK(ctx, std::memcmp(&before, &active.data, sizeof(before)) == 0);
+}
+
+void testCurrentSlotRequiresSemanticAdmission(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore writer("cfg_semantic_load", "cfg");
+    TrackerConfig good = makeConfig(100u);
+    CHECK(ctx, writer.save(good));
+
+    TrackerConfigSlotRecord record;
+    CHECK(ctx, readStoredRecord("cfg_semantic_load", "cfg_a", record));
+    TrackerConfig impossible;
+    impossible.data = record.payload;
+    impossible.data.fifo.maxWordsPerDrain = 65535u;
+    impossible.updateCrc();
+    record.payload = impossible.data;
+    record.crc32 = 0u;
+    record.crc32 = trackerConfigSlotRecordCrc(record);
+    Preferences::putTestBytes("cfg_semantic_load", "cfg_a", &record, sizeof(record));
+
+    TrackerConfigStore rebooted("cfg_semantic_load", "cfg");
+    TrackerConfig loaded;
+    CHECK(ctx, !rebooted.load(loaded));
+    CHECK(ctx, rebooted.lastError() == TrackerConfigError::CrcOrValidationFailed);
+}
+
+void testPreparedAuthoritativeCommitKeepsOldGoodUntilSelectorCommit(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore store("cfg_hw_prepare", "cfg");
+    TrackerConfig active = makeConfig(50u);
+    CHECK(ctx, store.save(active));
+
+    TrackerConfig candidate = makeConfig(100u);
+    TrackerPreparedConfigCommit prepared;
+    CHECK(ctx, store.prepareAuthoritativeCommit(candidate, prepared));
+    CHECK(ctx, prepared.valid);
+
+    TrackerConfigStore beforeCommit("cfg_hw_prepare", "cfg");
+    TrackerConfig loaded;
+    CHECK(ctx, beforeCommit.load(loaded));
+    CHECK(ctx, loaded.data.output.outputRateHz == 50u);
+
+    TrackerConfig committed;
+    CHECK(ctx, store.commitPreparedAuthoritative(prepared, committed));
+    CHECK(ctx, committed.data.output.outputRateHz == 100u);
+    TrackerConfigStore afterCommit("cfg_hw_prepare", "cfg");
+    CHECK(ctx, afterCommit.load(loaded));
+    CHECK(ctx, loaded.data.output.outputRateHz == 100u);
+
+    TrackerConfig abortedCandidate = makeConfig(75u);
+    CHECK(ctx, store.prepareAuthoritativeCommit(abortedCandidate, prepared));
+    CHECK(ctx, store.abortPreparedAuthoritative(prepared));
+    TrackerConfigStore afterAbort("cfg_hw_prepare", "cfg");
+    CHECK(ctx, afterAbort.load(loaded));
+    CHECK(ctx, loaded.data.output.outputRateHz == 100u);
+}
+
 } // namespace
 
 int main() {
@@ -1251,7 +1599,7 @@ int main() {
     testTornInactiveWriteKeepsOldSelector(ctx);
     testTornSelectorKeepsPreviousActive(ctx);
     testCorruptSelectedSlotFallsBack(ctx);
-    testSelectorLossUsesNewestExplicitlyCommittedV2Generation(ctx);
+    testSelectorLossUsesNewestExplicitlyCommittedGeneration(ctx);
     testLegacyV1SelectorLossUsesConservativeOlderGeneration(ctx);
     testLegacyMigration(ctx);
     testCandidateDoesNotBecomeActiveBeforeCommit(ctx);
@@ -1281,7 +1629,7 @@ int main() {
     testRuntimeSnapshotNoOpAndProvenancePreservation(ctx);
     testV3CandidateFreshAcrossEvidenceAndTempPolicyChanges(ctx);
     testV2CandidateRevisionCompatibility(ctx);
-    testNoOpSaveUpgradesLegacyV1ActiveSlotToV2(ctx);
+    testLoadUpgradesLegacyV1ActiveSlotToV3(ctx);
     testLegacyV1CandidateUsesGenerationFreshnessContract(ctx);
     testCorruptCandidateDoesNotBreakActiveConfig(ctx);
     testDegradedStateBlocksCandidateDiscardButAllowsFullErase(ctx);
@@ -1290,5 +1638,15 @@ int main() {
     testMeasuredAxisCandidateBeatsUnmeasuredValidAlignment(ctx);
     testSolverMeasuredAxisCandidateUsesNormalStorePromotionPath(ctx);
     testGenerationWrapComparison(ctx);
+    testDeployedV3MigrationKeepsCalibrations(ctx);
+    testSafeModeWriteInhibit(ctx);
+    testSafeModeLoadPerformsNoRepairOrMigrationWrites(ctx);
+    testTransitionalV2MigratesWithoutLosingMagOrCalibration(ctx);
+    testTransitionalV2ReadOnlyMigrationIsVolatileAndPreservesSource(ctx);
+    testInterruptedTransitionalV2MigrationKeepsOldGood(ctx);
+    testTransitionalV2ImpossibleCalibrationStillFailsClosed(ctx);
+    testRollbackFailureDoesNotApplyOutput(ctx);
+    testCurrentSlotRequiresSemanticAdmission(ctx);
+    testPreparedAuthoritativeCommitKeepsOldGoodUntilSelectorCommit(ctx);
     return ctx.finish("test_config_storage");
 }

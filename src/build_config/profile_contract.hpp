@@ -138,6 +138,10 @@
 // Contract checks. These catch profile/source-filter drift at compile time
 // before it turns into linker-only undefined references or unused module builds.
 
+#if !TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
+#error "Sensor progress liveness requires TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT=1 in every build profile."
+#endif
+
 #if TRACKER_CLI_IS_NONE && TRACKER_ENABLE_SERIAL_CLI
 #error "TRACKER_CLI_LEVEL_NONE requires TRACKER_ENABLE_SERIAL_CLI=0."
 #endif

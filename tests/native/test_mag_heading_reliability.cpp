@@ -6,9 +6,31 @@
 #include "sensor/frame_transform.hpp"
 #include "sensor/mag_axis_alignment.hpp"
 #include "sensor/mag_field_reliability.hpp"
+#include "sensor/mag_heading.hpp"
 #include "sensor/mag_yaw_correction.hpp"
 
 using namespace tracker;
+
+static void testHeadingRejectsInvalidQuaternionWithoutIdentityFallback(TestContext& ctx) {
+    MagProcessedSample mag;
+    mag.valid = true;
+    mag.trusted = true;
+    mag.body = Vec3(100.0f, 20.0f, 40.0f);
+    mag.bodyNorm = mag.body.norm();
+    MagHeadingEstimator estimator;
+    MagHeadingSample heading;
+    MagHeadingConfig cfg;
+
+    CHECK(ctx, !estimator.update(
+        mag, Quat(0.0f, 0.0f, 0.0f, 0.0f), cfg, 1u, heading));
+    CHECK(ctx, (heading.rejectFlags & MAG_HEADING_REJECT_QUAT_INVALID) != 0u);
+    CHECK(ctx, !heading.valid);
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK(ctx, !estimator.update(
+        mag, Quat(nan, 0.0f, 0.0f, 0.0f), cfg, 2u, heading));
+    CHECK(ctx, (heading.rejectFlags & MAG_HEADING_REJECT_QUAT_INVALID) != 0u);
+}
 
 static MagFieldReliabilityInput makeFieldInput(
     uint32_t ms, float yawDeg, float dipDeg, float norm, float ahrsYawDeg = 0.0f) {
@@ -1268,6 +1290,7 @@ static void testDynamicAxisSolverKeepsPureRotationConstraint(TestContext& ctx) {
 
 int main() {
     TestContext ctx;
+    testHeadingRejectsInvalidQuaternionWithoutIdentityFallback(ctx);
     testFieldReliabilityFailsClosedAcrossChangedEnvironment(ctx);
     testHighDipHealthyFieldUsesAdaptiveHorizontalTrust(ctx);
     testHighDipLegacyHeadingStepGateScalesWithObservability(ctx);

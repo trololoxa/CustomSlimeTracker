@@ -63,6 +63,10 @@ static constexpr uint32_t ACCEL_COMPONENT_MISSING      = 1u << 25;
 static constexpr uint32_t GYRO_COMPONENT_MISSING       = 1u << 26;
 static constexpr uint32_t FIFO_PAIR_DEGRADED           = 1u << 27;
 static constexpr uint32_t FIFO_COMPLETED_QUEUE_OVERFLOW = 1u << 28;
+// Informational only: a positive monotonic interval shorter than the
+// configured source-cadence fraction. It never rejects a sample or requests
+// recovery by itself.
+static constexpr uint32_t TIMESTAMP_SMALL_GAP          = 1u << 29;
 }
 
 struct ImuQualityConfig {
@@ -73,7 +77,7 @@ struct ImuQualityConfig {
     float largeGapFactor = 1.75f;
 
     // dt < expectedDtUs * smallGapFactor means timestamp is suspicious.
-    // Currently counted as non-monotonic only when dt <= 0; small gaps are kept as info.
+    // Small gaps are counted as diagnostics but remain usable.
     float smallGapFactor = 0.25f;
 
     // Raw near-saturation thresholds. Hard saturation is INT16_MIN/MAX.
@@ -91,7 +95,9 @@ struct ImuQualityConfig {
     bool requestRecoveryOnUnknownTag = false;
     bool requestRecoveryOnTimestampBackwards = true;
     bool requestRecoveryOnTimestampQueueOverflow = true;
-    bool requestRecoveryOnCompletedQueueOverflow = true;
+    // A completed-sample queue overflow is an unreconstructable discontinuity
+    // and is therefore always recovered. It is deliberately not a public or
+    // persisted switch.
 
     // AHRS policy.
     bool skipAhrsOnBadTimestamp = true;
@@ -136,6 +142,7 @@ struct ImuQualityCounters {
     uint32_t zeroTimestampSamples = 0;
     uint32_t nonMonotonicTimestampSamples = 0;
     uint32_t largeGapSamples = 0;
+    uint32_t smallGapSamples = 0;
     uint32_t estimatedDroppedSamples = 0;
 
     uint32_t fifoOverrunEvents = 0;

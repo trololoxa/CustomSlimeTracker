@@ -34,6 +34,7 @@ public:
             out.print("last_integrated_t_us="); tracker_serial_detail::printU64Dec(out, st.lastIntegratedTimestampUs); out.println();
             out.print("bad_dt_rejects="); out.println(st.skippedBadDt);
             out.print("startup_accel_rejects="); out.println(st.startupAccelRejectedCount);
+            out.print("invalid_quaternion_rejects="); out.println(st.invalidQuaternionRejectedCount);
             out.print("large_dt_clamps="); out.println(st.clampedLargeDt);
             out.print("large_dt_rebase_count="); out.println(st.largeDtRebaseCount);
             out.print("fifo_rebase_count="); out.println(st.fifoRecoveryRebaseCount);
@@ -72,7 +73,8 @@ public:
             const bool ok = trackerCommitConfigCandidate(
                 ctx,
                 candidate,
-                saveRequested,
+                saveRequested ? TrackerConfigCommitMode::PersistThenApply
+                              : TrackerConfigCommitMode::VolatilePreview,
                 [&]() { ctx.ahrs->setConfig(ctx.config->makeAhrsConfig()); }
             );
             if (!ok) {

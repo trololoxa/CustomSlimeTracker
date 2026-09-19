@@ -1,8 +1,10 @@
 #include "serial/tracker_setup_commands.hpp"
+#include "serial/tracker_calibration_transaction.hpp"
 
 #include "sensor/frame_transform.hpp"
 
 #include <Arduino.h>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -29,6 +31,7 @@
 #include "sensor/mag_runtime.hpp"
 #include "sensor/sensor_to_device_alignment.hpp"
 #include "serial/tracker_calibration_commands.hpp"
+#include "serial/tracker_calibration_capture_cancel.hpp"
 #include "serial/tracker_config_commands.hpp"
 #include "serial/tracker_mag_commands.hpp"
 #include "serial/tracker_network_commands.hpp"
@@ -60,15 +63,12 @@ const char* readyWord(bool v) {
     return v ? "ready" : "missing";
 }
 
-void copySetupCString(char* dst, size_t dstSize, const char* src) {
-    if (!dst || dstSize == 0) return;
-    if (!src) src = "";
-
-    size_t i = 0;
-    for (; i + 1 < dstSize && src[i] != '\0'; ++i) {
-        dst[i] = src[i];
-    }
-    dst[i] = '\0';
+bool copySetupCString(char* dst, size_t dstSize, const char* src) {
+    if (!dst || dstSize == 0u || !src) return false;
+    const size_t length = std::strlen(src);
+    if (length >= dstSize) return false;
+    std::memcpy(dst, src, length + 1u);
+    return true;
 }
 
 TrackerWifiManagerConfig makeSetupWifiManagerConfig(const TrackerNetworkConfig& net) {
@@ -86,7 +86,10 @@ TrackerWifiManagerConfig makeSetupWifiManagerConfig(const TrackerNetworkConfig& 
 
 void applySetupWifiConfig(TrackerSerialCommandContext& ctx) {
     if (!ctx.networkConfig) return;
-    ctx.networkConfig->sanitize();
+    if (!ctx.networkConfig->validateSemanticConfig()) {
+        tracker_serial_detail::printErr(out(ctx), "setup Wi-Fi preview config is invalid");
+        return;
+    }
     if (ctx.wifiManager) {
         ctx.wifiManager->configure(makeSetupWifiManagerConfig(*ctx.networkConfig));
     }
@@ -98,12 +101,17 @@ bool saveSetupNetworkConfig(TrackerSerialCommandContext& ctx) {
         tracker_serial_detail::printErr(s, "network config store not available");
         return false;
     }
-    ctx.networkConfig->sanitize();
-    if (!ctx.networkConfigStore->save(*ctx.networkConfig)) {
+    TrackerNetworkConfig candidate = *ctx.networkConfig;
+    if (!candidate.validateSemanticConfig()) {
+        tracker_serial_detail::printErr(s, "setup Wi-Fi candidate is invalid");
+        return false;
+    }
+    if (!ctx.networkConfigStore->save(candidate)) {
         s.print("# ERR setup wifi save failed: ");
         s.println(ctx.networkConfigStore->lastErrorName());
         return false;
     }
+    *ctx.networkConfig = candidate;
     if (ctx.networkConfigLoadedFromNvs) *ctx.networkConfigLoadedFromNvs = true;
     tracker_serial_detail::printOk(s, "Wi-Fi config saved to NVS");
     return true;
@@ -364,133 +372,11 @@ void dispatchMag(TrackerSerialCommandContext& ctx, int argc, char** argv) {
 bool readSetupLine(TrackerSerialCommandContext& ctx, const char* prompt, char* buf, size_t cap, uint32_t timeoutMs);
 bool serviceSetupRuntime(TrackerSerialCommandContext& ctx);
 
-struct SetupCalibrationTransaction {
-    TrackerConfig configSnapshot;
-    ImuCalibration imuSnapshot;
-    bool haveConfig = false;
-    bool haveImu = false;
-    RuntimeGyroBiasEstimator runtimeBiasSnapshot;
-    bool haveRuntimeBias = false;
-    bool originalMagDriverEnabled = false;
-    bool originalMagYawApplyEnabled = false;
-    bool committed = false;
-    bool persistentResultUncertain = false;
-
-    SetupCalibrationTransaction() = default;
-
-    void begin(TrackerSerialCommandContext& ctx) {
-        configSnapshot = TrackerConfig{};
-        imuSnapshot = ImuCalibration{};
-        runtimeBiasSnapshot = RuntimeGyroBiasEstimator{};
-        haveConfig = false;
-        haveImu = false;
-        haveRuntimeBias = false;
-        originalMagDriverEnabled = false;
-        originalMagYawApplyEnabled = false;
-        committed = false;
-        persistentResultUncertain = false;
-
-        if (ctx.config) {
-            configSnapshot = *ctx.config;
-            haveConfig = true;
-            originalMagDriverEnabled = ctx.config->data.magCal.driverEnabled;
-            originalMagYawApplyEnabled = ctx.config->data.magYaw.applyEnabled;
-        }
-        if (ctx.imuCal) {
-            imuSnapshot = *ctx.imuCal;
-            haveImu = true;
-        }
-        if (ctx.runtimeBias) {
-            runtimeBiasSnapshot = *ctx.runtimeBias;
-            haveRuntimeBias = true;
-        }
-    }
-
-    void rollback(TrackerSerialCommandContext& ctx, const char* reason) {
-        Stream& s = out(ctx);
-        if (committed) return;
-
-        if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
-        trackerSerialResetCalibrationWorkspaces(ctx);
-
-        if (haveConfig && ctx.config) {
-            *ctx.config = configSnapshot;
-            ctx.config->sanitize();
-            ctx.config->updateCrc();
-        }
-        if (haveImu && ctx.imuCal) {
-            *ctx.imuCal = imuSnapshot;
-        } else if (ctx.config && ctx.imuCal) {
-            ctx.config->applyToImuCalibration(*ctx.imuCal);
-        }
-        if (ctx.config && ctx.gyroTempComp) {
-            ctx.config->applyToGyroTempComp(*ctx.gyroTempComp);
-        }
-
-        if (haveRuntimeBias && ctx.runtimeBias) {
-            *ctx.runtimeBias = runtimeBiasSnapshot;
-        } else if (ctx.resetRuntimeGyroBiasEstimator) {
-            ctx.resetRuntimeGyroBiasEstimator(ctx.resetRuntimeGyroBiasEstimatorUser);
-        }
-        if (ctx.ahrs && ctx.config) ctx.ahrs->setConfig(ctx.config->makeAhrsConfig());
-        if (ctx.quality && ctx.config) {
-            ctx.quality->setConfig(ctx.config->makeQualityConfig());
-            ctx.quality->reset();
-            if (ctx.fifo) ctx.quality->syncFifoStats(ctx.fifo->stats());
-        }
-        if (ctx.resetAhrsRuntime) ctx.resetAhrsRuntime(ctx.resetAhrsRuntimeUser);
-        if (ctx.resetMagYawCorrection) ctx.resetMagYawCorrection(ctx.resetMagYawCorrectionUser);
-
-        if (ctx.setMagRuntimeEnabled) {
-            (void)ctx.setMagRuntimeEnabled(originalMagDriverEnabled, false, ctx.setMagRuntimeEnabledUser);
-        }
-        if (ctx.setMagYawCorrectionApplyEnabled) {
-            (void)ctx.setMagYawCorrectionApplyEnabled(originalMagYawApplyEnabled, false, ctx.setMagYawCorrectionApplyEnabledUser);
-        }
-        if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
-
-        s.print("# SETUP CALIBRATION ROLLBACK");
-        if (reason && reason[0]) {
-            s.print(" reason=");
-            s.print(reason);
-        }
-        s.println();
-        if (persistentResultUncertain) {
-            s.println("# Previous RAM calibration/config restored, but the persistent selector result is uncertain.");
-            s.println("# Reboot or run config load before any further config writes.");
-        } else {
-            s.println("# Current setup transaction restored to its pre-stage snapshot; earlier committed checkpoints, if any, remain authoritative.");
-        }
-    }
-
-    bool commit(TrackerSerialCommandContext& ctx, uint8_t workspaceMask = TRACKER_CAL_WORKSPACE_ALL) {
-        Stream& s = out(ctx);
-        if (!ctx.config || !ctx.configStore) {
-            tracker_serial_detail::printErr(s, "setup calibration commit failed: config store not available");
-            return false;
-        }
-        trackerSerialCaptureRuntimeToConfig(ctx);
-        ctx.config->sanitize();
-        ctx.config->updateCrc();
-        if (!ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Setup)) {
-            persistentResultUncertain =
-                ctx.configStore->lastError() == TrackerConfigError::CommitUncertain;
-            s.print("# ERR setup calibration commit save failed: ");
-            s.println(ctx.configStore->lastErrorName());
-            return false;
-        }
-        committed = true;
-        trackerSerialResetCalibrationWorkspaces(ctx, workspaceMask);
-        tracker_serial_detail::printOk(s, "setup calibration transaction committed to NVS");
-        if (ctx.slimevrRuntime) ctx.slimevrRuntime->requestSensorInfoRefresh();
-        return true;
-    }
-};
 
 // The guided calibration command runs inside Arduino's loopTask, whose stack is
 // small on ESP32-C3.  Keep the heavy transaction snapshot and mag-axis sample
 // buffers in static storage instead of the command stack frame.
-static SetupCalibrationTransaction g_setupCalibrationTx;
+static TrackerCalibrationTransaction g_calibrationTransaction;
 
 struct SetupFrameObservations {
     bool topValid = false;
@@ -1164,7 +1050,7 @@ void cmdSetupWifi(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     s.println("# SETUP WIFI");
     s.println("# Scanning visible 2.4 GHz networks. Keep SlimeVR Server open on the same LAN.");
     const int16_t seen = ctx.wifiManager->scanNetworks(results, 16, false);
-    trackerConsoleSuppressTrackingMessagesFor(TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS);
+    trackerRecoverSensorStreamAfterBlockingWifiScan(ctx, "setup_wifi_scan");
     if (seen < 0) {
         s.print("# ERR setup wifi scan failed: ");
         s.println(seen);
@@ -1220,19 +1106,28 @@ void cmdSetupWifi(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     }
 
     TrackerNetworkConfig oldConfig = *ctx.networkConfig;
-    copySetupCString(ctx.networkConfig->data.ssid, sizeof(ctx.networkConfig->data.ssid), selected.ssid);
-    copySetupCString(ctx.networkConfig->data.password, sizeof(ctx.networkConfig->data.password), password);
-    ctx.networkConfig->data.credentialsValid = true;
-    ctx.networkConfig->data.wifiEnabled = true;
-    ctx.networkConfig->data.discoveryEnabled = true;
-    ctx.networkConfig->sanitize();
+    TrackerNetworkConfig candidate = oldConfig;
+    if (!copySetupCString(candidate.data.ssid, sizeof(candidate.data.ssid), selected.ssid) ||
+        !copySetupCString(candidate.data.password, sizeof(candidate.data.password), password)) {
+        tracker_serial_detail::printErr(s, "setup Wi-Fi value is too long");
+        return;
+    }
+    candidate.data.credentialsValid = true;
+    candidate.data.wifiEnabled = true;
+    candidate.data.discoveryEnabled = true;
+    if (!candidate.validateSemanticConfig()) {
+        tracker_serial_detail::printErr(s, "setup Wi-Fi candidate is invalid");
+        return;
+    }
+    // Explicit volatile preview: persistence is intentionally delayed until
+    // the credentials have proved a working connection.
+    *ctx.networkConfig = candidate;
 
     s.println("# Trying Wi-Fi connection. Credentials are not saved until connection succeeds.");
     ctx.wifiManager->reset();
     applySetupWifiConfig(ctx);
     if (!setupWaitWifiConnected(ctx, 30000UL)) {
         *ctx.networkConfig = oldConfig;
-        ctx.networkConfig->sanitize();
         ctx.wifiManager->reset();
         applySetupWifiConfig(ctx);
         tracker_serial_detail::printErr(s, "setup wifi failed: could not connect; old network config restored in RAM and NVS was not changed");
@@ -1306,6 +1201,7 @@ bool readSetupLine(TrackerSerialCommandContext& ctx,
 
     const uint32_t startMs = millis();
     size_t n = 0;
+    bool tooLong = false;
     while (millis() - startMs < timeoutMs) {
         serviceSetupRuntime(ctx);
         while (s.available() > 0) {
@@ -1314,16 +1210,27 @@ bool readSetupLine(TrackerSerialCommandContext& ctx,
             if (c == '\r') continue;
             if (c == '\n') {
                 buf[n] = '\0';
+                if (tooLong) {
+                    tracker_serial_detail::printErr(s, "setup input too long; complete line rejected");
+                    return false;
+                }
                 return true;
             }
             if (n + 1 < cap) {
                 buf[n++] = static_cast<char>(c);
+            } else {
+                // Continue consuming through newline so no suffix of the
+                // rejected line can become the next answer or command.
+                tooLong = true;
             }
         }
         delay(5);
     }
 
     buf[n] = '\0';
+    if (tooLong) {
+        tracker_serial_detail::printErr(s, "setup input too long; complete line rejected");
+    }
     return false;
 }
 
@@ -2007,7 +1914,7 @@ bool setupRunMagMotionAndApply(TrackerSerialCommandContext& ctx,
         setupPrintMagAxisDynamicDiagnostics(s, axisDynamic);
 
         if (!magCalibrationApplied) {
-            if (ctx.applyMagCalibration && ctx.applyMagCalibration(false, ctx.applyMagCalibrationUser)) {
+            if (ctx.applyMagCalibration && ctx.applyMagCalibration(ctx.applyMagCalibrationUser)) {
                 magCalibrationApplied = true;
                 if (ctx.stopMagCalibration) ctx.stopMagCalibration(ctx.stopMagCalibrationUser);
                 tracker_serial_detail::printOk(s, "mag hard/soft calibration accepted in RAM");
@@ -2372,7 +2279,24 @@ uint32_t setupCounterDelta(uint32_t before, uint32_t after) {
     return after >= before ? after - before : after;
 }
 
-bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser) {
+
+
+bool setupVerificationInterrupted(TrackerSerialCommandContext& ctx, uint32_t startedMs) {
+    if (ctx.calibrationIo && ctx.calibrationIo->cancelRequested &&
+        ctx.calibrationIo->cancelRequested(ctx.calibrationIo->cancelUser)) {
+        tracker_serial_detail::printErr(out(ctx), "setup verification cancelled");
+        return true;
+    }
+    if (setupVerificationDeadlineReached(millis(), startedMs)) {
+        tracker_serial_detail::printErr(out(ctx), "setup verification deadline exceeded");
+        return true;
+    }
+    return false;
+}
+
+TRACKER_SETUP_NOINLINE bool setupVerifyOutputAttempt(TrackerSerialCommandContext& ctx,
+                              uint32_t overallStartedMs, bool& retryRequested) {
+    retryRequested = false;
     Stream& s = out(ctx);
     s.println();
     s.println("# SETUP OUTPUT VERIFICATION");
@@ -2385,22 +2309,11 @@ bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser)
             s, "setup verify failed: prepared output/input sample/quality/FIFO runtime is not available");
         return false;
     }
-    bool userAborted = false;
-    if (promptUser &&
-        !waitSetupEnter(ctx,
-                        "# Press Enter when the tracker is still, or type q then Enter to abort.",
-                        120000UL,
-                        &userAborted)) {
-        tracker_serial_detail::printErr(s, userAborted
-            ? "setup verify aborted by user"
-            : "setup verify aborted: rest confirmation timeout");
-        return false;
-    }
-
     // Give AHRS and magnetic re-entry a short settling period after the final
     // calibration apply. This does not ask the user for another pose.
     const uint32_t settleStartMs = millis();
     while (millis() - settleStartMs < 2500UL) {
+        if (setupVerificationInterrupted(ctx, overallStartedMs)) return false;
         serviceSetupRuntime(ctx);
         delay(5);
     }
@@ -2411,6 +2324,9 @@ bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser)
     SetupOutputVerificationAccumulator verifier;
     TrackerPreparedOutputSnapshot snapshot;
     uint32_t lastInputSequence = *ctx.lastImuSampleSequence;
+    uint32_t observedRecoveries = qualityBefore.fifoRecoveryRequests;
+    uint32_t observedSamples = qualityBefore.samples;
+    bool epochInterrupted = false;
 
     // At the normal prepared-output cadence a four-second capture can contain
     // only about 200 coherent input observations, while the stationarity gate
@@ -2421,8 +2337,21 @@ bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser)
     constexpr uint32_t kMaximumCaptureMs = 8000UL;
     const uint32_t captureStartMs = millis();
     while (true) {
+        if (setupVerificationInterrupted(ctx, overallStartedMs)) return false;
         serviceSetupRuntime(ctx);
-        if (ctx.preparedOutput->copy(snapshot)) verifier.push(snapshot);
+        const uint32_t currentSamples = ctx.quality->counters().samples;
+        if (currentSamples < observedSamples) epochInterrupted = true;
+        if (currentSamples < observedSamples ||
+            ctx.quality->counters().fifoRecoveryRequests != observedRecoveries) {
+            observedRecoveries = ctx.quality->counters().fifoRecoveryRequests;
+            verifier.noteDiscontinuity();
+        }
+        observedSamples = currentSamples;
+        if (ctx.preparedOutput->copyCoherent(snapshot)) {
+            verifier.push(snapshot, micros(), verifyConfig.maximumSnapshotAgeUs);
+        } else {
+            verifier.noteCoherentReadFailure();
+        }
         const uint32_t inputSequence = *ctx.lastImuSampleSequence;
         if (inputSequence != 0u && inputSequence != lastInputSequence) {
             lastInputSequence = inputSequence;
@@ -2465,18 +2394,24 @@ bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser)
     const uint32_t ahrsSkippedDelta = setupCounterDelta(
         qualityBefore.ahrsSkippedSamples, qualityAfter.ahrsSkippedSamples);
 
+    // A single fallback timestamp or skipped AHRS publication is recoverable
+    // evidence contamination, not proof that the candidate is bad. It is not
+    // counted as good output and is allowed only within a small count/rate
+    // budget. A recovery discards this entire window; it may be retried once.
+    // Numerical corruption, queue integrity failure and reversed time remain fatal.
+    const uint32_t recoverableStreamEvents = fallbackTimestampDelta + ahrsSkippedDelta;
+    const uint32_t recoverableStreamBudget =
+        std::max<uint32_t>(2u, setupCounterDelta(qualityBefore.samples, qualityAfter.samples) / 200u);
+    const bool fatalStreamFailure =
+        nonMonotonicTimestampDelta != 0u ||
+        timestampQueueOverflowDelta != 0u ||
+        completedQueueOverflowDelta != 0u ||
+        timestampBackwardsDelta != 0u;
+    const bool recoverableDiscontinuity = epochInterrupted || fifoOverrunDelta != 0u || fifoFullDelta != 0u ||
+        largeGapDelta != 0u || droppedDelta != 0u || recoveryDelta != 0u;
     const bool streamHealthPassed =
-        fifoOverrunDelta == 0u &&
-        fifoFullDelta == 0u &&
-        fallbackTimestampDelta == 0u &&
-        nonMonotonicTimestampDelta == 0u &&
-        largeGapDelta == 0u &&
-        droppedDelta == 0u &&
-        timestampQueueOverflowDelta == 0u &&
-        completedQueueOverflowDelta == 0u &&
-        timestampBackwardsDelta == 0u &&
-        recoveryDelta == 0u &&
-        ahrsSkippedDelta == 0u;
+        !fatalStreamFailure && !recoverableDiscontinuity &&
+        recoverableStreamEvents <= recoverableStreamBudget;
 
     const SetupOutputVerificationResult result = verifier.finish(verifyConfig, streamHealthPassed);
 
@@ -2484,6 +2419,8 @@ bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser)
     s.print("snapshots="); s.println(result.snapshots);
     s.print("unique_snapshots="); s.println(result.uniqueSnapshots);
     s.print("invalid_snapshots="); s.println(result.invalidSnapshots);
+    s.print("stale_snapshots="); s.println(result.staleSnapshots);
+    s.print("coherent_read_failures="); s.println(result.coherentReadFailures);
     s.print("duplicate_snapshots="); s.println(result.duplicateSnapshots);
     s.print("quaternion_norm_error_max="); s.println(result.maximumQuaternionNormError, 8);
     s.print("quaternion_step_max_deg="); s.println(result.maximumQuaternionStepDeg, 6);
@@ -2513,6 +2450,8 @@ bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser)
     s.print("timestamp_backwards_delta="); s.println(timestampBackwardsDelta);
     s.print("recovery_delta="); s.println(recoveryDelta);
     s.print("ahrs_skipped_delta="); s.println(ahrsSkippedDelta);
+    s.print("recoverable_stream_events="); s.println(recoverableStreamEvents);
+    s.print("recoverable_stream_budget="); s.println(recoverableStreamBudget);
     s.print("output_available="); s.println(yesNo(result.outputAvailable));
     s.print("quaternion_norm_passed="); s.println(yesNo(result.quaternionNormPassed));
     s.print("quaternion_continuity_passed="); s.println(yesNo(result.quaternionContinuityPassed));
@@ -2527,12 +2466,49 @@ bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser)
     s.print("setup_output_verified="); s.println(yesNo(result.valid));
 
     if (!result.valid) {
+        const bool recoverableContaminationExceeded =
+            recoverableDiscontinuity ||
+            recoverableStreamEvents > recoverableStreamBudget ||
+            result.invalidSnapshots > verifyConfig.maximumInvalidSnapshots ||
+            result.staleSnapshots > verifyConfig.maximumStaleSnapshots ||
+            result.coherentReadFailures > verifyConfig.maximumCoherentReadFailures;
+        retryRequested = setupVerificationMayRetry(result, fatalStreamFailure, recoverableContaminationExceeded);
+        if (retryRequested) return false;
         tracker_serial_detail::printErr(
             s, "setup verify rejected final quaternion/acceleration output; previous calibration remains authoritative");
         return false;
     }
+    if (setupVerificationInterrupted(ctx, overallStartedMs)) return false;
     tracker_serial_detail::printOk(s, "final coherent quaternion and linear acceleration output verified");
     return true;
+}
+
+bool setupVerifyOutputRuntime(TrackerSerialCommandContext& ctx, bool promptUser) {
+    Stream& s = out(ctx);
+    bool userAborted = false;
+    if (promptUser &&
+        !waitSetupEnter(ctx,
+                        "# Press Enter when the tracker is still, or type q then Enter to abort.",
+                        120000UL,
+                        &userAborted)) {
+        tracker_serial_detail::printErr(s, userAborted
+            ? "setup verify aborted by user"
+            : "setup verify aborted: rest confirmation timeout");
+        return false;
+    }
+
+    TrackerCalibrationCaptureCancelScope cancelScope(ctx);
+    const uint32_t startedMs = millis();
+    // A loop releases the large attempt frame before retry. Neither a FIFO
+    // transient nor unavailable output extends this absolute deadline.
+    for (uint8_t attempt = 0u; attempt < 2u; ++attempt) {
+        bool retryRequested = false;
+        if (setupVerifyOutputAttempt(ctx, startedMs, retryRequested)) return true;
+        if (!retryRequested || setupVerificationInterrupted(ctx, startedMs)) return false;
+        if (attempt == 0u) s.println("# WARN setup verify window contained recoverable events; retrying once with fresh evidence");
+    }
+    tracker_serial_detail::printErr(s, "setup verification exhausted clean-window retry; previous calibration retained");
+    return false;
 }
 
 bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx, bool noMag) {
@@ -2568,7 +2544,10 @@ bool setupEnableProductionTracking(TrackerSerialCommandContext& ctx, bool noMag)
         ctx.config->data.magYaw.applyEnabled = true;
     }
 
-    trackerSerialCaptureRuntimeToConfig(ctx);
+    if (!trackerSerialCaptureRuntimeToConfig(ctx)) {
+        tracker_serial_detail::printErr(s, "setup calibration runtime snapshot is invalid");
+        return false;
+    }
     if (ctx.ahrs) ctx.ahrs->setConfig(ctx.config->makeAhrsConfig());
     if (ctx.quality) {
         ctx.quality->setConfig(ctx.config->makeQualityConfig());
@@ -2661,7 +2640,7 @@ bool setupCheckpointCommit(TrackerSerialCommandContext& ctx, const char* stageNa
     } else if (stageName && std::strcmp(stageName, "enable_tracking") == 0) {
         workspaceMask = TRACKER_CAL_WORKSPACE_ALL;
     }
-    if (!g_setupCalibrationTx.commit(ctx, workspaceMask)) return false;
+    if (!g_calibrationTransaction.commit(ctx, workspaceMask)) return false;
     s.print("# setup calibration checkpoint saved stage=");
     s.println(stageName ? stageName : "unknown");
     return true;
@@ -2682,7 +2661,7 @@ void cmdSetupCalibrationFull(TrackerSerialCommandContext& ctx,
         return;
     }
 
-    SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+    TrackerCalibrationTransaction& tx = g_calibrationTransaction;
     tx.begin(ctx);
     setupPrepareCalibrationRuntime(ctx);
     auto fail = [&](const char* reason) {
@@ -2712,7 +2691,6 @@ void cmdSetupCalibrationFull(TrackerSerialCommandContext& ctx,
         s.println("# skip mag_axis: nomag/6dof requested");
     }
     if (!setupEnableProductionTracking(ctx, noMag)) { fail("enable_tracking"); return; }
-    if (!setupVerifyOutputRuntime(ctx, true)) { fail("verify_output"); return; }
 
     if (!tx.commit(ctx)) { fail("commit_save"); return; }
 
@@ -2748,7 +2726,7 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
     if (restReadyAtStart) {
         s.println("# skip rest_gyro: already valid in RAM/NVS");
     } else {
-        SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+        TrackerCalibrationTransaction& tx = g_calibrationTransaction;
         tx.begin(ctx);
         setupPrepareCalibrationRuntime(ctx);
         if (!setupRunRestGyro(ctx)) { tx.rollback(ctx, "rest_gyro"); return; }
@@ -2761,7 +2739,7 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
     if (tempReadyAfterRest) {
         s.println("# skip gyro_temperature: temperature model already valid for the current gyro model");
     } else {
-        SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+        TrackerCalibrationTransaction& tx = g_calibrationTransaction;
         tx.begin(ctx);
         setupPrepareCalibrationRuntime(ctx);
         if (!setupRunTemperatureFit(ctx)) { tx.rollback(ctx, "gyro_temperature"); return; }
@@ -2780,13 +2758,13 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
         if (r.frameReady) {
             s.println("# skip sensor_to_device: already valid in RAM/NVS");
         } else {
-            SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+            TrackerCalibrationTransaction& tx = g_calibrationTransaction;
             tx.begin(ctx);
             if (!setupRunSensorToDeviceAlignmentStandalone(ctx)) { tx.rollback(ctx, "sensor_to_device"); return; }
             if (!setupCheckpointCommit(ctx, "sensor_to_device")) { tx.rollback(ctx, "sensor_to_device_commit"); return; }
         }
     } else {
-        SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+        TrackerCalibrationTransaction& tx = g_calibrationTransaction;
         tx.begin(ctx);
         magCollectionStartedDuringAccel = needMagCollection;
         if (!setupRunAccelFacesWithMagCollection(
@@ -2813,7 +2791,7 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
                 s.println("# setup mag: stopped temporary face-sample hard/soft collector");
             }
         } else {
-            SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+            TrackerCalibrationTransaction& tx = g_calibrationTransaction;
             tx.begin(ctx);
             axisDynamic.reset();
             const bool startFreshMagCalibration = !magCollectionStartedDuringAccel;
@@ -2825,7 +2803,7 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
         if (r.magAxis && !(axisX && axisY && axisZ)) {
             s.println("# skip mag_axis: already valid in RAM/NVS");
         } else {
-            SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+            TrackerCalibrationTransaction& tx = g_calibrationTransaction;
             tx.begin(ctx);
             if (!axisDynamic.readyForSolve() && !(axisX && axisY && axisZ)) {
                 const SetupMagAxisMotionOutcome motion = setupRunMagAxisMotionOnly(ctx, axisDynamic);
@@ -2842,10 +2820,9 @@ void cmdSetupCalibrationResume(TrackerSerialCommandContext& ctx,
     // Always refresh feature toggles in RAM/NVS. This is quick and makes resume
     // useful after low-level diagnostics changed a flag manually.
     {
-        SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+        TrackerCalibrationTransaction& tx = g_calibrationTransaction;
         tx.begin(ctx);
         if (!setupEnableProductionTracking(ctx, noMag)) { tx.rollback(ctx, "enable_tracking"); return; }
-        if (!setupVerifyOutputRuntime(ctx, true)) { tx.rollback(ctx, "verify_output"); return; }
         if (!setupCheckpointCommit(ctx, "enable_tracking")) { tx.rollback(ctx, "enable_tracking_commit"); return; }
     }
 
@@ -2898,7 +2875,7 @@ void cmdSetupFrame(TrackerSerialCommandContext& ctx, int argc, char** argv) {
         return;
     }
 #endif
-    SetupCalibrationTransaction& tx = g_setupCalibrationTx;
+    TrackerCalibrationTransaction& tx = g_calibrationTransaction;
     tx.begin(ctx);
     if (!setupRunSensorToDeviceAlignmentStandalone(ctx)) {
         tx.rollback(ctx, "sensor_to_device");
@@ -2953,6 +2930,9 @@ void cmdSetupCalibration(TrackerSerialCommandContext& ctx, int argc, char** argv
     }
 #endif
 
+    out(ctx).println("# During FIFO capture, type q then Enter to cancel safely.");
+    TrackerCalibrationCaptureCancelScope cancelScope(ctx);
+
     if (opt.full) {
         cmdSetupCalibrationFull(ctx, opt.noMag, opt.axisX, opt.axisY, opt.axisZ);
     } else {
@@ -2966,6 +2946,73 @@ void cmdSetupCalibration(TrackerSerialCommandContext& ctx, int argc, char** argv
 }
 
 } // namespace
+
+bool trackerSerialVerifyCalibrationCandidate(TrackerSerialCommandContext& ctx,
+                                             const TrackerConfig& candidate, bool promptUser) {
+    if (!candidate.validateSemanticConfig() || !ctx.serviceNonCliRuntime ||
+        !ctx.lastImuSampleSequence || !ctx.lastCalibratedSample || !ctx.quality) return false;
+    if (candidate.data.gyroCal.biasValid && candidate.data.accelCal.valid &&
+        candidate.data.frame.sensorToDeviceValid) {
+        return setupVerifyOutputRuntime(ctx, promptUser);
+    }
+    // A first-run partial model cannot yet satisfy full 6D output readiness.
+    // Its held-out capture is checked by the domain calibrator. Probation here
+    // proves fresh, finite applied sensor data; it never requires a Server.
+    Stream& s = out(ctx);
+    s.println("# calibration_transaction=partial_model_sensor_probation");
+    TrackerCalibrationCaptureCancelScope cancelScope(ctx);
+    const uint32_t startedMs = millis();
+    uint32_t sequence = *ctx.lastImuSampleSequence;
+    uint64_t timestamp = 0u;
+    uint32_t fresh = 0u;
+    uint32_t cleanStartedMs = startedMs;
+    uint32_t recoveries = ctx.quality->counters().fifoRecoveryRequests;
+    const auto before = ctx.quality->counters();
+    while (millis() - startedMs < 5000u) {
+        if (setupVerificationInterrupted(ctx, startedMs)) return false;
+        serviceSetupRuntime(ctx);
+        const auto& quality = ctx.quality->counters();
+        if (setupCounterDelta(before.nonMonotonicTimestampSamples, quality.nonMonotonicTimestampSamples) != 0u ||
+            setupCounterDelta(before.timestampBackwards, quality.timestampBackwards) != 0u) return false;
+        if (quality.fifoRecoveryRequests != recoveries) {
+            recoveries = quality.fifoRecoveryRequests;
+            fresh = 0u;
+            timestamp = 0u;
+            cleanStartedMs = millis();
+        }
+        if (sequence != *ctx.lastImuSampleSequence) {
+            sequence = *ctx.lastImuSampleSequence;
+            const auto& sample = *ctx.lastCalibratedSample;
+            if (!sample.gyro_rad_s.isFinite() || !sample.accel_g.isFinite() ||
+                sample.t_us == 0u || (timestamp != 0u && sample.t_us <= timestamp)) return false;
+            timestamp = sample.t_us;
+            if (!fifoCalibrationSampleFlagsAcceptable(sample.flags) || sample.accel_g.normSq() <= MATH_EPSILON) {
+                fresh = 0u;
+                cleanStartedMs = millis();
+            } else {
+                ++fresh;
+            }
+        }
+        if (fresh >= 32u && millis() - cleanStartedMs >= 250u) {
+            return millis() - startedMs < 5000u && !setupVerificationInterrupted(ctx, startedMs);
+        }
+        delay(5);
+    }
+    tracker_serial_detail::printErr(s, "partial calibration probation timed out; previous calibration retained");
+    return false;
+}
+
+bool trackerSerialCommitCalibrationCandidate(TrackerSerialCommandContext& ctx,
+                                             const TrackerConfig& candidate,
+                                             TrackerCalibrationProvenance provenance,
+                                             TrackerPreparedConfigCommit* prepared,
+                                             uint8_t workspaceMask) {
+    if (!ctx.config || !ctx.configStore || !candidate.validateSemanticConfig()) return false;
+    g_calibrationTransaction.begin(ctx);
+    if (g_calibrationTransaction.commit(ctx, workspaceMask, provenance, &candidate, prepared)) return true;
+    g_calibrationTransaction.rollback(ctx, "calibration_commit_failed");
+    return false;
+}
 
 void trackerSerialDispatchSetupCommand(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     Stream& s = out(ctx);

@@ -89,6 +89,18 @@ tag-counter discontinuities, FIFO overrun/full states, saturation and recovery.
 The SlimeVR runtime consumes prepared snapshots and does not read the AHRS or
 FIFO directly.
 
+Patch 0027 adds an app-owned sensor progress watchdog and bounded recovery state
+machine. FIFO reset/configure changes hardware state with register read-back
+before software queues or timestamp epochs are cleared. Failed drains and
+whole-batch capacity violations publish typed discontinuities and cannot leak a
+partial old epoch. After four monotonic post-gap gyro integrations, strict
+recovery may publish degraded gyro-only pose while acceleration stays explicitly
+invalid until a clean gravity reacquisition window. The ESP task watchdog is fed
+only after mandatory app service. A retained, CRC-protected crash-boot record
+enters bounded safe mode after three panic/watchdog boots and clears after stable
+main-loop uptime; safe mode retains Wi-Fi/CLI/recovery while inhibiting optional
+work and persistent mutations.
+
 ## Calibration actually applied
 
 Runtime calibration currently includes:

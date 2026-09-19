@@ -1,6 +1,8 @@
 #include "runtime/gyro_temp_static_fit.hpp"
 
 #include <cmath>
+#include <memory>
+#include <new>
 
 #include "core/math.hpp"
 
@@ -243,7 +245,10 @@ bool persistTempModelCandidate(TrackerConfigStore& store,
                                Stream& out) {
     TrackerConfig candidate = activeConfig;
     candidate.captureFromGyroTempCompUpdate(model, millis(), sampleCount);
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) {
+        out.println("# ERR gyro temp fit produced an invalid config candidate");
+        return false;
+    }
     candidate.updateCrc();
     if (!store.save(candidate, TrackerCalibrationProvenance::Manual)) {
         out.print("# ERR gyro temp fit save failed: ");
@@ -457,9 +462,22 @@ bool fitGyroTempFromCompletedStaticTestEx(GyroTempStaticFitDeps& deps,
             return false;
         }
     } else {
-        config.captureFromGyroTempCompUpdate(model, millis(), inlierSamples);
-        config.sanitize();
-        config.updateCrc();
+        // RAM-only apply is a setup/cold path, but TrackerConfig is large enough
+        // to overflow loopTask's bounded frame on some host/target ABIs. Keep
+        // the immutable candidate off-stack and fail without touching runtime
+        // if the one bounded allocation is unavailable.
+        std::unique_ptr<TrackerConfig> candidate(new (std::nothrow) TrackerConfig(config));
+        if (!candidate) {
+            out.println("# ERR out of memory for gyro temp RAM candidate");
+            return false;
+        }
+        candidate->captureFromGyroTempCompUpdate(model, millis(), inlierSamples);
+        if (!candidate->validateSemanticConfig()) {
+            out.println("# ERR gyro temp fit produced an invalid RAM candidate");
+            return false;
+        }
+        candidate->updateCrc();
+        config = *candidate;
     }
 
     const bool biasValidityChanged = gyroTempComp.valid() != model.valid();

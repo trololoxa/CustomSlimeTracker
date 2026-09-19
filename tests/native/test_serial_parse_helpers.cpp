@@ -1,7 +1,10 @@
 #include "test_common.hpp"
 
+#include <cstring>
+
 #include "serial/tracker_serial_parse.hpp"
 #include "serial/tracker_serial_commands.hpp"
+#include "serial/tracker_command_line_parser.hpp"
 
 int main() {
     TestContext ctx;
@@ -45,6 +48,34 @@ int main() {
     CHECK(ctx, telnet.consume(0xf0u));
     CHECK(ctx, !telnet.consume(static_cast<uint8_t>('o')));
     CHECK(ctx, telnet.consume(0u));
+
+    {
+        char line[] = "net set ssid \"living room tracker\" save";
+        char* argv[10]{};
+        const auto parsed = tracker::trackerParseCommandLine(line, argv, 10u);
+        CHECK(ctx, parsed.status == tracker::TrackerCommandLineParseStatus::Ok);
+        CHECK(ctx, parsed.argc == 5u);
+        CHECK(ctx, std::strcmp(argv[3], "living room tracker") == 0);
+    }
+    {
+        char line[] = "net set ssid \"unclosed";
+        char* argv[10]{};
+        const auto parsed = tracker::trackerParseCommandLine(line, argv, 10u);
+        CHECK(ctx, parsed.status == tracker::TrackerCommandLineParseStatus::UnclosedQuote);
+    }
+    {
+        char line[] = "one two three";
+        char* argv[2]{};
+        const auto parsed = tracker::trackerParseCommandLine(line, argv, 2u);
+        CHECK(ctx, parsed.status == tracker::TrackerCommandLineParseStatus::TooManyArguments);
+    }
+    {
+        char line[] = "net set ssid \"ok\"garbage";
+        char* argv[10]{};
+        const auto parsed = tracker::trackerParseCommandLine(line, argv, 10u);
+        CHECK(ctx, parsed.status ==
+            tracker::TrackerCommandLineParseStatus::TrailingCharactersAfterQuote);
+    }
 
     return ctx.finish("test_serial_parse_helpers");
 }

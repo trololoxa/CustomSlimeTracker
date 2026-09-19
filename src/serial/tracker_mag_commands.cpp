@@ -1,4 +1,6 @@
 #include "serial/tracker_mag_commands.hpp"
+#include "serial/tracker_setup_commands.hpp"
+#include "serial/tracker_calibration_commands.hpp"
 
 #include <Arduino.h>
 #include <cstdint>
@@ -76,13 +78,6 @@ bool magCommandMutatesCalibration(int argc, char** argv) {
     }
     return false;
 }
-
-bool magSaveConfigIfRequested(TrackerSerialCommandContext& ctx, bool saveRequested) {
-        if (!saveRequested) return true;
-        if (!ctx.config || !ctx.configStore) return false;
-        ctx.config->updateCrc();
-        return ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Manual);
-    }
 
 bool rearmMagIfNeeded(TrackerSerialCommandContext& ctx) {
         if (!ctx.config || !ctx.config->data.magCal.driverEnabled) return true;
@@ -188,13 +183,6 @@ bool makeMagAxisMatrixFromTokens(const char* bodyXToken,
         return isProperRotationMatrix(out, 0.001f, 0.001f, 0.001f);
     }
 
-bool saveConfigIfRequested(TrackerSerialCommandContext& ctx, bool saveRequested) {
-        if (!saveRequested) return true;
-        if (!ctx.config || !ctx.configStore) return false;
-        ctx.config->updateCrc();
-        return ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Manual);
-    }
-
 void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
         const Mat3& m = config.data.magCal.magToImu;
 
@@ -276,7 +264,10 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             } else if (ctx.config) {
                 TrackerConfig candidate = *ctx.config;
                 candidate.data.magCal.driverEnabled = true;
-                candidate.sanitize();
+                if (!candidate.validateSemanticConfig()) {
+                    tracker_serial_detail::printErr(out, "invalid mag enable candidate");
+                    return;
+                }
                 candidate.updateCrc();
                 if (saveRequested && (!ctx.configStore || !ctx.configStore->save(candidate, TrackerCalibrationProvenance::Manual))) {
                     ok = false;
@@ -299,7 +290,10 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             } else if (ctx.config) {
                 TrackerConfig candidate = *ctx.config;
                 candidate.data.magCal.driverEnabled = false;
-                candidate.sanitize();
+                if (!candidate.validateSemanticConfig()) {
+                    tracker_serial_detail::printErr(out, "invalid mag disable candidate");
+                    return;
+                }
                 candidate.updateCrc();
                 if (saveRequested && (!ctx.configStore || !ctx.configStore->save(candidate, TrackerCalibrationProvenance::Manual))) {
                     ok = false;
@@ -365,8 +359,13 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                     tracker_serial_detail::printErr(out, "mag calibration apply hook not available");
                     return;
                 }
-                const bool ok = ctx.applyMagCalibration(saveRequested, ctx.applyMagCalibrationUser);
-                if (ok) tracker_serial_detail::printOk(out, saveRequested ? "mag calibration applied and saved" : "mag calibration applied in RAM");
+                out.println("# mag calibration volatile preview; keep still for requested save probation");
+                bool ok = ctx.applyMagCalibration(ctx.applyMagCalibrationUser);
+                if (ok && saveRequested) {
+                    ok = ctx.config && trackerSerialCommitCalibrationCandidate(
+                        ctx, *ctx.config, TrackerCalibrationProvenance::Manual, nullptr, TRACKER_CAL_WORKSPACE_MAG);
+                }
+                if (ok) tracker_serial_detail::printOk(out, saveRequested ? "mag calibration applied and saved" : "mag calibration volatile preview");
                 else tracker_serial_detail::printErr(out, "mag calibration apply failed");
                 return;
             }
@@ -521,7 +520,10 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
             }
 
             auto commitYawConfig = [&](TrackerConfig candidate, bool saveRequested) -> bool {
-                return trackerCommitConfigCandidate(ctx, candidate, saveRequested);
+                return trackerCommitConfigCandidate(
+                    ctx, candidate,
+                    saveRequested ? TrackerConfigCommitMode::PersistThenApply
+                                  : TrackerConfigCommitMode::VolatilePreview);
             };
 
             auto resetYawStats = [&]() {
@@ -806,7 +808,9 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 candidate.data.magCal.magToImu = m;
                 candidate.data.magCal.axisAlignmentValid = true;
 
-                if (!trackerCommitConfigCandidate(ctx, candidate, saveRequested)) {
+                if (!(saveRequested
+                        ? trackerSerialCommitCalibrationCandidate(ctx, candidate, TrackerCalibrationProvenance::Manual)
+                        : trackerCommitConfigCandidate(ctx, candidate, TrackerConfigCommitMode::VolatilePreview))) {
                     tracker_serial_detail::printErr(out, "mag axis save failed");
                     return;
                 }
@@ -824,7 +828,9 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 candidate.data.magCal.magToImu = Mat3::identity();
                 candidate.data.magCal.axisAlignmentValid = true;
 
-                if (!trackerCommitConfigCandidate(ctx, candidate, saveRequested)) {
+                if (!(saveRequested
+                        ? trackerSerialCommitCalibrationCandidate(ctx, candidate, TrackerCalibrationProvenance::Manual)
+                        : trackerCommitConfigCandidate(ctx, candidate, TrackerConfigCommitMode::VolatilePreview))) {
                     tracker_serial_detail::printErr(out, "mag axis identity save failed");
                     return;
                 }
@@ -842,7 +848,9 @@ void printMagAxisMatrix(Stream& out, const TrackerConfig& config) {
                 candidate.data.magCal.magToImu = Mat3::identity();
                 candidate.data.magCal.axisAlignmentValid = false;
 
-                if (!trackerCommitConfigCandidate(ctx, candidate, saveRequested)) {
+                if (!(saveRequested
+                        ? trackerSerialCommitCalibrationCandidate(ctx, candidate, TrackerCalibrationProvenance::Manual)
+                        : trackerCommitConfigCandidate(ctx, candidate, TrackerConfigCommitMode::VolatilePreview))) {
                     tracker_serial_detail::printErr(out, "mag axis clear save failed");
                     return;
                 }

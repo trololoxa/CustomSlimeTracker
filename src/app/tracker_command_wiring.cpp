@@ -12,6 +12,7 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.configStore = objects.configStore;
     ctx.networkConfig = objects.networkConfig;
     ctx.networkConfigStore = objects.networkConfigStore;
+    ctx.factoryResetCoordinator = objects.factoryResetCoordinator;
     ctx.networkConfigLoadedFromNvs = objects.networkConfigLoadedFromNvs;
     ctx.wifiManager = objects.wifiManager;
     ctx.slimevrRuntime = objects.slimevrRuntime;
@@ -52,6 +53,8 @@ void wireTrackerCommandContext(TrackerSerialCommandContext& ctx,
     ctx.resetFifoRuntimeUser = hooks.resetFifoRuntimeUser;
     ctx.requestTrackingRecovery = hooks.requestTrackingRecovery;
     ctx.requestTrackingRecoveryUser = hooks.requestTrackingRecoveryUser;
+    ctx.requestSensorRecovery = hooks.requestSensorRecovery;
+    ctx.requestSensorRecoveryUser = hooks.requestSensorRecoveryUser;
     ctx.resetAhrsRuntime = hooks.resetAhrsRuntime;
     ctx.resetAhrsRuntimeUser = hooks.resetAhrsRuntimeUser;
     ctx.printRuntimeStatus = hooks.printRuntimeStatus;

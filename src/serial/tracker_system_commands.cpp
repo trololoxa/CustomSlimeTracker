@@ -7,10 +7,12 @@
 #include "build_config/build_identity.hpp"
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
+#include "config/factory_reset_coordinator.hpp"
 #include "connection/lsm6dsv_driver.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/imu_quality.hpp"
+#include "runtime/tracker_health_state.hpp"
 #include "serial/tracker_serial_context.hpp"
 
 #if TRACKER_ENABLE_FULL_CLI
@@ -55,7 +57,8 @@ void trackerSerialPrintHelp(Stream& out, TrackerCommandOrigin origin) {
     out.println("==============================================================================");
     out.println("[core]");
     out.println("  help | ?");
-    out.println("  status | health | version | reboot | factory_reset");
+    out.println("  status | health | version | reboot");
+    out.println("  factory_reset main|network|calibration|full confirm");
     out.println("  console status | reset            (bounded Serial/telnet output queues)");
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     out.println("  sleep                              (enter motion light sleep; move tracker to wake)");
@@ -299,6 +302,20 @@ void trackerSerialPrintStatus(TrackerSerialCommandContext& ctx) {
     out.print("build_pio_env="); out.println(trackerBuildPioEnvironment());
     out.print("build_git="); out.println(trackerBuildIdentityString());
 
+    if (ctx.health) {
+        const TrackerHealthSnapshot health = ctx.health->snapshot();
+        out.print("tracker_fault_active="); out.println(health.fatalActive ? "yes" : "no");
+        out.print("tracker_degraded_no_imu="); out.println(health.degradedNoImu ? "yes" : "no");
+        out.print("sensor_recovery_active="); out.println(health.recoveryActive ? "yes" : "no");
+        out.print("safe_mode_active="); out.println(health.safeMode ? "yes" : "no");
+        out.print("tracker_fault_code="); out.println(trackerHealthFaultCodeName(health.faultCode));
+        out.print("tracker_last_fault_code="); out.println(trackerHealthFaultCodeName(health.lastFaultCode));
+        out.print("tracker_fault_count="); out.println(health.faultCount);
+        out.print("sensor_recovery_count="); out.println(health.recoveryCount);
+        out.print("sensor_recovery_success_count="); out.println(health.recoverySuccessCount);
+        out.print("tracker_fault_message="); out.println(health.message);
+    }
+
     if (ctx.printRuntimeStatus) {
         ctx.printRuntimeStatus(out, ctx.printRuntimeStatusUser);
         return;
@@ -367,22 +384,20 @@ void trackerSerialPrintHealth(TrackerSerialCommandContext& ctx) {
 #endif
 }
 
-void trackerSerialFactoryReset(TrackerSerialCommandContext& ctx) {
+bool trackerSerialFactoryReset(TrackerSerialCommandContext& ctx, FactoryResetScope scope) {
     Stream& out = trackerSerialSystemStream(ctx);
-    bool ok = true;
-
-    if (ctx.config) {
-        ctx.config->resetDefaults();
+    if (!ctx.config || !ctx.factoryResetCoordinator) {
+        tracker_serial_detail::printErr(out, "factory reset coordinator is not available");
+        return false;
     }
-    if (ctx.configStore) {
-        ok = ctx.configStore->erase();
-    }
-
-    if (ok) tracker_serial_detail::printOk(out, "factory reset done; reboot recommended");
-    else {
+    if (!ctx.factoryResetCoordinator->request(scope)) {
         out.print("# ERR factory reset failed: ");
-        out.println(ctx.configStore ? ctx.configStore->lastErrorName() : "no config store");
+        out.println(ctx.factoryResetCoordinator->lastErrorName());
+        return false;
     }
+    out.print("# OK factory reset complete scope=");
+    out.println(factoryResetScopeName(scope));
+    return true;
 }
 
 bool trackerSerialDispatchSystemCommand(TrackerSerialCommandContext& ctx, int argc, char** argv) {
@@ -502,7 +517,26 @@ bool trackerSerialDispatchSystemCommand(TrackerSerialCommandContext& ctx, int ar
     }
 
     if (trackerSerialSystemIs(argv[0], "factory_reset")) {
-        trackerSerialFactoryReset(ctx);
+        if (argc != 3 || !trackerSerialSystemIs(argv[2], "confirm")) {
+            tracker_serial_detail::printErr(
+                out, "usage: factory_reset main|network|calibration|full confirm");
+            return true;
+        }
+        FactoryResetScope scope;
+        if (trackerSerialSystemIs(argv[1], "main")) scope = FactoryResetScope::Main;
+        else if (trackerSerialSystemIs(argv[1], "network")) scope = FactoryResetScope::Network;
+        else if (trackerSerialSystemIs(argv[1], "calibration")) scope = FactoryResetScope::Calibration;
+        else if (trackerSerialSystemIs(argv[1], "full")) scope = FactoryResetScope::Full;
+        else {
+            tracker_serial_detail::printErr(
+                out, "usage: factory_reset main|network|calibration|full confirm");
+            return true;
+        }
+        if (!trackerSerialFactoryReset(ctx, scope)) return true;
+        out.println("# OK rebooting to apply factory reset");
+        out.flush();
+        delay(50);
+        ESP.restart();
         return true;
     }
 

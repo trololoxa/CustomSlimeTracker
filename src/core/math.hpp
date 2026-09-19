@@ -495,13 +495,17 @@ struct Quat {
         return *this / n;
     }
 
-    bool normalizeInPlace(float eps = MATH_EPSILON) {
+    bool tryNormalized(Quat& out, float eps = MATH_EPSILON) const {
         const float n = norm();
-        if (n < eps || !tracker::isFinite(n)) {
-            *this = Quat::identity();
-            return false;
-        }
-        *this = *this / n;
+        if (n < eps || !tracker::isFinite(n)) return false;
+        out = *this / n;
+        return out.isFinite();
+    }
+
+    bool normalizeInPlace(float eps = MATH_EPSILON) {
+        Quat candidate;
+        if (!tryNormalized(candidate, eps)) return false;
+        *this = candidate;
         return true;
     }
 

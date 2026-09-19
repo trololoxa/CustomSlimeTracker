@@ -19,6 +19,7 @@ class TrackerConfig;
 class TrackerConfigStore;
 class TrackerNetworkConfig;
 class TrackerNetworkConfigStore;
+class FactoryResetCoordinator;
 class TrackerWifiManager;
 class SlimeVROutputRuntime;
 class TapRuntimeController;
@@ -26,6 +27,7 @@ class StatusLedRuntime;
 class BatteryRuntime;
 class BatteryAdcBatchSampler;
 class TrackerHealthState;
+enum class TrackerHealthFaultCode : uint8_t;
 class RuntimeProfiler;
 class RuntimeMotionDiagnostics;
 class FifoRuntimeProcessor;
@@ -153,12 +155,14 @@ struct TrackerSerialCommandContext {
     Stream* io = nullptr;
     TrackerCommandOrigin origin = TrackerCommandOrigin::UsbSerial;
     uint32_t sessionId = 0;
+    bool factoryResetRecoveryOnly = false;
 
     TrackerConfig* config = nullptr;
     TrackerConfigStore* configStore = nullptr;
 
     TrackerNetworkConfig* networkConfig = nullptr;
     TrackerNetworkConfigStore* networkConfigStore = nullptr;
+    FactoryResetCoordinator* factoryResetCoordinator = nullptr;
     bool* networkConfigLoadedFromNvs = nullptr;
     TrackerWifiManager* wifiManager = nullptr;
     SlimeVROutputRuntime* slimevrRuntime = nullptr;
@@ -206,6 +210,13 @@ struct TrackerSerialCommandContext {
                                     uint64_t timestampUs,
                                     void* user) = nullptr;
     void* requestTrackingRecoveryUser = nullptr;
+
+    bool (*requestSensorRecovery)(TrackerHealthFaultCode code,
+                                  uint32_t reasonFlags,
+                                  uint64_t timestampUs,
+                                  const char* reason,
+                                  void* user) = nullptr;
+    void* requestSensorRecoveryUser = nullptr;
 
     void (*resetAhrsRuntime)(void* user) = nullptr;
     void* resetAhrsRuntimeUser = nullptr;
@@ -319,7 +330,7 @@ struct TrackerSerialCommandContext {
     void (*resetMagCalibration)(void* user) = nullptr;
     void* resetMagCalibrationUser = nullptr;
 
-    bool (*applyMagCalibration)(bool persist, void* user) = nullptr;
+    bool (*applyMagCalibration)(void* user) = nullptr;
     void* applyMagCalibrationUser = nullptr;
 
     void (*printMagCalibrationStatus)(Stream& out, void* user) = nullptr;

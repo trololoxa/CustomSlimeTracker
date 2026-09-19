@@ -57,11 +57,11 @@ inline SensorToDeviceFrame makeSensorToDeviceFrame(bool valid, const Mat3& rotat
     return out;
 }
 
-// Runtime cache for the validated sensor-to-device frame. TrackerConfig::sanitize()
-// already guarantees that a persisted valid frame is a proper rotation, but
+// Runtime cache for the validated sensor-to-device frame. Semantic config
+// admission guarantees that a persisted valid frame is a proper rotation, but
 // hot-path consumers also need to remain fail-closed if a runtime caller presents
 // an unsanitized candidate. The config CRC is the explicit runtime revision:
-// every authoritative config mutation must sanitize/updateCrc before apply.
+// every authoritative config mutation must validate/updateCrc before apply.
 class SensorToDeviceFrameCache {
 public:
     const SensorToDeviceFrame& resolve(uint32_t configRevision,

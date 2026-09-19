@@ -15,6 +15,7 @@ struct TrackerCommandRuntimeObjects {
 
     TrackerNetworkConfig* networkConfig = nullptr;
     TrackerNetworkConfigStore* networkConfigStore = nullptr;
+    FactoryResetCoordinator* factoryResetCoordinator = nullptr;
     bool* networkConfigLoadedFromNvs = nullptr;
     TrackerWifiManager* wifiManager = nullptr;
     SlimeVROutputRuntime* slimevrRuntime = nullptr;
@@ -61,6 +62,9 @@ struct TrackerCommandRuntimeHooks {
 
     decltype(TrackerSerialCommandContext::requestTrackingRecovery) requestTrackingRecovery = nullptr;
     void* requestTrackingRecoveryUser = nullptr;
+
+    decltype(TrackerSerialCommandContext::requestSensorRecovery) requestSensorRecovery = nullptr;
+    void* requestSensorRecoveryUser = nullptr;
 
     decltype(TrackerSerialCommandContext::resetAhrsRuntime) resetAhrsRuntime = nullptr;
     void* resetAhrsRuntimeUser = nullptr;

@@ -5,6 +5,7 @@
 #include "config/tracker_network_config.hpp"
 #include "connection/lsm6dsv_fifo.hpp"
 #include "network/wifi_manager.hpp"
+#include "runtime/tracker_health_state.hpp"
 #include "runtime/tracker_console_suppress.hpp"
 #include "runtime/tap_runtime_controller.hpp"
 #include "sensor/imu_quality.hpp"
@@ -25,29 +26,43 @@ bool is(const char* a, const char* b) {
 constexpr uint8_t WIFI_SCAN_DEFAULT_LIMIT = 32;
 constexpr uint8_t WIFI_SCAN_MAX_LIMIT = 64;
 
-void recoverSensorStreamAfterBlockingWifiScan(TrackerSerialCommandContext& ctx, const char* reason) {
+void recoverSensorStreamAfterBlockingWifiScanImpl(TrackerSerialCommandContext& ctx,
+                                                  const char* reason) {
     trackerConsoleSuppressTrackingMessagesFor(TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS);
 
     if (!ctx.fifo) return;
 
     const uint64_t keepTs = ctx.fifo->stats().lastAssignedTimestampUs;
-    const bool ok = ctx.fifo->resetFifo();
-    ctx.fifo->resetTimestampReconstruction(keepTs);
-
-    if (ctx.quality) {
-        ctx.quality->resetStreamRecoveryState();
-        ctx.quality->syncFifoStats(ctx.fifo->stats());
-    }
-    if (ctx.resetFifoRuntime) {
-        ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
-    }
-    if (ctx.requestTrackingRecovery) {
-        ctx.requestTrackingRecovery(
+    if (ctx.requestSensorRecovery) {
+        (void)ctx.requestSensorRecovery(
+            TrackerHealthFaultCode::FifoDiscontinuity,
             imu_quality_flags::FIFO_RECOVERY_REQUESTED,
-            "blocking_wifi_scan",
             keepTs,
-            ctx.requestTrackingRecoveryUser
-        );
+            "blocking_wifi_scan",
+            ctx.requestSensorRecoveryUser);
+        return;
+    }
+
+    // Host/minimal wiring fallback. The software epoch changes only if the
+    // transactional hardware reset was fully verified.
+    const bool ok = ctx.fifo->resetFifo();
+    if (ok) {
+        ctx.fifo->resetTimestampReconstruction(keepTs);
+        if (ctx.quality) {
+            ctx.quality->resetStreamRecoveryState();
+            ctx.quality->syncFifoStats(ctx.fifo->stats());
+        }
+        if (ctx.resetFifoRuntime) {
+            ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
+        }
+        if (ctx.requestTrackingRecovery) {
+            ctx.requestTrackingRecovery(
+                imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+                "blocking_wifi_scan",
+                keepTs,
+                ctx.requestTrackingRecoveryUser
+            );
+        }
     }
 
     if (!ok) {
@@ -68,14 +83,12 @@ bool hasSaveArg(int argc, char** argv, int startIndex) {
     return false;
 }
 
-void copyBounded(char* dst, size_t dstSize, const char* src) {
-    if (!dst || dstSize == 0) return;
-    if (!src) {
-        dst[0] = '\0';
-        return;
-    }
-    std::strncpy(dst, src, dstSize - 1);
-    dst[dstSize - 1] = '\0';
+bool copyExactBounded(char* dst, size_t dstSize, const char* src) {
+    if (!dst || dstSize == 0u || !src) return false;
+    const size_t length = std::strlen(src);
+    if (length >= dstSize) return false;
+    std::memcpy(dst, src, length + 1u);
+    return true;
 }
 
 void printIp(Stream& out, uint32_t ipv4) {
@@ -114,7 +127,6 @@ TrackerWifiManagerConfig makeWifiConfig(const TrackerNetworkConfig& net) {
 }
 
 void applyWifiConfig(TrackerSerialCommandContext& ctx) {
-    if (ctx.networkConfig) ctx.networkConfig->sanitize();
     if (ctx.wifiManager && ctx.networkConfig) {
         ctx.wifiManager->configure(makeWifiConfig(*ctx.networkConfig));
     }
@@ -130,8 +142,7 @@ bool commitNetworkCandidate(TrackerSerialCommandContext& ctx,
         return false;
     }
 
-    candidate.sanitize();
-    if (!candidate.validate()) {
+    if (!candidate.validateSemanticConfig()) {
         tracker_serial_detail::printErr(out, "network config candidate is invalid");
         return false;
     }
@@ -239,7 +250,7 @@ void runWifiScan(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     out.print("limit="); out.println(limit);
 
     const int16_t count = ctx.wifiManager->scanNetworks(results, limit, showHidden);
-    recoverSensorStreamAfterBlockingWifiScan(ctx, "net_scan");
+    trackerRecoverSensorStreamAfterBlockingWifiScan(ctx, "net_scan");
     if (count < 0) {
         out.print("# ERR wifi scan failed: ");
         out.println(count);
@@ -275,6 +286,12 @@ void runWifiScan(TrackerSerialCommandContext& ctx, int argc, char** argv) {
 }
 
 } // namespace
+
+void trackerRecoverSensorStreamAfterBlockingWifiScan(
+    TrackerSerialCommandContext& ctx,
+    const char* reason) {
+    recoverSensorStreamAfterBlockingWifiScanImpl(ctx, reason);
+}
 
 void trackerSerialPrintNetworkStatus(TrackerSerialCommandContext& ctx) {
     Stream& out = netStream(ctx);
@@ -410,7 +427,10 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
         const bool save = hasSaveArg(argc, argv, 4);
 
         if (is(argv[2], "ssid")) {
-            copyBounded(candidate.data.ssid, sizeof(candidate.data.ssid), argv[3]);
+            if (!copyExactBounded(candidate.data.ssid, sizeof(candidate.data.ssid), argv[3])) {
+                tracker_serial_detail::printErr(out, "ssid too long (maximum 32 bytes)");
+                return true;
+            }
             candidate.data.credentialsValid = candidate.data.ssid[0] != '\0';
             if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
             tracker_serial_detail::printOk(out, save ? "ssid updated and saved" : "ssid updated");
@@ -418,7 +438,10 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
         }
 
         if (is(argv[2], "pass") || is(argv[2], "password")) {
-            copyBounded(candidate.data.password, sizeof(candidate.data.password), argv[3]);
+            if (!copyExactBounded(candidate.data.password, sizeof(candidate.data.password), argv[3])) {
+                tracker_serial_detail::printErr(out, "password too long (maximum 64 bytes)");
+                return true;
+            }
             candidate.data.credentialsValid = candidate.data.ssid[0] != '\0';
             if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
             tracker_serial_detail::printOk(out, save ? "password updated and saved" : "password updated");
@@ -426,14 +449,20 @@ bool trackerSerialDispatchNetworkCommand(TrackerSerialCommandContext& ctx, int a
         }
 
         if (is(argv[2], "name") || is(argv[2], "hostname") || is(argv[2], "device")) {
-            copyBounded(candidate.data.deviceName, sizeof(candidate.data.deviceName), argv[3]);
+            if (!copyExactBounded(candidate.data.deviceName, sizeof(candidate.data.deviceName), argv[3])) {
+                tracker_serial_detail::printErr(out, "device name too long (maximum 31 bytes)");
+                return true;
+            }
             if (!commitNetworkCandidate(ctx, candidate, save, save)) return true;
             tracker_serial_detail::printOk(out, save ? "device name updated and saved" : "device name updated");
             return true;
         }
 
         if (is(argv[2], "server")) {
-            copyBounded(candidate.data.serverHost, sizeof(candidate.data.serverHost), argv[3]);
+            if (!copyExactBounded(candidate.data.serverHost, sizeof(candidate.data.serverHost), argv[3])) {
+                tracker_serial_detail::printErr(out, "server host too long (maximum 63 bytes)");
+                return true;
+            }
             candidate.data.manualServerEnabled = candidate.data.serverHost[0] != '\0';
             if (argc >= 5 && !is(argv[4], "save")) {
                 uint32_t port = 0;

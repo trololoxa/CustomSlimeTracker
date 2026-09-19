@@ -1,6 +1,7 @@
 #include "test_common.hpp"
 
 #include <cstdint>
+#include <string>
 
 #include "Preferences.h"
 #include "config/tracker_config_store.hpp"
@@ -27,7 +28,7 @@ bool allowRealtime(MagDeferredServiceGate& gate, void*) {
 
 void applyCalibration(const TrackerConfig& promoted, void* user) {
     auto& ctx = *static_cast<ApplyContext*>(user);
-    trackerApplyCalibrationCandidateToConfig(*ctx.config, promoted);
+    (void)trackerApplyCalibrationCandidateToConfig(*ctx.config, promoted);
     ctx.config->applyToImuCalibration(*ctx.imuCal);
     ctx.config->applyToGyroTempComp(*ctx.temp);
     runtimeBiasReset(*ctx.runtimeBias);
@@ -754,6 +755,18 @@ void testForceEraseRecoveryClearsInvalidJournal(TestContext& ctx) {
     CHECK(ctx, prefs.wave0023Enabled == 0u);
 }
 
+void testSafeModeWriteInhibit(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    CalibrationAutonomyStore store("auto_safe_mode");
+    store.setWriteInhibited(true);
+    CHECK(ctx, !store.savePreferences(true, true));
+    CHECK(ctx, std::string(store.lastErrorName()) == "write_inhibited");
+    CHECK(ctx, !store.clearJournal());
+    CHECK(ctx, std::string(store.lastErrorName()) == "write_inhibited");
+    store.setWriteInhibited(false);
+    CHECK(ctx, store.savePreferences(false, false));
+}
+
 } // namespace
 
 int main() {
@@ -771,5 +784,6 @@ int main() {
     testPowerLossDuringAcceptCleanup(ctx);
     testPowerLossDuringRollbackCleanup(ctx);
     testGyroLifecycleAcceptsOnlyAfterFreshProbation(ctx);
+    testSafeModeWriteInhibit(ctx);
     return ctx.finish("calibration_autonomy");
 }

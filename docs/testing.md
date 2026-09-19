@@ -1,5 +1,7 @@
 # Testing strategy
 
+> **0028d update:** 0028d adds native transaction/fault tests and an opaque-clock verification stack gate. Final target smoke (capture >15 s + cancel, FIFO proof, persistence/reboot, normal tracking/sleep) is in `0028d_recovery_and_calibration_contract_report.md`. Expected injected `ERR` lines may occur inside passing negative tests; process/test verdict determines success.
+
 This project has two very different kinds of tests:
 
 1. **Firmware-side diagnostics** that run on the ESP32-C3 and exercise the real
@@ -64,6 +66,40 @@ The script always runs native tests unless `--skip-native` is passed. It also ru
 ```bash
 python tools/check_all.py --require-pio
 ```
+
+For additive 0028a transaction/quaternion checks, run:
+
+```bash
+python tools/test_0028a_transaction_and_quaternion_hotpath_policy.py
+```
+
+The policy locks semantic admission of current slots, inactive-slot hardware
+transactions, fail-closed reset boot recovery, sensor/transport probation
+separation, informational small-gap handling and the retained quaternion safety
+boundaries around the optimized propagation path.
+
+For additive 0028b deployed-v2 compatibility checks, run:
+
+```bash
+python tools/test_0028b_v2_config_migration_policy.py
+```
+
+The policy and native storage regressions require v1/v2 copy-normalize-validate
+migration into a committed v3 slot, preservation of mag/calibration/user
+settings, read-only source preservation, and fail-closed rejection when an
+active legacy calibration remains impossible. Target recovery instructions are
+in `0028b_v2_config_compatibility_migration_report.md`.
+
+For additive 0028c bounded capture/recovery checks, run:
+
+```bash
+python tools/test_0028c_bounded_calibration_recovery_policy.py
+```
+
+The policy locks calibration deadlines/cancellation, invalid and stale evidence
+exclusion, a small recoverable verification budget with one retry, expiring
+autonomy rejection memory and fail-closed quaternion admission. Target smoke
+instructions are in `0028c_bounded_calibration_recovery_report.md`.
 
 The release entrypoint is stricter:
 
@@ -927,9 +963,11 @@ must not clear the block; only a successful `config load` plus hardware/runtime
 apply may confirm recovery. `config erase` is the deliberate destructive escape.
 
 A device upgraded from clean 0021/0021a/0021b may initially show a legacy-committed
-v1 slot. Its first real `config save` must create a committed v2 slot/marker. A
-second identical save must increment `noop_save_count` while leaving generation
-unchanged.
+v1 slot; a device from later pre-0028 firmware may show transitional v2. On
+0028b boot either must copy-normalize-validate into a committed v3 slot/marker
+without losing calibration or user policy. A second boot must load v3 directly
+without generation churn, and a subsequent identical save must increment
+`noop_save_count` while leaving generation unchanged.
 
 Candidate promotion is calibration-only: it must not increment FIFO
 reconfiguration/recovery counters, change output rate/FIFO/IMU settings, or stop
@@ -1379,3 +1417,71 @@ ordinary behavioral regression. The magnetic reliability policy must track the
 post-0026b lightweight-view expression, no-heap UDP policies must inspect code
 rather than comments, and predecessor stack gates must not contradict successor
 cross-ABI contracts.
+
+## 0027b cross-host quality-gate hardening
+
+Apply 0027b after 0027a, then run `python3 tools/check_all.py --clean` on the
+same Windows/MSYS2 host that reported the failures. The enabled remote-console
+compile-only source must build without `sys/socket.h`; ESP32 builds must retain
+the target-only `send(..., MSG_DONTWAIT)` path. The 0026b and pre-0024 policies
+measure every new magnetic/runtime-bias phase as well as their public entry
+points without raising predecessor limits. Complete magnetic reliability and
+runtime-bias behavioral tests must pass. Target acceptance is the unchanged
+0027a smoke plus before/after `perf tracking` and task stack high-water checks.
+
+## 0027c Windows stack and failure summary
+
+Apply 0027c after corrected 0027b. Run
+`python3 tools/test_0027c_windows_stack_and_failure_summary_policy.py`, then one
+`python3 tools/check_all.py --clean` on Windows/MSYS2. The yaw public frame must
+remain at most 96 bytes in both optimization modes, helper frames must not hide
+a larger nested peak, expected FIFO drain-failure injection must remain tested
+without emitting a misleading top-level `# ERR`, and the final aggregate entry
+must repeat the child stderr containing the root cause.
+
+## 0027d recovery feedback and tap reconfiguration
+
+Apply 0027d after 0027c. Run
+`python3 tools/test_0027d_recovery_feedback_and_tap_policy.py`, then build and
+flash the normal ProductionDiag target. Strict recovery must continue enforcing
+IRQ/drain and accepted-gyro progress while orientation-publication timeout is
+deferred only until `tracking_degraded_gyro_output_allowed=yes`. A transactional
+FIFO reset must not reconfigure tap hardware or print another
+`tap_runtime_enabled` line; a full sensor reinitialization must still restore tap
+configuration. `health` must expose the last triggered progress fault and sensor
+recovery request/success/failure counters. The target smoke procedure and exact
+pass conditions are recorded in the 0027d report.
+
+## 0027e progress clock-domain separation
+
+Apply 0027e after 0027d. Run
+`python3 tools/test_0027e_progress_clock_domain_policy.py`, then repeat the
+ProductionDiag target smoke. IMU hardware timestamps must never be compared to
+`micros()` for liveness. The per-sample path publishes only fixed-width progress
+edges; the bounded watchdog service assigns local observation timestamps. An
+undisturbed five-minute run must keep `sensor_progress_current_fault=none`, keep
+the recovery-controller request count unchanged, allow FIFO interrupt count to
+grow, and retain zero FIFO/quality recovery faults. No new clock read, heap use,
+sensor cadence change or estimator/gate change is permitted.
+
+## 0027f progress epoch contract
+
+Apply 0027f after 0027e and run
+`python3 tools/test_0027f_progress_epoch_contract_policy.py`. The regression
+enters two nested suppress reasons, publishes gyro/orientation progress before
+and after a partial unsuppress, then exits the final reason. A fresh drain at
+the new epoch deadline must still report `NoAcceptedGyro`; only a new gyro edge
+may advance the result to `NoOrientationPublication`, and only a new orientation
+edge may clear it. This patch changes no production executable behavior and
+does not require another target flash.
+
+## 0028 semantic config and calibration transaction
+
+Run `python3 tools/test_0028_semantic_config_transaction_policy.py`, then the
+ordinary native suite and relevant ProductionDiag build. The semantic gate must
+reject invalid candidates without modifying them or the stored old-good config.
+Parser overflow, too-many-argument and quote errors must reject the entire input.
+Calibration probation retains a fixed deadline across recoverable sensor/network
+events, and factory reset uses the fixed-width recoverable coordinator for every
+scope and for `FRST`. The non-destructive and spare-device destructive target
+procedure is in `0028_semantic_config_and_calibration_transaction_report.md`.

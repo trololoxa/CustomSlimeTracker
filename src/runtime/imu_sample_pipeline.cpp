@@ -384,20 +384,50 @@ FifoRuntimeSampleResult imuSamplePipelineProcessRaw(ImuSamplePipelineDeps& deps,
                                                    ahrsIntegrated,
                                                    deps.callbacks.user);
     }
+    if (ahrsIntegrated && deps.sensorProgress != nullptr) {
+        deps.sensorProgress->noteAcceptedGyro();
+    }
 #if TRACKER_HAS_RUNTIME_PROFILER
     finishImuStage(RuntimeProfiler::ImuStage::AhrsAndRecovery);
 #endif
 
-    if (deps.trackingState.recoveryActive()) {
+    const bool trackingRecoveryActive = deps.trackingState.recoveryActive();
+    if (trackingRecoveryActive &&
+        !deps.trackingState.degradedGyroOutputAllowed()) {
         deps.preparedOutput.reset();
     } else {
-        const bool preparedPublished = deps.preparedOutput.update(deps.config,
-                                                                  deps.runtimeSamples,
-                                                                  raw.t_us,
-                                                                  deps.ahrs,
-                                                                  quality,
-                                                                  calibrated.accel_g,
-                                                                  softwareQueueAgeUs);
+        bool preparedPublished = false;
+        if (trackingRecoveryActive) {
+            // The quaternion is current gyro propagation, but gravity/linear
+            // acceleration are not reacquired yet. Publish pose as degraded
+            // without allowing stale accel-derived output to look fresh.
+            ImuQualityResult recoveryQuality = quality;
+            recoveryQuality.shouldUseAccelCorrection = false;
+            recoveryQuality.shouldUseAccelOutput = false;
+            recoveryQuality.flags |= imu_quality_flags::ACCEL_NOT_AHRS_USABLE |
+                                     imu_quality_flags::FIFO_RECOVERY_REQUESTED;
+            preparedPublished = deps.preparedOutput.update(deps.config,
+                                                            deps.runtimeSamples,
+                                                            raw.t_us,
+                                                            deps.ahrs,
+                                                            recoveryQuality,
+                                                            calibrated.accel_g,
+                                                            softwareQueueAgeUs);
+        } else {
+            // Keep the 960 Hz normal path on the original quality object. The
+            // recovery-only copy above must not become a permanent hot-path
+            // memory operation.
+            preparedPublished = deps.preparedOutput.update(deps.config,
+                                                            deps.runtimeSamples,
+                                                            raw.t_us,
+                                                            deps.ahrs,
+                                                            quality,
+                                                            calibrated.accel_g,
+                                                            softwareQueueAgeUs);
+        }
+        if (preparedPublished && ahrsIntegrated && deps.sensorProgress != nullptr) {
+            deps.sensorProgress->noteOrientationPublication();
+        }
 #if TRACKER_HAS_RUNTIME_PROFILER
         if (preparedPublished && deps.runtimeProfiler != nullptr) {
             deps.runtimeProfiler->recordPreparedSoftwareAge(softwareQueueAgeUs);

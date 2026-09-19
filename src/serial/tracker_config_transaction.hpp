@@ -8,21 +8,28 @@
 
 namespace tracker {
 
-// Commit a fully prepared configuration candidate.  When persistence is
+enum class TrackerConfigCommitMode : uint8_t {
+    PersistThenApply,
+    VolatilePreview,
+};
+
+// Commit a fully prepared immutable configuration candidate. When persistence is
 // requested, the active RAM configuration and runtime state are changed only
-// after NVS accepted the candidate.  This is intentionally a small current-
+// after NVS accepted and verified the candidate. VolatilePreview is explicit
+// at call sites so a preview cannot be mistaken for durable configuration.
+// This is intentionally a small current-
 // schema transaction helper; the dual-slot storage work belongs to patch 0021.
 template <typename ApplyFn>
 bool trackerCommitConfigCandidate(TrackerSerialCommandContext& ctx,
                                   TrackerConfig candidate,
-                                  bool persist,
+                                  TrackerConfigCommitMode mode,
                                   ApplyFn&& applyRuntime) {
     if (!ctx.config) return false;
 
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) return false;
     candidate.updateCrc();
 
-    if (persist) {
+    if (mode == TrackerConfigCommitMode::PersistThenApply) {
         if (!ctx.configStore ||
             !ctx.configStore->save(candidate, TrackerCalibrationProvenance::Manual)) {
             return false;
@@ -36,8 +43,8 @@ bool trackerCommitConfigCandidate(TrackerSerialCommandContext& ctx,
 
 inline bool trackerCommitConfigCandidate(TrackerSerialCommandContext& ctx,
                                          TrackerConfig candidate,
-                                         bool persist) {
-    return trackerCommitConfigCandidate(ctx, candidate, persist, []() {});
+                                         TrackerConfigCommitMode mode) {
+    return trackerCommitConfigCandidate(ctx, candidate, mode, []() {});
 }
 
 } // namespace tracker

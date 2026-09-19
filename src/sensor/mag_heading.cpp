@@ -21,7 +21,7 @@ bool MagHeadingEstimator::update(const MagProcessedSample& mag,
     out.magTimestampUs = mag.t_us;
     out.magReceivedMs = mag.receivedMs;
     out.magSeq = mag.seq;
-    out.qWorldFromBody = qWorldFromBody.normalized();
+    const bool quaternionValid = qWorldFromBody.tryNormalized(out.qWorldFromBody);
     out.magBody = mag.body;
     out.magBodyNorm = mag.bodyNorm;
 
@@ -36,7 +36,7 @@ bool MagHeadingEstimator::update(const MagProcessedSample& mag,
         addReject(out, MAG_HEADING_REJECT_MAG_NOT_TRUSTED);
     }
 
-    if (!out.qWorldFromBody.isFinite()) {
+    if (!quaternionValid) {
         addReject(out, MAG_HEADING_REJECT_QUAT_INVALID);
     }
 

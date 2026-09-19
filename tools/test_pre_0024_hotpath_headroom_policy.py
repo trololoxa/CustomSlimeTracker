@@ -229,6 +229,10 @@ def main() -> int:
         for symbol, ceiling in (
             ("FifoRuntimeProcessor::process", 256),
             ("runtimeBiasFinalizePendingWindow", 256),
+            ("evaluateCompletedRuntimeBiasWindow", 320),
+            ("rejectCompletedRuntimeBiasWindow", 128),
+            ("primeCompletedRuntimeBiasWindow", 192),
+            ("applyCompletedRuntimeBiasWindow", 224),
             ("CalibrationAutonomyController::service", 512),
         ):
             measured = stack_usage(tmp, symbol)

@@ -63,7 +63,6 @@ static void emitLogStateEvent(const char* state, const char* reason, uint64_t tU
 static void resetFifoRuntimeCounters() {
     noInterrupts();
     g_fifoIntCount = 0;
-    g_fifoLastIrqUs = micros();
     interrupts();
 
     g_fifoEvents.reset();
@@ -79,6 +78,10 @@ static bool consumeFifoInterruptEvent(uint32_t timeoutMs) {
 static bool waitFifoEventForCalibration(uint32_t timeoutMs, void* user) {
     (void)user;
     return consumeFifoInterruptEvent(timeoutMs);
+}
+
+static bool serviceFifoCalibrationCapture(FifoCalibrationService event, void*) {
+    return g_app.serviceFifoCalibrationCapture(event);
 }
 
 #endif
@@ -106,6 +109,7 @@ static TrackerBootstrapDeps makeTrackerBootstrapDeps() {
     deps.calibrationRawBufferCapacity = FIFO_RAW_BUFFER_CAPACITY;
     deps.waitForCalibrationFifoEvent = waitFifoEventForCalibration;
     deps.waitForCalibrationFifoEventUser = nullptr;
+    deps.serviceCalibrationCapture = serviceFifoCalibrationCapture;
 #endif
     deps.latestTempC = g_latestTempC;
     deps.pins.sck = PIN_LSM_SCK;

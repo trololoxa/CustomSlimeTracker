@@ -103,6 +103,7 @@ struct Ahrs6DofStats {
     uint32_t startupAccelRejectedCount = 0;
     uint32_t clampedLargeDt = 0;
     uint32_t normalizedCount = 0;
+    uint32_t invalidQuaternionRejectedCount = 0;
 
     // Recovery/rebase diagnostics. largeDtRebaseCount counts automatic
     // rebases after a rejected over-large dt when clampLargeDt=false.
@@ -154,7 +155,7 @@ class Ahrs6Dof {
 public:
     explicit Ahrs6Dof(const Ahrs6DofConfig& config = Ahrs6DofConfig{});
 
-    void reset(const Quat& initialQ = Quat::identity(), uint64_t timestampUs = 0);
+    bool reset(const Quat& initialQ = Quat::identity(), uint64_t timestampUs = 0);
     bool resetFromAccel(const Vec3& accelG, uint64_t timestampUs = 0);
 
     // Rebuild roll/pitch from gravity after an unreconstructable sample gap
@@ -172,7 +173,9 @@ public:
     const Ahrs6DofConfig& config() const;
 
     void setConfig(const Ahrs6DofConfig& config);
-    void setQuaternion(const Quat& q);
+    // External yaw/config corrections are rejected without replacing the last
+    // valid orientation when the candidate is non-finite or near zero.
+    bool setQuaternion(const Quat& q);
 
     // Explicitly rebase AHRS integration time after a known recovery event
     // (FIFO reset, timestamp reconstruction reset, sensor reset). This does
@@ -204,6 +207,7 @@ private:
     AccelEvaluation evaluateAccel(const Vec3& accelG, float accelNormG) const;
     void updateAdaptiveAccelTrust(float accelNormG, float gyroNorm, uint8_t representedSamples);
     void applyAccelCorrection(const Vec3& accelG, float accelNormG, float dtS);
+    bool recoverPredictionAfterInvalidQuaternion(const Quat& predicted);
     void resetAccelCorrectionAccumulator();
     void accumulateAccelCorrection(const Vec3& accelG,
                                    float accelNormG,

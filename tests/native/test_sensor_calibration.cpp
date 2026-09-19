@@ -1,10 +1,64 @@
 #include "test_common.hpp"
 
+#include <limits>
+
 #include "sensor/calibration.hpp"
 #include "sensor/accel_6pos_calibration.hpp"
 #include "sensor/fifo_calibrations.hpp"
 
 using namespace tracker;
+
+namespace {
+
+class CalibrationNullTransport final : public Lsm6dsvTransport {
+public:
+    bool available = false;
+    uint8_t registers[256]{};
+    bool read(uint8_t reg, uint8_t* dst, size_t len) override {
+        if (!available) return false;
+        for (size_t i = 0u; i < len; ++i) dst[i] = registers[static_cast<uint8_t>(reg + i)];
+        return true;
+    }
+    bool write(uint8_t reg, const uint8_t* src, size_t len) override {
+        if (!available) return false;
+        for (size_t i = 0u; i < len; ++i) registers[static_cast<uint8_t>(reg + i)] = src[i];
+        return true;
+    }
+    void delayMs(uint32_t) override {}
+};
+
+struct CalibrationWaitProbe {
+    uint32_t calls = 0u;
+    bool cancel = false;
+    uint32_t nowMs = 0u;
+    uint32_t maxSlice = 0u;
+    uint32_t services = 0u;
+    uint32_t begins = 0u;
+    uint32_t ends = 0u;
+};
+
+bool calibrationWaitTimeout(uint32_t timeoutMs, void* user) {
+    auto& probe = *static_cast<CalibrationWaitProbe*>(user);
+    ++probe.calls;
+    probe.nowMs += timeoutMs;
+    probe.maxSlice = std::max(probe.maxSlice, timeoutMs);
+    return false;
+}
+
+uint32_t captureClock(void* user) { return static_cast<CalibrationWaitProbe*>(user)->nowMs; }
+bool captureService(FifoCalibrationService event, void* user) {
+    auto& p = *static_cast<CalibrationWaitProbe*>(user);
+    if (event == FifoCalibrationService::Begin) ++p.begins;
+    if (event == FifoCalibrationService::Progress) ++p.services;
+    if (event == FifoCalibrationService::End) ++p.ends;
+    return true;
+}
+
+bool calibrationCancelRequested(void* user) {
+    return static_cast<CalibrationWaitProbe*>(user)->cancel;
+}
+
+} // namespace
 
 static Lsm6dsv::Sample makeSample(const Vec3& gyroRadS, const Vec3& accelG) {
     Lsm6dsv::Sample s;
@@ -89,6 +143,117 @@ static void testAccelAutoFaceDetection(TestContext& ctx) {
     auto slightlyRotated = Accel6PosCalibration::detectFace(Vec3(0.83f, 0.38f, 0.02f), strict);
     CHECK(ctx, slightlyRotated.valid);
     CHECK(ctx, slightlyRotated.face == Accel6PosCalibration::Face::XP);
+}
+
+static void testAccelInputValidation(TestContext& ctx) {
+    CHECK(ctx, Accel6PosCalibration::parseFace("X") ==
+        Accel6PosCalibration::Face::Invalid);
+    CHECK(ctx, Accel6PosCalibration::parseFace("XPx") ==
+        Accel6PosCalibration::Face::Invalid);
+    CHECK(ctx, Accel6PosCalibration::parseFace("x+") ==
+        Accel6PosCalibration::Face::XP);
+
+    Accel6PosCalibration cal;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK(ctx, !cal.setFace(Accel6PosCalibration::Face::XP,
+                            Vec3::unitX(), 100u, Vec3(nan, 0.0f, 0.0f)));
+    CHECK(ctx, !cal.setFace(Accel6PosCalibration::Face::XP,
+                            Vec3::unitX(), 100u, Vec3(-0.1f, 0.0f, 0.0f)));
+
+    Accel6PosCalibration::ValidationParams invalidParams;
+    invalidParams.maxPostCalNormErrorG = 0.0f;
+    CHECK(ctx, !cal.compute(invalidParams));
+    CHECK(ctx, (cal.result().qualityFlags &
+                accel_cal_quality_flags::INVALID_VALIDATION_PARAMS) != 0u);
+}
+
+static void testFifoCaptureWaitsAreBoundedAndCancellable(TestContext& ctx) {
+    CHECK(ctx, fifoCalibrationSampleFlagsAcceptable(Lsm6dsv::FLAG_READ_OUTPUT_OK |
+        Lsm6dsvFifoReader::FIFO_FLAG_SOURCE_FIFO | Lsm6dsvFifoReader::FIFO_FLAG_TS_HARDWARE |
+        Lsm6dsvFifoReader::FIFO_FLAG_STATUS_WTM));
+    CHECK(ctx, !fifoCalibrationSampleFlagsAcceptable(Lsm6dsv::FLAG_GYRO_SATURATED));
+    CalibrationNullTransport transport;
+    Lsm6dsv lsm(transport);
+    Lsm6dsvFifoReader fifo(transport, lsm);
+    Lsm6dsv::RawSample raw[8]{};
+    CalibrationWaitProbe probe;
+    FifoCalibrationIo io;
+    io.lsm = &lsm;
+    io.fifo = &fifo;
+    io.rawBuffer = raw;
+    io.rawBufferCapacity = 8u;
+    io.waitForFifoEvent = &calibrationWaitTimeout;
+    io.waitUser = &probe;
+    io.cancelRequested = &calibrationCancelRequested;
+    io.cancelUser = &probe;
+    io.clockMs = &captureClock;
+    io.clockUser = &probe;
+    io.serviceCapture = &captureService;
+    io.serviceUser = &probe;
+
+    FifoGyroStartupCalibrationParams gyroParams;
+    gyroParams.maximumCaptureMs = 120000u;
+    gyroParams.maximumConsecutiveWaitTimeouts = 3u;
+    FifoGyroStartupCalibrator gyro(gyroParams);
+    GyroStartupCalibrationResult gyroResult;
+    CHECK(ctx, !gyro.run(io, gyroResult));
+    CHECK(ctx, probe.nowMs == gyroParams.fifoWaitTimeoutMs * 3u);
+    CHECK(ctx, probe.maxSlice <= 20u);
+    CHECK(ctx, probe.services == probe.calls);
+    CHECK(ctx, probe.begins == 1u && probe.ends == 1u);
+    CHECK(ctx, gyro.lastStatus() == FifoCalibrationCaptureStatus::SensorUnavailable);
+
+    // One session owns train and held-out validation: no second deadline.
+    FifoCalibrationCaptureStatus status;
+    probe.nowMs = 0xfffffff0u;
+    {
+        FifoCalibrationCaptureSession session(io, status, 16001u, 1000u, 100u);
+        for (unsigned i = 0; i < 16u; ++i) {
+            CHECK(ctx, !session.wait());
+            CHECK(ctx, !session.failed());
+        }
+        CHECK(ctx, session.check());
+        CHECK(ctx, !session.wait());
+        CHECK(ctx, status == FifoCalibrationCaptureStatus::DeadlineExceeded);
+    }
+    CHECK(ctx, probe.begins == probe.ends);
+    transport.available = true;
+    CHECK(ctx, fifo.configure(Lsm6dsvFifoReader::Config{}));
+    {
+        FifoCalibrationCaptureSession session(io, status, 1000u, 100u, 3u);
+        Lsm6dsv::RawSample rawSample;
+        rawSample.t_us = 1000u;
+        CHECK(ctx, session.acceptFresh(rawSample));
+        CHECK(ctx, !session.acceptFresh(rawSample));
+        rawSample.t_us = 900u;
+        CHECK(ctx, !session.acceptFresh(rawSample));
+        rawSample.t_us = 950u;
+        CHECK(ctx, !session.acceptFresh(rawSample));
+        rawSample.t_us = 2000u;
+        rawSample.flags = Lsm6dsv::FLAG_GYRO_SATURATED;
+        CHECK(ctx, !session.acceptFresh(rawSample));
+        rawSample.flags = 0u;
+        rawSample.t_us = 3000u;
+        CHECK(ctx, session.acceptFresh(rawSample));
+        probe.cancel = true;
+        CHECK(ctx, !session.check());
+        CHECK(ctx, status == FifoCalibrationCaptureStatus::Cancelled);
+    }
+    probe.cancel = false;
+    {
+        FifoCalibrationCaptureSession session(io, status, 0u, 100u, 3u);
+        CHECK(ctx, status == FifoCalibrationCaptureStatus::InvalidRequest);
+    }
+    CHECK(ctx, probe.begins == probe.ends);
+
+    probe.calls = 0u;
+    probe.cancel = true;
+    FifoAccel6PosCaptureParams accelParams;
+    accelParams.maximumConsecutiveWaitTimeouts = 3u;
+    FifoAccel6PosCalibrationRunner accel(accelParams);
+    CHECK(ctx, !accel.captureFace(io, Accel6PosCalibration::Face::XP));
+    CHECK(ctx, probe.calls == 0u);
+    CHECK(ctx, accel.lastStatus() == FifoCalibrationCaptureStatus::Cancelled);
 }
 
 static void testAccelCaptureResetsAfterMotion(TestContext& ctx) {
@@ -203,6 +368,8 @@ int main() {
     testImuCalibrationApply(ctx);
     testAccel6PosFull3x3Calibration(ctx);
     testAccelAutoFaceDetection(ctx);
+    testAccelInputValidation(ctx);
+    testFifoCaptureWaitsAreBoundedAndCancellable(ctx);
     testAccelCaptureResetsAfterMotion(ctx);
     testStationaryStats(ctx);
     testStationaryDetectorAndGyroStartup(ctx);

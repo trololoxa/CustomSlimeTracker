@@ -4,6 +4,19 @@
 
 namespace tracker {
 
+#if defined(__GNUC__) || defined(__clang__)
+#define TRACKER_MAG_YAW_NOINLINE __attribute__((noinline))
+#else
+#define TRACKER_MAG_YAW_NOINLINE
+#endif
+
+namespace {
+
+constexpr uint8_t MAG_YAW_PHASE_INNOVATION_LARGE = 1u << 0;
+constexpr uint8_t MAG_YAW_PHASE_REACQUIRE_ELIGIBLE = 1u << 1;
+
+} // namespace
+
 void MagYawCorrectionController::reset() {
     last_ = MagYawCorrectionOutput{};
     stats_ = MagYawCorrectionStats{};
@@ -31,11 +44,26 @@ void MagYawCorrectionController::markApplied(float correctionStepDeg) {
 bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
                                         const MagYawCorrectionConfig& cfg,
                                         MagYawCorrectionOutput& out) {
+    if (!initializeUpdate(in, out)) {
+        last_ = out;
+        return false;
+    }
+    evaluateMagValidity(in, cfg, out);
+    evaluateHorizontalTrust(in, cfg, out);
+    evaluateMotionTrust(in, cfg, out);
+    const uint8_t phaseFlags = evaluateInnovation(in, cfg, out);
+    updateCooldown(in, cfg, out);
+    computeCorrection(in, cfg, phaseFlags, out);
+    return out.valid;
+}
+
+TRACKER_MAG_YAW_NOINLINE bool MagYawCorrectionController::initializeUpdate(
+    const MagYawCorrectionInputView& in,
+    MagYawCorrectionOutput& out) {
     if (in.mag == nullptr || in.heading == nullptr) {
         out = MagYawCorrectionOutput{};
         out.nowMs = in.nowMs;
         addReject(out, MAG_YAW_REJECT_NONFINITE);
-        last_ = out;
         return false;
     }
     const MagProcessedSample& mag = *in.mag;
@@ -56,6 +84,16 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
     lastUpdateMs_ = in.nowMs;
     stats_.updates++;
 
+    return true;
+}
+
+TRACKER_MAG_YAW_NOINLINE void MagYawCorrectionController::evaluateMagValidity(
+    const MagYawCorrectionInputView& in,
+    const MagYawCorrectionConfig& cfg,
+    MagYawCorrectionOutput& out) {
+    const MagProcessedSample& mag = *in.mag;
+    const MagHeadingSample& heading = *in.heading;
+
     if (!cfg.enabled) addReject(out, MAG_YAW_REJECT_DISABLED);
     if (!in.referenceValid) addReject(out, MAG_YAW_REJECT_NO_REFERENCE);
     if (!heading.valid) addReject(out, MAG_YAW_REJECT_HEADING_INVALID);
@@ -65,6 +103,13 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
     out.magAgeMs = MagRuntimeProcessor::ageMsForUse(mag, in.nowMs);
     if (out.magAgeMs > cfg.maxMagAgeMs) addReject(out, MAG_YAW_REJECT_MAG_STALE);
 
+}
+
+TRACKER_MAG_YAW_NOINLINE void MagYawCorrectionController::evaluateHorizontalTrust(
+    const MagYawCorrectionInputView& in,
+    const MagYawCorrectionConfig& cfg,
+    MagYawCorrectionOutput& out) {
+    const MagHeadingSample& heading = *in.heading;
     if (in.horizontalTrustValid) {
         out.horizontalTrust = in.horizontalTrust;
         out.horizontalReferenceNorm = in.horizontalReferenceNorm;
@@ -84,6 +129,12 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
         addReject(out, MAG_YAW_REJECT_HORIZONTAL_BAD);
     }
 
+}
+
+TRACKER_MAG_YAW_NOINLINE void MagYawCorrectionController::evaluateMotionTrust(
+    const MagYawCorrectionInputView& in,
+    const MagYawCorrectionConfig& cfg,
+    MagYawCorrectionOutput& out) {
     out.gyroTrust = rampDown(in.gyroNormDps,
                              cfg.gyroNormGoodDps,
                              cfg.gyroNormBadDps);
@@ -97,7 +148,13 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
     if (cfg.requireAccelTrusted && (!tracker::isFinite(in.accelTrust) || out.accelGateTrust <= 0.0f)) {
         addReject(out, MAG_YAW_REJECT_ACCEL_NOT_TRUSTED);
     }
+}
 
+TRACKER_MAG_YAW_NOINLINE uint8_t MagYawCorrectionController::evaluateInnovation(
+    const MagYawCorrectionInputView& in,
+    const MagYawCorrectionConfig& cfg,
+    MagYawCorrectionOutput& out) {
+    const MagHeadingSample& heading = *in.heading;
     bool innovationLarge = false;
     bool reacquireEligible = false;
     if (in.referenceValid && heading.valid) {
@@ -150,6 +207,16 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
         }
     }
 
+    uint8_t phaseFlags = 0u;
+    if (innovationLarge) phaseFlags |= MAG_YAW_PHASE_INNOVATION_LARGE;
+    if (reacquireEligible) phaseFlags |= MAG_YAW_PHASE_REACQUIRE_ELIGIBLE;
+    return phaseFlags;
+}
+
+TRACKER_MAG_YAW_NOINLINE void MagYawCorrectionController::updateCooldown(
+    const MagYawCorrectionInputView& in,
+    const MagYawCorrectionConfig& cfg,
+    MagYawCorrectionOutput& out) {
     const uint32_t instantRejectFlags = out.rejectFlags;
     if (instantRejectFlags & MAG_YAW_REJECT_GYRO_MOVING) {
         requestCooldown(in.nowMs, cfg.gyroMovingCooldownMs, instantRejectFlags);
@@ -169,7 +236,13 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
         out.cooldownRemainingMs = cooldownRemainingMs(in.nowMs);
         out.cooldownReasonFlags = cooldownReasonFlags_;
     }
+}
 
+TRACKER_MAG_YAW_NOINLINE void MagYawCorrectionController::computeCorrection(
+    const MagYawCorrectionInputView& in,
+    const MagYawCorrectionConfig& cfg,
+    uint8_t phaseFlags,
+    MagYawCorrectionOutput& out) {
     float dtS = static_cast<float>(out.dtMs) * 0.001f;
     if (dtS <= 0.0f || dtS > 1.0f || !tracker::isFinite(dtS)) dtS = cfg.fallbackDtS;
     if (dtS <= 0.0f || !tracker::isFinite(dtS)) addReject(out, MAG_YAW_REJECT_DT_INVALID);
@@ -182,7 +255,11 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
         out.gateOpen = true;
         stats_.gateOpenCount++;
 
-        const bool reacquireMode = innovationLarge && reacquireEligible;
+        const bool reacquireMode =
+            (phaseFlags & (MAG_YAW_PHASE_INNOVATION_LARGE |
+                           MAG_YAW_PHASE_REACQUIRE_ELIGIBLE)) ==
+            (MAG_YAW_PHASE_INNOVATION_LARGE |
+             MAG_YAW_PHASE_REACQUIRE_ELIGIBLE);
         const float tc = reacquireMode
             ? (cfg.reacquireTimeConstantS > 0.001f ? cfg.reacquireTimeConstantS : 90.0f)
             : (cfg.timeConstantS > 0.001f ? cfg.timeConstantS : 30.0f);
@@ -218,7 +295,6 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
         stats_.gateClosedCount++;
         countRejects(out.rejectFlags);
     }
-
     if (out.applyAllowed && out.correctionStepRad != 0.0f) {
         stats_.lastCorrectionStepDeg = out.correctionStepDeg;
         const float absStep = std::fabs(out.correctionStepDeg);
@@ -227,7 +303,6 @@ bool MagYawCorrectionController::update(const MagYawCorrectionInputView& in,
     }
 
     last_ = out;
-    return out.valid;
 }
 
 bool MagYawCorrectionController::update(const MagYawCorrectionInput& in,

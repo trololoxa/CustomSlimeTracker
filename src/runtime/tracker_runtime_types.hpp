@@ -62,6 +62,7 @@ static constexpr uint8_t ACCEL_COMPONENT_MISSING = 1u << 1;
 static constexpr uint8_t PAIR_COHERENCY_DEGRADED = 1u << 2;
 static constexpr uint8_t ACCEL_SATURATED = 1u << 3;
 static constexpr uint8_t NON_FINITE = 1u << 4;
+static constexpr uint8_t RECOVERY_DEGRADED = 1u << 5;
 }
 
 // Latest timestamp-coherent motion snapshot for non-blocking output

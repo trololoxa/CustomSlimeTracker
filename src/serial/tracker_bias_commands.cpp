@@ -32,7 +32,10 @@ bool trackerSerialBiasSaveAutostart(TrackerSerialCommandContext& ctx, bool enabl
         candidate.data.ahrsRuntime.reserved &=
             static_cast<uint8_t>(~tracker_config_detail::AHRS_RUNTIME_FLAG_RUNTIME_BIAS_ENABLED);
     }
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) {
+        tracker_serial_detail::printErr(out, "runtime gyro bias candidate is invalid");
+        return false;
+    }
     candidate.updateCrc();
     if (!ctx.configStore->save(candidate, TrackerCalibrationProvenance::Manual)) {
         out.print("# ERR runtime gyro bias save failed: ");

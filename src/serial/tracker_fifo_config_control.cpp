@@ -49,19 +49,6 @@ bool persistCandidate(TrackerSerialCommandContext& ctx,
     return true;
 }
 
-bool restorePersistedPrevious(TrackerSerialCommandContext& ctx,
-                              Stream& out,
-                              TrackerConfig& previous) {
-    if (!ctx.configStore) return false;
-    if (ctx.configStore->save(previous)) {
-        out.println("# WARN previous config restored in NVS");
-        return true;
-    }
-    out.print("# ERR previous config NVS restore failed: ");
-    out.println(ctx.configStore->lastErrorName());
-    return false;
-}
-
 void requestReconfigureRecovery(TrackerSerialCommandContext& ctx,
                                 uint64_t timestampUs) {
     if (!ctx.requestTrackingRecovery) return;
@@ -153,20 +140,53 @@ bool commitImuFifoCandidate(TrackerSerialCommandContext& ctx,
         return false;
     }
     scratch->candidate = candidateInput;
-    scratch->candidate.sanitize();
+    if (!scratch->candidate.validateSemanticConfig()) {
+        tracker_serial_detail::printErr(out, "invalid IMU/FIFO config candidate");
+        return false;
+    }
     scratch->candidate.updateCrc();
     scratch->previous = *ctx.config;
+
+    TrackerPreparedConfigCommit prepared;
+    if (save) {
+        if (!ctx.configStore) {
+            tracker_serial_detail::printErr(out, "config store not available");
+            return false;
+        }
+        if (!ctx.configStore->prepareAuthoritativeCommit(scratch->candidate, prepared)) {
+            out.print("# ERR config prepare failed: ");
+            out.println(ctx.configStore->lastErrorName());
+            return false;
+        }
+    }
     *ctx.config = scratch->candidate;
 
     if (!applyImuFifoHardware(ctx, out, rebeginImu, true)) {
         (void)rollbackImuFifo(ctx, out, scratch->previous, rebeginImu);
+        if (save && !ctx.configStore->abortPreparedAuthoritative(prepared)) {
+            out.print("# ERR prepared config cleanup failed: ");
+            out.println(ctx.configStore->lastErrorName());
+        }
         return false;
     }
-
-    if (save && !persistCandidate(ctx, out, *ctx.config)) {
-        (void)rollbackImuFifo(ctx, out, scratch->previous, rebeginImu);
-        (void)restorePersistedPrevious(ctx, out, scratch->previous);
-        return false;
+    if (save) {
+        TrackerConfig committed;
+        if (!ctx.configStore->commitPreparedAuthoritative(prepared, committed)) {
+            const TrackerConfigError error = ctx.configStore->lastError();
+            out.print("# ERR config commit failed: ");
+            out.println(ctx.configStore->lastErrorName());
+            if (error == TrackerConfigError::CommitUncertain) {
+                out.println("# ERR selector state uncertain; working candidate remains active, reboot required");
+                return false;
+            }
+            (void)rollbackImuFifo(ctx, out, scratch->previous, rebeginImu);
+            if (!ctx.configStore->abortPreparedAuthoritative(prepared)) {
+                out.print("# ERR prepared config cleanup failed: ");
+                out.println(ctx.configStore->lastErrorName());
+            }
+            return false;
+        }
+        *ctx.config = committed;
     }
     return true;
 }
@@ -209,23 +229,52 @@ bool trackerSerialCommitSpiFrequency(TrackerSerialCommandContext& ctx,
     TrackerConfig previous = *ctx.config;
     TrackerConfig candidate = previous;
     candidate.data.hardware.spiHz = hz;
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) {
+        tracker_serial_detail::printErr(out, "invalid SPI config candidate");
+        return false;
+    }
     candidate.updateCrc();
+
+    TrackerPreparedConfigCommit prepared;
+    if (save) {
+        if (!ctx.configStore ||
+            !ctx.configStore->prepareAuthoritativeCommit(candidate, prepared)) {
+            out.print("# ERR SPI config prepare failed: ");
+            out.println(ctx.configStore ? ctx.configStore->lastErrorName() : "store_unavailable");
+            return false;
+        }
+    }
     *ctx.config = candidate;
 
     if (!ctx.setSpiFrequency(ctx.config->data.hardware.spiHz, ctx.setSpiFrequencyUser)) {
         *ctx.config = previous;
         (void)ctx.setSpiFrequency(previous.data.hardware.spiHz, ctx.setSpiFrequencyUser);
+        if (save && !ctx.configStore->abortPreparedAuthoritative(prepared)) {
+            out.print("# ERR prepared SPI config cleanup failed: ");
+            out.println(ctx.configStore->lastErrorName());
+        }
         tracker_serial_detail::printErr(out, "failed to apply SPI clock");
         return false;
     }
-
-    if (save && !persistCandidate(ctx, out, *ctx.config)) {
-        *ctx.config = previous;
-        (void)ctx.setSpiFrequency(previous.data.hardware.spiHz, ctx.setSpiFrequencyUser);
-        (void)restorePersistedPrevious(ctx, out, previous);
-        out.println("# WARN SPI runtime setting rolled back");
-        return false;
+    if (save) {
+        TrackerConfig committed;
+        if (!ctx.configStore->commitPreparedAuthoritative(prepared, committed)) {
+            const TrackerConfigError error = ctx.configStore->lastError();
+            out.print("# ERR SPI config commit failed: ");
+            out.println(ctx.configStore->lastErrorName());
+            if (error == TrackerConfigError::CommitUncertain) {
+                out.println("# ERR selector state uncertain; working SPI setting remains active, reboot required");
+                return false;
+            }
+            *ctx.config = previous;
+            (void)ctx.setSpiFrequency(previous.data.hardware.spiHz, ctx.setSpiFrequencyUser);
+            if (!ctx.configStore->abortPreparedAuthoritative(prepared)) {
+                out.print("# ERR prepared SPI config cleanup failed: ");
+                out.println(ctx.configStore->lastErrorName());
+            }
+            return false;
+        }
+        *ctx.config = committed;
     }
     return true;
 }
@@ -255,7 +304,10 @@ bool trackerSerialCommitFifoDrain(TrackerSerialCommandContext& ctx,
     TrackerConfig candidate = *ctx.config;
     candidate.data.fifo.maxWordsPerDrain = maxWordsPerDrain;
     candidate.data.fifo.maxDrainRoundsPerEvent = maxDrainRoundsPerEvent;
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) {
+        tracker_serial_detail::printErr(out, "invalid FIFO drain config candidate");
+        return false;
+    }
     candidate.updateCrc();
 
     if (save && !persistCandidate(ctx, out, candidate)) return false;

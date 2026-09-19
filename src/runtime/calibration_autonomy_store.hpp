@@ -149,6 +149,11 @@ public:
                             bool wave0022Enabled,
                             bool wave0023Enabled);
     bool clearEraseRecovery();
+    // Idempotent full metadata reset used by the factory-reset transaction.
+    // All known keys are removed and absence is verified before success.
+    bool eraseAll();
+    void setWriteInhibited(bool inhibited) { writeInhibited_ = inhibited; }
+    bool writeInhibited() const { return writeInhibited_; }
 
     const char* lastErrorName() const { return lastError_; }
     bool lastErrorIsNotFound() const { return std::strcmp(lastError_, "not_found") == 0; }
@@ -167,6 +172,7 @@ public:
 private:
     const char* ns_;
     const char* lastError_ = "none";
+    bool writeInhibited_ = false;
     CalibrationAutonomyJournalRecord journalA_{};
     CalibrationAutonomyJournalRecord journalB_{};
     CalibrationAutonomyJournalRecord journalCurrent_{};

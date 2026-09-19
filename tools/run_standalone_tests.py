@@ -84,6 +84,7 @@ PROJECT_SOURCES = [
     pathlib.Path("src/config/tracker_config_storage.cpp"),
     pathlib.Path("src/config/tracker_config_store.cpp"),
     pathlib.Path("src/config/tracker_network_config.cpp"),
+    pathlib.Path("src/config/factory_reset_coordinator.cpp"),
     pathlib.Path("src/output/slimevr_packet_writer.cpp"),
     pathlib.Path("src/network/wifi_manager.cpp"),
     pathlib.Path("src/network/udp_transport.cpp"),
@@ -136,6 +137,9 @@ TEST_EXTRA_LINK_SOURCES = {
     "test_diagnostic_completion_deferred.cpp": (
         pathlib.Path("src/runtime/runtime_test_runner.cpp"),
         pathlib.Path("src/runtime/static_test_runner.cpp"),
+    ),
+    "test_sensor_calibration.cpp": (
+        pathlib.Path("src/sensor/fifo_calibrations.cpp"),
     ),
 }
 

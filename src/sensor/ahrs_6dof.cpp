@@ -9,14 +9,17 @@ namespace tracker {
 Ahrs6Dof::Ahrs6Dof(const Ahrs6DofConfig& config)
     : cfg_(sanitizeConfig(config)) {}
 
-void Ahrs6Dof::reset(const Quat& initialQ, uint64_t timestampUs) {
-    q_ = initialQ.normalized().withPositiveW();
+bool Ahrs6Dof::reset(const Quat& initialQ, uint64_t timestampUs) {
+    Quat normalized;
+    if (!initialQ.tryNormalized(normalized)) return false;
+    q_ = normalized.withPositiveW();
     stats_ = Ahrs6DofStats{};
     stats_.lastSeenTimestampUs = timestampUs;
     stats_.lastIntegratedTimestampUs = timestampUs;
     stats_.lastTimestampUs = timestampUs;
     resetAccelCorrectionAccumulator();
     initialized_ = timestampUs != 0;
+    return true;
 }
 
 bool Ahrs6Dof::resetFromAccel(const Vec3& accelG, uint64_t timestampUs) {
@@ -87,7 +90,9 @@ bool Ahrs6Dof::reacquireTiltFromAccelPreserveHeading(const Vec3& accelG, uint64_
         correction = Quat::fromTwoUnitVectors(predictedUp, cfg_.worldUp);
     }
 
-    const Quat candidate = (correction * q_).normalized().withPositiveW();
+    Quat candidate;
+    if (!(correction * q_).tryNormalized(candidate)) return false;
+    candidate = candidate.withPositiveW();
     const Vec3 mappedUp = candidate.rotate(measuredUp).normalized();
     if (!candidate.isFinite() || !mappedUp.isFinite() ||
         dot(mappedUp, cfg_.worldUp) < 0.999f) {
@@ -153,9 +158,15 @@ void Ahrs6Dof::setConfig(const Ahrs6DofConfig& config) {
     resetAccelCorrectionAccumulator();
 }
 
-void Ahrs6Dof::setQuaternion(const Quat& q) {
-    q_ = q.normalized().withPositiveW();
+bool Ahrs6Dof::setQuaternion(const Quat& q) {
+    Quat normalized;
+    if (!q.tryNormalized(normalized)) {
+        stats_.invalidQuaternionRejectedCount++;
+        return false;
+    }
+    q_ = normalized.withPositiveW();
     resetAccelCorrectionAccumulator();
+    return true;
 }
 
 void Ahrs6Dof::rebaseTimestamp(uint64_t timestampUs) {
@@ -245,7 +256,24 @@ bool Ahrs6Dof::update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG
 
     // 1. Full-rate gyro prediction. The incremental exponential map uses a
     // sixth-order small-angle path and leaves normalization to normalizeEvery.
-    q_ = integrateBodyRateFast(q_, gyroUsed, dtS);
+    const Quat predicted = integrateBodyRateFast(q_, gyroUsed, dtS);
+    // A finite check remains mandatory on every publication path. A second
+    // normSq() guard here was redundant: q_ can only enter through a checked
+    // reset/setter, and the incremental quaternion is unit length by
+    // construction. Norm validity is proven by the configured periodic
+    // normalization below and after the only operation that can add an
+    // independently-derived correction.
+#if TRACKER_BUILD_IS_SLIM
+    // Slim is optimized for minimum flash/stack rather than maximum 960 Hz
+    // throughput. Retain the compact original all-in-one validation shape.
+    if (!predicted.isFinite() || predicted.normSq() < MATH_EPSILON) {
+#else
+    if (!predicted.isFinite()) {
+#endif
+        stats_.invalidQuaternionRejectedCount++;
+        return false;
+    }
+    q_ = predicted;
 
     stats_.updateCount++;
     stats_.gyroPredictCount++;
@@ -262,15 +290,64 @@ bool Ahrs6Dof::update(const Vec3& gyroRadS, const Vec3& accelG, float accelNormG
     // prediction remains full-rate; only the low-bandwidth absolute tilt
     // correction is decimated, with the full represented dt applied at once.
     accumulateAccelCorrection(accelG, accelNormG, gyroNormSq, dtS);
+#if TRACKER_BUILD_IS_SLIM
+    if (!q_.isFinite() || q_.normSq() < MATH_EPSILON) {
+        q_ = predicted;
+        stats_.invalidQuaternionRejectedCount++;
+        return false;
+    }
+#else
+    if (accelCorrectionSamples_ == 0u) {
+        const float correctedNormSq = q_.normSq();
+        // normSq is finite iff all quaternion components and their squared sum
+        // are finite, so a separate four-component isFinite() pass is redundant.
+        if (!std::isfinite(correctedNormSq) || correctedNormSq < MATH_EPSILON) {
+            stats_.invalidQuaternionRejectedCount++;
+            // Invalid absolute correction must not suppress an otherwise valid
+            // gyro propagation. The common path already proved finiteness; do
+            // the more expensive full normalization only on this failure path
+            // before allowing the prediction to remain publishable.
+            return recoverPredictionAfterInvalidQuaternion(predicted);
+        }
+    }
+#endif
 
     if (cfg_.normalizeEvery > 0 && (stats_.updateCount % cfg_.normalizeEvery) == 0) {
-        q_.normalizeInPlace();
+        if (!q_.normalizeInPlace()) {
+            stats_.invalidQuaternionRejectedCount++;
+#if TRACKER_BUILD_IS_SLIM
+            q_ = predicted;
+#else
+            (void)recoverPredictionAfterInvalidQuaternion(predicted);
+#endif
+            return false;
+        }
         q_ = q_.withPositiveW();
         stats_.normalizedCount++;
     }
 
     return true;
 }
+
+#if !TRACKER_BUILD_IS_SLIM
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+bool Ahrs6Dof::recoverPredictionAfterInvalidQuaternion(const Quat& predicted) {
+    Quat recoveredPrediction;
+    if (predicted.tryNormalized(recoveredPrediction)) {
+        q_ = recoveredPrediction.withPositiveW();
+        return true;
+    }
+
+    // Do not leave a finite-but-degenerate sentinel publishable. The next
+    // update must pass normal startup gravity admission again.
+    q_ = Quat::identity();
+    initialized_ = false;
+    resetAccelCorrectionAccumulator();
+    return false;
+}
+#endif
 
 Ahrs6DofConfig Ahrs6Dof::sanitizeConfig(Ahrs6DofConfig cfg) {
     cfg.worldUp = cfg.worldUp.normalized();

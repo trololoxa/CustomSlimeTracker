@@ -471,8 +471,11 @@ bool trackerSerialApplySlimeVRRuntimeConfig(
     TrackerSlimeVRRuntimeApplyMode mode
 ) {
     if (!ctx.slimevrRuntime || !ctx.networkConfig) return false;
+    if (!ctx.networkConfig->validateSemanticConfig() ||
+        (ctx.config && !ctx.config->validateSemanticConfig())) {
+        return false;
+    }
 
-    ctx.networkConfig->sanitize();
     stopLocalSerialStreamForSlime(ctx);
     ctx.slimevrRuntime->configure(
         makeConfigFromNetwork(ctx, *ctx.networkConfig, slimeRotationRateHzFromConfig(ctx))
@@ -519,9 +522,11 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             tracker_serial_detail::printErr(out, "network config not available");
             return true;
         }
-        (void)trackerSerialApplySlimeVRRuntimeConfig(
-            ctx, TrackerSlimeVRRuntimeApplyMode::PreserveSession
-        );
+        if (!trackerSerialApplySlimeVRRuntimeConfig(
+                ctx, TrackerSlimeVRRuntimeApplyMode::PreserveSession)) {
+            tracker_serial_detail::printErr(out, "invalid SlimeVR runtime config");
+            return true;
+        }
         tracker_serial_detail::printOk(out, "SlimeVR output started");
         out.println("# use: slime status");
         return true;
@@ -538,9 +543,11 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             tracker_serial_detail::printErr(out, "network config not available");
             return true;
         }
-        (void)trackerSerialApplySlimeVRRuntimeConfig(
-            ctx, TrackerSlimeVRRuntimeApplyMode::RestartSession
-        );
+        if (!trackerSerialApplySlimeVRRuntimeConfig(
+                ctx, TrackerSlimeVRRuntimeApplyMode::RestartSession)) {
+            tracker_serial_detail::printErr(out, "invalid SlimeVR runtime config");
+            return true;
+        }
         tracker_serial_detail::printOk(out, "SlimeVR output restarted");
         return true;
     }
@@ -556,16 +563,24 @@ bool trackerSerialDispatchSlimeVRCommand(TrackerSerialCommandContext& ctx, int a
             return true;
         }
         uint32_t hz = 0;
-        if (!tracker_serial_detail::parseU32(argv[2], hz) || hz == 0 || hz > 1000) {
-            tracker_serial_detail::printErr(out, "invalid slime rate; expected 1..1000");
+        if (!tracker_serial_detail::parseU32(argv[2], hz) || hz == 0 ||
+            hz > ::tracker::cfg::OUTPUT_RATE_HZ_MAX) {
+            out.print("# ERR invalid slime rate; expected 1..");
+            out.println(::tracker::cfg::OUTPUT_RATE_HZ_MAX);
             return true;
         }
-        ctx.config->data.output.outputRateHz = static_cast<uint16_t>(hz);
-        ctx.config->updateCrc();
-        if (ctx.networkConfig) {
-            ctx.networkConfig->sanitize();
-            ctx.slimevrRuntime->configure(makeConfigFromNetwork(ctx, *ctx.networkConfig, static_cast<uint16_t>(hz)));
+        TrackerConfig candidate = *ctx.config;
+        candidate.data.output.outputRateHz = static_cast<uint16_t>(hz);
+        if (!candidate.validateSemanticConfig() ||
+            (ctx.networkConfig && !ctx.networkConfig->validateSemanticConfig())) {
+            tracker_serial_detail::printErr(out, "invalid SlimeVR rate candidate");
+            return true;
         }
+        candidate.updateCrc();
+        *ctx.config = candidate;
+        if (ctx.networkConfig)
+            ctx.slimevrRuntime->configure(
+                makeConfigFromNetwork(ctx, *ctx.networkConfig, static_cast<uint16_t>(hz)));
         tracker_serial_detail::printOk(out, "SlimeVR rotation rate set");
         return true;
     }

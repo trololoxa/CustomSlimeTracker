@@ -332,32 +332,45 @@ bool runtimeBiasUpdateEstimator(const RuntimeGyroBiasUpdateDeps& deps,
     return true;
 }
 
-bool runtimeBiasFinalizePendingWindow(const RuntimeGyroBiasUpdateDeps& deps) {
-    RuntimeGyroBiasEstimator& bias = deps.bias;
-    if (!bias.completedWindowPending) return false;
+namespace {
 
+#if defined(__GNUC__) || defined(__clang__)
+#define TRACKER_RUNTIME_BIAS_NOINLINE __attribute__((noinline))
+#else
+#define TRACKER_RUNTIME_BIAS_NOINLINE
+#endif
+
+enum RuntimeBiasWindowEvaluationFlags : uint8_t {
+    RUNTIME_BIAS_WINDOW_MOTION_BAD = 1u << 0,
+    RUNTIME_BIAS_WINDOW_ACCEL_BAD = 1u << 1,
+    RUNTIME_BIAS_WINDOW_TEMP_BAD = 1u << 2,
+    RUNTIME_BIAS_WINDOW_TEMP_CAUTIOUS = 1u << 3,
+};
+
+TRACKER_RUNTIME_BIAS_NOINLINE uint8_t evaluateCompletedRuntimeBiasWindow(
+    const RuntimeGyroBiasUpdateDeps& deps) {
+    RuntimeGyroBiasEstimator& bias = deps.bias;
     const Vec3Stats& gyroStats = bias.completedCalibratedGyroRadS;
     const ScalarStats& accelNormStats = bias.completedAccelNormG;
     const ScalarStats& accelTrustStats = bias.completedAccelTrust;
     const ScalarStats& tempStats = bias.completedTempC;
-    const uint64_t timestampUs = bias.completedTimestampUs;
-
-    bias.windows++;
 
     const Vec3 meanGyroDps = gyroStats.mean() * MATH_RAD_TO_DEG;
     const Vec3 stdGyroDps = gyroStats.stddev() * MATH_RAD_TO_DEG;
     const float gyroMeanNormDps = meanGyroDps.norm();
     const float gyroStdNormDps = stdGyroDps.norm();
     float gyroStdAxisMax = stdGyroDps.x;
-    if (stdGyroDps.y > gyroStdAxisMax) gyroStdAxisMax = stdGyroDps.y;
-    if (stdGyroDps.z > gyroStdAxisMax) gyroStdAxisMax = stdGyroDps.z;
+    if (stdGyroDps.y > gyroStdAxisMax) {
+        gyroStdAxisMax = stdGyroDps.y;
+    }
+    if (stdGyroDps.z > gyroStdAxisMax) {
+        gyroStdAxisMax = stdGyroDps.z;
+    }
     const float accelMeanG = accelNormStats.mean();
     const float accelMeanErrG = std::fabs(accelMeanG - 1.0f);
     const float accelStdG = accelNormStats.stddev();
     const float accelTrustMean = accelTrustStats.mean();
-    const float tempMin = tempStats.minValue;
-    const float tempMax = tempStats.maxValue;
-    const float tempSpanC = tempMax - tempMin;
+    const float tempSpanC = tempStats.maxValue - tempStats.minValue;
 
     bias.lastResidualDps = meanGyroDps;
     bias.lastGyroStdDps = stdGyroDps;
@@ -368,58 +381,74 @@ bool runtimeBiasFinalizePendingWindow(const RuntimeGyroBiasUpdateDeps& deps) {
     bias.lastTempSpanC = tempSpanC;
     const RuntimeBiasTempGate windowTempGate = runtimeBiasTempGateFor(
         bias, deps.gyroTempComp, bias.lastTempC);
-    const bool tempCautious = windowTempGate.nearOutOfRange;
     bias.lastTempDistanceToRangeC = windowTempGate.distanceToRangeC;
     bias.lastUpdateGainScale = windowTempGate.gainScale;
 
     const bool motionBad = gyroMeanNormDps > bias.gyroMeanMaxDps ||
         gyroStdNormDps > bias.gyroStdNormMaxDps ||
         gyroStdAxisMax > bias.gyroStdAxisMaxDps;
-
     const bool accelBad = accelMeanErrG > bias.accelNormMeanMaxErrG ||
         accelStdG > bias.accelNormStdMaxG ||
         accelTrustMean < bias.accelTrustMin;
-
     const bool windowTempBad = tempSpanC > bias.maxWindowTempDeltaC;
 
-    if (motionBad || accelBad || windowTempBad) {
-        if (motionBad) bias.motionRejects++;
-        if (accelBad) bias.accelRejects++;
-        if (windowTempBad) bias.tempRejects++;
-        bias.rejected++;
-        bias.consecutiveStationaryWindows = 0;
-        bias.lastDecisionFlags = runtimeBiasDecisionFlags(
-            false, false, false, false, windowTempBad, motionBad,
-            accelBad, false, false, false, tempCautious);
-        bias.resetCompletedWindow();
-        return true;
+    uint8_t flags = 0u;
+    if (motionBad) flags |= RUNTIME_BIAS_WINDOW_MOTION_BAD;
+    if (accelBad) flags |= RUNTIME_BIAS_WINDOW_ACCEL_BAD;
+    if (windowTempBad) flags |= RUNTIME_BIAS_WINDOW_TEMP_BAD;
+    if (windowTempGate.nearOutOfRange) {
+        flags |= RUNTIME_BIAS_WINDOW_TEMP_CAUTIOUS;
     }
+    return flags;
+}
 
-    if (tempCautious) bias.tempCautiousWindows++;
+TRACKER_RUNTIME_BIAS_NOINLINE void rejectCompletedRuntimeBiasWindow(
+    RuntimeGyroBiasEstimator& bias,
+    uint8_t evaluationFlags) {
+    const bool motionBad =
+        (evaluationFlags & RUNTIME_BIAS_WINDOW_MOTION_BAD) != 0u;
+    const bool accelBad =
+        (evaluationFlags & RUNTIME_BIAS_WINDOW_ACCEL_BAD) != 0u;
+    const bool windowTempBad =
+        (evaluationFlags & RUNTIME_BIAS_WINDOW_TEMP_BAD) != 0u;
+    const bool tempCautious =
+        (evaluationFlags & RUNTIME_BIAS_WINDOW_TEMP_CAUTIOUS) != 0u;
+    if (motionBad) bias.motionRejects++;
+    if (accelBad) bias.accelRejects++;
+    if (windowTempBad) bias.tempRejects++;
+    bias.rejected++;
+    bias.consecutiveStationaryWindows = 0;
+    bias.lastDecisionFlags = runtimeBiasDecisionFlags(
+        false, false, false, false, windowTempBad,
+        motionBad, accelBad, false, false, false, tempCautious);
+    bias.resetCompletedWindow();
+}
 
-    bias.stationaryWindows++;
-    if (bias.consecutiveStationaryWindows < 255) {
-        bias.consecutiveStationaryWindows++;
-    }
+TRACKER_RUNTIME_BIAS_NOINLINE void primeCompletedRuntimeBiasWindow(
+    const RuntimeGyroBiasUpdateDeps& deps,
+    bool tempCautious) {
+    RuntimeGyroBiasEstimator& bias = deps.bias;
+    bias.primingWindows++;
+    bias.lastAppliedDeltaDps = Vec3::zero();
+    bias.lastDecisionFlags = runtimeBiasDecisionFlags(
+        false, false, false, false, false, false, false,
+        false, true, bias.dryRun, tempCautious);
+    emitRuntimeBiasUpdateLog(
+        deps, bias.completedTimestampUs, bias.lastTempC,
+        bias.lastResidualDps, bias.lastGyroStdDps,
+        Vec3::zero(), bias.runtimeTrimRadS * MATH_RAD_TO_DEG,
+        bias.lastDecisionFlags);
+    bias.resetCompletedWindow();
+}
 
-    const bool priming =
-        bias.consecutiveStationaryWindows < bias.stationaryWindowsBeforeUpdate;
-    if (priming) {
-        bias.primingWindows++;
-        bias.lastAppliedDeltaDps = Vec3::zero();
-        bias.lastDecisionFlags = runtimeBiasDecisionFlags(
-            false, false, false, false, false, false, false,
-            false, true, bias.dryRun, tempCautious);
-        emitRuntimeBiasUpdateLog(
-            deps, timestampUs, bias.lastTempC, meanGyroDps, stdGyroDps,
-            Vec3::zero(), bias.runtimeTrimRadS * MATH_RAD_TO_DEG,
-            bias.lastDecisionFlags);
-        bias.resetCompletedWindow();
-        return true;
-    }
-
-    const float effectiveGainScale = clampf(bias.lastUpdateGainScale, 0.01f, 1.0f);
-    Vec3 deltaDps = meanGyroDps * (bias.updateAlpha * effectiveGainScale);
+TRACKER_RUNTIME_BIAS_NOINLINE void applyCompletedRuntimeBiasWindow(
+    const RuntimeGyroBiasUpdateDeps& deps,
+    bool tempCautious) {
+    RuntimeGyroBiasEstimator& bias = deps.bias;
+    const float effectiveGainScale = clampf(
+        bias.lastUpdateGainScale, 0.01f, 1.0f);
+    Vec3 deltaDps = bias.lastResidualDps *
+        (bias.updateAlpha * effectiveGainScale);
     const float maxStep = bias.maxUpdateStepDps * effectiveGainScale;
     deltaDps.x = clampf(deltaDps.x, -maxStep, maxStep);
     deltaDps.y = clampf(deltaDps.y, -maxStep, maxStep);
@@ -443,11 +472,49 @@ bool runtimeBiasFinalizePendingWindow(const RuntimeGyroBiasUpdateDeps& deps) {
         !bias.dryRun, false, false, false, false, false, false,
         false, false, bias.dryRun, tempCautious);
     emitRuntimeBiasUpdateLog(
-        deps, timestampUs, bias.lastTempC, meanGyroDps, stdGyroDps,
+        deps, bias.completedTimestampUs, bias.lastTempC,
+        bias.lastResidualDps, bias.lastGyroStdDps,
         appliedDeltaDps, newTrimDps, bias.lastDecisionFlags);
     bias.resetCompletedWindow();
+}
+
+} // namespace
+
+bool runtimeBiasFinalizePendingWindow(const RuntimeGyroBiasUpdateDeps& deps) {
+    RuntimeGyroBiasEstimator& bias = deps.bias;
+    if (!bias.completedWindowPending) return false;
+
+    bias.windows++;
+    const uint8_t evaluationFlags = evaluateCompletedRuntimeBiasWindow(deps);
+    const bool motionBad =
+        (evaluationFlags & RUNTIME_BIAS_WINDOW_MOTION_BAD) != 0u;
+    const bool accelBad =
+        (evaluationFlags & RUNTIME_BIAS_WINDOW_ACCEL_BAD) != 0u;
+    const bool windowTempBad =
+        (evaluationFlags & RUNTIME_BIAS_WINDOW_TEMP_BAD) != 0u;
+    const bool tempCautious =
+        (evaluationFlags & RUNTIME_BIAS_WINDOW_TEMP_CAUTIOUS) != 0u;
+
+    if (motionBad || accelBad || windowTempBad) {
+        rejectCompletedRuntimeBiasWindow(bias, evaluationFlags);
+        return true;
+    }
+
+    if (tempCautious) bias.tempCautiousWindows++;
+    bias.stationaryWindows++;
+    if (bias.consecutiveStationaryWindows < 255) {
+        bias.consecutiveStationaryWindows++;
+    }
+
+    if (bias.consecutiveStationaryWindows < bias.stationaryWindowsBeforeUpdate) {
+        primeCompletedRuntimeBiasWindow(deps, tempCautious);
+    } else {
+        applyCompletedRuntimeBiasWindow(deps, tempCautious);
+    }
     return true;
 }
+
+#undef TRACKER_RUNTIME_BIAS_NOINLINE
 
 void runtimeBiasPrintStatus(Stream& out,
                                    const RuntimeGyroBiasEstimator& bias,

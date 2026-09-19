@@ -11,7 +11,11 @@ namespace tracker_config_storage_detail {
 
 static constexpr uint32_t SLOT_MAGIC = 0x53474643UL;      // 'CFGS'
 static constexpr uint16_t LEGACY_SLOT_VERSION = 1;
-static constexpr uint16_t SLOT_VERSION = 2;
+// v2 was already emitted before strict semantic admission was introduced.
+// Deployed v1/v2 and v3 have distinct compatibility contracts.
+static constexpr uint16_t TRANSITIONAL_SLOT_VERSION = 2;
+static constexpr uint16_t DEPLOYED_V3_SLOT_VERSION = 3;
+static constexpr uint16_t SLOT_VERSION = 4;
 static constexpr uint32_t SELECTOR_MAGIC = 0x4C454343UL;  // 'CCEL'
 static constexpr uint16_t SELECTOR_VERSION = 1;
 static constexpr uint32_t CANDIDATE_MAGIC = 0x444E4143UL; // 'CAND'
@@ -192,6 +196,10 @@ struct TrackerConfigSlotInfo {
     bool readable = false;
     bool valid = false;
     bool legacyCommitted = false;
+    bool migrationRequired = false;
+    bool semanticValid = false;
+    uint16_t version = 0;
+    TrackerSemanticConfigError semanticError = TrackerSemanticConfigError::None;
     bool commitMarkerExists = false;
     bool commitMarkerValid = false;
     uint32_t generation = 0;
@@ -249,13 +257,16 @@ struct TrackerCalibrationWearPolicy {
         tracker_config_storage_detail::DEFAULT_CANDIDATE_MIN_QUALITY_IMPROVEMENT;
 };
 
-struct TrackerPreparedConfigPromotion {
+struct TrackerPreparedConfigCommit {
     bool valid = false;
     TrackerConfigSlot targetSlot = TrackerConfigSlot::None;
     uint32_t targetGeneration = 0;
     uint32_t activeGenerationAtPreparation = 0;
     TrackerConfigSelectorRecord previousSelector;
 };
+
+// Source-compatible name retained for calibration-candidate callers.
+using TrackerPreparedConfigPromotion = TrackerPreparedConfigCommit;
 
 TrackerSensorSignature trackerMakeSensorSignature(const TrackerConfig& config);
 bool trackerValidateSensorSignature(const TrackerSensorSignature& signature);
@@ -267,10 +278,11 @@ void trackerCalibrationQualityRecomputeOverall(const TrackerConfigBlob& payload,
                                                TrackerCalibrationQualitySummary& quality);
 void trackerCalibrationQualityRecomputeOverall(const TrackerConfig& config,
                                                TrackerCalibrationQualitySummary& quality);
-void trackerApplyCalibrationCandidateToConfig(TrackerConfig& active,
-                                                const TrackerConfig& candidate);
-TrackerConfig trackerComposeCalibrationCandidate(const TrackerConfig& active,
-                                                 const TrackerConfig& candidate);
+bool trackerApplyCalibrationCandidateToConfig(TrackerConfig& active,
+                                              const TrackerConfig& candidate);
+bool trackerComposeCalibrationCandidate(const TrackerConfig& active,
+                                        const TrackerConfig& candidate,
+                                        TrackerConfig& outComposed);
 bool trackerCalibrationModelEqual(const TrackerConfig& a, const TrackerConfig& b);
 bool trackerCalibrationEvidenceEqual(const TrackerConfig& a, const TrackerConfig& b);
 // Compatibility alias: calibration payload means model + evidence, not product policy.

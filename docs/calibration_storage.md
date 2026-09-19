@@ -1,5 +1,7 @@
 # Calibration storage and candidate framework
 
+> **0028d update:** 0028d shares manual/setup prepare → sensor probation → commit. Inactive-slot proof precedes candidate probation; old authority is protected by a write barrier. Exact temperature/session-trim rollback and uncertain-selector handling are described in `0028d_recovery_and_calibration_contract_report.md`. Slot writer is v4; v3 is migration input.
+
 Patch 0021 replaces the single `tracker/cfg` blob with a power-loss-safe active
 configuration store and a separate calibration-candidate store. It does not
 change the tracking algorithm or collect background calibration by itself.
@@ -12,8 +14,8 @@ Core IMU/calibration config uses the NVS namespace `tracker` and these keys:
 cfg_a   full active-slot record A
 cfg_b   full active-slot record B
 cfg_s   CRC-protected active selector
-cfg_ac  slot-A commit marker (storage v2)
-cfg_bc  slot-B commit marker (storage v2)
+cfg_ac  slot-A commit marker (slot v2/v3)
+cfg_bc  slot-B commit marker (slot v2/v3)
 cfg     legacy single-blob key, migration input only
 ```
 
@@ -26,10 +28,10 @@ Every slot contains:
 - a complete validated `TrackerConfigBlob`;
 - a record CRC covering header, signature, quality and payload.
 
-Storage-v2 slots also require a matching CRC-protected commit marker. Slots written
-by clean 0021/0021a/0021b builds remain readable as legacy-committed v1 records,
-but the first subsequent real save upgrades the active store to the v2 marker
-lifecycle without changing calibration values or requiring an NVS erase.
+Slot v2/v3 records require a matching CRC-protected commit marker. Slots written
+by clean 0021/0021a/0021b builds remain readable as legacy-committed v1 records.
+0028b treats both deployed v1 and transitional v2 as migration input and commits
+a validated v3 copy without changing valid calibration or requiring an NVS erase.
 
 A save always removes the target slot's old commit marker, writes the inactive
 slot, reads it back byte-for-byte and validates its CRC/signature/payload. Only
@@ -38,9 +40,9 @@ previous selected slot remains authoritative throughout. An interrupted first
 save cannot become active merely because one complete-looking slot exists.
 
 If the selector points to a corrupt slot, boot falls back only to a slot with
-commit authority: either a matching v2 marker or a compatible v1 legacy record.
-A newer non-selected v2 slot without a marker is an uncommitted prepared write
-and is never promoted by fallback. With a missing selector, committed v2 markers
+commit authority: either a matching v2/v3 marker or a compatible v1 legacy record.
+A newer non-selected v2/v3 slot without a marker is an uncommitted prepared write
+and is never promoted by fallback. With a missing selector, committed v2/v3 markers
 allow the newest committed generation to be recovered; two legacy v1 slots use
 the conservative older-generation rule. Selector/marker repair is best-effort
 and never overrides a valid authoritative payload.
@@ -50,7 +52,7 @@ and never overrides a valid authoritative payload.
 When no committed dual-slot generation is available, the loader checks the old
 `cfg` blob. A valid legacy blob is written to slot A, read back, selected, marked
 committed, and only then removed. If a previous migration stopped after writing an
-uncommitted v2 artifact, the artifact is cleared and migration safely retries from
+uncommitted marker-based artifact, it is cleared and migration safely retries from
 the still-valid legacy blob.
 Once the selector commit succeeds, legacy-key removal is best-effort and non-fatal:
 the committed slot is loaded immediately and stale-key cleanup is retried. If a
@@ -242,8 +244,8 @@ adds:
 - a degraded-storage write latch after boot read errors; active/candidate mutations
   stay blocked until an authoritative config is read **and successfully applied**
   to hardware/runtime; read-only `config verify` cannot clear that latch;
-- per-slot v2 commit markers, while retaining read compatibility with v1 slots;
-- automatic v1-to-v2 upgrade on the next real save;
+- per-slot commit markers, while retaining read compatibility with v1 slots;
+- automatic v1/v2-to-v3 compatibility migration on 0028b boot;
 - content-addressed no-op saves that do not write flash, change generation or stale
   a candidate;
 - candidate freshness based on calibration revision rather than whole-config generation;

@@ -256,7 +256,10 @@ bool MagRuntimeController::setEnabled(bool enabled, bool persist) {
 
     TrackerConfig candidateConfig = oldConfig;
     candidateConfig.data.magCal.driverEnabled = enabled;
-    candidateConfig.sanitize();
+    if (!candidateConfig.validateSemanticConfig()) {
+        stream().println("# ERR invalid mag runtime config candidate");
+        return false;
+    }
     candidateConfig.updateCrc();
 
     const bool hardwareAlreadyMatches = enabled
@@ -274,29 +277,54 @@ bool MagRuntimeController::setEnabled(bool enabled, bool persist) {
         return true;
     }
 
-    // Reconfigure hardware while the active config still describes the old
-    // state.  The helper takes the target explicitly, so a failed transition
-    // cannot leave RAM claiming that the magnetometer was enabled.
-    if (!applyHardwareEnabledState(enabled, keepTs)) {
-        return false;
-    }
-
-    if (persist && !deps_.configStore->save(candidateConfig)) {
+    TrackerPreparedConfigCommit prepared;
+    if (persist &&
+        !deps_.configStore->prepareAuthoritativeCommit(candidateConfig, prepared)) {
         stream().print("# ERR mag ");
         stream().print(enabled ? "enable" : "disable");
         stream().print(" save failed: ");
         stream().println(deps_.configStore->lastErrorName());
+        return false;
+    }
 
+    if (!applyHardwareEnabledState(enabled, keepTs)) {
         const bool rollbackOk = applyHardwareEnabledState(oldHardwareEnabled, keepTs);
         if (!rollbackOk) {
-            stream().println("# ERR mag hardware rollback failed after persistence error");
+            stream().println("# ERR mag hardware rollback failed; recovery required");
             deps_.state->lastInitOk = false;
         }
-        *deps_.config = oldConfig;
+        if (persist && !deps_.configStore->abortPreparedAuthoritative(prepared)) {
+            stream().print("# ERR prepared mag config cleanup failed: ");
+            stream().println(deps_.configStore->lastErrorName());
+        }
         return false;
     }
 
     *deps_.config = candidateConfig;
+    if (persist) {
+        TrackerConfig committed;
+        if (!deps_.configStore->commitPreparedAuthoritative(prepared, committed)) {
+            const TrackerConfigError error = deps_.configStore->lastError();
+            stream().print("# ERR mag config commit failed: ");
+            stream().println(deps_.configStore->lastErrorName());
+            if (error == TrackerConfigError::CommitUncertain) {
+                stream().println("# ERR selector state uncertain; working mag state remains active, reboot required");
+                return false;
+            }
+            const bool rollbackOk = applyHardwareEnabledState(oldHardwareEnabled, keepTs);
+            *deps_.config = oldConfig;
+            if (!deps_.configStore->abortPreparedAuthoritative(prepared)) {
+                stream().print("# ERR prepared mag config cleanup failed: ");
+                stream().println(deps_.configStore->lastErrorName());
+            }
+            if (!rollbackOk) {
+                stream().println("# ERR mag hardware rollback failed; recovery required");
+                deps_.state->lastInitOk = false;
+            }
+            return false;
+        }
+        *deps_.config = committed;
+    }
     stream().print("# OK QMC6309 runtime ");
     stream().println(enabled ? "enabled" : "disabled");
     return true;
@@ -448,12 +476,11 @@ bool MagRuntimeController::setYawCorrectionApplyEnabled(bool enabled, bool persi
 
     TrackerConfig candidateConfig = *deps_.config;
     candidateConfig.data.magYaw.applyEnabled = enabled;
-    candidateConfig.sanitize();
-    candidateConfig.updateCrc();
-    if (candidateConfig.data.magYaw.applyEnabled != enabled) {
+    if (!candidateConfig.validateSemanticConfig()) {
         stream().println("# ERR mag yaw correction request was rejected by config invariants");
         return false;
     }
+    candidateConfig.updateCrc();
 
     const bool changed = deps_.config->data.magYaw.applyEnabled != enabled;
     if (persist && !deps_.configStore->save(candidateConfig)) {
@@ -487,7 +514,7 @@ void MagRuntimeController::resetCalibration() {
     if (deps_.calibrationCollector) deps_.calibrationCollector->reset();
 }
 
-bool MagRuntimeController::applyCalibration(bool persist) {
+bool MagRuntimeController::applyCalibrationVolatilePreview() {
     if (!deps_.config || !deps_.calibrationCollector) return false;
 
     MagCalibrationResult result;
@@ -522,10 +549,7 @@ bool MagRuntimeController::applyCalibration(bool persist) {
         return false;
     }
 
-    if (persist && !deps_.configStore) {
-        stream().println("# ERR mag calibration persistence requested but config store is unavailable");
-        return false;
-    }
+
 
     const TrackerMagCalibrationConfig oldMagCal = deps_.config->data.magCal;
     TrackerConfig candidateConfig = *deps_.config;
@@ -563,15 +587,15 @@ bool MagRuntimeController::applyCalibration(bool persist) {
         candidateConfig.data.magCal.magToImu = Mat3::identity();
         candidateConfig.data.magCal.axisAlignmentValid = false;
         candidateConfig.data.magYaw.applyEnabled = false;
-        candidateConfig.sanitize();
-        candidateConfig.updateCrc();
     }
 
-    if (persist && !deps_.configStore->save(candidateConfig, TrackerCalibrationProvenance::Manual)) {
-        stream().print("# ERR mag calibration save failed: ");
-        stream().println(deps_.configStore->lastErrorName());
+    if (!candidateConfig.validateSemanticConfig()) {
+        stream().println("# ERR mag calibration produced an invalid config candidate");
         return false;
     }
+    candidateConfig.updateCrc();
+
+
 
     *deps_.config = candidateConfig;
     const uint64_t ts = deps_.fifo ? deps_.fifo->stats().lastAssignedTimestampUs : 0;
@@ -1344,7 +1368,13 @@ bool MagRuntimeController::stageAxisAlignmentCandidate(
     candidate = *deps_.config;
     candidate.data.magCal.magToImu = result.magToImu;
     candidate.data.magCal.axisAlignmentValid = true;
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) {
+        state.stageFailures++;
+        state.stagePending = false;
+        state.pendingAction = MagAxisAlignmentDeferredAction::None;
+        deps_.axisAlignmentCollector->reset();
+        return false;
+    }
     candidate.updateCrc();
     if (!candidate.data.magCal.axisAlignmentValid ||
         !magAxisMatricesEquivalent(candidate.data.magCal.magToImu,
@@ -1465,8 +1495,7 @@ bool MagRuntimeController::applyYawCorrectionToAhrs(const MagYawCorrectionOutput
         return false;
     }
 
-    deps_.ahrs->setQuaternion(corrected);
-    return true;
+    return deps_.ahrs->setQuaternion(corrected);
 }
 
 #undef TRACKER_MAG_RUNTIME_NOINLINE

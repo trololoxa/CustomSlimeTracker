@@ -13,6 +13,7 @@
 #include "runtime/output_runtime.hpp"
 #include "runtime/runtime_bias_types.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
+#include "runtime/sensor_progress_watchdog.hpp"
 #if TRACKER_HAS_RUNTIME_PROFILER
 #include "runtime/runtime_motion_diagnostics.hpp"
 #include "runtime/runtime_profiler.hpp"
@@ -95,6 +96,7 @@ struct ImuSamplePipelineDeps {
     // Optional freshness/profiler sources. They never affect AHRS math or
     // sample acceptance; Production profiles may leave them null.
     FifoRuntimeProcessor* fifoRuntime = nullptr;
+    SensorProgressWatchdog* sensorProgress = nullptr;
     SensorToDeviceFrameCache* sensorToDeviceFrameCache = nullptr;
 #if TRACKER_HAS_RUNTIME_PROFILER
     RuntimeProfiler* runtimeProfiler = nullptr;

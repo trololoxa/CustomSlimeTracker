@@ -1,5 +1,7 @@
 # Serial CLI reference
 
+> **0028d update:** 0028d: learned calibration saves may perform bounded sensor probation. Keep still; `q` cancels. Unsaved calibration is explicitly a volatile preview. Ordinary policy saves with unchanged calibration do not require stationary verification. See `0028d_recovery_and_calibration_contract_report.md`.
+
 The serial CLI is a developer/configuration interface. It is text based, fixed-buffer, no-heap, and non-blocking while idle. Command implementations live in `src/serial/*_commands.cpp`; headers expose only cross-module APIs.
 
 Legend:
@@ -14,10 +16,10 @@ Legend:
 |---|---|---:|---|
 | `help`, `?` | Print command list | No | Human-readable reference. |
 | `status` | Print runtime status | No | Uses runtime status hook when available. |
-| `health` | Print status + quality/FIFO health | No | Uses runtime health hook when available. |
+| `health` | Print status + quality/FIFO health | No | Includes typed current/last tracker fault, recovery/safe-mode state and recovery counters; uses the detailed runtime hook when available. |
 | `version` | Print firmware/build identity and CLI protocol | No | Shows profile, PlatformIO environment, Git HEAD, dirty worktree fingerprint and handshake firmware string. |
 | `reboot` | Restart ESP32 | No | Flushes output before restart. |
-| `factory_reset` | Reset runtime config defaults and erase config store | Yes | Reboot recommended after success. |
+| `factory_reset main|network|calibration|full confirm` | Transactionally reset the selected persistent scope | Yes | Uses a recoverable marker and reboots after success. `calibration` preserves network config; `full` clears all scopes. |
 | `sleep` | Queue motion-triggered ESP32 light sleep | No | Compiled only with `TRACKER_ENABLE_MOTION_LIGHT_SLEEP=1`; serial/FIFO/Wi-Fi/mag are stopped after the current CLI poll returns, and a qualifying LSM6DSV motion event wakes the tracker. |
 | `remote status` | Print Wi-Fi TCP console state | No | Available when `TRACKER_ENABLE_WIFI_REMOTE_CONSOLE=1`. |
 | `remote off` / `remote on` | Stop/start the Wi-Fi TCP console for the current boot | No | `remote off` closes the TCP client/server so it stops adding normal-loop work. |
@@ -49,7 +51,7 @@ Legend:
 | `config fifo watermark <1..255> [save]` / `fifo watermark ...` | Live FIFO watermark reconfigure | Optional | Transactional hardware apply; clears pre-reconfigure software queues, requests controlled orientation recovery, and rolls back on apply/save failure. |
 | `config fifo drain <16..4096> <1..32> [save]` / `fifo drain ...` | Change bounded drain limits | Optional | Takes effect on the next app-loop drain; `save` persists before the in-RAM config is committed. |
 | `fifo stats` | Print detailed FIFO counters | No | Full developer CLI only. Production/ProductionDiag use `health` or `perf tracking`. |
-| `fifo reset` | Reset hardware FIFO/runtime path | No | Full developer CLI only; intentionally requests orientation recovery. |
+| `fifo reset` | Queue verified FIFO recovery | No | Full developer CLI only; hardware reset/read-back runs from the bounded app recovery service and software state changes only after success. |
 | `quality stats` / `quality reset` | Inspect/reset detailed quality counters | No | Full developer CLI only. ProductionDiag uses non-destructive `perf tracking reset` baselines. |
 
 ## Calibration
@@ -76,7 +78,7 @@ Legend:
 
 | Command | Effect | Persisted | Notes |
 |---|---|---:|---|
-| `ahrs status`, `ahrs config` | Print AHRS config/status | No | Inspection only. `ahrs status` includes timestamp recovery diagnostics: `large_dt_rebase_count`, `fifo_rebase_count`, `last_rebase_t_us`, and `post_fifo_recovery_samples`. |
+| `ahrs status`, `ahrs config` | Print AHRS config/status | No | Inspection only. Includes timestamp recovery diagnostics and `invalid_quaternion_rejects`. |
 | `ahrs reset` | Reset AHRS runtime state | No | Also uses app hook. |
 | `ahrs defaults [save]` | Reset AHRS tunables to defaults | Optional | Config-layer defaults. |
 | `ahrs accel on|off [save]` | Enable/disable accel correction | Optional | Runtime + optional config. |
@@ -255,7 +257,7 @@ slime debug
 
 | Command | Effect | Persisted | Notes |
 |---|---|---:|---|
-| `config slots` / `config nvs` | Print both active slots, selector, generations, signatures, quality, boot load/degraded state, legacy/candidate state and transaction counters | No | Does not change the selected config. |
+| `config slots` / `config nvs` | Print both active slots, versions, migration/semantic verdicts, selector, generations, signatures, quality, boot load/degraded state, legacy/candidate state and transaction counters | No | Does not change the selected config. |
 | `config verify` | Read-only verification of the authoritative slot/selector/commit marker | No | Does not migrate, repair, apply runtime state or clear a degraded-storage write latch. Use `config load` for authoritative recovery. |
 | `config migrate` | Explicitly migrate a valid legacy `cfg` blob when no committed dual-slot generation exists | Yes | Never overwrites an existing authoritative dual-slot config; otherwise only performs stale legacy cleanup. |
 | `cal status` | Print saved calibration validity plus the full autonomy status block | No | Read-only convenience summary. |
@@ -376,7 +378,7 @@ These aliases are for first-run provisioning from SlimeVR Server's Serial Consol
 | `GET TEST` | Print a compact sensor smoke-test response | No | Uses current LSM/AHRS/sample counters. |
 | `GET WIFISCAN` | Blocking Wi-Fi scan with `[WSCAN]` SlimeVR-style lines | No | Suppresses expected FIFO-recovery console noise for a short grace period after the scan reply. |
 | `REBOOT` | Reboot the tracker | No | Mirrors official firmware command name. |
-| `FRST` | Factory reset config/network NVS and reboot | Yes | Clears tracker and network config. |
+| `FRST` | Run the same transactional full reset as `factory_reset full confirm` | Yes | Clears main, network and calibration/autonomy state, then reboots. |
 | `DELCAL` | Clear saved IMU/mag calibration state | Yes | Keeps Wi-Fi credentials. |
 | `TCAL PRINT|DEBUG|RESET|SAVE` | Compatibility wrappers for temperature-calibration inspection/reset/save | Optional | Temperature-only compatibility path. `SAVE` persists gyro temperature compensation without capturing unrelated runtime output/accel state. `RESET` changes only RAM temperature-comp slope/quality metadata, not the config object saved in NVS. |
 

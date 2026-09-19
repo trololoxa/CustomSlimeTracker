@@ -20,10 +20,16 @@ public:
     using Word = std::array<uint8_t, Lsm6dsvFifoReader::FIFO_WORD_BYTES>;
     using Write = std::array<uint8_t, 2>;
 
-    bool read(uint8_t, uint8_t* dst, size_t len) override {
+    bool read(uint8_t reg, uint8_t* dst, size_t len) override {
         if (!dst || len == 0) return false;
         if (len == 1) {
-            dst[0] = 0;
+            ++singleReadCount_;
+            if (failSingleReadAt_ != 0u && singleReadCount_ == failSingleReadAt_) {
+                return false;
+            }
+            dst[0] = corruptReadbackReg_ == reg
+                ? static_cast<uint8_t>(registers_[reg] ^ 0x01u)
+                : registers_[reg];
             return true;
         }
         if (len == 2) {
@@ -46,7 +52,12 @@ public:
 
     bool write(uint8_t reg, const uint8_t* src, size_t len) override {
         if (src == nullptr || len == 0 || writeCount_ >= writes_.size()) return false;
+        if (failWriteAt_ != 0u && writeCount_ + 1u == failWriteAt_) {
+            ++writeCount_;
+            return false;
+        }
         writes_[writeCount_++] = Write{reg, src[0]};
+        registers_[reg] = src[0];
         return true;
     }
     void delayMs(uint32_t) override {}
@@ -74,6 +85,18 @@ public:
     }
 
     void clearWrites() { writeCount_ = 0; }
+    void corruptReadback(uint8_t reg) { corruptReadbackReg_ = reg; }
+    void failWriteAt(size_t oneBased) { failWriteAt_ = oneBased; }
+    void failSingleReadAt(size_t oneBased) {
+        singleReadCount_ = 0u;
+        failSingleReadAt_ = oneBased;
+    }
+    void clearFaultInjection() {
+        failWriteAt_ = 0u;
+        failSingleReadAt_ = 0u;
+        corruptReadbackReg_ = 0xffu;
+        singleReadCount_ = 0u;
+    }
     std::span<const Write> writes() const {
         return std::span<const Write>(writes_.data(), writeCount_);
     }
@@ -102,6 +125,11 @@ private:
     size_t readIndex_ = 0;
     std::array<Write, WRITE_LOG_CAPACITY> writes_{};
     size_t writeCount_ = 0;
+    std::array<uint8_t, 256> registers_{};
+    uint8_t corruptReadbackReg_ = 0xffu;
+    size_t failWriteAt_ = 0u;
+    size_t singleReadCount_ = 0u;
+    size_t failSingleReadAt_ = 0u;
 };
 
 struct Fixture {
@@ -282,17 +310,73 @@ void testPausePreservesConfiguredFifoRegisters(TestContext& ctx) {
     CHECK(ctx, bus.writes()[0][1] == 0x00);
 
     CHECK(ctx, fifo.resetFifo());
-    CHECK(ctx, bus.writes().size() == 3);
-    CHECK(ctx, bus.writes()[1][0] == 0x0A);
-    CHECK(ctx, bus.writes()[1][1] == 0x00);
-    CHECK(ctx, bus.writes()[2][0] == 0x0A);
-    CHECK(ctx, bus.writes()[2][1] != 0x00);
+    CHECK(ctx, bus.writes().size() == 10u);
+    CHECK(ctx, bus.writes()[1][0] == 0x0D); // stop INT1 route
+    CHECK(ctx, bus.writes()[2][0] == 0x0E); // stop INT2 route
+    CHECK(ctx, bus.writes()[3][0] == 0x0A); // bypass
+    CHECK(ctx, bus.writes()[4][0] == 0x07); // watermark
+    CHECK(ctx, bus.writes()[5][0] == 0x08); // FIFO options
+    CHECK(ctx, bus.writes()[6][0] == 0x09); // BDR
+    CHECK(ctx, bus.writes()[7][0] == 0x0A); // resume configured mode
+    CHECK(ctx, bus.writes()[7][1] != 0x00);
+    CHECK(ctx, bus.writes()[8][0] == 0x0D); // restore INT1 route
+    CHECK(ctx, bus.writes()[9][0] == 0x0E); // restore INT2 route
+    CHECK(ctx, fifo.hardwareStateKnown());
+}
 
-    // No pause/resume write may destroy watermark or accel/gyro BDR registers.
-    for (const auto& write : bus.writes()) {
-        CHECK(ctx, write[0] != 0x07);
-        CHECK(ctx, write[0] != 0x08);
-        CHECK(ctx, write[0] != 0x09);
+void testResetReadbackFailureKeepsSoftwareEpoch(TestContext& ctx) {
+    Fixture f;
+    CHECK(ctx, f.begin());
+    f.bus.gyro(0u, 10);
+    f.bus.accel(0u, 100);
+    Lsm6dsv::RawSample out[1]{};
+    size_t count = 0u;
+    CHECK(ctx, f.fifo.drainRawSamples(out, 1u, count, 1000000u, 16u));
+    CHECK(ctx, count == 1u);
+    const uint64_t oldTimestamp = f.fifo.stats().lastAssignedTimestampUs;
+    CHECK(ctx, oldTimestamp != 0u);
+
+    f.bus.corruptReadback(0x0Au);
+    CHECK(ctx, !f.fifo.resetFifo());
+    CHECK(ctx, !f.fifo.hardwareStateKnown());
+    CHECK(ctx, f.fifo.lastRecoveryError() ==
+                   Lsm6dsvFifoReader::RecoveryError::BypassVerify);
+    CHECK(ctx, f.fifo.stats().lastAssignedTimestampUs == oldTimestamp);
+}
+
+void testEveryResetTransportStepTerminatesAndRetries(TestContext& ctx) {
+    for (size_t writeStep = 1u; writeStep <= 9u; ++writeStep) {
+        PairingTransport bus;
+        Lsm6dsv lsm(bus);
+        Lsm6dsvFifoReader fifo(bus, lsm);
+        Lsm6dsvFifoReader::Config config;
+        config.enableTimestampCounter = false;
+        CHECK(ctx, fifo.configure(config));
+        bus.clearWrites();
+        bus.failWriteAt(writeStep);
+        CHECK(ctx, !fifo.resetFifo());
+        CHECK(ctx, !fifo.hardwareStateKnown());
+        bus.clearFaultInjection();
+        bus.clearWrites();
+        CHECK(ctx, fifo.resetFifo());
+        CHECK(ctx, fifo.hardwareStateKnown());
+    }
+
+    for (size_t readStep = 1u; readStep <= 9u; ++readStep) {
+        PairingTransport bus;
+        Lsm6dsv lsm(bus);
+        Lsm6dsvFifoReader fifo(bus, lsm);
+        Lsm6dsvFifoReader::Config config;
+        config.enableTimestampCounter = false;
+        CHECK(ctx, fifo.configure(config));
+        bus.clearWrites();
+        bus.failSingleReadAt(readStep);
+        CHECK(ctx, !fifo.resetFifo());
+        CHECK(ctx, !fifo.hardwareStateKnown());
+        bus.clearFaultInjection();
+        bus.clearWrites();
+        CHECK(ctx, fifo.resetFifo());
+        CHECK(ctx, fifo.hardwareStateKnown());
     }
 }
 
@@ -446,6 +530,8 @@ int main() {
     testCounterMismatchDegradesOnlyAccel(ctx);
     testCompletedQueueOverflowIsAccountedSeparately(ctx);
     testPausePreservesConfiguredFifoRegisters(ctx);
+    testResetReadbackFailureKeepsSoftwareEpoch(ctx);
+    testEveryResetTransportStepTerminatesAndRetries(ctx);
     testSensorHubTimestampsReanchorToImuTimeline(ctx);
     testSensorHubTimestampsUseHardwareImuAnchor(ctx);
     testSensorHubRepeatedAnchorUsesFailHonestMonotonicMarker(ctx);

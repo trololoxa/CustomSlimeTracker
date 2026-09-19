@@ -1,5 +1,7 @@
 # Project status
 
+> **0028d update:** 0028d addresses final-audit R1–R7 with stream-proven recovery, cooperative capture, v4 migration and shared manual/setup acceptance. Source/host completion must not be confused with target/release closure; target smoke remains outstanding. See `0028d_recovery_and_calibration_contract_report.md`.
+
 This document replaces the completed code-quality roadmap notes. It records the current structural state of the firmware after the architecture cleanup patches.
 
 
@@ -62,6 +64,18 @@ python tools/check_all.py --clean --skip-pio
 3. Maintain `docs/config_schema.md` when persisted schema changes.
 4. Maintain replay/log tooling and add fixtures before major tracking-filter changes.
 5. Keep SlimeVR UDP output decoupled from AHRS/FIFO: it must consume prepared output snapshots only, never low-level sensor state directly.
+
+## Patch 0027 sensor liveness baseline
+
+Current source now closes the code-side defects tracked as A-14, A-29, A-30,
+A-33, S-03, S-04, S-05 and S-17: progress has one watchdog owner; FIFO
+reset/configure is read-back verified and commits software state only after
+hardware success; runtime batches are all-or-discontinuity; retry/reinit has
+bounded backoff with continued exhausted probes; strict recovery resumes
+gyro-only pose after monotonic timebase proof without stale acceleration; and
+the task watchdog/crash-boot safe mode is wired at app level. These IDs are
+code-complete but not release-verified until the ESP32-C3 build, retained-memory
+test and short physical sensor-fault smoke listed in the 0027 report pass.
 
 ## Current SlimeVR network baseline
 
@@ -572,3 +586,96 @@ the 0026b lightweight magnetic input view; UDP no-heap scans ignore comments;
 and older stack policies use the final successor-owned cross-ABI ceilings rather
 than Linux-only near-zero margins. Production behavior, packet/config formats,
 magnetic decisions and target cadence remain unchanged.
+
+## 0027b cross-host quality-gate hardening
+
+`0027b_cross_host_quality_gate_hardening` is applied after 0027a. It makes the
+ESP/lwIP nonblocking socket include/call target-only so the enabled diagnostic
+translation unit remains compile-checkable on Windows, and splits the two
+reported cross-ABI stack offenders into bounded no-inline semantic phases.
+Every phase has an explicit stack ceiling; no old ceiling is raised. Magnetic
+thresholds/state order, runtime-bias algebra, FIFO/AHRS/output cadence, schemas
+and recovery behavior remain unchanged. Host behavioral/stack verification is
+required; Windows rerun and ESP32 target stack/performance smoke remain the
+acceptance authority.
+
+## 0027c_windows_stack_and_failure_summary
+
+Additive after corrected 0027b. The remaining MSYS2 yaw update frame is split
+into explicitly bounded semantic phases without raising the 96-byte public
+budget or changing magnetic decisions. Expected FIFO drain-failure injection
+no longer emits a misleading console error in native policy output. `check_all`
+retains and repeats failing child stderr in its final summary. Host behavioral,
+aggregation and Microsoft-ABI stack probes pass; target build/profiler and the
+Windows/MSYS2 aggregate rerun remain required.
+
+## 0027d_recovery_feedback_and_tap
+
+Additive after 0027c. Sensor liveness no longer treats intentionally suppressed
+orientation during the initial strict-recovery gyro proof as a publication
+failure; IRQ/drain and accepted-gyro deadlines remain active throughout. A
+successful FIFO-only transaction no longer rewrites retained tap registers or
+prints the tap setup banner, while full sensor reinitialization still restores
+them. FIFO interrupt attachment has an explicit owner, avoiding an initial
+detach of a handler that was never installed. `health` now retains the last
+progress fault, exposes recovery episode counters, and reports whether gyro-only
+degraded output has been unlocked. Host contract/compile tests pass; target
+ProductionDiag build and smoke remain required.
+
+## 0027e_progress_clock_domain
+
+Additive after 0027d. Target evidence showed thousands of successful FIFO reset
+episodes with `no_accepted_gyro` despite a continuous, fault-free IMU stream.
+The progress watchdog had compared LSM hardware time, whose epoch lagged MCU
+`micros()` by roughly 0.7–0.85 seconds, against a 0.5-second local timeout.
+Gyro/orientation producers now increment cheap progress sequences, and the
+periodic watchdog service timestamps observed changes in its own clock domain.
+IRQ/drain/gyro/orientation deadlines and wrap-safe local timeout arithmetic are
+retained. Host behavioral and compile checks pass; the target functional rerun
+subsequently passed and is recorded by 0027f.
+
+## 0027f_progress_epoch_contract
+
+Additive after 0027e. The sensor-progress documentation now distinguishes local
+IRQ/drain timestamps from timestamp-free per-sample sequence edges. A native
+regression proves that gyro/orientation progress accumulated while any nested
+suppress reason is active cannot be reused after the final resume boundary.
+There is no production executable change. The ProductionDiag smoke passed for
+steady tracking, one bounded manual FIFO reset, software reboot, accel/mag
+passability and light sleep; physical no-IRQ injection and target stack
+high-water remain outside this documentation/test-only patch.
+
+## 0028_semantic_config_and_calibration_transaction
+
+Main patch after 0027f. Runtime/config admission is now non-mutating and semantic:
+invalid matrices, enums, rates, dependencies, reserved state and reversed gates
+cannot be repaired into an accepted CLI/setup/autonomy candidate. Durable command
+paths prove persistence before active RAM apply; calibration probation has a
+wrap-safe absolute deadline and separate sensor/transport verdicts. The fixed CLI
+rejects malformed or oversized complete input, and `factory_reset`/`FRST` share a
+scoped idempotent coordinator with an explicit 16-byte recovery codec. Native
+tests pass; ProductionDiag target build, board smoke and target performance/stack
+evidence remain pending.
+
+## 0028a_transaction_recovery_and_quaternion_hotpath
+
+Additive after 0028. Then-current NVS slots gained semantic admission, and
+hardware-changing saves keep old-good authoritative until the candidate works
+on hardware and the selector is committed. Interrupted factory reset boots into
+a bounded local recovery mode instead of mixed-domain runtime. Calibration
+sensor probation no longer depends on network perfection. Existing physical
+fusion gates and cadence are unchanged; redundant quaternion norm work is
+removed only from the full-rate propagation boundary while per-sample finite
+rejection, periodic normalization and strict external quaternion admission stay
+in force. Host and target verification status is recorded in the patch report.
+0028b subsequently corrects the discovered deployed-v2 classification by moving
+the strict writer to v3 without removing the semantic proof.
+
+## 0028b_v2_config_compatibility_migration
+
+Additive after 0028a. Deployed slot v2 is now explicit migration input and the
+strict writer emits v3. Compatibility normalization is performed on a copy,
+then fully validated and committed to the inactive slot before runtime apply;
+the source generation remains old-good. This fixes target fallback to defaults
+that disabled mag and hid otherwise valid calibration. Strict v3 admission and
+post-normalization rejection of impossible legacy calibration remain fail-closed.

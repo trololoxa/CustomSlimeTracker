@@ -109,6 +109,8 @@ public:
         uint32_t recoveryStableSamples = 0;
         uint16_t softRecoveryGoodSamples = 0;
         uint8_t recoveryRejectStreak = 0;
+        uint8_t recoveryMonotonicGyroSamples = 0;
+        bool degradedGyroOutputAllowed = false;
         uint32_t recoveryEnterCount = 0;
         uint32_t recoveryTiltReacquireCount = 0;
         uint32_t recoveryBootstrapBypassCount = 0;
@@ -133,6 +135,8 @@ public:
     uint32_t recoveryStableSamples() const;
     uint16_t softRecoveryGoodSamples() const;
     uint8_t recoveryRejectStreak() const;
+    uint8_t recoveryMonotonicGyroSamples() const;
+    bool degradedGyroOutputAllowed() const;
     uint32_t recoveryEnterCount() const;
     uint32_t recoveryTiltReacquireCount() const;
     uint32_t recoveryBootstrapBypassCount() const;
@@ -188,6 +192,7 @@ private:
 
     static constexpr uint8_t MAX_RECOVERY_REJECT_STREAK = 8;
     static constexpr uint16_t SOFT_RECOVERY_GOOD_SAMPLES_REQUIRED = 32;
+    static constexpr uint8_t RECOVERY_MONOTONIC_GYRO_SAMPLES_REQUIRED = 4;
 
     uint32_t stableSamplesRequired_ = 256;
     bool recoveryActive_ = false;
@@ -195,6 +200,9 @@ private:
     uint32_t recoveryStableSamples_ = 0;
     uint16_t softRecoveryGoodSamples_ = 0;
     uint8_t recoveryRejectStreak_ = 0;
+    uint8_t recoveryMonotonicGyroSamples_ = 0;
+    bool degradedGyroOutputAllowed_ = false;
+    uint64_t recoveryLastIntegratedTimestampUs_ = 0u;
     Vec3 recoveryAccelSum_ = Vec3::zero();
     uint32_t recoveryEnterCount_ = 0;
     uint32_t recoveryTiltReacquireCount_ = 0;

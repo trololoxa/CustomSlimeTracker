@@ -53,9 +53,33 @@ void runtimeStatusPrint(Stream& out, const RuntimeStatusReporterDeps& deps) {
         out.print("fifo_runtime_mag_queue_high_water="); out.println(qs.magQueueHighWater);
         out.print("fifo_runtime_raw_queue_overflow="); out.println(qs.rawQueueOverflow);
         out.print("fifo_runtime_mag_queue_overflow="); out.println(qs.magQueueOverflow);
+        out.print("fifo_runtime_drain_failures="); out.println(qs.drainFailures);
+        out.print("fifo_runtime_batch_capacity_failures="); out.println(qs.batchCapacityInvariantFailures);
         out.print("fifo_runtime_mag_chronological_deferrals="); out.println(qs.magChronologicalDeferrals);
         out.print("fifo_runtime_mag_count_deferrals="); out.println(qs.magCallbackCountDeferrals);
         out.print("fifo_runtime_mag_budget_deferrals="); out.println(qs.magCallbackBudgetDeferrals);
+    }
+    if (deps.sensorProgress) {
+        const SensorProgressSnapshot progress = deps.sensorProgress->snapshot();
+        out.print("sensor_progress_timeout_us="); out.println(progress.timeoutUs);
+        out.print("sensor_progress_suppress_mask=0x"); out.println(progress.suppressMask, HEX);
+        out.print("sensor_progress_fault_count="); out.println(progress.faultCount);
+        out.print("sensor_progress_current_fault="); out.println(sensorProgressFaultName(progress.lastFault));
+        out.print("sensor_progress_last_triggered_fault="); out.println(sensorProgressFaultName(progress.lastTriggeredFault));
+        out.print("sensor_progress_last_fault_at_us="); out.println(progress.lastFaultAtUs);
+        out.print("sensor_progress_last_irq_at_us="); out.println(progress.lastIrqAtUs);
+        out.print("sensor_progress_last_drain_at_us="); out.println(progress.lastDrainAtUs);
+        out.print("sensor_progress_last_gyro_at_us="); out.println(progress.lastAcceptedGyroAtUs);
+        out.print("sensor_progress_last_orientation_at_us="); out.println(progress.lastOrientationAtUs);
+    }
+    if (deps.sensorRecovery) {
+        const SensorRecoverySnapshot recovery = deps.sensorRecovery->snapshot();
+        out.print("sensor_recovery_state="); out.println(sensorRecoveryStateName(recovery.state));
+        out.print("sensor_recovery_request_count="); out.println(recovery.requestCount);
+        out.print("sensor_recovery_success_count="); out.println(recovery.successCount);
+        out.print("sensor_recovery_failure_count="); out.println(recovery.failureCount);
+        out.print("sensor_recovery_attempts_in_episode="); out.println(recovery.attemptsInEpisode);
+        out.print("sensor_recovery_exhausted="); out.println(recovery.exhausted ? "yes" : "no");
     }
     out.print("latest_temp_c="); out.println(deps.latestTempC, 3);
 
@@ -237,6 +261,8 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
         out.print("runtime_mag_queue_depth="); out.println(deps.fifoRuntime->magQueueDepth());
         out.print("runtime_mag_queue_high_water="); out.println(qs.magQueueHighWater);
         out.print("runtime_mag_queue_overflow="); out.println(qs.magQueueOverflow);
+        out.print("runtime_drain_failures="); out.println(qs.drainFailures);
+        out.print("runtime_batch_capacity_failures="); out.println(qs.batchCapacityInvariantFailures);
     }
     out.print("hw_ts_assigned="); out.println(fs.hwTimestampAssigned);
     out.print("fb_ts_assigned="); out.println(fs.fallbackTimestampAssigned);
@@ -247,6 +273,7 @@ void runtimeStatusPrintHealth(Stream& out, const RuntimeStatusReporterDeps& deps
     out.print("quality_samples="); out.println(qc.samples);
     out.print("estimated_dropped_samples="); out.println(qc.estimatedDroppedSamples);
     out.print("large_gap_samples="); out.println(qc.largeGapSamples);
+    out.print("small_gap_samples="); out.println(qc.smallGapSamples);
     out.print("gyro_saturated_samples="); out.println(qc.gyroSaturatedSamples);
     out.print("accel_saturated_samples="); out.println(qc.accelSaturatedSamples);
     out.print("fifo_recovery_requests="); out.println(qc.fifoRecoveryRequests);

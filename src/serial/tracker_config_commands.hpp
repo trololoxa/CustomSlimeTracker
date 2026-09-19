@@ -8,8 +8,8 @@
 namespace tracker {
 
 void trackerSerialApplyConfigToRuntime(TrackerSerialCommandContext& ctx);
-void trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx, TrackerConfig& target);
-void trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx);
+bool trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx, TrackerConfig& target);
+bool trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx);
 void trackerSerialPrintConfigNvsInfo(Stream& out, TrackerConfigStore& store);
 void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int argc, char** argv);
 

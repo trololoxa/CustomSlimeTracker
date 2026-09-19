@@ -107,7 +107,8 @@ def main() -> int:
     # Tracking-quality invariants stay unchanged.
     require(tuning, "AHRS_ACCEL_CORRECTION_DIVISOR = 4", "accel correction cadence")
     require(tuning, "PREPARED_OUTPUT_MIN_INTERVAL_US = 4000", "prepared output cadence")
-    require(ahrs, "q_ = integrateBodyRateFast(q_, gyroUsed, dtS);", "full-rate gyro prediction")
+    require(ahrs, "const Quat predicted = integrateBodyRateFast(q_, gyroUsed, dtS);", "transactional full-rate gyro prediction")
+    require(ahrs, "q_ = predicted;", "checked full-rate gyro commit")
     for forbidden in ("dropOldest", "discardRaw", "decimateGyro"):
         forbid(pipeline, forbidden, f"sample loss {forbidden}")
 

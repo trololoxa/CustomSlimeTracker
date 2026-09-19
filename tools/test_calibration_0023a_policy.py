@@ -110,7 +110,9 @@ def main() -> int:
     require(setup_cli, "setup verify", "standalone setup verify command")
     require(setup_cli, "No diagonal or precisely measured angle is required",
             "user-friendly arbitrary-face verification")
-    require(setup_cli, "verify_output", "setup transaction verification rollback")
+    require(setup_cli, "trackerSerialVerifyCalibrationCandidate", "shared transaction verification")
+    transaction = (ROOT / "src/serial/tracker_calibration_transaction.hpp").read_text(encoding="utf-8")
+    require(transaction, "abortPreparedAuthoritative", "failed verification retains old authority")
     require(setup_verifier, "linearAccelerationRmsG", "final linear-acceleration residual gate")
     require(setup_verifier, "maximumQuaternionStepDeg", "final quaternion continuity gate")
     require(serial_context, "PreparedOutputRuntime* preparedOutput", "prepared output command wiring")

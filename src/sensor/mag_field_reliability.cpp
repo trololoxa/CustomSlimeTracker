@@ -7,6 +7,12 @@ namespace tracker {
 
 namespace {
 
+#if defined(__GNUC__) || defined(__clang__)
+#define TRACKER_MAG_FIELD_NOINLINE __attribute__((noinline))
+#else
+#define TRACKER_MAG_FIELD_NOINLINE
+#endif
+
 bool finiteInput(const MagProcessedSample& mag,
                  const MagHeadingSample& heading,
                  float gyroNormDps,
@@ -78,7 +84,9 @@ void MagFieldReliabilityMonitor::restartAcquisition() {
     resetAcquisitionAccumulator();
 }
 
-void MagFieldReliabilityMonitor::transition(MagFieldReliabilityState next, uint32_t nowMs) {
+void MagFieldReliabilityMonitor::transition(
+    MagFieldReliabilityState next,
+    uint32_t nowMs) {
     if (state_ == next) return;
     state_ = next;
     stateSinceMs_ = nowMs;
@@ -161,74 +169,65 @@ void MagFieldReliabilityMonitor::adaptReference(const MagProcessedSample& mag,
         (heading.horizontalNorm - referenceHorizontalNorm_);
 }
 
-bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
-                                        const MagFieldReliabilityConfig& cfg,
-                                        MagFieldReliabilityOutput& out) {
-    if (in.mag == nullptr || in.heading == nullptr) {
-        out = MagFieldReliabilityOutput{};
-        out.nowMs = in.nowMs;
-        out.state = state_;
-        out.flags = MAG_FIELD_FLAG_INPUT_INVALID;
-        stats_.updates++;
-        stats_.rejectedSamples++;
-        return false;
-    }
-    const MagProcessedSample& mag = *in.mag;
-    const MagHeadingSample& heading = *in.heading;
-    const bool processorTrustedForUse = in.processorTrustedForUse;
-    const float gyroNormDps = in.gyroNormDps;
-    const float accelTrust = in.accelTrust;
-    const uint32_t nowMs = in.nowMs;
+TRACKER_MAG_FIELD_NOINLINE void MagFieldReliabilityMonitor::initializeReliabilityOutput(
+    MagFieldReliabilityOutput& out,
+    uint32_t nowMs) const {
     out = MagFieldReliabilityOutput{};
     out.nowMs = nowMs;
     out.state = state_;
-    stats_.updates++;
+}
 
-    const uint32_t previousMs = previousHeadingMs_;
-    const bool inputFinite = finiteInput(mag, heading, gyroNormDps, accelTrust);
-    if (!inputFinite) out.flags |= MAG_FIELD_FLAG_INPUT_INVALID;
-    if (!processorTrustedForUse) out.flags |= MAG_FIELD_FLAG_PROCESSOR_UNTRUSTED;
+TRACKER_MAG_FIELD_NOINLINE void MagFieldReliabilityMonitor::updateHeadingRateEvidence(
+    const MagFieldReliabilityInputView& in,
+    const MagFieldReliabilityConfig& cfg,
+    MagFieldReliabilityOutput& out) {
+    if (!out.valid) return;
 
-    const float stationaryFieldYawRad = inputFinite
-        ? wrapPi(heading.yawInnovationRad)
-        : 0.0f;
-    if (inputFinite) {
-        out.valid = true;
-        out.fieldNorm = mag.bodyNorm;
-        out.dipDeg = heading.dipDeg;
-        out.stationaryFieldYawDeg = stationaryFieldYawRad * MATH_RAD_TO_DEG;
+    const MagProcessedSample& mag = *in.mag;
+    const MagHeadingSample& heading = *in.heading;
+    const float stationaryFieldYawRad = wrapPi(heading.yawInnovationRad);
+    out.fieldNorm = mag.bodyNorm;
+    out.dipDeg = heading.dipDeg;
+    out.stationaryFieldYawDeg = stationaryFieldYawRad * MATH_RAD_TO_DEG;
 
-        if (havePreviousHeading_) {
-            const uint32_t dtMs = nowMs - previousHeadingMs_;
-            // Remove AHRS yaw from the magnetic-world heading before measuring
-            // field motion. A bounded yaw correction or an explicit AHRS yaw
-            // rebase rotates both terms together and therefore produces no
-            // synthetic magnetic-field step.
-            const float signedStepDeg = wrapPi(
-                stationaryFieldYawRad - previousStationaryFieldYawRad_) * MATH_RAD_TO_DEG;
-            out.headingStepDeg = std::fabs(signedStepDeg);
-            if (dtMs > 0u && dtMs <= cfg.headingRateResetGapMs) {
-                const float instantRate = signedStepDeg * 1000.0f / static_cast<float>(dtMs);
-                out.headingInstantRateDegS = std::fabs(instantRate);
-                const float dtS = static_cast<float>(dtMs) * 0.001f;
-                const float tau = std::max(cfg.headingRateFilterTimeConstantS, 0.05f);
-                const float alpha = clampf(dtS / (tau + dtS), 0.0f, 1.0f);
-                if (!headingRateInitialized_) {
-                    filteredHeadingRateDegS_ = instantRate;
-                    headingRateInitialized_ = true;
-                } else {
-                    filteredHeadingRateDegS_ += alpha * (instantRate - filteredHeadingRateDegS_);
-                }
+    if (havePreviousHeading_) {
+        const uint32_t dtMs = in.nowMs - previousHeadingMs_;
+        // Remove AHRS yaw from magnetic-world heading before measuring field
+        // motion, so our own bounded yaw correction cannot create a field step.
+        const float signedStepDeg = wrapPi(
+            stationaryFieldYawRad - previousStationaryFieldYawRad_) * MATH_RAD_TO_DEG;
+        out.headingStepDeg = std::fabs(signedStepDeg);
+        if (dtMs > 0u && dtMs <= cfg.headingRateResetGapMs) {
+            const float instantRate = signedStepDeg * 1000.0f / static_cast<float>(dtMs);
+            out.headingInstantRateDegS = std::fabs(instantRate);
+            const float dtS = static_cast<float>(dtMs) * 0.001f;
+            const float tau = std::max(cfg.headingRateFilterTimeConstantS, 0.05f);
+            const float alpha = clampf(dtS / (tau + dtS), 0.0f, 1.0f);
+            if (!headingRateInitialized_) {
+                filteredHeadingRateDegS_ = instantRate;
+                headingRateInitialized_ = true;
             } else {
-                headingRateInitialized_ = false;
-                filteredHeadingRateDegS_ = 0.0f;
+                filteredHeadingRateDegS_ += alpha *
+                    (instantRate - filteredHeadingRateDegS_);
             }
+        } else {
+            headingRateInitialized_ = false;
+            filteredHeadingRateDegS_ = 0.0f;
         }
-        out.headingRateDegS = std::fabs(filteredHeadingRateDegS_);
-        previousStationaryFieldYawRad_ = stationaryFieldYawRad;
-        previousHeadingMs_ = nowMs;
-        havePreviousHeading_ = true;
     }
+    out.headingRateDegS = std::fabs(filteredHeadingRateDegS_);
+    previousStationaryFieldYawRad_ = stationaryFieldYawRad;
+    previousHeadingMs_ = in.nowMs;
+    havePreviousHeading_ = true;
+}
+
+TRACKER_MAG_FIELD_NOINLINE bool MagFieldReliabilityMonitor::updateReferenceEvidence(
+    const MagFieldReliabilityInputView& in,
+    const MagFieldReliabilityConfig& cfg,
+    MagFieldReliabilityOutput& out) {
+    const MagProcessedSample& mag = *in.mag;
+    const MagHeadingSample& heading = *in.heading;
+    const bool inputFinite = out.valid;
 
     if (!referenceValid_) {
         out.flags |= MAG_FIELD_FLAG_REFERENCE_MISSING;
@@ -241,11 +240,20 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
         out.normRelativeError = std::fabs(mag.bodyNorm - referenceNorm_) /
                                 (std::fabs(referenceNorm_) + MATH_EPSILON);
         out.dipErrorDeg = std::fabs(heading.dipDeg - referenceDipDeg_);
-        if (out.normRelativeError > cfg.normSoftFraction) out.flags |= MAG_FIELD_FLAG_NORM_SOFT;
-        if (out.normRelativeError > cfg.normHardFraction) out.flags |= MAG_FIELD_FLAG_NORM_HARD;
-        const bool dipObservable = gyroNormDps <= 120.0f && accelTrust >= 0.20f;
-        if (dipObservable && out.dipErrorDeg > cfg.dipSoftDeg) out.flags |= MAG_FIELD_FLAG_DIP_SOFT;
-        if (dipObservable && out.dipErrorDeg > cfg.dipHardDeg) out.flags |= MAG_FIELD_FLAG_DIP_HARD;
+        if (out.normRelativeError > cfg.normSoftFraction) {
+            out.flags |= MAG_FIELD_FLAG_NORM_SOFT;
+        }
+        if (out.normRelativeError > cfg.normHardFraction) {
+            out.flags |= MAG_FIELD_FLAG_NORM_HARD;
+        }
+        const bool dipObservable = in.gyroNormDps <= 120.0f &&
+            in.accelTrust >= 0.20f;
+        if (dipObservable && out.dipErrorDeg > cfg.dipSoftDeg) {
+            out.flags |= MAG_FIELD_FLAG_DIP_SOFT;
+        }
+        if (dipObservable && out.dipErrorDeg > cfg.dipHardDeg) {
+            out.flags |= MAG_FIELD_FLAG_DIP_HARD;
+        }
     }
 
     const MagHorizontalTrustResult horizontal = evaluateMagHorizontalTrustFromReference(
@@ -254,8 +262,7 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
         in.horizontalNormGood,
         referenceValid_ ? referenceHorizontalNorm_ : 0.0f,
         referenceValid_ ? referenceNorm_ : 0.0f,
-        cfg.horizontalTrust
-    );
+        cfg.horizontalTrust);
     out.horizontalNorm = inputFinite ? heading.horizontalNorm : 0.0f;
     out.referenceHorizontalNorm = referenceValid_ ? referenceHorizontalNorm_ : 0.0f;
     out.horizontalTrust = horizontal.trust;
@@ -266,25 +273,35 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
     if (referenceValid_ && !headingObservable) {
         out.flags |= MAG_FIELD_FLAG_HORIZONTAL_UNOBSERVABLE;
     }
-
     out.headingNoiseScaleSquared = horizontal.valid
         ? horizontal.headingNoiseScaleSquared
         : 1.0f;
     out.stationaryHeadingJumpRateGyroFloorDegS =
-        gyroNormDps + cfg.stationaryHeadingJumpRateMarginOverGyroDegS;
+        in.gyroNormDps + cfg.stationaryHeadingJumpRateMarginOverGyroDegS;
+    return headingObservable;
+}
 
+TRACKER_MAG_FIELD_NOINLINE void MagFieldReliabilityMonitor::updateStationaryHeadingEvidence(
+    const MagFieldReliabilityInputView& in,
+    const MagFieldReliabilityConfig& cfg,
+    MagFieldReliabilityOutput& out,
+    uint64_t phaseState) {
+    const MagHeadingSample& heading = *in.heading;
+    const bool inputFinite = out.valid;
+    const bool headingObservable = (phaseState & 1u) != 0u;
+    const uint32_t previousMs = static_cast<uint32_t>(phaseState >> 32);
+    const uint32_t nowMs = in.nowMs;
+    const float stationaryFieldYawRad = inputFinite
+        ? wrapPi(heading.yawInnovationRad)
+        : 0.0f;
     const bool stationaryForHeadingCheck = inputFinite &&
-        gyroNormDps <= cfg.stationaryGyroMaxDps &&
-        accelTrust >= cfg.stationaryAccelTrustMin;
+        in.gyroNormDps <= cfg.stationaryGyroMaxDps &&
+        in.accelTrust >= cfg.stationaryAccelTrustMin;
     const bool stationaryForHeadingJumpCheck = stationaryForHeadingCheck &&
         headingObservable;
 
-    // A one-sample heading step is not enough by itself because the existing
-    // soft gate can clear once the disturbed field becomes temporally stable.
-    // Keep a short stationary-window anchor and latch a discontinuity when the
-    // cumulative change is too fast to be ordinary calibrated gyro drift or
-    // our own bounded yaw correction.  The latch is intentionally independent
-    // of the old 8/20 degree per-sample thresholds.
+    // A one-sample step is insufficient: keep a short stationary anchor and
+    // latch only a cumulative/instantaneous change too fast for gyro drift.
     if (!stationaryForHeadingJumpCheck || !referenceValid_) {
         if (stationaryHeadingJumpLatched_ && !stationaryForHeadingCheck) {
             stationaryLatchMotionSeen_ = true;
@@ -292,63 +309,58 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
         stationaryWindowActive_ = false;
         stationaryWindowStartMs_ = 0u;
         referenceReturnSinceMs_ = 0u;
+    } else if (!stationaryWindowActive_) {
+        stationaryWindowActive_ = true;
+        stationaryWindowStartMs_ = nowMs;
+        stationaryWindowStartFieldYawRad_ = stationaryFieldYawRad;
     } else {
-        if (!stationaryWindowActive_) {
-            stationaryWindowActive_ = true;
+        const uint32_t windowMs = nowMs - stationaryWindowStartMs_;
+        const float signedWindowDeltaDeg = wrapPi(
+            stationaryFieldYawRad - stationaryWindowStartFieldYawRad_) *
+            MATH_RAD_TO_DEG;
+        out.stationaryWindowHeadingDeltaDeg = std::fabs(signedWindowDeltaDeg);
+        if (windowMs > 0u) {
+            out.stationaryWindowHeadingRateDegS =
+                out.stationaryWindowHeadingDeltaDeg * 1000.0f /
+                static_cast<float>(windowMs);
+        }
+
+        const bool withinDetectionWindow = windowMs <= cfg.stationaryHeadingWindowMs;
+        const bool windowRateAboveGyroFloor =
+            out.stationaryWindowHeadingRateDegS >=
+            out.stationaryHeadingJumpRateGyroFloorDegS;
+        const bool cumulativeDiscontinuity = withinDetectionWindow &&
+            magnitudeAtLeastScaledThreshold(
+                out.stationaryWindowHeadingDeltaDeg,
+                cfg.stationaryHeadingJumpMinDeg,
+                out.headingNoiseScaleSquared) &&
+            windowRateAboveGyroFloor &&
+            magnitudeAtLeastScaledThreshold(
+                out.stationaryWindowHeadingRateDegS,
+                cfg.stationaryHeadingJumpRateDegS,
+                out.headingNoiseScaleSquared);
+        const bool instantaneousDiscontinuity = previousMs != 0u &&
+            magnitudeAtLeastScaledThreshold(
+                out.headingStepDeg,
+                cfg.stationaryHeadingJumpMinDeg,
+                out.headingNoiseScaleSquared) &&
+            out.headingInstantRateDegS >= out.stationaryHeadingJumpRateGyroFloorDegS &&
+            magnitudeAtLeastScaledThreshold(
+                out.headingInstantRateDegS,
+                cfg.stationaryHeadingJumpRateDegS,
+                out.headingNoiseScaleSquared);
+        if ((cumulativeDiscontinuity || instantaneousDiscontinuity) &&
+            !stationaryHeadingJumpLatched_) {
+            stationaryHeadingJumpLatched_ = true;
+            stationaryLatchReferenceFieldYawRad_ = stationaryWindowStartFieldYawRad_;
+            stationaryLatchMotionSeen_ = false;
+            referenceReturnSinceMs_ = 0u;
+            stats_.stationaryHeadingJumpsLatched++;
+        }
+
+        if (windowMs >= cfg.stationaryHeadingWindowMs) {
             stationaryWindowStartMs_ = nowMs;
             stationaryWindowStartFieldYawRad_ = stationaryFieldYawRad;
-        } else {
-            const uint32_t windowMs = nowMs - stationaryWindowStartMs_;
-            const float signedWindowDeltaDeg = wrapPi(
-                stationaryFieldYawRad - stationaryWindowStartFieldYawRad_) *
-                MATH_RAD_TO_DEG;
-            out.stationaryWindowHeadingDeltaDeg = std::fabs(signedWindowDeltaDeg);
-            if (windowMs > 0u) {
-                out.stationaryWindowHeadingRateDegS =
-                    out.stationaryWindowHeadingDeltaDeg * 1000.0f /
-                    static_cast<float>(windowMs);
-            }
-
-            const bool withinDetectionWindow = windowMs <= cfg.stationaryHeadingWindowMs;
-            const bool windowRateAboveGyroFloor =
-                out.stationaryWindowHeadingRateDegS >=
-                out.stationaryHeadingJumpRateGyroFloorDegS;
-            const bool cumulativeDiscontinuity = withinDetectionWindow &&
-                magnitudeAtLeastScaledThreshold(
-                    out.stationaryWindowHeadingDeltaDeg,
-                    cfg.stationaryHeadingJumpMinDeg,
-                    out.headingNoiseScaleSquared) &&
-                windowRateAboveGyroFloor &&
-                magnitudeAtLeastScaledThreshold(
-                    out.stationaryWindowHeadingRateDegS,
-                    cfg.stationaryHeadingJumpRateDegS,
-                    out.headingNoiseScaleSquared);
-            // The rolling anchor is periodically refreshed.  Also test the
-            // adjacent-sample step so an abrupt field jump cannot land exactly
-            // on an anchor boundary and become the new undetected baseline.
-            const bool instantaneousDiscontinuity = previousMs != 0u &&
-                magnitudeAtLeastScaledThreshold(
-                    out.headingStepDeg,
-                    cfg.stationaryHeadingJumpMinDeg,
-                    out.headingNoiseScaleSquared) &&
-                out.headingInstantRateDegS >= out.stationaryHeadingJumpRateGyroFloorDegS &&
-                magnitudeAtLeastScaledThreshold(
-                    out.headingInstantRateDegS,
-                    cfg.stationaryHeadingJumpRateDegS,
-                    out.headingNoiseScaleSquared);
-            const bool discontinuity = cumulativeDiscontinuity || instantaneousDiscontinuity;
-            if (discontinuity && !stationaryHeadingJumpLatched_) {
-                stationaryHeadingJumpLatched_ = true;
-                stationaryLatchReferenceFieldYawRad_ = stationaryWindowStartFieldYawRad_;
-                stationaryLatchMotionSeen_ = false;
-                referenceReturnSinceMs_ = 0u;
-                stats_.stationaryHeadingJumpsLatched++;
-            }
-
-            if (windowMs >= cfg.stationaryHeadingWindowMs) {
-                stationaryWindowStartMs_ = nowMs;
-                stationaryWindowStartFieldYawRad_ = stationaryFieldYawRad;
-            }
         }
     }
 
@@ -385,7 +397,28 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
     if (out.flags & MAG_FIELD_FLAG_DIP_HARD) stats_.dipHardRejects++;
     if (out.flags & MAG_FIELD_FLAG_HEADING_STEP_SOFT) stats_.headingStepSoftRejects++;
     if (out.flags & MAG_FIELD_FLAG_HEADING_STEP_HARD) stats_.headingStepHardRejects++;
+}
 
+TRACKER_MAG_FIELD_NOINLINE void MagFieldReliabilityMonitor::advanceReliabilityState(
+    const MagFieldReliabilityInputView& in,
+    const MagFieldReliabilityConfig& cfg,
+    MagFieldReliabilityOutput& out,
+    uint64_t phaseState) {
+    const MagProcessedSample& mag = *in.mag;
+    const MagHeadingSample& heading = *in.heading;
+    const bool inputFinite = out.valid;
+    const bool processorTrustedForUse = in.processorTrustedForUse;
+    const bool headingObservable = (phaseState & 1u) != 0u;
+    const uint32_t previousMs = static_cast<uint32_t>(phaseState >> 32);
+    const uint32_t nowMs = in.nowMs;
+    const float stationaryFieldYawRad = inputFinite
+        ? wrapPi(heading.yawInnovationRad)
+        : 0.0f;
+    const bool stationaryForHeadingCheck = inputFinite &&
+        in.gyroNormDps <= cfg.stationaryGyroMaxDps &&
+        in.accelTrust >= cfg.stationaryAccelTrustMin;
+    const bool stationaryForHeadingJumpCheck = stationaryForHeadingCheck &&
+        headingObservable;
     const uint32_t hardFlags = MAG_FIELD_FLAG_INPUT_INVALID |
                                MAG_FIELD_FLAG_PROCESSOR_UNTRUSTED |
                                MAG_FIELD_FLAG_NORM_HARD |
@@ -396,7 +429,8 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
                                MAG_FIELD_FLAG_HEADING_STEP_SOFT;
     const bool hardBad = (out.flags & hardFlags) != 0u;
     const bool softBad = (out.flags & softFlags) != 0u;
-    const bool baseGood = inputFinite && processorTrustedForUse && !hardBad && !softBad;
+    const bool baseGood = inputFinite && processorTrustedForUse &&
+        !hardBad && !softBad;
 
     if (!inputFinite || !processorTrustedForUse) {
         goodSinceMs_ = 0;
@@ -423,11 +457,8 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
             resetAcquisitionAccumulator();
         }
     } else if (stationaryHeadingJumpLatched_) {
-        // Do not let the ordinary suspect-clear path re-trust a stable local
-        // disturbance. A stable return may be proven by the absolute world
-        // reference, or by the pre-jump stationary field signal when no motion
-        // occurred since latching. Explicit restartAcquisition() remains the
-        // path for intentionally accepting a genuinely new environment.
+        // A latched local disturbance cannot clear through the ordinary soft
+        // path. Require return to the absolute or no-motion pre-jump reference.
         const float headingToReferenceDeg = std::fabs(wrapPi(
             heading.magneticNorthWorldYawRad - referenceHeadingYawRad_)) * MATH_RAD_TO_DEG;
         const float stationaryFieldReturnErrorDeg = std::fabs(wrapPi(
@@ -439,10 +470,6 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
 
         const bool returnedViaWorldHeading =
             headingToReferenceDeg <= cfg.referenceReturnDeg;
-        // If the tracker has remained physically stationary since the latch,
-        // compare the magnetic direction with AHRS yaw removed. This lets the
-        // original field recover after arbitrary 6DoF yaw drift while yaw
-        // correction is disabled, without accepting a stable shifted field.
         const bool returnedViaStationaryField = !stationaryLatchMotionSeen_ &&
             stationaryFieldReturnErrorDeg <= cfg.referenceReturnDeg;
         if (stationaryForHeadingJumpCheck &&
@@ -539,9 +566,28 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
 
         if (state_ == MagFieldReliabilityState::Trusted) {
             const uint32_t dtMs = previousMs == 0u ? 0u : nowMs - previousMs;
-            adaptReference(mag, heading, gyroNormDps, accelTrust, cfg, dtMs);
+            adaptReference(mag, heading, in.gyroNormDps, in.accelTrust, cfg, dtMs);
         }
     }
+}
+
+TRACKER_MAG_FIELD_NOINLINE void MagFieldReliabilityMonitor::finalizeReliabilityOutput(
+    const MagFieldReliabilityInputView& in,
+    MagFieldReliabilityOutput& out,
+    uint64_t phaseState) {
+    const MagHeadingSample& heading = *in.heading;
+    const bool inputFinite = out.valid;
+    const bool headingObservable = (phaseState & 1u) != 0u;
+    const uint32_t hardFlags = MAG_FIELD_FLAG_INPUT_INVALID |
+                               MAG_FIELD_FLAG_PROCESSOR_UNTRUSTED |
+                               MAG_FIELD_FLAG_NORM_HARD |
+                               MAG_FIELD_FLAG_DIP_HARD |
+                               MAG_FIELD_FLAG_HEADING_STEP_HARD;
+    const uint32_t softFlags = MAG_FIELD_FLAG_NORM_SOFT |
+                               MAG_FIELD_FLAG_DIP_SOFT |
+                               MAG_FIELD_FLAG_HEADING_STEP_SOFT;
+    const bool baseGood = inputFinite && in.processorTrustedForUse &&
+        (out.flags & hardFlags) == 0u && (out.flags & softFlags) == 0u;
 
     out.state = state_;
     out.referenceValid = referenceValid_;
@@ -550,6 +596,7 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
         stationaryLatchReferenceFieldYawRad_ * MATH_RAD_TO_DEG;
     out.stationaryLatchMotionSeen = stationaryLatchMotionSeen_;
     if (inputFinite && stationaryHeadingJumpLatched_) {
+        const float stationaryFieldYawRad = wrapPi(heading.yawInnovationRad);
         out.stationaryLatchReferenceErrorDeg = std::fabs(wrapPi(
             stationaryFieldYawRad - stationaryLatchReferenceFieldYawRad_)) * MATH_RAD_TO_DEG;
     }
@@ -567,7 +614,7 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
         out.referenceHeadingErrorDeg = std::fabs(wrapPi(
             heading.magneticNorthWorldYawRad - referenceHeadingYawRad_)) * MATH_RAD_TO_DEG;
     }
-    out.stableMs = elapsedMs(nowMs, goodSinceMs_);
+    out.stableMs = elapsedMs(in.nowMs, goodSinceMs_);
     out.trustedForYaw = referenceValid_ &&
                         state_ == MagFieldReliabilityState::Trusted && baseGood &&
                         headingObservable;
@@ -578,6 +625,38 @@ bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
 
     if (out.trustedForYaw) stats_.trustedSamples++;
     else stats_.rejectedSamples++;
+}
+
+bool MagFieldReliabilityMonitor::update(const MagFieldReliabilityInputView& in,
+                                        const MagFieldReliabilityConfig& cfg,
+                                        MagFieldReliabilityOutput& out) {
+    if (in.mag == nullptr || in.heading == nullptr) {
+        initializeReliabilityOutput(out, in.nowMs);
+        out.flags = MAG_FIELD_FLAG_INPUT_INVALID;
+        stats_.updates++;
+        stats_.rejectedSamples++;
+        return false;
+    }
+    initializeReliabilityOutput(out, in.nowMs);
+    stats_.updates++;
+
+    const uint32_t previousMs = previousHeadingMs_;
+    const bool inputFinite = finiteInput(
+        *in.mag, *in.heading, in.gyroNormDps, in.accelTrust);
+    if (!inputFinite) out.flags |= MAG_FIELD_FLAG_INPUT_INVALID;
+    if (!in.processorTrustedForUse) {
+        out.flags |= MAG_FIELD_FLAG_PROCESSOR_UNTRUSTED;
+    }
+    out.valid = inputFinite;
+    updateHeadingRateEvidence(in, cfg, out);
+    const bool headingObservable = updateReferenceEvidence(in, cfg, out);
+
+    const uint64_t phaseState =
+        (static_cast<uint64_t>(previousMs) << 32) |
+        static_cast<uint64_t>(headingObservable ? 1u : 0u);
+    updateStationaryHeadingEvidence(in, cfg, out, phaseState);
+    advanceReliabilityState(in, cfg, out, phaseState);
+    finalizeReliabilityOutput(in, out, phaseState);
 
     return out.valid;
 }
@@ -593,5 +672,7 @@ const char* MagFieldReliabilityMonitor::stateName(MagFieldReliabilityState state
     }
     return "unknown";
 }
+
+#undef TRACKER_MAG_FIELD_NOINLINE
 
 } // namespace tracker

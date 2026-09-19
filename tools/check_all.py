@@ -69,12 +69,18 @@ class CheckSummary:
         self.warnings.append(description)
 
 
+@dataclass(frozen=True)
+class CheckCommandResult:
+    returncode: int
+    stderr: str = ""
+
+
 def run_command(
     cmd: Sequence[str],
     *,
     cwd: Path = ROOT,
     timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
-) -> int:
+) -> CheckCommandResult:
     printable = shlex.join(cmd)
     print(f"\n$ {printable}", flush=True)
     try:
@@ -83,14 +89,25 @@ def run_command(
             cwd=str(cwd),
             timeout_s=timeout_s,
             env=quality_gate_environment(ROOT, scope="check-all"),
+            stderr=subprocess.PIPE,
+            text=True,
         )
-        return proc.returncode
-    except subprocess.TimeoutExpired:
-        print(f"# command timed out after {timeout_s:g}s", file=sys.stderr, flush=True)
-        return 124
+        stderr = proc.stderr or ""
+        if stderr:
+            print(stderr, end="" if stderr.endswith("\n") else "\n", file=sys.stderr, flush=True)
+        return CheckCommandResult(proc.returncode, stderr)
+    except subprocess.TimeoutExpired as exc:
+        captured = exc.stderr or ""
+        if isinstance(captured, bytes):
+            captured = captured.decode("utf-8", errors="replace")
+        message = f"command timed out after {timeout_s:g}s"
+        detail = f"{captured.rstrip()}\n{message}" if captured else message
+        print(detail, file=sys.stderr, flush=True)
+        return CheckCommandResult(124, detail)
     except OSError as exc:
-        print(f"# command launch failed: {exc}", file=sys.stderr, flush=True)
-        return 127
+        detail = f"command launch failed: {exc}"
+        print(detail, file=sys.stderr, flush=True)
+        return CheckCommandResult(127, detail)
 
 
 def run_checked(
@@ -101,13 +118,23 @@ def run_checked(
     cwd: Path = ROOT,
     timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
 ) -> bool:
-    returncode = run_command(cmd, cwd=cwd, timeout_s=timeout_s)
-    if returncode == 0:
+    result = run_command(cmd, cwd=cwd, timeout_s=timeout_s)
+    if result.returncode == 0:
         print(f"# PASS {description}", flush=True)
         return True
-    summary.fail(f"{description} (exit={returncode})")
-    print(f"# FAIL {description} (exit={returncode})", flush=True)
+    failure = f"{description} (exit={result.returncode})"
+    if result.stderr.strip():
+        failure += "\n" + result.stderr.rstrip()
+    summary.fail(failure)
+    print(f"# FAIL {description} (exit={result.returncode})", flush=True)
     return False
+
+
+def print_aggregated_failure(failure: str) -> None:
+    lines = failure.splitlines()
+    print(f"# FAIL {lines[0]}")
+    for line in lines[1:]:
+        print(f"#   {line}")
 
 
 def run_native_tests(
@@ -199,6 +226,17 @@ def run_tool_smokes(summary: CheckSummary, *, timeout_s: float) -> None:
         ("tools/test_0026b_hotpath_optimization_policy.py", "0026b hot-path optimization"),
         ("tools/test_0026c_command_hook_declaration_order.py", "0026c command-hook declaration order"),
         ("tools/test_0026d_host_quality_gate_portability_policy.py", "0026d host quality-gate portability"),
+        ("tools/test_0027_sensor_liveness_policy.py", "0027 sensor liveness/recovery policy"),
+        ("tools/test_0027b_cross_host_quality_gate_policy.py", "0027b cross-host quality-gate hardening"),
+        ("tools/test_0027c_windows_stack_and_failure_summary_policy.py", "0027c Windows stack/failure summary"),
+        ("tools/test_0027d_recovery_feedback_and_tap_policy.py", "0027d recovery feedback/tap hardening"),
+        ("tools/test_0027e_progress_clock_domain_policy.py", "0027e progress clock-domain separation"),
+        ("tools/test_0027f_progress_epoch_contract_policy.py", "0027f progress epoch contract"),
+        ("tools/test_0028_semantic_config_transaction_policy.py", "0028 semantic config/transaction policy"),
+        ("tools/test_0028a_transaction_and_quaternion_hotpath_policy.py", "0028a transaction/quaternion hot-path hardening"),
+        ("tools/test_0028b_v2_config_migration_policy.py", "0028b v2 config compatibility migration"),
+        ("tools/test_0028c_bounded_calibration_recovery_policy.py", "0028c bounded calibration/recovery"),
+        ("tools/test_0028d_recovery_and_calibration_contract_policy.py", "0028d recovery and calibration contract"),
         ("tools/test_slimevr_session_contract_policy.py", "SlimeVR session contract"),
         ("tools/test_calibration_storage_contract_policy.py", "calibration storage contract"),
         ("tools/test_calibration_storage_stack_policy.py", "calibration storage stack budget"),
@@ -722,7 +760,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if summary.failures:
         print(f"\n# check_all: FAIL ({len(summary.failures)} failure(s))")
         for failure in summary.failures:
-            print(f"# FAIL {failure}")
+            print_aggregated_failure(failure)
         for warning in summary.warnings:
             print(f"# WARN {warning}")
         return 1

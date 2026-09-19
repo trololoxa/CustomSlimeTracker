@@ -19,6 +19,10 @@ struct SetupOutputVerificationConfig {
     float maximumInputGyroMeanStdErrorAxisDps = 0.050f;
     float maximumInputAccelNormMeanErrorG = 0.050f;
     float maximumInputAccelNormStdG = 0.025f;
+    uint32_t maximumSnapshotAgeUs = 100000;
+    uint32_t maximumInvalidSnapshots = 2;
+    uint32_t maximumStaleSnapshots = 4;
+    uint32_t maximumCoherentReadFailures = 4;
 };
 
 struct SetupOutputVerificationResult {
@@ -40,6 +44,8 @@ struct SetupOutputVerificationResult {
     uint32_t uniqueSnapshots = 0;
     uint32_t linearAccelerationValidSnapshots = 0;
     uint32_t invalidSnapshots = 0;
+    uint32_t staleSnapshots = 0;
+    uint32_t coherentReadFailures = 0;
     uint32_t duplicateSnapshots = 0;
     uint32_t inputSamples = 0;
 
@@ -55,6 +61,16 @@ struct SetupOutputVerificationResult {
     float inputAccelNormStdG = 0.0f;
 };
 
+inline bool setupVerificationMayRetry(const SetupOutputVerificationResult& result,
+                                      bool fatalStreamFailure, bool recoverableContamination) {
+    return !result.valid && !fatalStreamFailure && result.quaternionFinite &&
+        result.quaternionNormPassed && result.quaternionContinuityPassed && recoverableContamination;
+}
+
+inline bool setupVerificationDeadlineReached(uint32_t nowMs, uint32_t startedMs) {
+    return nowMs - startedMs >= 22000u;
+}
+
 // Accumulates already-produced coherent output snapshots. It intentionally
 // verifies the final output boundary instead of re-running calibration math.
 // This catches frame, AHRS, gravity-removal and snapshot-coherency failures
@@ -63,6 +79,11 @@ class SetupOutputVerificationAccumulator {
 public:
     void reset();
     void push(const TrackerPreparedOutputSnapshot& snapshot);
+    void push(const TrackerPreparedOutputSnapshot& snapshot,
+              uint32_t nowMcuUs,
+              uint32_t maximumAgeUs);
+    void noteCoherentReadFailure();
+    void noteDiscontinuity() { haveQuaternion_ = false; }
     void pushInputSample(const Vec3& calibratedGyroRadS,
                          const Vec3& calibratedAccelG);
 
@@ -74,10 +95,18 @@ public:
         bool streamHealthPassed) const;
 
 private:
+    void pushObservation(const TrackerPreparedOutputSnapshot& snapshot, bool stale);
+    bool haveObservation_ = false;
+    uint32_t observationSequence_ = 0u;
+    uint64_t observationPublishedAt_ = 0u;
+    bool observationValid_ = false;
+    bool observationStale_ = false;
     uint32_t snapshots_ = 0;
     uint32_t uniqueSnapshots_ = 0;
     uint32_t linearAccelerationValidSnapshots_ = 0;
     uint32_t invalidSnapshots_ = 0;
+    uint32_t staleSnapshots_ = 0;
+    uint32_t coherentReadFailures_ = 0;
     uint32_t duplicateSnapshots_ = 0;
     uint32_t lastSequence_ = 0;
     bool haveSequence_ = false;

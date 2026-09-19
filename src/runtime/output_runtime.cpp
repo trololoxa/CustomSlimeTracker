@@ -104,6 +104,9 @@ bool PreparedOutputRuntime::update(const TrackerConfig& config,
     if (!accelDeviceG.isFinite()) {
         motionInvalidFlags |= prepared_output_motion_flags::NON_FINITE;
     }
+    if (quality.has(imu_quality_flags::FIFO_RECOVERY_REQUESTED)) {
+        motionInvalidFlags |= prepared_output_motion_flags::RECOVERY_DEGRADED;
+    }
 
     // ACCEL_NORM_OUTLIER intentionally does not invalidate motion output. It
     // disables gravity correction in the AHRS because the sample contains
@@ -137,6 +140,10 @@ bool PreparedOutputRuntime::update(const TrackerConfig& config,
 }
 
 bool PreparedOutputRuntime::copy(TrackerPreparedOutputSnapshot& out) const {
+    return copyCoherent(out) && out.valid;
+}
+
+bool PreparedOutputRuntime::copyCoherent(TrackerPreparedOutputSnapshot& out) const {
 #if TRACKER_ENABLE_PREPARED_OUTPUT_SNAPSHOT
     for (uint8_t attempt = 0; attempt < 3; ++attempt) {
         const uint32_t seqBefore = seqLock_;
@@ -147,7 +154,7 @@ bool PreparedOutputRuntime::copy(TrackerPreparedOutputSnapshot& out) const {
 
         if (seqBefore == seqAfter && (seqAfter & 1u) == 0u) {
             out = tmp;
-            return tmp.valid;
+            return true;
         }
     }
 #endif

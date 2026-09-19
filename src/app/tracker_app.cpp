@@ -6,6 +6,11 @@
 
 #include <cstring>
 
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_system.h>
+#include <esp_task_wdt.h>
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 #define TRACKER_APP_NOINLINE __attribute__((noinline))
 #else
@@ -28,6 +33,36 @@ constexpr uint32_t FIFO_INIT_RETRY_DELAY_MS = 50;
 constexpr uint32_t SENSOR_STARTUP_RECOVERY_INTERVAL_MS = 5000;
 constexpr uint32_t SENSOR_STARTUP_HARD_FAIL_DELAY_MS = 60000;
 constexpr uint32_t SENSOR_STARTUP_HARD_FAIL_RECOVERY_INTERVAL_MS = 30000;
+constexpr uint32_t SENSOR_PROGRESS_SERVICE_INTERVAL_US = 20000u;
+constexpr uint32_t BOOT_STABLE_UPTIME_MS = 60000u;
+// Existing explicit service interruptions (notably a synchronous Wi-Fi scan)
+// may take several seconds. Fifteen seconds still bounds a wedged loop while
+// avoiding a watchdog reboot during a valid, finite platform call.
+constexpr uint32_t APP_TASK_WATCHDOG_TIMEOUT_S = 15u;
+constexpr uint8_t FACTORY_RESET_RECOVERY_MAX_ATTEMPTS = 8u;
+constexpr uint32_t FACTORY_RESET_RECOVERY_RETRY_MS = 5000u;
+
+BootResetClass currentBootResetClass() {
+#if defined(ARDUINO_ARCH_ESP32)
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:
+        case ESP_RST_EXT:
+        case ESP_RST_BROWNOUT:
+            return BootResetClass::Cold;
+        case ESP_RST_SW:
+            return BootResetClass::PlannedSoftware;
+        case ESP_RST_PANIC:
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:
+            return BootResetClass::CrashOrWatchdog;
+        default:
+            return BootResetClass::Other;
+    }
+#else
+    return BootResetClass::Other;
+#endif
+}
 
 } // namespace
 
@@ -56,6 +91,17 @@ void TrackerApp::setup() {
     motionLightSleepManualRequested_ = false;
 #endif
     deps_.runtime.health->reset();
+    initializeBootHealth();
+
+    // Complete a user-confirmed interrupted reset before either config domain
+    // is loaded. The verified marker keeps this bounded and idempotent.
+    if (!deps_.runtime.factoryResetCoordinator->resumePending()) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+        Serial.print("# ERR pending factory reset recovery deferred: ");
+        Serial.println(deps_.runtime.factoryResetCoordinator->lastErrorName());
+#endif
+        enterFactoryResetRecoveryMode();
+    }
 
 #if TRACKER_ENABLE_BOOT_DELAY
     delay(TRACKER_BOOT_SERIAL_SETTLE_DELAY_MS);
@@ -94,6 +140,39 @@ void TrackerApp::setup() {
     out.println("==============================================================================");
 #endif
 
+    if (factoryResetRecoveryActive_) {
+        // Never boot a mixed old/new configuration after a partial destructive
+        // transaction. Keep only a bounded local recovery console alive; no
+        // sensor, network, autonomy, tap or ordinary config load is started.
+        if (deps_.callbacks.setSafeModeWriteInhibit != nullptr) {
+            deps_.callbacks.setSafeModeWriteInhibit(true);
+        }
+        deps_.runtime.config->resetDefaults();
+        *deps_.runtime.configLoadedFromNvs = false;
+        call(deps_.callbacks.setupCommandInterface);
+#if TRACKER_HAS_SERIAL_CLI
+        deps_.runtime.cli->setFactoryResetRecoveryOnly(true);
+#endif
+        initializeTaskWatchdog();
+#if TRACKER_HAS_SERIAL_CONSOLE
+        out.println("# FATAL factory_reset_recovery_mode=yes");
+        out.print("# FATAL factory_reset_error=");
+        out.println(deps_.runtime.factoryResetCoordinator->lastErrorName());
+        out.println("# INFO normal sensor/network startup is inhibited until reset transaction completes");
+#if TRACKER_HAS_SERIAL_CLI
+        out.println("# Type: help (local console only)");
+#endif
+        out.println("==============================================================================");
+#endif
+        return;
+    }
+
+    // Safe mode must inhibit repair/migration writes as well as later CLI and
+    // autonomy writes. Apply the gate before loadOrDefaults(), which may
+    // otherwise perform best-effort selector/commit-marker repair.
+    if (deps_.callbacks.setSafeModeWriteInhibit != nullptr) {
+        deps_.callbacks.setSafeModeWriteInhibit(safeModeActive_);
+    }
     trackerBootstrapLoadConfigAndApplyRuntime(deps_.bootstrap);
 
 #if TRACKER_HAS_SERIAL_CONSOLE
@@ -139,6 +218,7 @@ void TrackerApp::setup() {
         call(deps_.callbacks.setupTapRuntime);
     }
     call(deps_.callbacks.setupCommandInterface);
+    initializeTaskWatchdog();
 
 #if TRACKER_HAS_SERIAL_CONSOLE
     if (sensorRuntimeReady_) {
@@ -164,6 +244,16 @@ void TrackerApp::setup() {
 void TrackerApp::loop() {
     if (!ready()) {
         delay(10);
+        return;
+    }
+
+    if (factoryResetRecoveryActive_) {
+        serviceFactoryResetRecoveryMode();
+#if TRACKER_HAS_SERIAL_CLI
+        deps_.runtime.cli->poll(TRACKER_CLI_BYTES_PER_LOOP);
+#endif
+        feedTaskWatchdogAfterMandatoryLoop();
+        delay(0);
         return;
     }
 
@@ -199,8 +289,14 @@ void TrackerApp::loop() {
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) profilerSectionStartUs = micros();
 #endif
-    const bool sensorRecoveryWorked = updateSensorStartupRecovery(millis());
-    const bool fifoWorked = sensorRuntimeReady_ ? processFifoRuntime() : false;
+    const uint32_t sensorServiceNowMs = millis();
+    const bool startupRecoveryWorked = updateSensorStartupRecovery(sensorServiceNowMs);
+    const bool runtimeRecoveryWorked = serviceSensorRuntimeRecovery(sensorServiceNowMs);
+    const bool sensorRecoveryWorked = startupRecoveryWorked || runtimeRecoveryWorked;
+    const bool fifoWorked = sensorRuntimeReady_ && !sensorRecovery_.blocksSampling()
+        ? processFifoRuntime()
+        : false;
+    updateSensorProgressWatchdog(micros());
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) {
         profiler->record(RuntimeProfiler::Section::Fifo, micros() - profilerSectionStartUs, sensorRecoveryWorked || fifoWorked, profilerNowMs);
@@ -243,7 +339,9 @@ void TrackerApp::loop() {
         profilerSectionStartUs = micros();
     }
 #endif
-    const bool tapWorked = sensorRuntimeReady_ ? callBool(deps_.callbacks.updateTapRuntime) : false;
+    const bool tapWorked = sensorRuntimeReady_ && !safeModeActive_
+        ? callBool(deps_.callbacks.updateTapRuntime)
+        : false;
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) {
         profiler->record(RuntimeProfiler::Section::Tap, micros() - profilerSectionStartUs, tapWorked, profilerNowMs);
@@ -282,8 +380,9 @@ void TrackerApp::loop() {
 #if TRACKER_HAS_RUNTIME_PROFILER
     if (profilerActive) profilerSectionStartUs = micros();
 #endif
-    const bool magDeferredAdmitted = trackingOptionalRuntimeAdmitted(
-        postCriticalSlack, TrackingOptionalServiceClass::Background);
+    const bool magDeferredAdmitted = !safeModeActive_ &&
+        trackingOptionalRuntimeAdmitted(
+            postCriticalSlack, TrackingOptionalServiceClass::Background);
     const bool magDeferredWorked = magDeferredAdmitted
         ? callBool(deps_.callbacks.updateMagDeferredRuntime)
         : false;
@@ -307,8 +406,10 @@ void TrackerApp::loop() {
     // starting autonomy from the same stale snapshot would recreate a phase
     // collision.  If magnetic work was only polled and had nothing pending,
     // autonomy may still use the slot.
-    const bool calibrationAutonomyAdmitted = trackingBackgroundRuntimeAdmitted(
-        postCriticalSlack, magDeferredWorked);
+    const bool calibrationAutonomyAdmitted =
+        trackingBackgroundRuntimeAdmitted(
+        postCriticalSlack, magDeferredWorked) &&
+        !safeModeActive_;
     const bool calibrationAutonomyWorked = calibrationAutonomyAdmitted
         ? callBool(deps_.callbacks.updateCalibrationAutonomyRuntime)
         : false;
@@ -337,6 +438,11 @@ void TrackerApp::loop() {
         nullptr
 #endif
     );
+
+    // FIFO/AHRS (or bounded recovery), network liveness and command service all
+    // completed for this iteration. This is the only task-WDT feed point.
+    feedTaskWatchdogAfterMandatoryLoop();
+    updateBootStableState(millis());
 
 #if TRACKER_ENABLE_MOTION_LIGHT_SLEEP
     // Light sleep is deliberately entered after the network state machine has
@@ -487,6 +593,8 @@ bool TrackerApp::ready() const {
            deps_.runtime.lastHeartbeatMs != nullptr &&
            deps_.runtime.latestTempC != nullptr &&
            deps_.runtime.health != nullptr &&
+           deps_.runtime.bootHealthRecord != nullptr &&
+           deps_.runtime.factoryResetCoordinator != nullptr &&
            deps_.buffers.fifoRaw != nullptr &&
            deps_.buffers.fifoRawCapacity > 0u &&
            deps_.buffers.magRaw != nullptr &&
@@ -499,6 +607,53 @@ bool TrackerApp::ready() const {
            deps_.callbacks.processRawSample != nullptr &&
            deps_.callbacks.processMagSample != nullptr &&
            deps_.callbacks.recordFifoProcessTime != nullptr;
+}
+
+void TrackerApp::enterFactoryResetRecoveryMode() {
+    factoryResetRecoveryActive_ = true;
+    factoryResetRecoveryAttempts_ = 1u; // setup() already made the first attempt.
+    nextFactoryResetRecoveryMs_ = millis() + FACTORY_RESET_RECOVERY_RETRY_MS;
+    factoryResetRecoveryExhausted_ =
+        deps_.runtime.factoryResetCoordinator->lastError() == FactoryResetError::MarkerInvalid;
+}
+
+void TrackerApp::serviceFactoryResetRecoveryMode() {
+    if (!factoryResetRecoveryActive_ || factoryResetRecoveryExhausted_) return;
+    const uint32_t nowMs = millis();
+    if (static_cast<int32_t>(nowMs - nextFactoryResetRecoveryMs_) < 0) return;
+
+    if (deps_.runtime.factoryResetCoordinator->resumePending()) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+        deps_.runtime.out->println("# OK pending factory reset completed; rebooting into clean runtime");
+        deps_.runtime.out->flush();
+#endif
+#if defined(ARDUINO_ARCH_ESP32)
+        delay(50);
+        ESP.restart();
+#else
+        factoryResetRecoveryActive_ = false;
+#endif
+        return;
+    }
+
+    ++factoryResetRecoveryAttempts_;
+#if TRACKER_HAS_SERIAL_CONSOLE
+    deps_.runtime.out->print("# WARN factory reset recovery attempt=");
+    deps_.runtime.out->print(factoryResetRecoveryAttempts_);
+    deps_.runtime.out->print('/');
+    deps_.runtime.out->print(FACTORY_RESET_RECOVERY_MAX_ATTEMPTS);
+    deps_.runtime.out->print(" error=");
+    deps_.runtime.out->println(deps_.runtime.factoryResetCoordinator->lastErrorName());
+#endif
+    if (factoryResetRecoveryAttempts_ >= FACTORY_RESET_RECOVERY_MAX_ATTEMPTS ||
+        deps_.runtime.factoryResetCoordinator->lastError() == FactoryResetError::MarkerInvalid) {
+        factoryResetRecoveryExhausted_ = true;
+#if TRACKER_HAS_SERIAL_CONSOLE
+        deps_.runtime.out->println("# FATAL factory reset auto-recovery exhausted; use an explicit local factory reset command");
+#endif
+        return;
+    }
+    nextFactoryResetRecoveryMs_ = nowMs + FACTORY_RESET_RECOVERY_RETRY_MS;
 }
 
 bool TrackerApp::initLsmWithRetries() {
@@ -626,7 +781,236 @@ void TrackerApp::finishSensorStartupRecoverySuccess() {
 #endif
 }
 
-bool TrackerApp::setupSensorRuntime() {
+bool TrackerApp::requestSensorRecovery(TrackerHealthFaultCode code,
+                                       uint32_t reasonFlags,
+                                       uint64_t timestampUs,
+                                       const char* reason) {
+    const uint32_t nowMs = millis();
+    const bool wasAwaitingProgress = sensorRecovery_.awaitingProgress();
+    const bool newEpisode = sensorRecovery_.request(code, reasonFlags, nowMs);
+    if (!newEpisode) {
+        if (wasAwaitingProgress) reportRuntimeRecoveryFailure(code, reason ? reason : "sensor probation failed");
+        return false;
+    }
+
+    sensorRuntimeReady_ = false;
+    recoveryTimestampUs_ = timestampUs != 0u
+        ? timestampUs
+        : deps_.runtime.fifo->stats().lastAssignedTimestampUs;
+    const char* safeReason = reason && reason[0] != '\0'
+        ? reason
+        : trackerHealthFaultCodeName(code);
+    std::strncpy(recoveryReason_, safeReason, sizeof(recoveryReason_) - 1u);
+    recoveryReason_[sizeof(recoveryReason_) - 1u] = '\0';
+
+    sensorProgress_.setSuppressed(
+        SensorProgressSuppressReason::SensorReinit, true, micros());
+    if (std::strcmp(recoveryReason_, "blocking_wifi_scan") == 0) {
+        sensorProgress_.setSuppressed(
+            SensorProgressSuppressReason::BlockingScan, true, micros());
+    }
+    deps_.runtime.health->beginRecovery(code, recoveryReason_);
+    publishHealthState();
+
+    if (deps_.callbacks.enterTrackingRecovery != nullptr) {
+        deps_.callbacks.enterTrackingRecovery(
+            reasonFlags | imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+            recoveryReason_,
+            recoveryTimestampUs_);
+    }
+    return true;
+}
+
+bool TrackerApp::performTransactionalFifoRecovery() {
+    call(deps_.callbacks.detachFifoInterrupt);
+    if (!deps_.runtime.fifo->resetFifo()) return false;
+
+    // The verified hardware reset starts a new interrupt/software epoch.
+    // Rebase the ISR counter and clear the old event timestamp before the
+    // route is attached again; otherwise a pre-recovery event can be copied
+    // into the freshly reset progress watchdog and trigger an immediate,
+    // false ImuNoProgress episode after a long blocking service.
+    deps_.runtime.fifoEvents->reset();
+    deps_.runtime.fifo->resetTimestampReconstruction(recoveryTimestampUs_);
+    deps_.runtime.fifoRuntime->resetWork();
+    deps_.runtime.quality->resetStreamRecoveryState();
+    deps_.runtime.quality->syncFifoStats(deps_.runtime.fifo->stats());
+    call(deps_.callbacks.resetFifoRuntimeCounters);
+    call(deps_.callbacks.attachFifoInterrupt);
+    return true;
+}
+
+bool TrackerApp::performFullSensorReinit() {
+    call(deps_.callbacks.detachFifoInterrupt);
+    if (!trackerBootstrapInitLsm(deps_.bootstrap)) return false;
+    if (!trackerBootstrapInitFifo(deps_.bootstrap)) return false;
+    return setupSensorRuntime(true);
+}
+
+void TrackerApp::finishRuntimeRecoverySuccess() {
+    sensorRuntimeReady_ = true;
+    sensorProgress_.setSuppressed(
+        SensorProgressSuppressReason::SensorReinit, false, micros());
+    sensorProgress_.setSuppressed(
+        SensorProgressSuppressReason::BlockingScan, false, micros());
+    deps_.runtime.health->finishRecovery();
+    publishHealthState();
+    recoveryTimestampUs_ = 0u;
+    recoveryReason_[0] = '\0';
+}
+
+bool TrackerApp::serviceSensorRuntimeRecovery(uint32_t nowMs) {
+    const bool wasAwaitingProgress = sensorRecovery_.awaitingProgress();
+    const SensorRecoveryAction action = sensorRecovery_.poll(nowMs);
+    if (wasAwaitingProgress && !sensorRecovery_.awaitingProgress()) {
+        reportRuntimeRecoveryFailure(TrackerHealthFaultCode::ImuNoProgress,
+                                     "sensor did not resume after verified reset");
+        return true;
+    }
+    if (action == SensorRecoveryAction::None) return false;
+
+    // A failed proof may already have consumed samples. Preserve the highest
+    // assigned timestamp across every attempt, including full sensor reinit.
+    recoveryTimestampUs_ = std::max(recoveryTimestampUs_, deps_.runtime.fifo->stats().lastAssignedTimestampUs);
+    sensorProgress_.setSuppressed(SensorProgressSuppressReason::SensorReinit, true, micros());
+    const bool ok = action == SensorRecoveryAction::TransactionalFifoReset
+        ? performTransactionalFifoRecovery()
+        : performFullSensorReinit();
+    sensorRecovery_.completeAttempt(action, ok, millis(),
+        sensorProgress_.snapshot().timeoutUs / 1000u);
+
+    if (ok) {
+        sensorRuntimeReady_ = true;
+        sensorProgress_.setSuppressed(SensorProgressSuppressReason::SensorReinit, false, micros());
+        sensorProgress_.setSuppressed(SensorProgressSuppressReason::BlockingScan, false, micros());
+        if (sensorRecoveryReinitializesDevice(action)) call(deps_.callbacks.setupTapRuntime);
+        return true;
+    }
+
+    const TrackerHealthFaultCode failedCode =
+        action == SensorRecoveryAction::TransactionalFifoReset
+            ? TrackerHealthFaultCode::FifoResetFailed
+            : TrackerHealthFaultCode::SpiPlausibilityFailed;
+    reportRuntimeRecoveryFailure(failedCode,
+        action == SensorRecoveryAction::TransactionalFifoReset
+            ? "transactional FIFO reset/readback failed" : "full sensor reprobe/reinit failed");
+    return true;
+}
+
+void TrackerApp::reportRuntimeRecoveryFailure(TrackerHealthFaultCode failedCode,
+                                             const char* message) {
+    sensorRuntimeReady_ = false;
+    sensorProgress_.setSuppressed(SensorProgressSuppressReason::SensorReinit, true, micros());
+    if (sensorRecovery_.exhausted()) {
+        deps_.runtime.health->enterRecoveryExhausted(
+            failedCode,
+            "sensor recovery exhausted; bounded probes continue");
+        call(deps_.callbacks.setStatusLedSensorError);
+    } else {
+        deps_.runtime.health->reportRecoveryFault(
+            failedCode,
+            message);
+    }
+    publishHealthState();
+}
+
+void TrackerApp::updateSensorProgressWatchdog(uint32_t nowUs) {
+    if (!sensorRuntimeReady_ || sensorRecovery_.blocksSampling()) return;
+    if (static_cast<int32_t>(nowUs - nextSensorProgressCheckUs_) < 0) return;
+    nextSensorProgressCheckUs_ = nowUs + SENSOR_PROGRESS_SERVICE_INTERVAL_US;
+
+    const uint32_t irqAtUs = deps_.runtime.fifoEvents->lastEventAtUs();
+    if (irqAtUs != 0u) sensorProgress_.noteIrq(irqAtUs);
+    const uint32_t drainAtUs = deps_.runtime.fifoRuntime->lastHardwareDrainAtUs();
+    if (drainAtUs != 0u) sensorProgress_.noteDrain(drainAtUs);
+
+    const bool orientationExpected = deps_.callbacks.orientationPublicationExpected
+        ? deps_.callbacks.orientationPublicationExpected()
+        : deps_.runtime.ahrs->initialized();
+    const SensorProgressFault fault = sensorProgress_.evaluate(
+        nowUs, orientationExpected);
+    if (sensorRecovery_.awaitingProgress()) {
+        const auto progress = sensorProgress_.snapshot();
+        if (fault != SensorProgressFault::None) {
+            sensorRecovery_.failProgress(millis());
+            reportRuntimeRecoveryFailure(TrackerHealthFaultCode::ImuNoProgress,
+                                         sensorProgressFaultName(fault));
+        } else if (progress.lastDrainAtUs != 0u && progress.lastAcceptedGyroAtUs != 0u &&
+                   (!orientationExpected || progress.lastOrientationAtUs != 0u) &&
+                   sensorRecovery_.confirmProgress(millis())) {
+            finishRuntimeRecoverySuccess();
+        }
+        return;
+    }
+    if (fault == SensorProgressFault::None) return;
+
+    (void)requestSensorRecovery(
+        TrackerHealthFaultCode::ImuNoProgress,
+        imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+        deps_.runtime.fifo->stats().lastAssignedTimestampUs,
+        sensorProgressFaultName(fault));
+}
+
+void TrackerApp::initializeBootHealth() {
+    bootStartedMs_ = millis();
+    bootHealth_.begin(*deps_.runtime.bootHealthRecord, currentBootResetClass());
+    sensorProgress_.setSuppressed(
+        SensorProgressSuppressReason::Boot, true, micros());
+    safeModeActive_ = bootHealth_.safeMode();
+    deps_.runtime.health->setSafeMode(safeModeActive_);
+#if TRACKER_HAS_SERIAL_CONSOLE
+    if (deps_.runtime.out != nullptr) {
+        deps_.runtime.out->print("# boot_health reset=");
+        deps_.runtime.out->print(bootResetClassName(bootHealth_.resetClass()));
+        deps_.runtime.out->print(" consecutive_crash_boots=");
+        deps_.runtime.out->print(deps_.runtime.bootHealthRecord->consecutiveCrashBoots);
+        deps_.runtime.out->print(" safe_mode=");
+        deps_.runtime.out->println(safeModeActive_ ? "yes" : "no");
+    }
+#endif
+}
+
+void TrackerApp::updateBootStableState(uint32_t nowMs) {
+    if (bootHealth_.stable() || nowMs - bootStartedMs_ < BOOT_STABLE_UPTIME_MS) return;
+    bootHealth_.markStable(*deps_.runtime.bootHealthRecord);
+    if (safeModeActive_) {
+        safeModeActive_ = false;
+        deps_.runtime.health->setSafeMode(false);
+        if (deps_.callbacks.setSafeModeWriteInhibit != nullptr) {
+            deps_.callbacks.setSafeModeWriteInhibit(false);
+        }
+        publishHealthState();
+    }
+}
+
+void TrackerApp::initializeTaskWatchdog() {
+#if defined(ARDUINO_ARCH_ESP32)
+    const esp_err_t init = esp_task_wdt_init(APP_TASK_WATCHDOG_TIMEOUT_S, true);
+    if (init != ESP_OK && init != ESP_ERR_INVALID_STATE) return;
+    const esp_err_t add = esp_task_wdt_add(nullptr);
+    taskWatchdogRegistered_ = add == ESP_OK || esp_task_wdt_status(nullptr) == ESP_OK;
+#else
+    taskWatchdogRegistered_ = false;
+#endif
+}
+
+void TrackerApp::feedTaskWatchdogAfterMandatoryLoop() {
+#if defined(ARDUINO_ARCH_ESP32)
+    if (taskWatchdogRegistered_) (void)esp_task_wdt_reset();
+#endif
+}
+
+bool TrackerApp::suspendTaskWatchdogForIntentionalSleep() {
+#if defined(ARDUINO_ARCH_ESP32)
+    if (!taskWatchdogRegistered_) return true;
+    const esp_err_t removed = esp_task_wdt_delete(nullptr);
+    if (removed != ESP_OK && esp_task_wdt_status(nullptr) == ESP_OK) return false;
+    taskWatchdogRegistered_ = false;
+#endif
+    return true;
+}
+
+bool TrackerApp::setupSensorRuntime(bool preserveOrientation) {
     deps_.runtime.fifoEvents->begin(
         deps_.runtime.fifoIntCount,
         deps_.runtime.fifo,
@@ -678,19 +1062,32 @@ bool TrackerApp::setupSensorRuntime() {
 #endif
         return false;
     }
-    deps_.runtime.fifo->resetTimestampReconstruction(0);
+    deps_.runtime.fifo->resetTimestampReconstruction(preserveOrientation ? recoveryTimestampUs_ : 0u);
     deps_.runtime.fifoRuntime->resetWork();
     call(deps_.callbacks.resetFifoRuntimeCounters);
     deps_.runtime.quality->reset();
     deps_.runtime.quality->syncFifoStats(deps_.runtime.fifo->stats());
-    deps_.runtime.ahrs->reset();
+    if (!preserveOrientation) {
+        deps_.runtime.ahrs->reset();
+    }
     if (deps_.callbacks.resetOrientationState != nullptr) {
-        deps_.callbacks.resetOrientationState("startup", 0, false);
+        deps_.callbacks.resetOrientationState(
+            preserveOrientation ? "sensor_reinit" : "startup",
+            preserveOrientation ? recoveryTimestampUs_ : 0u,
+            preserveOrientation);
     }
 
     // Attach only after all queues, timestamp baselines and quality state belong
     // to the new live epoch.
     call(deps_.callbacks.attachFifoInterrupt);
+    sensorProgress_.configure(
+        micros(),
+        deps_.runtime.fifo->samplePeriodUs(),
+        deps_.runtime.config->data.fifo.watermarkWords);
+    if (!preserveOrientation) {
+        sensorProgress_.setSuppressed(
+            SensorProgressSuppressReason::Boot, false, micros());
+    }
     return true;
 }
 void TrackerApp::enterFatalDegraded(TrackerHealthFaultCode code, const char* message) {
@@ -790,6 +1187,9 @@ bool TrackerApp::enterMotionLightSleep() {
         return false;
     }
 
+    sensorProgress_.setSuppressed(
+        SensorProgressSuppressReason::IntentionalSleep, true, micros());
+
 #if TRACKER_HAS_SERIAL_CONSOLE
     if (deps_.runtime.out != nullptr) {
         deps_.runtime.out->println("# motion_light_sleep=enter");
@@ -850,6 +1250,16 @@ bool TrackerApp::enterMotionLightSleep() {
         return true;
     }
 
+    if (!suspendTaskWatchdogForIntentionalSleep()) {
+#if TRACKER_HAS_SERIAL_CONSOLE
+        if (deps_.runtime.out != nullptr) {
+            deps_.runtime.out->println("# ERR motion_light_sleep=watchdog_suspend_failed");
+        }
+#endif
+        resumeFromMotionLightSleep();
+        return true;
+    }
+
 #if TRACKER_HAS_SERIAL_CONSOLE
     Serial.flush();
     Serial.end();
@@ -862,6 +1272,7 @@ bool TrackerApp::enterMotionLightSleep() {
     // GPIO wake source until gpio_wakeup_enable() is called again.
     (void)gpio_wakeup_disable(wakePin);
 
+    initializeTaskWatchdog();
     resumeFromMotionLightSleep();
     return true;
 }
@@ -909,6 +1320,8 @@ void TrackerApp::resumeFromMotionLightSleep() {
         call(deps_.callbacks.setupTapRuntime);
     }
     call(deps_.callbacks.setupCommandInterface);
+    sensorProgress_.setSuppressed(
+        SensorProgressSuppressReason::IntentionalSleep, false, micros());
     publishHealthState();
 
 #if TRACKER_HAS_SERIAL_CONSOLE
@@ -1055,16 +1468,19 @@ bool TrackerApp::maybeIdleYield(bool anyWork) {
 void TrackerApp::serviceRuntimeForBlockingCommand() {
     if (!ready()) return;
 
-    if (!sensorRuntimeReady_) {
-        (void)updateSensorStartupRecovery(millis());
+    const uint32_t nowMs = millis();
+    if (!fifoCalibrationCaptureActive_) {
+        (void)updateSensorStartupRecovery(nowMs);
+        (void)serviceSensorRuntimeRecovery(nowMs);
     }
-    if (sensorRuntimeReady_) {
+    if (!fifoCalibrationCaptureActive_ && sensorRuntimeReady_ && !sensorRecovery_.blocksSampling()) {
         (void)processFifoRuntime();
     }
+    updateSensorProgressWatchdog(micros());
     (void)callBool(deps_.callbacks.updateSerialConsoleRuntime);
     (void)callBool(deps_.callbacks.updateBatteryRuntime);
     (void)callBool(deps_.callbacks.updateNetworkRuntime);
-    if (sensorRuntimeReady_) {
+    if (!fifoCalibrationCaptureActive_ && sensorRuntimeReady_ && !safeModeActive_) {
         (void)callBool(deps_.callbacks.updateTapRuntime);
     }
     (void)callBool(deps_.callbacks.updateStatusLedRuntime);
@@ -1073,7 +1489,39 @@ void TrackerApp::serviceRuntimeForBlockingCommand() {
 #if TRACKER_HAS_RUNTIME_TEST
     deps_.runtime.runtimeTestRunner->update(millis());
 #endif
+    // This path replaces loop() while a bounded command transaction owns the
+    // CLI. It has completed the same mandatory sensor/network service set.
+    feedTaskWatchdogAfterMandatoryLoop();
+    updateBootStableState(millis());
 }
+
+#if TRACKER_HAS_CALIBRATION_UI
+bool TrackerApp::serviceFifoCalibrationCapture(FifoCalibrationService event) {
+    if (event == FifoCalibrationService::Begin) {
+        if (!ready() || !sensorRuntimeReady_ || sensorRecovery_.active() ||
+            fifoCalibrationCaptureActive_) return false;
+        fifoCalibrationCaptureActive_ = true;
+        sensorProgress_.setSuppressed(SensorProgressSuppressReason::CalibrationCapture, true, micros());
+        if (deps_.callbacks.enterTrackingRecovery) {
+            deps_.callbacks.enterTrackingRecovery(imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+                "calibration_capture", deps_.runtime.fifo->stats().lastAssignedTimestampUs);
+        }
+        return true;
+    }
+    if (!fifoCalibrationCaptureActive_) return false;
+    if (event == FifoCalibrationService::End) {
+        fifoCalibrationCaptureActive_ = false;
+        (void)requestSensorRecovery(TrackerHealthFaultCode::FifoDiscontinuity,
+            imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+            deps_.runtime.fifo->stats().lastAssignedTimestampUs, "calibration_capture_end");
+        sensorProgress_.setSuppressed(SensorProgressSuppressReason::CalibrationCapture, false, micros());
+    }
+    // Capture has finished its bounded sensor attempt before entering here.
+    // The ordinary FIFO consumer is excluded until End releases ownership.
+    serviceRuntimeForBlockingCommand();
+    return true;
+}
+#endif
 
 bool TrackerApp::processFifoRuntime() {
     const TrackerConfig& config = *deps_.runtime.config;
@@ -1122,6 +1570,21 @@ bool TrackerApp::processFifoRuntime() {
             maxRounds,
             *deps_.runtime.out,
             sliceBudgetUs);
+        const FifoRuntimeFault fifoFault = deps_.runtime.fifoRuntime->takeFault();
+        if (fifoFault != FifoRuntimeFault::None) {
+            const TrackerHealthFaultCode code = fifoFault == FifoRuntimeFault::DrainFailed
+                ? TrackerHealthFaultCode::FifoDrainFailed
+                : TrackerHealthFaultCode::FifoDiscontinuity;
+            (void)requestSensorRecovery(
+                code,
+                imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+                deps_.runtime.fifo->stats().lastAssignedTimestampUs,
+                fifoFault == FifoRuntimeFault::DrainFailed
+                    ? "fifo_drain_failed"
+                    : "fifo_batch_capacity_invariant");
+            worked = true;
+            break;
+        }
         if (!sliceWorked) break;
         worked = true;
 

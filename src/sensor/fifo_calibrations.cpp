@@ -8,6 +8,32 @@ namespace tracker {
 
 namespace {
 
+bool captureCancelled(const FifoCalibrationIo& io) {
+    return io.cancelRequested && io.cancelRequested(io.cancelUser);
+}
+
+bool validCaptureParams(const FifoGyroStartupCalibrationParams& p) {
+    const uint64_t needed = static_cast<uint64_t>(p.requiredStationarySamples) + p.validationSamples + p.warmupSamples;
+    if (p.requiredStationarySamples == 0u || p.validationSamples == 0u ||
+        needed > p.maxTotalSamples || p.maxTotalSamples > 1000000u) return false;
+    const float limits[] = {p.maxGyroNormRadS, p.maxAccelNormErrorG, p.maxGyroStdDps,
+        p.maxGyroMeanStdErrorDps, p.maxValidationGyroMeanStdErrorDps, p.maxAccelStdG,
+        p.maxTemperatureSpanC, p.maxValidationBiasErrorDps, p.maxValidationAccelMeanDeltaG};
+    for (float value : limits) if (!std::isfinite(value) || value <= 0.0f) return false;
+    return true;
+}
+
+bool validCaptureParams(const FifoAccel6PosCaptureParams& p) {
+    return p.requiredSamples > 0u && p.requiredSamples <= 65535u &&
+        p.validationSamples > 0u && p.validationSamples <= 65535u &&
+        std::isfinite(p.maxGyroNormDps) && p.maxGyroNormDps > 0.0f &&
+        std::isfinite(p.minAccelNormG) && p.minAccelNormG > 0.0f &&
+        std::isfinite(p.maxAccelNormG) && p.maxAccelNormG > p.minAccelNormG &&
+        std::isfinite(p.maxValidationNormErrorG) && p.maxValidationNormErrorG > 0.0f &&
+        std::isfinite(p.maxValidationAxisResidualG) && p.maxValidationAxisResidualG > 0.0f;
+}
+
+
 Vec3 standardError(const Vec3& stddev, uint32_t samples) {
     if (samples == 0u) return Vec3(999.0f, 999.0f, 999.0f);
     const float scale = 1.0f / std::sqrt(static_cast<float>(samples));
@@ -15,6 +41,22 @@ Vec3 standardError(const Vec3& stddev, uint32_t samples) {
 }
 
 } // namespace
+
+const char* fifoCalibrationCaptureStatusName(FifoCalibrationCaptureStatus status) {
+    switch (status) {
+        case FifoCalibrationCaptureStatus::Idle: return "idle";
+        case FifoCalibrationCaptureStatus::Completed: return "completed";
+        case FifoCalibrationCaptureStatus::InvalidIo: return "invalid_io";
+        case FifoCalibrationCaptureStatus::InvalidRequest: return "invalid_request";
+        case FifoCalibrationCaptureStatus::Cancelled: return "cancelled";
+        case FifoCalibrationCaptureStatus::DeadlineExceeded: return "deadline_exceeded";
+        case FifoCalibrationCaptureStatus::SensorUnavailable: return "sensor_unavailable";
+        case FifoCalibrationCaptureStatus::DrainFailed: return "drain_failed";
+        case FifoCalibrationCaptureStatus::SampleBudgetExhausted: return "sample_budget_exhausted";
+        case FifoCalibrationCaptureStatus::QualityRejected: return "quality_rejected";
+    }
+    return "unknown";
+}
 
 namespace {
 
@@ -126,7 +168,19 @@ bool FifoGyroStartupCalibrator::run(FifoCalibrationIo& io,
                                     FifoGyroCalibrationProgressCallback progressCb,
                                     void* progressUser) {
     result = GyroStartupCalibrationResult{};
-    if (!fifoCalibrationIoValid(io)) return false;
+    lastStatus_ = FifoCalibrationCaptureStatus::Idle;
+    if (!fifoCalibrationIoValid(io)) {
+        lastStatus_ = FifoCalibrationCaptureStatus::InvalidIo;
+        return false;
+    }
+
+    if (!validCaptureParams(params_)) {
+        lastStatus_ = FifoCalibrationCaptureStatus::InvalidRequest;
+        return false;
+    }
+    FifoCalibrationCaptureSession session(io, lastStatus_, params_.maximumCaptureMs,
+        params_.fifoWaitTimeoutMs, params_.maximumConsecutiveWaitTimeouts);
+    if (!session.check()) return false;
 
     Vec3Stats trainGyro;
     Vec3Stats trainAccel;
@@ -158,15 +212,17 @@ bool FifoGyroStartupCalibrator::run(FifoCalibrationIo& io,
     };
 
     while (accepted < targetAccepted && total < params_.maxTotalSamples) {
-        if (!fifoCalibrationWait(io, params_.fifoWaitTimeoutMs)) {
-            publishProgress(progressCb, progressUser, io, accepted, total, rejected, warmupSeen);
+        if (!session.wait()) {
+            resetContinuousWindow();
+            if (session.failed()) { return false; }
             continue;
         }
 
         bool drainedAny = false;
         const bool drainOk = fifoCalibrationDrainBounded(
             io,
-            [&](const Lsm6dsv::RawSample&, const Lsm6dsv::Sample& scaled) -> bool {
+            [&](const Lsm6dsv::RawSample& raw, const Lsm6dsv::Sample& scaled) -> bool {
+                if (!session.acceptFresh(raw)) { resetContinuousWindow(); return true; }
                 if (accepted >= targetAccepted || total >= params_.maxTotalSamples) return false;
                 total++;
 
@@ -209,16 +265,25 @@ bool FifoGyroStartupCalibrator::run(FifoCalibrationIo& io,
             },
             &drainedAny);
 
-        if (!drainOk) return false;
+        if (!drainOk) {
+            resetContinuousWindow();
+            if (!session.recoverDrain()) { return false; }
+            continue;
+        }
+        if (!session.service()) { return false; }
         if (drainedAny) {
             publishProgress(progressCb, progressUser, io, accepted, total, rejected, warmupSeen);
         }
     }
 
+    if (!session.check()) { return false; }
     result.stationarySamples = accepted;
     result.validationSamples = validationGyro.count;
     result.totalSamples = total;
-    if (trainGyro.count == 0u) return false;
+    if (trainGyro.count == 0u) {
+        lastStatus_ = FifoCalibrationCaptureStatus::SampleBudgetExhausted;
+        return false;
+    }
 
     result.gyroBiasRadS = trainGyro.mean();
     result.gyroBiasDps = result.gyroBiasRadS * MATH_RAD_TO_DEG;
@@ -268,6 +333,12 @@ bool FifoGyroStartupCalibrator::run(FifoCalibrationIo& io,
     // The shared evaluator applies params_.maxTemperatureSpanC together with
     // the fit/held-out precision and vibration gates.
     (void)fifoGyroStartupCalibrationEvaluateQuality(result, params_);
+    if (!session.check()) { result.success = false; return false; }
+    lastStatus_ = result.success
+        ? FifoCalibrationCaptureStatus::Completed
+        : (total >= params_.maxTotalSamples
+            ? FifoCalibrationCaptureStatus::SampleBudgetExhausted
+            : FifoCalibrationCaptureStatus::QualityRejected);
     return result.success;
 }
 
@@ -340,16 +411,101 @@ void FifoAccel6PosCalibrationRunner::reset() {
     cal_.reset();
     for (auto& face : validationFaces_) face = Accel6PosCalibration::FaceData{};
     setParams(params_);
+    lastStatus_ = FifoCalibrationCaptureStatus::Idle;
+}
+
+uint32_t FifoCalibrationCaptureSession::now() const {
+    return io_.clockMs ? io_.clockMs(io_.clockUser) : millis();
+}
+
+FifoCalibrationCaptureSession::FifoCalibrationCaptureSession(
+    FifoCalibrationIo& io, FifoCalibrationCaptureStatus& status,
+    uint32_t maximumMs, uint32_t waitMs, uint8_t timeoutLimit)
+    : io_(io), status_(status), startedMs_(now()), maximumMs_(maximumMs),
+      waitMs_(waitMs), timeoutLimit_(timeoutLimit) {
+    status_ = FifoCalibrationCaptureStatus::Idle;
+    if (!fifoCalibrationIoValid(io_)) {
+        status_ = FifoCalibrationCaptureStatus::InvalidIo;
+    } else if (maximumMs == 0u || maximumMs > 120000u || waitMs == 0u ||
+               waitMs > 1000u || timeoutLimit == 0u || io.maxDrainRoundsPerEvent == 0u) {
+        status_ = FifoCalibrationCaptureStatus::InvalidRequest;
+    } else if (check()) {
+        owned_ = !io_.serviceCapture || io_.serviceCapture(FifoCalibrationService::Begin, io_.serviceUser);
+        if (!owned_) status_ = FifoCalibrationCaptureStatus::SensorUnavailable;
+    }
+}
+
+FifoCalibrationCaptureSession::~FifoCalibrationCaptureSession() {
+    if (owned_ && io_.serviceCapture) {
+        (void)io_.serviceCapture(FifoCalibrationService::End, io_.serviceUser);
+    }
+}
+
+bool FifoCalibrationCaptureSession::check() {
+    if (failed()) return false;
+    if (captureCancelled(io_)) status_ = FifoCalibrationCaptureStatus::Cancelled;
+    else if (now() - startedMs_ >= maximumMs_) status_ = FifoCalibrationCaptureStatus::DeadlineExceeded;
+    return !failed();
+}
+
+bool FifoCalibrationCaptureSession::service() {
+    io_.fifo->discardMagDuringCalibrationCapture();
+    if (io_.serviceCapture && !io_.serviceCapture(FifoCalibrationService::Progress, io_.serviceUser)) {
+        status_ = FifoCalibrationCaptureStatus::SensorUnavailable;
+    }
+    return check();
+}
+
+bool FifoCalibrationCaptureSession::wait() {
+    if (!check()) return false;
+    // Bound both wall time and attempts, even if an adapter returns early.
+    uint32_t remaining = waitMs_;
+    while (remaining != 0u) {
+        const uint32_t deadlineRemaining = maximumMs_ - (now() - startedMs_);
+        const uint32_t slice = std::min<uint32_t>(20u, std::min(remaining, deadlineRemaining));
+        const bool ready = fifoCalibrationWait(io_, slice);
+        if (!service()) return false;
+        if (ready) { timeouts_ = 0u; return true; }
+        remaining -= slice;
+    }
+    if (++timeouts_ >= timeoutLimit_) status_ = FifoCalibrationCaptureStatus::SensorUnavailable;
+    return false;
+}
+
+bool FifoCalibrationCaptureSession::acceptFresh(const Lsm6dsv::RawSample& raw) {
+    const float period = io_.fifo->samplePeriodUs();
+    const bool fresh = raw.t_us != 0u && raw.components == Lsm6dsv::SAMPLE_COMPONENT_COMPLETE &&
+        raw.coherency == Lsm6dsv::SampleCoherency::Coherent && fifoCalibrationSampleFlagsAcceptable(raw.flags) &&
+        (lastSampleUs_ == 0u || (raw.t_us > lastSampleUs_ &&
+            static_cast<double>(raw.t_us - lastSampleUs_) <= static_cast<double>(period) * 4.0));
+    if (raw.t_us > lastSampleUs_) lastSampleUs_ = raw.t_us;
+    return fresh;
+}
+
+bool FifoCalibrationCaptureSession::recoverDrain() {
+    if (!check()) return false;
+    const uint64_t anchor = io_.fifo->stats().lastAssignedTimestampUs;
+    if (++drainRecoveries_ > 2u || !io_.fifo->resetFifo()) {
+        status_ = FifoCalibrationCaptureStatus::DrainFailed;
+        return false;
+    }
+    io_.fifo->resetTimestampReconstruction(anchor);
+    lastSampleUs_ = 0u;
+    return service();
 }
 
 bool FifoAccel6PosCalibrationRunner::captureValidationFace(
     FifoCalibrationIo& io,
+    FifoCalibrationCaptureSession& session,
     Accel6PosCalibration::Face face,
     Accel6PosCalibration::FaceData& out,
     FifoAccelCaptureProgressCallback progressCb,
     void* progressUser) {
     out = Accel6PosCalibration::FaceData{};
-    if (params_.validationSamples == 0u) return false;
+    if (params_.validationSamples == 0u) {
+        lastStatus_ = FifoCalibrationCaptureStatus::InvalidRequest;
+        return false;
+    }
 
     Accel6PosCapture::Params validationParams;
     validationParams.requiredSamples = params_.validationSamples;
@@ -360,24 +516,43 @@ bool FifoAccel6PosCalibrationRunner::captureValidationFace(
     Accel6PosCapture validationCapture(validationParams);
     validationCapture.begin(face);
 
+
     while (!validationCapture.done()) {
-        if (!fifoCalibrationWait(io, params_.fifoWaitTimeoutMs)) continue;
+        if (!session.wait()) {
+            validationCapture.begin(face);
+            if (session.failed()) { validationCapture.cancel(); return false; }
+            continue;
+        }
         const bool drainOk = fifoCalibrationDrainBounded(
             io,
-            [&](const Lsm6dsv::RawSample&, const Lsm6dsv::Sample& scaled) -> bool {
+            [&](const Lsm6dsv::RawSample& raw, const Lsm6dsv::Sample& scaled) -> bool {
+                if (!session.acceptFresh(raw)) { validationCapture.begin(face); return true; }
                 validationCapture.push(scaled);
                 return !validationCapture.done();
             });
         if (!drainOk) {
-            validationCapture.cancel();
-            return false;
+            validationCapture.begin(face);
+            if (!session.recoverDrain()) { validationCapture.cancel(); return false; }
+            continue;
         }
-        // Re-use the normal progress callback so the user sees that the tracker
-        // is still collecting; the setup flow does not require another prompt.
-        (void)progressCb;
-        (void)progressUser;
+        if (!session.service()) { validationCapture.cancel(); return false; }
+        if (progressCb) {
+            const auto evidence = validationCapture.snapshot();
+            FifoAccel6PosCaptureProgress progress;
+            progress.active = true;
+            progress.face = face;
+            progress.acceptedSamples = evidence.acceptedSamples;
+            progress.rejectedSamples = evidence.rejectedSamples;
+            progress.requiredSamples = params_.validationSamples;
+            progress.meanG = evidence.meanG;
+            progress.varianceG2 = evidence.varianceG2;
+            progress.meanNormG = evidence.meanG.norm();
+            progress.latestTempC = io.latestTempC;
+            progressCb(progress, progressUser);
+        }
     }
 
+    if (!session.check()) { validationCapture.cancel(); return false; }
     const auto snap = validationCapture.snapshot();
     validationCapture.cancel();
     out.valid = snap.acceptedSamples >= params_.validationSamples;
@@ -385,6 +560,9 @@ bool FifoAccel6PosCalibrationRunner::captureValidationFace(
     out.meanG = snap.meanG;
     out.varianceG2 = snap.varianceG2;
     out.meanNormG = snap.meanNormG;
+    lastStatus_ = out.valid
+        ? FifoCalibrationCaptureStatus::Idle
+        : FifoCalibrationCaptureStatus::QualityRejected;
     return out.valid;
 }
 
@@ -392,38 +570,62 @@ bool FifoAccel6PosCalibrationRunner::captureFace(FifoCalibrationIo& io,
                                                  Accel6PosCalibration::Face face,
                                                  FifoAccelCaptureProgressCallback progressCb,
                                                  void* progressUser) {
-    if (!fifoCalibrationIoValid(io)) return false;
-    if (face == Accel6PosCalibration::Face::Invalid) return false;
+    lastStatus_ = FifoCalibrationCaptureStatus::Idle;
+    if (!fifoCalibrationIoValid(io)) {
+        lastStatus_ = FifoCalibrationCaptureStatus::InvalidIo;
+        return false;
+    }
+    if (static_cast<uint8_t>(face) >= 6u) {
+        lastStatus_ = FifoCalibrationCaptureStatus::InvalidRequest;
+        return false;
+    }
+
+    if (!validCaptureParams(params_)) {
+        lastStatus_ = FifoCalibrationCaptureStatus::InvalidRequest;
+        return false;
+    }
+    FifoCalibrationCaptureSession session(io, lastStatus_, params_.maximumCaptureMs,
+        params_.fifoWaitTimeoutMs, params_.maximumConsecutiveWaitTimeouts);
+    if (!session.check()) return false;
 
     capture_.begin(face);
     publishProgress(progressCb, progressUser, io);
     while (!capture_.done()) {
-        if (!fifoCalibrationWait(io, params_.fifoWaitTimeoutMs)) {
-            publishProgress(progressCb, progressUser, io);
+        if (!session.wait()) {
+            capture_.begin(face);
+            if (session.failed()) { capture_.cancel(); return false; }
             continue;
         }
         bool drainedAny = false;
         const bool drainOk = fifoCalibrationDrainBounded(
             io,
-            [&](const Lsm6dsv::RawSample&, const Lsm6dsv::Sample& scaled) -> bool {
+            [&](const Lsm6dsv::RawSample& raw, const Lsm6dsv::Sample& scaled) -> bool {
+                if (!session.acceptFresh(raw)) { capture_.begin(face); return true; }
                 capture_.push(scaled);
                 return !capture_.done();
             },
             &drainedAny);
         if (!drainOk) {
-            capture_.cancel();
-            return false;
+            capture_.begin(face);
+            if (!session.recoverDrain()) { capture_.cancel(); return false; }
+            continue;
         }
+        if (!session.service()) { capture_.cancel(); return false; }
         if (drainedAny) publishProgress(progressCb, progressUser, io);
     }
 
     const auto train = capture_.snapshot();
     capture_.cancel();
     Accel6PosCalibration::FaceData validation;
-    if (!captureValidationFace(io, face, validation, progressCb, progressUser)) return false;
+    if (!captureValidationFace(io, session, face, validation, progressCb, progressUser)) return false;
+    if (!session.check()) { capture_.cancel(); return false; }
     const uint8_t idx = static_cast<uint8_t>(face);
     validationFaces_[idx] = validation;
-    return cal_.setFace(face, train.meanG, train.acceptedSamples, train.varianceG2);
+    const bool stored = cal_.setFace(face, train.meanG, train.acceptedSamples, train.varianceG2);
+    lastStatus_ = stored
+        ? FifoCalibrationCaptureStatus::Completed
+        : FifoCalibrationCaptureStatus::QualityRejected;
+    return stored;
 }
 
 bool FifoAccel6PosCalibrationRunner::captureAutoFace(FifoCalibrationIo& io,
@@ -431,27 +633,43 @@ bool FifoAccel6PosCalibrationRunner::captureAutoFace(FifoCalibrationIo& io,
                                                      FifoAccelCaptureProgressCallback progressCb,
                                                      void* progressUser) {
     result = FifoAccelAutoFaceCaptureResult{};
-    if (!fifoCalibrationIoValid(io)) return false;
+    lastStatus_ = FifoCalibrationCaptureStatus::Idle;
+    if (!fifoCalibrationIoValid(io)) {
+        lastStatus_ = FifoCalibrationCaptureStatus::InvalidIo;
+        return false;
+    }
+
+    if (!validCaptureParams(params_)) {
+        lastStatus_ = FifoCalibrationCaptureStatus::InvalidRequest;
+        return false;
+    }
+    FifoCalibrationCaptureSession session(io, lastStatus_, params_.maximumCaptureMs,
+        params_.fifoWaitTimeoutMs, params_.maximumConsecutiveWaitTimeouts);
+    if (!session.check()) return false;
 
     capture_.begin(Accel6PosCalibration::Face::Invalid);
     publishProgress(progressCb, progressUser, io);
     while (!capture_.done()) {
-        if (!fifoCalibrationWait(io, params_.fifoWaitTimeoutMs)) {
-            publishProgress(progressCb, progressUser, io);
+        if (!session.wait()) {
+            capture_.begin(Accel6PosCalibration::Face::Invalid);
+            if (session.failed()) { capture_.cancel(); return false; }
             continue;
         }
         bool drainedAny = false;
         const bool drainOk = fifoCalibrationDrainBounded(
             io,
-            [&](const Lsm6dsv::RawSample&, const Lsm6dsv::Sample& scaled) -> bool {
+            [&](const Lsm6dsv::RawSample& raw, const Lsm6dsv::Sample& scaled) -> bool {
+                if (!session.acceptFresh(raw)) { capture_.begin(Accel6PosCalibration::Face::Invalid); return true; }
                 capture_.push(scaled);
                 return !capture_.done();
             },
             &drainedAny);
         if (!drainOk) {
-            capture_.cancel();
-            return false;
+            capture_.begin(Accel6PosCalibration::Face::Invalid);
+            if (!session.recoverDrain()) { capture_.cancel(); return false; }
+            continue;
         }
+        if (!session.service()) { capture_.cancel(); return false; }
         if (drainedAny) publishProgress(progressCb, progressUser, io);
     }
 
@@ -467,27 +685,34 @@ bool FifoAccel6PosCalibrationRunner::captureAutoFace(FifoCalibrationIo& io,
 
     if (!result.detection.valid) {
         result.ambiguous = true;
+        lastStatus_ = FifoCalibrationCaptureStatus::QualityRejected;
         return false;
     }
     if (cal_.hasFace(result.detectedFace)) {
         result.duplicate = true;
+        lastStatus_ = FifoCalibrationCaptureStatus::QualityRejected;
         return false;
     }
 
     Accel6PosCalibration::FaceData validation;
-    if (!captureValidationFace(io, result.detectedFace, validation, progressCb, progressUser)) {
+    if (!captureValidationFace(io, session, result.detectedFace, validation, progressCb, progressUser)) {
         return false;
     }
     const auto validationDetection =
         Accel6PosCalibration::detectFace(validation.meanG, params_.autoFaceDetection);
     if (!validationDetection.valid || validationDetection.face != result.detectedFace) {
         result.ambiguous = true;
+        lastStatus_ = FifoCalibrationCaptureStatus::QualityRejected;
         return false;
     }
 
+    if (!session.check()) return false;
     validationFaces_[static_cast<uint8_t>(result.detectedFace)] = validation;
     result.success = cal_.setFace(
         result.detectedFace, train.meanG, train.acceptedSamples, train.varianceG2);
+    lastStatus_ = result.success
+        ? FifoCalibrationCaptureStatus::Completed
+        : FifoCalibrationCaptureStatus::QualityRejected;
     return result.success;
 }
 

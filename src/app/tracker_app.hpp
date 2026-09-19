@@ -18,6 +18,9 @@
 #endif
 #include "runtime/tracker_runtime_types.hpp"
 #include "runtime/tracker_health_state.hpp"
+#include "runtime/boot_health.hpp"
+#include "runtime/sensor_progress_watchdog.hpp"
+#include "runtime/sensor_recovery_controller.hpp"
 #include "runtime/tracking_slack_admission.hpp"
 #if TRACKER_HAS_RUNTIME_PROFILER
 #include "runtime/runtime_profiler.hpp"
@@ -33,6 +36,7 @@
 #include "serial/tracker_serial_commands.hpp"
 #endif
 #include "app/tracker_bootstrap.hpp"
+#include "config/factory_reset_coordinator.hpp"
 
 namespace tracker {
 
@@ -95,6 +99,8 @@ struct TrackerAppRuntimeObjects {
     uint32_t* lastHeartbeatMs = nullptr;
     float* latestTempC = nullptr;
     TrackerHealthState* health = nullptr;
+    BootHealthRecord* bootHealthRecord = nullptr;
+    FactoryResetCoordinator* factoryResetCoordinator = nullptr;
 };
 
 struct TrackerAppCallbacks {
@@ -128,6 +134,13 @@ struct TrackerAppCallbacks {
     bool (*updateBatteryRuntime)() = nullptr;
     void (*setStatusLedSensorError)() = nullptr;
     void (*publishHealthState)(const TrackerHealthSnapshot& health) = nullptr;
+    void (*enterTrackingRecovery)(uint32_t reasonFlags,
+                                  const char* reason,
+                                  uint64_t timestampUs) = nullptr;
+    // Side-effect-free publication contract. During strict recovery the AHRS
+    // may be initialized while prepared orientation is intentionally withheld.
+    bool (*orientationPublicationExpected)() = nullptr;
+    void (*setSafeModeWriteInhibit)(bool inhibited) = nullptr;
     void (*resetFifoRuntimeCounters)() = nullptr;
     void (*attachFifoInterrupt)() = nullptr;
     void (*detachFifoInterrupt)() = nullptr;
@@ -168,6 +181,20 @@ public:
     // flow is active. This keeps FIFO, mag runtime, Wi-Fi and SlimeVR alive
     // without recursively polling the serial parser.
     void serviceRuntimeForBlockingCommand();
+#if TRACKER_HAS_CALIBRATION_UI
+    bool serviceFifoCalibrationCapture(FifoCalibrationService event);
+#endif
+
+    // Queue-only entry point used by the sample pipeline and command recovery
+    // adapters. Hardware work runs later from the bounded app service path.
+    bool requestSensorRecovery(TrackerHealthFaultCode code,
+                               uint32_t reasonFlags,
+                               uint64_t timestampUs,
+                               const char* reason);
+
+    SensorProgressWatchdog& sensorProgressWatchdog() { return sensorProgress_; }
+    const SensorProgressWatchdog& sensorProgressWatchdog() const { return sensorProgress_; }
+    const SensorRecoveryController& sensorRecoveryController() const { return sensorRecovery_; }
 
 #if TRACKER_HAS_MOTION_LIGHT_SLEEP
     // Queue a manual sleep request. It is intentionally serviced only after
@@ -183,7 +210,20 @@ private:
     void beginSensorStartupRecovery(TrackerHealthFaultCode code, const char* message);
     bool updateSensorStartupRecovery(uint32_t nowMs);
     void finishSensorStartupRecoverySuccess();
-    bool setupSensorRuntime();
+    bool setupSensorRuntime(bool preserveOrientation = false);
+    bool serviceSensorRuntimeRecovery(uint32_t nowMs);
+    bool performTransactionalFifoRecovery();
+    bool performFullSensorReinit();
+    void finishRuntimeRecoverySuccess();
+    void reportRuntimeRecoveryFailure(TrackerHealthFaultCode code, const char* message);
+    void updateSensorProgressWatchdog(uint32_t nowUs);
+    void initializeBootHealth();
+    void updateBootStableState(uint32_t nowMs);
+    void initializeTaskWatchdog();
+    void enterFactoryResetRecoveryMode();
+    void serviceFactoryResetRecoveryMode();
+    void feedTaskWatchdogAfterMandatoryLoop();
+    bool suspendTaskWatchdogForIntentionalSleep();
     void enterFatalDegraded(TrackerHealthFaultCode code, const char* message);
     void publishHealthState();
     void call(void (*callback)());
@@ -208,6 +248,7 @@ private:
 
     TrackerAppDeps deps_;
     bool sensorRuntimeReady_ = false;
+    bool fifoCalibrationCaptureActive_ = false;
     bool sensorStartupRecoveryActive_ = false;
     bool sensorStartupHardFailed_ = false;
     TrackerHealthFaultCode pendingSensorFaultCode_ = TrackerHealthFaultCode::None;
@@ -215,6 +256,19 @@ private:
     uint32_t nextSensorStartupRecoveryMs_ = 0;
     uint16_t sensorStartupRecoveryAttempts_ = 0;
     char pendingSensorFaultMessage_[64] = {};
+    SensorProgressWatchdog sensorProgress_;
+    SensorRecoveryController sensorRecovery_;
+    BootHealthController bootHealth_;
+    bool safeModeActive_ = false;
+    bool taskWatchdogRegistered_ = false;
+    bool factoryResetRecoveryActive_ = false;
+    bool factoryResetRecoveryExhausted_ = false;
+    uint8_t factoryResetRecoveryAttempts_ = 0u;
+    uint32_t nextFactoryResetRecoveryMs_ = 0u;
+    uint32_t bootStartedMs_ = 0u;
+    uint32_t nextSensorProgressCheckUs_ = 0u;
+    uint64_t recoveryTimestampUs_ = 0u;
+    char recoveryReason_[48] = {};
 #if TRACKER_ENABLE_LOOP_TIMING
     uint32_t loopTimingDecimator_ = 0u;
     bool loopTimingSampled_ = false;

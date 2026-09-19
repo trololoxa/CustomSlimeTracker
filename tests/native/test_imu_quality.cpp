@@ -68,6 +68,23 @@ static void testTimestampGapAndRecovery(TestContext& ctx) {
     CHECK_NEAR(ctx, c.meanDtUs(), 1500.0f, 1.0e-4f);
 }
 
+static void testSmallGapIsInformationalOnly(TestContext& ctx) {
+    ImuQualityConfig cfg;
+    cfg.expectedDtUs = 1000.0f;
+    cfg.smallGapFactor = 0.25f;
+    ImuQualityMonitor monitor(cfg);
+    const Lsm6dsvFifoReader::DrainStats stats = makeStats();
+
+    (void)monitor.evaluate(makeRaw(1000), makeSample(1000), stats, false);
+    const ImuQualityResult shortGap =
+        monitor.evaluate(makeRaw(1100), makeSample(1100), stats, false);
+    CHECK(ctx, shortGap.has(imu_quality_flags::TIMESTAMP_SMALL_GAP));
+    CHECK(ctx, !shortGap.has(imu_quality_flags::TIMESTAMP_NON_MONOTONIC));
+    CHECK(ctx, shortGap.shouldUpdateAhrs);
+    CHECK(ctx, !shortGap.shouldRequestFifoRecovery);
+    CHECK(ctx, monitor.counters().smallGapSamples == 1u);
+}
+
 static void testSaturationAndAccelOutlierGates(TestContext& ctx) {
     ImuQualityConfig cfg;
     cfg.expectedDtUs = 1000.0f;
@@ -248,6 +265,7 @@ static void testFifoStatsDeltaRequestsRecovery(TestContext& ctx) {
 int main() {
     TestContext ctx;
     testTimestampGapAndRecovery(ctx);
+    testSmallGapIsInformationalOnly(ctx);
     testSaturationAndAccelOutlierGates(ctx);
     testAccelOutputGateRejectsOnlyHardInvalidity(ctx);
     testUnknownTagAloneDoesNotRequestRecoveryByDefault(ctx);

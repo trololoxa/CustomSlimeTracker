@@ -15,6 +15,7 @@
 #include "runtime/runtime_gyro_bias_controller.hpp"
 #include "runtime/battery_runtime.hpp"
 #include "runtime/tracker_console_suppress.hpp"
+#include "runtime/tracker_health_state.hpp"
 #include "sensor/ahrs_6dof.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/fifo_calibrations.hpp"
@@ -52,11 +53,12 @@ void error(Stream& out, const char* msg) {
     out.println(msg ? msg : "");
 }
 
-void copyBounded(char* dst, size_t dstSize, const char* src) {
-    if (!dst || dstSize == 0) return;
-    if (!src) src = "";
-    std::strncpy(dst, src, dstSize - 1);
-    dst[dstSize - 1] = '\0';
+bool copyExactBounded(char* dst, size_t dstSize, const char* src) {
+    if (!dst || dstSize == 0u || !src) return false;
+    const size_t length = std::strlen(src);
+    if (length >= dstSize) return false;
+    std::memcpy(dst, src, length + 1u);
+    return true;
 }
 
 constexpr uint8_t slimeVrTrackerStatusCode(bool imuInitialized) {
@@ -135,42 +137,6 @@ void printMac(Stream& out, const uint8_t mac[6]) {
     }
 }
 
-
-void recoverSensorStreamAfterBlockingWifiScan(TrackerSerialCommandContext& ctx, const char* reason) {
-    trackerConsoleSuppressTrackingMessagesFor(TRACKER_SERIAL_COMMAND_RECOVERY_SUPPRESS_MS);
-
-    if (!ctx.fifo) return;
-
-    const uint64_t keepTs = ctx.fifo->stats().lastAssignedTimestampUs;
-    const bool ok = ctx.fifo->resetFifo();
-    ctx.fifo->resetTimestampReconstruction(keepTs);
-
-    if (ctx.quality) {
-        ctx.quality->resetStreamRecoveryState();
-        ctx.quality->syncFifoStats(ctx.fifo->stats());
-    }
-    if (ctx.resetFifoRuntime) {
-        ctx.resetFifoRuntime(ctx.resetFifoRuntimeUser);
-    }
-    if (ctx.requestTrackingRecovery) {
-        ctx.requestTrackingRecovery(
-            imu_quality_flags::FIFO_RECOVERY_REQUESTED,
-            "blocking_wifi_scan",
-            keepTs,
-            ctx.requestTrackingRecoveryUser
-        );
-    }
-
-    if (!ok) {
-        Stream& out = outFor(ctx);
-        out.print("[WARN ] [SerialCommands] [WSCAN] post-scan FIFO reset failed");
-        if (reason && reason[0] != '\0') {
-            out.print(" reason=");
-            out.print(reason);
-        }
-        out.println();
-    }
-}
 
 void printCompatConfig(Stream& out) {
     out.print("BOARD="); out.println(10); // LOLIN_C3_MINI-compatible metadata used by UDP handshake.
@@ -287,7 +253,7 @@ void printCompatTest(TrackerSerialCommandContext& ctx) {
 
 void applyWifiConfig(TrackerSerialCommandContext& ctx) {
     if (!ctx.networkConfig) return;
-    ctx.networkConfig->sanitize();
+    if (!ctx.networkConfig->validateSemanticConfig()) return;
     if (ctx.wifiManager) {
         TrackerWifiManagerConfig cfg;
         cfg.enabled = ctx.networkConfig->data.wifiEnabled;
@@ -307,18 +273,20 @@ bool setWifiCredentials(TrackerSerialCommandContext& ctx, const char* ssid, cons
         !ctx.wifiManager || !ctx.slimevrRuntime) {
         return false;
     }
-    if (!ssid || ssid[0] == '\0' || std::strlen(ssid) > 32) return false;
-    if (password && std::strlen(password) > 64) return false;
+    if (!ssid || ssid[0] == '\0') return false;
 
     // Build and persist the replacement before touching live Wi-Fi/session
     // state. A failed NVS commit leaves the working tracker unchanged.
     TrackerNetworkConfig candidate = *ctx.networkConfig;
-    copyBounded(candidate.data.ssid, sizeof(candidate.data.ssid), ssid);
-    copyBounded(candidate.data.password, sizeof(candidate.data.password), password ? password : "");
+    if (!copyExactBounded(candidate.data.ssid, sizeof(candidate.data.ssid), ssid) ||
+        !copyExactBounded(
+            candidate.data.password, sizeof(candidate.data.password), password ? password : "")) {
+        return false;
+    }
     candidate.data.credentialsValid = true;
     candidate.data.wifiEnabled = true;
     candidate.data.discoveryEnabled = true;
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) return false;
 
     const bool saved = ctx.networkConfigStore->save(candidate);
     g_slimeVrServerCredentialAttempt = saved;
@@ -415,7 +383,7 @@ void dispatchGetWifiScan(TrackerSerialCommandContext& ctx) {
     static WifiScanResult results[32];
     info(out, "[WSCAN] Scanning for WiFi networks...");
     const int16_t seen = ctx.wifiManager->scanNetworks(results, 32, false);
-    recoverSensorStreamAfterBlockingWifiScan(ctx, "get_wifiscan");
+    trackerRecoverSensorStreamAfterBlockingWifiScan(ctx, "get_wifiscan");
 
     if (seen < 0) {
         info(out, "[WSCAN] Scan failed!");
@@ -522,7 +490,10 @@ void dispatchTemperatureCalibration(TrackerSerialCommandContext& ctx, int argc, 
         if (ctx.gyroTempComp) {
             candidate.captureFromGyroTempComp(*ctx.gyroTempComp);
         }
-        candidate.sanitize();
+        if (!candidate.validateSemanticConfig()) {
+            error(out, "TCAL SAVE failed: invalid candidate");
+            return;
+        }
         candidate.updateCrc();
         if (ctx.configStore->save(candidate, TrackerCalibrationProvenance::Manual)) {
             *ctx.config = candidate;
@@ -548,7 +519,10 @@ void eraseCalibration(TrackerSerialCommandContext& ctx) {
 
     TrackerConfig candidate = *ctx.config;
     candidate.clearAllCalibrationPreservingPolicy();
-    candidate.sanitize();
+    if (!candidate.validateSemanticConfig()) {
+        error(out, "ERASE CALIBRATION failed: invalid candidate");
+        return;
+    }
     candidate.updateCrc();
 
     // Persistence is the commit point. A failed write must leave the live
@@ -604,10 +578,9 @@ bool trackerSerialDispatchSlimeVRSerialCompatCommand(TrackerSerialCommandContext
     }
     if (is(argv[0], "FRST")) {
         info(out, "FACTORY RESET");
-        trackerSerialFactoryReset(ctx);
-        if (ctx.networkConfig) ctx.networkConfig->resetDefaults();
-        if (ctx.networkConfigStore) ctx.networkConfigStore->erase();
-        if (ctx.networkConfigLoadedFromNvs) *ctx.networkConfigLoadedFromNvs = false;
+        // FRST is itself the protocol's explicit full-reset request. It uses
+        // the same verified transaction as the human CLI command.
+        if (!trackerSerialFactoryReset(ctx, FactoryResetScope::Full)) return true;
         out.flush();
         delay(100);
         ESP.restart();

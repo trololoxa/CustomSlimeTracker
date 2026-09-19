@@ -6,10 +6,8 @@
 namespace tracker {
 namespace {
 
-float quaternionAngularDifferenceDeg(const Quat& a, const Quat& b) {
-    const Quat an = a.normalized();
-    const Quat bn = b.normalized();
-    const float d = std::fabs(an.w * bn.w + an.x * bn.x + an.y * bn.y + an.z * bn.z);
+float normalizedQuaternionAngularDifferenceDeg(const Quat& a, const Quat& b) {
+    const float d = std::fabs(a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z);
     const float clamped = clampf(d, 0.0f, 1.0f);
     return 2.0f * std::acos(clamped) * MATH_RAD_TO_DEG;
 }
@@ -21,10 +19,39 @@ void SetupOutputVerificationAccumulator::reset() {
 }
 
 void SetupOutputVerificationAccumulator::push(const TrackerPreparedOutputSnapshot& snapshot) {
-    snapshots_++;
-    if (!snapshot.valid || !snapshot.q.isFinite()) {
-        invalidSnapshots_++;
+    pushObservation(snapshot, false);
+}
+
+void SetupOutputVerificationAccumulator::pushObservation(
+    const TrackerPreparedOutputSnapshot& snapshot, bool stale) {
+    const float qNormSq = snapshot.q.normSq();
+    // Corruption is fatal even for a duplicate, invalid or stale publication.
+    if (!snapshot.q.isFinite() || !isFinite(qNormSq) || qNormSq <= MATH_EPSILON) {
         quaternionFinite_ = false;
+    }
+    const float qNorm = std::sqrt(qNormSq);
+    maximumQuaternionNormError_ = std::max(maximumQuaternionNormError_, std::fabs(qNorm - 1.0f));
+    if (haveObservation_ && observationSequence_ == snapshot.sequence &&
+        observationPublishedAt_ == snapshot.publishedAtMcuUs &&
+        observationValid_ == snapshot.valid && observationStale_ == stale) {
+        duplicateSnapshots_++;
+        return;
+    }
+    haveObservation_ = true;
+    observationSequence_ = snapshot.sequence;
+    observationPublishedAt_ = snapshot.publishedAtMcuUs;
+    observationValid_ = snapshot.valid;
+    observationStale_ = stale;
+    snapshots_++;
+    if (!quaternionFinite_) { invalidSnapshots_++; return; }
+    if (stale) {
+        staleSnapshots_++;
+        haveQuaternion_ = false;
+        return;
+    }
+    if (!snapshot.valid) {
+        invalidSnapshots_++;
+        haveQuaternion_ = false;
         return;
     }
 
@@ -36,21 +63,15 @@ void SetupOutputVerificationAccumulator::push(const TrackerPreparedOutputSnapsho
     lastSequence_ = snapshot.sequence;
     uniqueSnapshots_++;
 
-    const float qNorm = snapshot.q.norm();
-    if (!isFinite(qNorm)) {
-        invalidSnapshots_++;
-        quaternionFinite_ = false;
-        return;
-    }
-    maximumQuaternionNormError_ = std::max(
-        maximumQuaternionNormError_, std::fabs(qNorm - 1.0f));
+    const Quat normalizedQ = snapshot.q / qNorm;
 
     if (haveQuaternion_) {
         maximumQuaternionStepDeg_ = std::max(
             maximumQuaternionStepDeg_,
-            quaternionAngularDifferenceDeg(previousQuaternion_, snapshot.q));
+            normalizedQuaternionAngularDifferenceDeg(
+                previousQuaternion_, normalizedQ));
     }
-    previousQuaternion_ = snapshot.q;
+    previousQuaternion_ = normalizedQ;
     haveQuaternion_ = true;
 
     if (!snapshot.linearAccelerationValid ||
@@ -64,6 +85,18 @@ void SetupOutputVerificationAccumulator::push(const TrackerPreparedOutputSnapsho
     linearAccelerationNormSum_ += static_cast<double>(normG);
     linearAccelerationNormSqSum_ += static_cast<double>(normG) * static_cast<double>(normG);
     maximumLinearAccelerationNorm_ = std::max(maximumLinearAccelerationNorm_, normG);
+}
+
+void SetupOutputVerificationAccumulator::push(
+    const TrackerPreparedOutputSnapshot& snapshot,
+    uint32_t nowMcuUs,
+    uint32_t maximumAgeUs) {
+    pushObservation(snapshot, maximumAgeUs != 0u &&
+        nowMcuUs - static_cast<uint32_t>(snapshot.publishedAtMcuUs) > maximumAgeUs);
+}
+
+void SetupOutputVerificationAccumulator::noteCoherentReadFailure() {
+    coherentReadFailures_++;
 }
 
 void SetupOutputVerificationAccumulator::pushInputSample(
@@ -94,6 +127,8 @@ SetupOutputVerificationResult SetupOutputVerificationAccumulator::finish(
     result.uniqueSnapshots = uniqueSnapshots_;
     result.linearAccelerationValidSnapshots = linearAccelerationValidSnapshots_;
     result.invalidSnapshots = invalidSnapshots_;
+    result.staleSnapshots = staleSnapshots_;
+    result.coherentReadFailures = coherentReadFailures_;
     result.duplicateSnapshots = duplicateSnapshots_;
     result.inputSamples = inputSamples_;
     result.quaternionFinite = quaternionFinite_;
@@ -171,7 +206,9 @@ SetupOutputVerificationResult SetupOutputVerificationAccumulator::finish(
         result.linearAccelerationPassed &&
         result.stationaryInputPassed &&
         result.streamHealthPassed &&
-        invalidSnapshots_ == 0u;
+        invalidSnapshots_ <= config.maximumInvalidSnapshots &&
+        staleSnapshots_ <= config.maximumStaleSnapshots &&
+        coherentReadFailures_ <= config.maximumCoherentReadFailures;
     return result;
 }
 

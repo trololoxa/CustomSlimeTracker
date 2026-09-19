@@ -5,8 +5,11 @@
 #include <cstring>
 #include <initializer_list>
 
+#include <Preferences.h>
+
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_detail.hpp"
+#include "config/tracker_config_store.hpp"
 #include "sensor/calibration.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 
@@ -18,6 +21,7 @@ static void testDefaultRuntimeConfigValidates(TestContext& ctx) {
 
     CHECK(ctx, cfg.validate());
     CHECK(ctx, cfg.validateContent());
+    CHECK(ctx, cfg.validateSemanticConfig());
     CHECK(ctx, cfg.data.magic == tracker_config_detail::CONFIG_MAGIC);
     CHECK(ctx, cfg.data.version == tracker_config_detail::CONFIG_VERSION);
     CHECK(ctx, cfg.data.size == sizeof(TrackerConfigBlob));
@@ -206,6 +210,15 @@ static void testPerformanceDefaultMigrationPreservesCurrentSettings(TestContext&
     CHECK(ctx, current.data.hardware.spiHz == tracker_config_detail::PREVIOUS_SPI_HZ);
     CHECK(ctx, current.data.fifo.watermarkWords == cfg::PREVIOUS_FIFO_WATERMARK_WORDS);
     CHECK(ctx, current.validate());
+
+    TrackerConfig impossible = current;
+    impossible.data.ahrsRuntime.accelNormGoodErrorG = 0.40f;
+    impossible.data.ahrsRuntime.accelNormBadErrorG = 0.20f;
+    impossible.updateCrc();
+    trackerMigratePerformanceDefaults(impossible);
+    CHECK_NEAR(ctx, impossible.data.ahrsRuntime.accelNormGoodErrorG, 0.40f, 1.0e-6f);
+    CHECK_NEAR(ctx, impossible.data.ahrsRuntime.accelNormBadErrorG, 0.20f, 1.0e-6f);
+    CHECK(ctx, !impossible.validateSemanticConfig());
 }
 
 static void testOversizedTemperatureSlopeIsInvalidated(TestContext& ctx) {
@@ -350,6 +363,111 @@ static void testFullCalibrationClearAlsoClearsFrame(TestContext& ctx) {
     CHECK(ctx, cfg.data.magCal.driverEnabled);
 }
 
+static void testStrictSemanticValidationRejectsImpossibleCandidates(TestContext& ctx) {
+    TrackerConfig cfg;
+    cfg.resetDefaults();
+    TrackerSemanticConfigError error = TrackerSemanticConfigError::None;
+    CHECK(ctx, cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::None);
+
+    cfg.data.ahrsRuntime.accelNormGoodErrorG = 0.5f;
+    cfg.data.ahrsRuntime.accelNormBadErrorG = 0.1f;
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::AhrsGates);
+
+    cfg.resetDefaults();
+    cfg.data.accelCal.valid = true;
+    cfg.data.accelCal.scale = Mat3::diagonal(1.0f, 1.0f, 0.0f);
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::AccelCalibration);
+
+    cfg.resetDefaults();
+    cfg.data.fifo.gyroBdr = Lsm6dsv::Odr::Hz480;
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::ImuFifoMismatch);
+
+    cfg.resetDefaults();
+    cfg.data.magYaw.applyEnabled = true;
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::Dependency);
+
+    cfg.resetDefaults();
+    cfg.data.ahrsRuntime.reserved = 0x80u;
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::ReservedState);
+
+    cfg.resetDefaults();
+    cfg.data.magCal.calibrationValid = true;
+    cfg.data.magCal.softIron = Mat3::diagonal(-1.0f, 1.0f, 1.0f);
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::MagCalibration);
+
+    cfg.resetDefaults();
+    cfg.data.quality.expectedDtUs = 1.0f;
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::QualityGates);
+
+    cfg.resetDefaults();
+    cfg.data.hardware.serialBaud = cfg::SERIAL_BAUD / 2u;
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::Hardware);
+
+    cfg.resetDefaults();
+    cfg.data.output.serialDebugEnabled = true;
+    cfg.data.output.quaternionOutputEnabled = true;
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::Output);
+}
+
+static void testStoreRejectsWithoutMutatingCandidateOrOldGood(TestContext& ctx) {
+    Preferences::clearTestStorage();
+    TrackerConfigStore store("semantic_store", "cfg");
+    TrackerConfig good;
+    good.resetDefaults();
+    CHECK(ctx, store.save(good));
+
+    TrackerConfig invalid = good;
+    invalid.data.quality.accelNormOutlierMinG = 2.0f;
+    invalid.data.quality.accelNormOutlierMaxG = 1.0f;
+    const TrackerConfig before = invalid;
+    CHECK(ctx, !store.save(invalid));
+    CHECK(ctx, store.lastError() == TrackerConfigError::CrcOrValidationFailed);
+    CHECK(ctx, std::memcmp(&invalid.data, &before.data, sizeof(invalid.data)) == 0);
+
+    TrackerConfig loaded;
+    CHECK(ctx, store.load(loaded));
+    CHECK(ctx, loaded.validateSemanticConfig());
+    CHECK(ctx, loaded.data.quality.accelNormOutlierMinG ==
+               good.data.quality.accelNormOutlierMinG);
+}
+
+static void testStrictSemanticValidationRejectsExtremeFiniteValues(TestContext& ctx) {
+    TrackerConfig cfg;
+    TrackerSemanticConfigError error = TrackerSemanticConfigError::None;
+
+    cfg.resetDefaults();
+    cfg.data.accelCal.valid = true;
+    cfg.data.accelCal.biasG = Vec3(1000.0f, 0.0f, 0.0f);
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::AccelCalibration);
+
+    cfg.resetDefaults();
+    cfg.data.gyroCal.biasValid = true;
+    cfg.data.gyroCal.biasRadS = Vec3(1.0f, 0.0f, 0.0f);
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::GyroCalibration);
+
+    cfg.resetDefaults();
+    cfg.data.fifo.maxWordsPerDrain = 65535u;
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::ImuFifoMismatch);
+
+    cfg.resetDefaults();
+    cfg.data.fifo.maxWaitingSamplesBeforeFallback = 255u;
+    CHECK(ctx, !cfg.validateSemanticConfig(&error));
+    CHECK(ctx, error == TrackerSemanticConfigError::ImuFifoMismatch);
+}
+
 int main() {
     TestContext ctx;
     testDefaultRuntimeConfigValidates(ctx);
@@ -364,5 +482,8 @@ int main() {
     testMagAxisSanitizePreservesContinuousProperRotation(ctx);
     testSlimeVRMotionModePersistenceAndLegacyMigration(ctx);
     testFullCalibrationClearAlsoClearsFrame(ctx);
+    testStrictSemanticValidationRejectsImpossibleCandidates(ctx);
+    testStrictSemanticValidationRejectsExtremeFiniteValues(ctx);
+    testStoreRejectsWithoutMutatingCandidateOrOldGood(ctx);
     return ctx.finish("test_config_hardening");
 }

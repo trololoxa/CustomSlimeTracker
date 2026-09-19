@@ -4,6 +4,7 @@
 
 #include "core/math.hpp"
 #include "connection/lsm6dsv_driver.hpp"
+#include "sensor/calibration_limits.hpp"
 
 namespace tracker {
 
@@ -23,6 +24,7 @@ static constexpr uint32_t PAIR_CENTER_RESIDUAL_HIGH = 1u << 10;
 static constexpr uint32_t MATRIX_SINGULAR       = 1u << 11;
 static constexpr uint32_t AUTO_FACE_AMBIGUOUS    = 1u << 12;
 static constexpr uint32_t INDEPENDENT_VALIDATION_FAILED = 1u << 13;
+static constexpr uint32_t INVALID_VALIDATION_PARAMS = 1u << 14;
 }
 
 class Accel6PosCalibration {
@@ -53,10 +55,10 @@ public:
         float maxFaceStddevG = 0.030f;
         float minExpectedAxisAbsG = 0.50f;
         float minAxisSeparationG = 0.75f;
-        float maxAbsBiasG = 0.30f;
+        float maxAbsBiasG = calibration_limits::ACCEL_MAX_ABS_BIAS_G;
         float maxPairCenterResidualG = 0.080f;
-        float minScale = 0.70f;
-        float maxScale = 1.30f;
+        float minScale = calibration_limits::ACCEL_MIN_SCALE;
+        float maxScale = calibration_limits::ACCEL_MAX_SCALE;
         float maxPostCalNormErrorG = 0.080f;
         float maxPostCalAxisResidualG = 0.220f;
     };
@@ -125,6 +127,7 @@ private:
     static float clamp01(float x);
     static int faceIndex(Face face);
     static char upper(char c);
+    static bool validationParamsValid(const ValidationParams& params);
 
     FaceData faces_[6];
     FaceData dummyFace_;

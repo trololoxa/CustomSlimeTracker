@@ -153,7 +153,8 @@ public:
     bool startCalibration();
     void stopCalibration();
     void resetCalibration();
-    bool applyCalibration(bool persist);
+    // Learned persistence belongs to the shared calibration transaction.
+    bool applyCalibrationVolatilePreview();
 
     void processRawSample(const Lsm6dsvFifoReader::MagRawSample& mag);
     // Runs bounded solver/storage work outside the FIFO/mag sample callback.

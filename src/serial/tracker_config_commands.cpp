@@ -1,6 +1,9 @@
 #include "serial/tracker_config_commands.hpp"
 
 #include <Arduino.h>
+#include <memory>
+#include <new>
+#include "serial/tracker_setup_commands.hpp"
 
 #include "config/tracker_config.hpp"
 #include "runtime/runtime_gyro_bias_controller.hpp"
@@ -80,6 +83,8 @@ void trackerSerialApplyConfigToRuntime(TrackerSerialCommandContext& ctx) {
 
     if (ctx.streamState) {
         ctx.streamState->rateHz = ctx.config->data.output.outputRateHz;
+        // Debug text streaming remains an explicit volatile session action;
+        // never auto-resume it after loading a config on a live console.
         ctx.streamState->mode = ctx.config->data.output.quaternionOutputEnabled
             ? TrackerStreamMode::Quat
             : TrackerStreamMode::Off;
@@ -110,20 +115,23 @@ void trackerSerialApplyConfigToRuntime(TrackerSerialCommandContext& ctx) {
 #endif
 }
 
-void trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx, TrackerConfig& target) {
-    if (ctx.imuCal) target.captureFromImuCalibration(*ctx.imuCal);
-    if (ctx.gyroTempComp) target.captureFromGyroTempComp(*ctx.gyroTempComp);
+bool trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx, TrackerConfig& target) {
+    TrackerConfig candidate = target;
+    if (ctx.imuCal) candidate.captureFromImuCalibration(*ctx.imuCal);
+    if (ctx.gyroTempComp) candidate.captureFromGyroTempComp(*ctx.gyroTempComp);
     // Runtime stream state is transient (SlimeVR and FIFO reconfigure may
     // temporarily force it Off). User-facing output commands update the config
     // at the moment policy changes, so persistence must not snapshot runtime
     // stream state back into the authoritative blob.
-    target.sanitize();
-    target.updateCrc();
+    if (!candidate.validateSemanticConfig()) return false;
+    candidate.updateCrc();
+    target = candidate;
+    return true;
 }
 
-void trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx) {
-    if (!ctx.config) return;
-    trackerSerialCaptureRuntimeToConfig(ctx, *ctx.config);
+bool trackerSerialCaptureRuntimeToConfig(TrackerSerialCommandContext& ctx) {
+    if (!ctx.config) return false;
+    return trackerSerialCaptureRuntimeToConfig(ctx, *ctx.config);
 }
 
 void trackerSerialPrintConfigNvsInfo(Stream& out, TrackerConfigStore& store) {
@@ -150,6 +158,11 @@ void trackerSerialPrintConfigNvsInfo(Stream& out, TrackerConfigStore& store) {
     out.print("slot_a_readable="); out.println(info.storage.slotA.readable ? "yes" : "no");
     out.print("slot_a_valid="); out.println(info.storage.slotA.valid ? "yes" : "no");
     out.print("slot_a_legacy_committed="); out.println(info.storage.slotA.legacyCommitted ? "yes" : "no");
+    out.print("slot_a_version="); out.println(info.storage.slotA.version);
+    out.print("slot_a_migration_required="); out.println(info.storage.slotA.migrationRequired ? "yes" : "no");
+    out.print("slot_a_semantic_valid="); out.println(info.storage.slotA.semanticValid ? "yes" : "no");
+    out.print("slot_a_semantic_error=");
+    out.println(trackerSemanticConfigErrorName(info.storage.slotA.semanticError));
     out.print("slot_a_commit_marker_exists="); out.println(info.storage.slotA.commitMarkerExists ? "yes" : "no");
     out.print("slot_a_commit_marker_valid="); out.println(info.storage.slotA.commitMarkerValid ? "yes" : "no");
     out.print("slot_a_generation="); out.println(info.storage.slotA.generation);
@@ -163,6 +176,11 @@ void trackerSerialPrintConfigNvsInfo(Stream& out, TrackerConfigStore& store) {
     out.print("slot_b_readable="); out.println(info.storage.slotB.readable ? "yes" : "no");
     out.print("slot_b_valid="); out.println(info.storage.slotB.valid ? "yes" : "no");
     out.print("slot_b_legacy_committed="); out.println(info.storage.slotB.legacyCommitted ? "yes" : "no");
+    out.print("slot_b_version="); out.println(info.storage.slotB.version);
+    out.print("slot_b_migration_required="); out.println(info.storage.slotB.migrationRequired ? "yes" : "no");
+    out.print("slot_b_semantic_valid="); out.println(info.storage.slotB.semanticValid ? "yes" : "no");
+    out.print("slot_b_semantic_error=");
+    out.println(trackerSemanticConfigErrorName(info.storage.slotB.semanticError));
     out.print("slot_b_commit_marker_exists="); out.println(info.storage.slotB.commitMarkerExists ? "yes" : "no");
     out.print("slot_b_commit_marker_valid="); out.println(info.storage.slotB.commitMarkerValid ? "yes" : "no");
     out.print("slot_b_generation="); out.println(info.storage.slotB.generation);
@@ -276,6 +294,10 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
 
         ConfigCalibrationOwnershipScope ownership(ctx);
         if (!requireConfigCalibrationOwnership(ctx, out, ownership)) return;
+        if (argc - 2 > 7) {
+            tracker_serial_detail::printErr(out, "too many fifo arguments");
+            return;
+        }
         char* fifoArgv[8] = {};
         fifoArgv[0] = const_cast<char*>("fifo");
         int fifoArgc = 1;
@@ -348,6 +370,9 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
             out.println(ctx.configStore->lastErrorName());
             return;
         }
+        // Legacy normalization belongs to the storage migration path. This
+        // explicit runtime load must either pass strict semantics unchanged or
+        // remain unapplied.
         if (!trackerSerialCommitFullHardwareConfig(ctx, out, candidate)) {
             ctx.configStore->markAuthoritativeConfigApplyFailed();
             tracker_serial_detail::printErr(out, "loaded config hardware apply failed; previous config restored; persistent writes remain blocked");
@@ -362,9 +387,29 @@ void trackerSerialDispatchConfigCommand(TrackerSerialCommandContext& ctx, int ar
     if (trackerSerialConfigIs(argv[1], "save")) {
         ConfigCalibrationOwnershipScope ownership(ctx);
         if (!requireConfigCalibrationOwnership(ctx, out, ownership)) return;
-        ctx.config->sanitize();
-        ctx.config->updateCrc();
-        if (ctx.configStore->save(*ctx.config, TrackerCalibrationProvenance::Manual)) {
+        TrackerConfig candidate = *ctx.config;
+        // Ordinary policy saves need no stationary sensor. A changed learned
+        // model/frame uses the same probation as explicit calibration saves.
+        std::unique_ptr<TrackerConfig> durable(new (std::nothrow) TrackerConfig{});
+        if (!durable) { tracker_serial_detail::printErr(out, "out of memory for config comparison"); return; }
+        const bool haveDurable = ctx.configStore->verify(*durable);
+        const auto& a = candidate.data.frame;
+        const auto& b = durable->data.frame;
+        bool frameChanged = a.sensorToDeviceValid != b.sensorToDeviceValid;
+        for (uint8_t row = 0u; row < 3u; ++row) {
+            for (uint8_t col = 0u; col < 3u; ++col) {
+                frameChanged |= a.sensorToDevice.m[row][col] != b.sensorToDevice.m[row][col];
+            }
+        }
+        const bool calibrationChanged = haveDurable
+            ? (!trackerCalibrationModelEqual(candidate, *durable) || frameChanged)
+            : (candidate.data.gyroCal.biasValid || candidate.data.accelCal.valid ||
+               candidate.data.magCal.calibrationValid || candidate.data.frame.sensorToDeviceValid);
+        const bool saved = calibrationChanged
+            ? trackerSerialCommitCalibrationCandidate(ctx, candidate, TrackerCalibrationProvenance::Manual)
+            : ctx.configStore->save(candidate, TrackerCalibrationProvenance::Manual);
+        if (saved) {
+            *ctx.config = candidate;
             tracker_serial_detail::printOk(out, "config saved to NVS");
         } else {
             out.print("# ERR config save failed: ");

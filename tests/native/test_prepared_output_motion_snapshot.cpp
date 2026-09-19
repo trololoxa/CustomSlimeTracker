@@ -65,6 +65,8 @@ static void testOrientationTimestampMustMatchSample(TestContext& ctx) {
     CHECK(ctx, !prepared.copy(snapshot));
     CHECK(ctx, !snapshot.valid);
     CHECK(ctx, !snapshot.linearAccelerationValid);
+    CHECK(ctx, prepared.copyCoherent(snapshot));
+    CHECK(ctx, !snapshot.valid);
 }
 
 static void testRejectedLargeDtCannotMasqueradeAsFreshOrientation(TestContext& ctx) {
@@ -152,6 +154,30 @@ static void testDynamicAccelOutlierRemainsValidMotionOutput(TestContext& ctx) {
     checkVec(ctx, snapshot.linearAccelerationDeviceG, Vec3(0.4f, 0.0f, 0.0f), 1.0e-6f);
 }
 
+static void testRecoveryPoseCannotPublishStaleAcceleration(TestContext& ctx) {
+    TrackerConfig config;
+    config.resetDefaults();
+    config.data.accelCal.valid = true;
+    config.data.frame.sensorToDeviceValid = true;
+
+    Ahrs6Dof ahrs(config.makeAhrsConfig());
+    ahrs.reset(Quat::identity(), 11500);
+    ImuQualityResult quality;
+    quality.flags = imu_quality_flags::FIFO_RECOVERY_REQUESTED;
+    quality.shouldUseAccelCorrection = false;
+    quality.shouldUseAccelOutput = false;
+
+    PreparedOutputRuntime prepared;
+    prepared.update(config, 1, 11500, ahrs, quality, Vec3(0.5f, 0.0f, 1.0f));
+    TrackerPreparedOutputSnapshot snapshot;
+    CHECK(ctx, prepared.copy(snapshot));
+    CHECK(ctx, snapshot.valid);
+    CHECK(ctx, !snapshot.linearAccelerationValid);
+    CHECK(ctx, (snapshot.linearAccelerationInvalidFlags &
+                prepared_output_motion_flags::RECOVERY_DEGRADED) != 0u);
+    checkVec(ctx, snapshot.linearAccelerationDeviceG, Vec3::zero(), 1.0e-6f);
+}
+
 static void testMotionRequiresAccelAndFrameCalibration(TestContext& ctx) {
     TrackerConfig config;
     config.resetDefaults();
@@ -219,6 +245,7 @@ int main() {
     testRejectedLargeDtCannotMasqueradeAsFreshOrientation(ctx);
     testHardAccelFailureKeepsOrientationButInvalidatesMotion(ctx);
     testDynamicAccelOutlierRemainsValidMotionOutput(ctx);
+    testRecoveryPoseCannotPublishStaleAcceleration(ctx);
     testMotionRequiresAccelAndFrameCalibration(ctx);
     testPreparedSnapshotRateLimitAndFailClosed(ctx);
     return ctx.finish("test_prepared_output_motion_snapshot");

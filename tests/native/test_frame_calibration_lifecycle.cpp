@@ -251,7 +251,8 @@ static void testCalibrationSnapshotAndRevisionSemantics(TestContext& ctx) {
     candidate.data.magCal.maxTrustNorm = 1.28f;
     candidate.updateCrc();
 
-    TrackerConfig composed = trackerComposeCalibrationCandidate(active, candidate);
+    TrackerConfig composed;
+    CHECK(ctx, trackerComposeCalibrationCandidate(active, candidate, composed));
     CHECK(ctx, !composed.data.gyroCal.tempCompEnabled);
     CHECK(ctx, composed.data.magCal.driverEnabled);
     CHECK_NEAR(ctx, composed.data.magCal.expectedFieldNorm, 321.0f, 1.0e-6f);

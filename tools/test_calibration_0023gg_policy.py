@@ -163,7 +163,7 @@ def main() -> int:
     require(setup, "verifier.inputSampleCount() >= verifyConfig.minimumInputSamples", "adaptive evidence stop")
     require(setup, "capture_duration_ms=", "capture duration diagnostic")
     require(setup, "stationary_input_sample_count_passed=", "stationary sample diagnostic")
-    require(setup, "earlier committed checkpoints, if any, remain authoritative", "checkpoint-honest rollback message")
+    require(setup + (ROOT / "src/serial/tracker_calibration_transaction.hpp").read_text(encoding="utf-8"), "earlier committed checkpoints, if any, remain authoritative", "checkpoint-honest rollback message")
     forbid(setup, "while (millis() - captureStartMs < 4000UL)", "fixed verification capture")
     require(verifier_test, "pushStableInput(verifier, 207)", "hardware sample-count regression")
 

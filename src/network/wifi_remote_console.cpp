@@ -5,8 +5,32 @@
 #if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
 #include <cerrno>
 #include <cstring>
+#if defined(ARDUINO_ARCH_ESP32)
 #include <sys/socket.h>
 #endif
+#endif
+
+namespace {
+
+#if TRACKER_ENABLE_WIFI_REMOTE_CONSOLE
+int remoteConsoleSendNonblocking(int socketFd, const void* data, size_t len) {
+#if defined(ARDUINO_ARCH_ESP32)
+    return ::send(socketFd, data, len, MSG_DONTWAIT);
+#else
+    // The enabled remote-console translation unit is compile-checked with a
+    // host WiFi stub. Host tests never own a real Arduino socket; keep the
+    // ESP/lwIP call target-only instead of importing a POSIX-only header into
+    // Windows/MSYS2 builds.
+    (void)socketFd;
+    (void)data;
+    (void)len;
+    errno = EWOULDBLOCK;
+    return -1;
+#endif
+}
+#endif
+
+} // namespace
 
 namespace tracker {
 
@@ -69,7 +93,8 @@ bool WifiRemoteConsoleRuntime::update(bool wifiConnected,
                 static constexpr char kBusy[] = "# ERR remote console busy\r\n";
                 const int fd = candidate.fd();
                 if (fd >= 0) {
-                    (void)::send(fd, kBusy, sizeof(kBusy) - 1u, MSG_DONTWAIT);
+                    (void)remoteConsoleSendNonblocking(
+                        fd, kBusy, sizeof(kBusy) - 1u);
                 }
                 candidate.stop();
                 ++rejectedClients_;
@@ -163,7 +188,7 @@ size_t WifiRemoteConsoleRuntime::drainClientOutput(size_t byteBudget) {
                 fatalSocketError = true;
                 return 0u;
             }
-            const int written = ::send(socketFd, data, len, MSG_DONTWAIT);
+            const int written = remoteConsoleSendNonblocking(socketFd, data, len);
             if (written > 0) return static_cast<size_t>(written);
             if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0u;
             fatalSocketError = true;

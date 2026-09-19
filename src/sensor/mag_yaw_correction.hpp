@@ -249,6 +249,28 @@ public:
                 const MagYawCorrectionConfig& cfg);
 
 private:
+    bool initializeUpdate(const MagYawCorrectionInputView& in,
+                          MagYawCorrectionOutput& out);
+    void evaluateMagValidity(const MagYawCorrectionInputView& in,
+                             const MagYawCorrectionConfig& cfg,
+                             MagYawCorrectionOutput& out);
+    void evaluateHorizontalTrust(const MagYawCorrectionInputView& in,
+                                 const MagYawCorrectionConfig& cfg,
+                                 MagYawCorrectionOutput& out);
+    void evaluateMotionTrust(const MagYawCorrectionInputView& in,
+                             const MagYawCorrectionConfig& cfg,
+                             MagYawCorrectionOutput& out);
+    uint8_t evaluateInnovation(const MagYawCorrectionInputView& in,
+                               const MagYawCorrectionConfig& cfg,
+                               MagYawCorrectionOutput& out);
+    void updateCooldown(const MagYawCorrectionInputView& in,
+                        const MagYawCorrectionConfig& cfg,
+                        MagYawCorrectionOutput& out);
+    void computeCorrection(const MagYawCorrectionInputView& in,
+                           const MagYawCorrectionConfig& cfg,
+                           uint8_t phaseFlags,
+                           MagYawCorrectionOutput& out);
+
     static bool timeBefore(uint32_t a, uint32_t b);
 
     void expireCooldownIfNeeded(uint32_t nowMs);

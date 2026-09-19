@@ -65,6 +65,9 @@ struct CalibrationAutonomyStats {
     uint32_t promotionFailures = 0;
     uint32_t probationWindows = 0;
     uint32_t probationRegressions = 0;
+    uint32_t probationSensorDeferrals = 0;
+    uint32_t probationTransportDeferrals = 0;
+    uint32_t probationTransportUnverifiedAccepts = 0;
     uint32_t accepts = 0;
     uint32_t rollbacks = 0;
     uint32_t rollbackFailures = 0;
@@ -224,10 +227,13 @@ private:
     uint32_t stateChangedMs_ = 0;
     uint32_t proposalCreatedMs_ = 0;
     uint32_t probationStartedMs_ = 0;
+    uint32_t probationDeadlineMs_ = 0;
     uint32_t probationAcceptedWindows_ = 0;
     uint8_t probationAccelFaceMask_ = 0;
     float probationCandidateResidualSum_ = 0.0f;
     float probationPreviousResidualSum_ = 0.0f;
+    uint32_t probationTransportCleanStartedMs_ = 0u;
+    bool probationTransportVerified_ = false;
     bool proposalPending_ = false;
     uint8_t manualCalibrationDepth_ = 0u;
     uint32_t proposalActiveRevision_ = 0;
@@ -243,6 +249,9 @@ private:
     TrackerConfig rollbackConfig_;
     CalibrationAutonomyJournalRecord journal_;
     CalibrationAutonomyRejectionRecord rejection_;
+    // Uptime timestamps are boot-local. A record loaded from NVS is retained
+    // for diagnostics, but cannot suppress fresh evidence in a new boot.
+    bool rejectionWrittenThisBoot_ = false;
 
     ImuQualityCounters probationQualityBaseline_{};
     SlimeVROutputHealthCounters probationSlimeBaseline_{};
@@ -269,7 +278,7 @@ private:
         const TrackerCalibrationCandidateRecord& candidate) const;
     bool candidateOwnedByAutonomy(const TrackerCalibrationCandidateRecord& candidate) const;
     uint32_t candidateFingerprint(const TrackerCalibrationCandidateRecord& candidate) const;
-    bool rejectionSuppresses(uint32_t fingerprint) const;
+    bool rejectionSuppresses(uint32_t fingerprint, uint32_t nowMs) const;
     bool serviceCandidateLifecycle(uint32_t nowMs);
     bool beginPromotion(uint32_t nowMs);
     bool advancePromotion(uint32_t nowMs);
@@ -280,7 +289,8 @@ private:
         const CalibrationAutonomyEraseRecoveryRecord& recovery, uint32_t nowMs);
     bool enterProbationAfterPromotion(uint32_t nowMs);
     bool evaluateProbationWindow(const Session& session, uint32_t nowMs);
-    bool probationHealthFailed() const;
+    bool probationSensorHealthFailed() const;
+    bool probationTransportHealthFailed() const;
     bool probationCanAccept(uint32_t nowMs) const;
     bool acceptPromotion(uint32_t nowMs);
     bool rollbackPromotion(uint32_t nowMs, CalibrationAutonomyRejectReason reason);
@@ -288,6 +298,8 @@ private:
     bool writeJournal(CalibrationAutonomyJournalState state, uint32_t nowMs);
     bool recordRejection(uint32_t nowMs, CalibrationAutonomyRejectReason reason);
     void snapshotProbationHealth();
+    void snapshotProbationSensorHealth();
+    void snapshotProbationTransportHealth();
 
     static float gyroModelResidualDps(const TrackerConfigBlob& payload,
                                       const Session& session);

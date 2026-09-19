@@ -11,6 +11,32 @@
 
 namespace tracker {
 
+// Only for deployed slot v3 copies. Calibration bytes are never repaired.
+class TrackerConfig;
+bool trackerNormalizeDeployedV3(TrackerConfig& config);
+
+enum class TrackerSemanticConfigError : uint8_t {
+    None = 0,
+    Schema,
+    Hardware,
+    ImuEnum,
+    FifoEnum,
+    ImuFifoMismatch,
+    GyroCalibration,
+    TemperatureModel,
+    AccelCalibration,
+    MagCalibration,
+    FrameTransform,
+    MagYawGates,
+    AhrsGates,
+    QualityGates,
+    Output,
+    Dependency,
+    ReservedState,
+};
+
+const char* trackerSemanticConfigErrorName(TrackerSemanticConfigError error);
+
 struct ImuCalibration;
 class GyroTempCompensator;
 class Accel6PosCalibration;
@@ -23,6 +49,10 @@ public:
     void resetDefaults();
     bool validate() const;
     bool validateContent() const;
+    // Strict runtime/candidate validation. Unlike sanitize(), this never edits
+    // the candidate and therefore cannot silently turn rejected input into a
+    // different accepted configuration.
+    bool validateSemanticConfig(TrackerSemanticConfigError* error = nullptr) const;
     uint32_t computeCrc() const;
     void updateCrc();
     void sanitize();
@@ -62,8 +92,9 @@ public:
     void captureFromGyroTempCompUpdate(const GyroTempCompensator& tempComp, uint32_t uptimeMs, uint32_t sampleCount = 0);
 };
 
-// One-time schema-gated migration of historical performance defaults.
-// sanitize() is called before return and updates schema versions/CRC.
+// One-time value-gated migration of historical performance defaults. This
+// changes only those exact defaults and updates the CRC; it is not a general
+// candidate repair path.
 void trackerMigratePerformanceDefaults(TrackerConfig& config);
 
 } // namespace tracker

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import subprocess
 import unittest
 from pathlib import Path
@@ -19,6 +21,28 @@ class CheckAllAggregationPolicyTests(unittest.TestCase):
             ok = check_all.run_checked(summary, ["false-test"], "synthetic failure")
         self.assertFalse(ok)
         self.assertEqual(summary.failures, ["synthetic failure (exit=7)"])
+
+    def test_failed_command_stderr_is_repeated_in_final_summary(self) -> None:
+        summary = check_all.CheckSummary()
+        completed = subprocess.CompletedProcess(
+            [], 7, stderr="root stack-budget cause\nsecond detail\n"
+        )
+        with mock.patch.object(check_all, "run_bounded_process", return_value=completed):
+            ok = check_all.run_checked(summary, ["false-test"], "synthetic failure")
+        self.assertFalse(ok)
+        self.assertEqual(
+            summary.failures,
+            ["synthetic failure (exit=7)\nroot stack-budget cause\nsecond detail"],
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            check_all.print_aggregated_failure(summary.failures[0])
+        self.assertEqual(
+            output.getvalue(),
+            "# FAIL synthetic failure (exit=7)\n"
+            "#   root stack-budget cause\n"
+            "#   second detail\n",
+        )
 
     def test_require_pio_reports_failure_instead_of_raising(self) -> None:
         with mock.patch.object(check_all, "pio_executable", return_value=None):
@@ -39,7 +63,10 @@ class CheckAllAggregationPolicyTests(unittest.TestCase):
                 timeout_s=0.01,
             )
         self.assertFalse(ok)
-        self.assertEqual(summary.failures, ["bounded command (exit=124)"])
+        self.assertEqual(
+            summary.failures,
+            ["bounded command (exit=124)\ncommand timed out after 0.01s"],
+        )
 
     def test_strict_modes_reject_coverage_reducing_options(self) -> None:
         common = dict(

@@ -12,6 +12,11 @@
 #include "connection/lsm6dsv_fifo.hpp"
 #include "connection/lsm6dsv_sensorhub.hpp"
 #include "sensor/qmc6309.hpp"
+#include "runtime/boot_health.hpp"
+
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_attr.h>
+#endif
 
 using namespace tracker;
 
@@ -53,9 +58,13 @@ static uint8_t g_fifoRuntimeRawQueueFlags[FIFO_RUNTIME_RAW_QUEUE_CAPACITY];
 static Lsm6dsvFifoReader::MagRawSample g_fifoRuntimeMagQueue[FIFO_RUNTIME_MAG_QUEUE_CAPACITY];
 
 static volatile uint32_t g_fifoIntCount = 0;
-static volatile uint32_t g_fifoLastIrqUs = 0;
+
+#if defined(ARDUINO_ARCH_ESP32)
+RTC_NOINIT_ATTR static BootHealthRecord g_bootHealthRecord;
+#else
+static BootHealthRecord g_bootHealthRecord;
+#endif
 
 static void IRAM_ATTR onFifoInt1() {
-    g_fifoLastIrqUs = micros();
     g_fifoIntCount++;
 }

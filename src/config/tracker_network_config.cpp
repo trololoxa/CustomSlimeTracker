@@ -16,6 +16,21 @@ bool validUserActionValue(uint8_t value) {
            value == static_cast<uint8_t>(SlimeVRUserAction::PauseTracking);
 }
 
+bool terminatedWithin(const char* value, size_t capacity) {
+    return value && std::memchr(value, '\0', capacity) != nullptr;
+}
+
+bool validHostname(const char* value) {
+    if (!value || value[0] == '\0' || value[0] == '-') return false;
+    size_t length = 0;
+    for (const char* p = value; *p; ++p, ++length) {
+        const bool alpha = (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z');
+        const bool digit = (*p >= '0' && *p <= '9');
+        if (!alpha && !digit && *p != '-') return false;
+    }
+    return length != 0u && value[length - 1u] != '-';
+}
+
 } // namespace
 
 
@@ -41,46 +56,25 @@ void TrackerNetworkConfig::updateCrc() {
     data.crc32 = computeCrc();
 }
 
-void TrackerNetworkConfig::sanitize() {
-    data.ssid[sizeof(data.ssid) - 1] = '\0';
-    data.password[sizeof(data.password) - 1] = '\0';
-    data.serverHost[sizeof(data.serverHost) - 1] = '\0';
-    data.deviceName[sizeof(data.deviceName) - 1] = '\0';
-    if (data.deviceName[0] == '\0' || std::strcmp(data.deviceName, "c3_6dsv_tracker") == 0) {
-        std::strncpy(data.deviceName, "c3-6dsv-tracker", sizeof(data.deviceName) - 1);
-        data.deviceName[sizeof(data.deviceName) - 1] = '\0';
-    }
-
-    // DHCP hostnames should be simple LDH labels. Some routers tolerate
-    // underscores/spaces, some do not. Keep the stored name safe before it is
-    // passed to WiFi.setHostname().
-    for (char* p = data.deviceName; *p; ++p) {
-        const bool alpha = (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z');
-        const bool digit = (*p >= '0' && *p <= '9');
-        if (!alpha && !digit && *p != '-') *p = '-';
-    }
-    if (data.deviceName[0] == '-') data.deviceName[0] = 't';
-    const size_t nameLen = std::strlen(data.deviceName);
-    if (nameLen > 0 && data.deviceName[nameLen - 1] == '-') data.deviceName[nameLen - 1] = 'r';
-    if (data.serverPort == 0) data.serverPort = tracker_network_detail::DEFAULT_SLIMEVR_PORT;
-    if (!validUserActionValue(data.tapUserAction)) {
-        data.tapUserAction = static_cast<uint8_t>(SlimeVRUserAction::None);
-    }
-    if (!data.credentialsValid) {
-        data.wifiEnabled = false;
-    }
-    updateCrc();
-}
-
 bool TrackerNetworkConfig::validate() const {
     if (data.magic != tracker_network_detail::CONFIG_MAGIC) return false;
     if (data.version != tracker_network_detail::CONFIG_VERSION) return false;
     if (data.size != sizeof(TrackerNetworkConfigBlob)) return false;
     if (computeCrc() != data.crc32) return false;
-    if (data.serverPort == 0) return false;
+    return validateSemanticConfig();
+}
+
+bool TrackerNetworkConfig::validateSemanticConfig() const {
+    if (!terminatedWithin(data.ssid, sizeof(data.ssid)) ||
+        !terminatedWithin(data.password, sizeof(data.password)) ||
+        !terminatedWithin(data.serverHost, sizeof(data.serverHost)) ||
+        !terminatedWithin(data.deviceName, sizeof(data.deviceName))) return false;
+    if (data.serverPort == 0u || !validHostname(data.deviceName)) return false;
+    if (data.reserved1 != 0u) return false;
     if (data.credentialsValid && data.ssid[0] == '\0') return false;
-    if (!validUserActionValue(data.tapUserAction)) return false;
-    return true;
+    if (data.wifiEnabled && !data.credentialsValid) return false;
+    if (data.manualServerEnabled && data.serverHost[0] == '\0') return false;
+    return validUserActionValue(data.tapUserAction);
 }
 
 SlimeVRUserAction TrackerNetworkConfig::tapUserAction() const {
@@ -91,7 +85,7 @@ SlimeVRUserAction TrackerNetworkConfig::tapUserAction() const {
 
 void TrackerNetworkConfig::setTapUserAction(SlimeVRUserAction action) {
     data.tapUserAction = static_cast<uint8_t>(action);
-    sanitize();
+    updateCrc();
 }
 
 TrackerNetworkConfigStore::TrackerNetworkConfigStore(const char* nvsNamespace,
@@ -126,6 +120,25 @@ bool TrackerNetworkConfigStore::load(TrackerNetworkConfig& out) {
         lastError_ = TrackerConfigError::ReadFailed;
         return false;
     }
+    // First validate the stored envelope exactly as written. Sanitizing before
+    // this check would turn corrupted bytes into apparently valid input.
+    if (tmp.data.magic != tracker_network_detail::CONFIG_MAGIC ||
+        tmp.data.version != tracker_network_detail::CONFIG_VERSION ||
+        tmp.data.size != sizeof(TrackerNetworkConfigBlob) ||
+        tmp.computeCrc() != tmp.data.crc32) {
+        lastError_ = TrackerConfigError::CrcOrValidationFailed;
+        return false;
+    }
+    // The only same-schema legacy exception is the exact old default DHCP
+    // hostname. Do not run the general sanitizer here: a CRC-valid but
+    // semantically impossible current record must still fail closed.
+    if (terminatedWithin(tmp.data.deviceName, sizeof(tmp.data.deviceName)) &&
+        std::strcmp(tmp.data.deviceName, "c3_6dsv_tracker") == 0) {
+        std::strncpy(
+            tmp.data.deviceName, "c3-6dsv-tracker", sizeof(tmp.data.deviceName) - 1u);
+        tmp.data.deviceName[sizeof(tmp.data.deviceName) - 1u] = '\0';
+        tmp.updateCrc();
+    }
     if (!tmp.validate()) {
         lastError_ = TrackerConfigError::CrcOrValidationFailed;
         return false;
@@ -136,12 +149,16 @@ bool TrackerNetworkConfigStore::load(TrackerNetworkConfig& out) {
 }
 
 bool TrackerNetworkConfigStore::save(TrackerNetworkConfig& config) {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
     TrackerNetworkConfig candidate = config;
-    candidate.sanitize();
-    if (!candidate.validate()) {
+    if (!candidate.validateSemanticConfig()) {
         lastError_ = TrackerConfigError::CrcOrValidationFailed;
         return false;
     }
+    candidate.updateCrc();
     Preferences prefs;
     if (!prefs.begin(ns_, false)) {
         lastError_ = TrackerConfigError::NvsBeginFailed;
@@ -153,21 +170,41 @@ bool TrackerNetworkConfigStore::save(TrackerNetworkConfig& config) {
         lastError_ = TrackerConfigError::WriteFailed;
         return false;
     }
+    TrackerNetworkConfig verify;
+    if (!load(verify) || std::memcmp(&verify.data, &candidate.data, sizeof(candidate.data)) != 0) {
+        lastError_ = TrackerConfigError::CommitUncertain;
+        return false;
+    }
     config = candidate;
     lastError_ = TrackerConfigError::None;
     return true;
 }
 
 bool TrackerNetworkConfigStore::erase() {
+    if (writeInhibited_) {
+        lastError_ = TrackerConfigError::WriteInhibited;
+        return false;
+    }
     Preferences prefs;
     if (!prefs.begin(ns_, false)) {
         lastError_ = TrackerConfigError::NvsBeginFailed;
         return false;
     }
-    const bool ok = prefs.remove(key_);
+    const bool ok = !prefs.isKey(key_) || prefs.remove(key_);
     prefs.end();
-    lastError_ = ok ? TrackerConfigError::None : TrackerConfigError::RemoveFailed;
-    return ok;
+    if (!ok) {
+        lastError_ = TrackerConfigError::RemoveFailed;
+        return false;
+    }
+    Preferences verify;
+    if (!verify.begin(ns_, true)) {
+        lastError_ = TrackerConfigError::NvsBeginFailed;
+        return false;
+    }
+    const bool gone = !verify.isKey(key_);
+    verify.end();
+    lastError_ = gone ? TrackerConfigError::None : TrackerConfigError::RemoveFailed;
+    return gone;
 }
 
 } // namespace tracker

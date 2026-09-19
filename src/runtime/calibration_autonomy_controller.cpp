@@ -10,6 +10,30 @@ namespace tracker {
 
 namespace {
 
+uint32_t rejectionRetryDelayMs(CalibrationAutonomyRejectReason reason) {
+    switch (reason) {
+        case CalibrationAutonomyRejectReason::RealtimeFault:
+        case CalibrationAutonomyRejectReason::StorageFailure:
+            return 30000u;
+        case CalibrationAutonomyRejectReason::CandidateStale:
+        case CalibrationAutonomyRejectReason::RejectedFingerprint:
+            return 60000u;
+        case CalibrationAutonomyRejectReason::UserDisabled:
+            return 300000u;
+        case CalibrationAutonomyRejectReason::CandidateNotBetter:
+        case CalibrationAutonomyRejectReason::FreshEvidenceRegression:
+        case CalibrationAutonomyRejectReason::MagneticProbationFailed:
+            return 600000u;
+        case CalibrationAutonomyRejectReason::None:
+            return 0u;
+    }
+    return 0u;
+}
+
+} // namespace
+
+namespace {
+
 constexpr float kRadToDps = MATH_RAD_TO_DEG;
 constexpr uint32_t kBadQualityMask =
     imu_quality_flags::TIMESTAMP_ZERO |
@@ -77,6 +101,14 @@ float faceResidual(const Vec3& calibrated,
 
 bool finiteFloat(float value) {
     return std::isfinite(value);
+}
+
+bool deadlineReached(uint32_t nowMs, uint32_t deadlineMs) {
+    return deadlineMs != 0u && static_cast<int32_t>(nowMs - deadlineMs) >= 0;
+}
+
+bool deadlinePending(uint32_t nowMs, uint32_t deadlineMs) {
+    return deadlineMs != 0u && static_cast<int32_t>(nowMs - deadlineMs) < 0;
 }
 
 } // namespace
@@ -201,6 +233,7 @@ void CalibrationAutonomyController::transition(CalibrationAutonomyState state,
 void CalibrationAutonomyController::begin(const CalibrationAutonomyDeps& deps,
                                           uint32_t nowMs) {
     deps_ = deps;
+    rejectionWrittenThisBoot_ = false;
     begun_ = deps_.config && deps_.configStore && deps_.autonomyStore;
     resetRuntimeEvidence();
     transition(CalibrationAutonomyState::Observing, nowMs);
@@ -256,9 +289,13 @@ void CalibrationAutonomyController::resetRuntimeEvidence() {
     proposalActiveRevision_ = 0u;
     proposalSignature_ = TrackerSensorSignature{};
     probationAcceptedWindows_ = 0u;
+    probationStartedMs_ = 0u;
+    probationDeadlineMs_ = 0u;
     probationAccelFaceMask_ = 0u;
     probationCandidateResidualSum_ = 0.0f;
     probationPreviousResidualSum_ = 0.0f;
+    probationTransportCleanStartedMs_ = 0u;
+    probationTransportVerified_ = false;
 }
 
 void CalibrationAutonomyController::notifyCalibrationContractChanged() {
@@ -493,7 +530,7 @@ bool CalibrationAutonomyController::buildGyroBiasProposal(uint32_t nowMs) {
     proposalConfig_.data.gyroCal.biasValid = true;
     proposalConfig_.data.gyroCal.biasRadS = candidateBias;
     proposalConfig_.data.gyroCalMeta.biasCalibrationUptimeMs = nowMs;
-    proposalConfig_.sanitize();
+    if (!proposalConfig_.validateSemanticConfig()) return false;
     proposalConfig_.updateCrc();
 
     proposalMetadata_ = TrackerCalibrationCandidateMetadata{};
@@ -653,7 +690,7 @@ bool CalibrationAutonomyController::buildGyroTemperatureProposal(uint32_t nowMs)
     proposalConfig_.data.gyroCalMeta.tempModelUpdatedUptimeMs = nowMs;
     proposalConfig_.data.gyroCalMeta.tempModelSampleCount =
         static_cast<uint32_t>(sessionCount_) * kWindowSamples;
-    proposalConfig_.sanitize();
+    if (!proposalConfig_.validateSemanticConfig()) return false;
     proposalConfig_.updateCrc();
     if (!proposalConfig_.data.gyroCal.tempCompValid ||
         !proposalConfig_.data.gyroCal.tempCompEnabled) {
@@ -782,7 +819,7 @@ bool CalibrationAutonomyController::buildAccelProposal(uint32_t nowMs) {
     proposalConfig_.data.accelCalQuality.qualityFlags = result.qualityFlags;
     proposalConfig_.data.accelCalQuality.qualityScore = result.qualityScore;
     proposalConfig_.data.accelCalQuality.maxFaceNormErrorG = candidateWorst;
-    proposalConfig_.sanitize();
+    if (!proposalConfig_.validateSemanticConfig()) return false;
     proposalConfig_.updateCrc();
 
     proposalMetadata_ = TrackerCalibrationCandidateMetadata{};
@@ -913,11 +950,21 @@ uint32_t CalibrationAutonomyController::candidateFingerprint(
            (static_cast<uint32_t>(classifyCandidate(candidate)) << 24u);
 }
 
-bool CalibrationAutonomyController::rejectionSuppresses(uint32_t fingerprint) const {
-    if (!CalibrationAutonomyStore::valid(rejection_) || !deps_.config) return false;
-    return rejection_.candidateFingerprint == fingerprint &&
-           rejection_.activeCalibrationRevision ==
-               trackerCalibrationPayloadRevision(*deps_.config);
+bool CalibrationAutonomyController::rejectionSuppresses(
+    uint32_t fingerprint, uint32_t nowMs) const {
+    if (!rejectionWrittenThisBoot_ ||
+        !CalibrationAutonomyStore::valid(rejection_) || !deps_.config) {
+        return false;
+    }
+    if (rejection_.candidateFingerprint != fingerprint ||
+        rejection_.activeCalibrationRevision !=
+            trackerCalibrationPayloadRevision(*deps_.config)) {
+        return false;
+    }
+    const auto reason = static_cast<CalibrationAutonomyRejectReason>(rejection_.reason);
+    const uint32_t retryDelayMs = rejectionRetryDelayMs(reason);
+    return retryDelayMs != 0u &&
+        nowMs - rejection_.rejectedUptimeMs < retryDelayMs;
 }
 
 bool CalibrationAutonomyController::service(uint32_t nowMs) {
@@ -986,19 +1033,36 @@ bool CalibrationAutonomyController::service(uint32_t nowMs) {
         if (realtimeGateAllows(gate)) worked = acceptPromotion(nowMs);
         else ++stats_.serviceDeferrals;
     } else if (state_ == CalibrationAutonomyState::PromotedProbation) {
-        if (probationHealthFailed()) {
-            // Network/FIFO/magnetic disturbances are not evidence that the new
-            // calibration is worse. Pause and discard the contaminated interval.
-            snapshotProbationHealth();
-            probationStartedMs_ = nowMs;
+        const bool sensorFailed = probationSensorHealthFailed();
+        const bool transportFailed = probationTransportHealthFailed();
+        if (sensorFailed) {
+            // Only sensor-stream faults contaminate sensor evidence.
+            snapshotProbationSensorHealth();
             window_.reset();
+            ++stats_.probationSensorDeferrals;
             ++stats_.serviceDeferrals;
-        } else if (nowMs - probationStartedMs_ > kProbationMaxMs) {
+        }
+        if (transportFailed) {
+            // Transport smoke is reported separately and never vetoes an
+            // otherwise valid sensor calibration.
+            snapshotProbationTransportHealth();
+            probationTransportVerified_ = false;
+            probationTransportCleanStartedMs_ = nowMs;
+            ++stats_.probationTransportDeferrals;
+        } else if (!probationTransportVerified_ &&
+                   nowMs - probationTransportCleanStartedMs_ >= kProbationMinMs) {
+            probationTransportVerified_ = true;
+        }
+
+        if (!sensorFailed && probationCanAccept(nowMs)) {
+            if (!probationTransportVerified_) {
+                ++stats_.probationTransportUnverifiedAccepts;
+            }
+            transition(CalibrationAutonomyState::AcceptedCleanup, nowMs);
+            worked = true;
+        } else if (deadlineReached(nowMs, probationDeadlineMs_)) {
             lastRejectReason_ = CalibrationAutonomyRejectReason::RealtimeFault;
             transition(CalibrationAutonomyState::RollbackPending, nowMs);
-            worked = true;
-        } else if (probationCanAccept(nowMs)) {
-            transition(CalibrationAutonomyState::AcceptedCleanup, nowMs);
             worked = true;
         }
     } else if (wave0023Enabled_ || wave0022Enabled_) {
@@ -1020,7 +1084,7 @@ bool CalibrationAutonomyController::service(uint32_t nowMs) {
 
 bool CalibrationAutonomyController::serviceCandidateLifecycle(uint32_t nowMs) {
     if (!deps_.configStore) return false;
-    if (candidateProbeNotBeforeMs_ != 0u && nowMs < candidateProbeNotBeforeMs_) {
+    if (deadlinePending(nowMs, candidateProbeNotBeforeMs_)) {
         return false;
     }
     if (!deps_.configStore->loadCandidate(candidateRecord_)) {
@@ -1042,7 +1106,7 @@ bool CalibrationAutonomyController::serviceCandidateLifecycle(uint32_t nowMs) {
         return false;
     }
     const uint32_t fingerprint = candidateFingerprint(candidateRecord_);
-    if (rejectionSuppresses(fingerprint)) {
+    if (rejectionSuppresses(fingerprint, nowMs)) {
         ++stats_.proposalsSuppressed;
         lastRejectReason_ = CalibrationAutonomyRejectReason::RejectedFingerprint;
         // The slot is owned by autonomy and has already been rejected for the
@@ -1200,10 +1264,13 @@ bool CalibrationAutonomyController::advancePromotion(uint32_t nowMs) {
 
 bool CalibrationAutonomyController::enterProbationAfterPromotion(uint32_t nowMs) {
     probationStartedMs_ = nowMs;
+    probationDeadlineMs_ = nowMs + kProbationMaxMs;
     probationAcceptedWindows_ = 0u;
     probationAccelFaceMask_ = 0u;
     probationCandidateResidualSum_ = 0.0f;
     probationPreviousResidualSum_ = 0.0f;
+    probationTransportCleanStartedMs_ = nowMs;
+    probationTransportVerified_ = false;
     snapshotProbationHealth();
     clearSessions();
     motionSeenSinceSession_ = true;
@@ -1221,11 +1288,19 @@ bool CalibrationAutonomyController::enterProbationAfterPromotion(uint32_t nowMs)
 }
 
 void CalibrationAutonomyController::snapshotProbationHealth() {
+    snapshotProbationSensorHealth();
+    snapshotProbationTransportHealth();
+}
+
+void CalibrationAutonomyController::snapshotProbationSensorHealth() {
     if (deps_.quality) probationQualityBaseline_ = deps_.quality->counters();
+}
+
+void CalibrationAutonomyController::snapshotProbationTransportHealth() {
     if (deps_.slimevr) deps_.slimevr->healthCounters(probationSlimeBaseline_);
 }
 
-bool CalibrationAutonomyController::probationHealthFailed() const {
+bool CalibrationAutonomyController::probationSensorHealthFailed() const {
     if (deps_.quality) {
         const auto& now = deps_.quality->counters();
         if (now.fifoOverrunEvents != probationQualityBaseline_.fifoOverrunEvents ||
@@ -1238,16 +1313,6 @@ bool CalibrationAutonomyController::probationHealthFailed() const {
             return true;
         }
     }
-    if (deps_.slimevr) {
-        SlimeVROutputHealthCounters now;
-        deps_.slimevr->healthCounters(now);
-        if (now.sendFailures != probationSlimeBaseline_.sendFailures ||
-            now.rotationSendFailures != probationSlimeBaseline_.rotationSendFailures ||
-            now.serverSilenceResets != probationSlimeBaseline_.serverSilenceResets ||
-            now.wifiLostResets != probationSlimeBaseline_.wifiLostResets) {
-            return true;
-        }
-    }
     if (subsystem_ == CalibrationAutonomySubsystem::MagToImu && deps_.magReliability) {
         if (deps_.magReliability->state == MagFieldReliabilityState::Disturbed ||
             deps_.magReliability->state == MagFieldReliabilityState::Suspect) {
@@ -1255,6 +1320,16 @@ bool CalibrationAutonomyController::probationHealthFailed() const {
         }
     }
     return false;
+}
+
+bool CalibrationAutonomyController::probationTransportHealthFailed() const {
+    if (!deps_.slimevr) return false;
+    SlimeVROutputHealthCounters now;
+    deps_.slimevr->healthCounters(now);
+    return now.sendFailures != probationSlimeBaseline_.sendFailures ||
+           now.rotationSendFailures != probationSlimeBaseline_.rotationSendFailures ||
+           now.serverSilenceResets != probationSlimeBaseline_.serverSilenceResets ||
+           now.wifiLostResets != probationSlimeBaseline_.wifiLostResets;
 }
 
 float CalibrationAutonomyController::gyroModelResidualDps(
@@ -1391,7 +1466,9 @@ bool CalibrationAutonomyController::recordRejection(
         : candidateFingerprint(candidateRecord_);
     rejection_.activeCalibrationRevision = trackerCalibrationPayloadRevision(*deps_.config);
     rejection_.rejectedUptimeMs = nowMs;
-    return deps_.autonomyStore->writeRejection(rejection_);
+    const bool written = deps_.autonomyStore->writeRejection(rejection_);
+    rejectionWrittenThisBoot_ = written;
+    return written;
 }
 
 bool CalibrationAutonomyController::rollbackPromotion(
@@ -1537,6 +1614,10 @@ bool CalibrationAutonomyController::recoverJournalAtBoot(uint32_t nowMs) {
         }
         if (activeRevision == journal_.targetCalibrationRevision) {
             probationStartedMs_ = nowMs;
+            probationDeadlineMs_ = nowMs + kProbationMaxMs;
+            probationAcceptedWindows_ = 0u;
+            probationTransportCleanStartedMs_ = nowMs;
+            probationTransportVerified_ = false;
             snapshotProbationHealth();
             journal_.state = CalibrationAutonomyJournalState::Probation;
             if (!deps_.autonomyStore->writeJournal(journal_)) {
@@ -1554,7 +1635,14 @@ bool CalibrationAutonomyController::recoverJournalAtBoot(uint32_t nowMs) {
     if (journal_.state == CalibrationAutonomyJournalState::Probation) {
         if (activeRevision == journal_.targetCalibrationRevision) {
             probationStartedMs_ = nowMs;
-            probationAcceptedWindows_ = journal_.probationAcceptedWindows;
+            probationDeadlineMs_ = nowMs + kProbationMaxMs;
+            // Residual sums and face coverage are intentionally RAM-only. A
+            // reboot therefore discards the old count too, so stale evidence
+            // cannot accept a candidate without fresh matching observations.
+            probationAcceptedWindows_ = 0u;
+            journal_.probationAcceptedWindows = 0u;
+            probationTransportCleanStartedMs_ = nowMs;
+            probationTransportVerified_ = false;
             snapshotProbationHealth();
             transition(CalibrationAutonomyState::PromotedProbation, nowMs);
             return true;
@@ -1590,7 +1678,10 @@ bool CalibrationAutonomyController::recoverPendingEraseAtBoot(
     TrackerConfig clean;
     clean.data = recovery.cleanPayload;
     clean.clearAllCalibrationPreservingPolicy();
-    clean.sanitize();
+    if (!clean.validateSemanticConfig()) {
+        transition(CalibrationAutonomyState::SuspendedStorage, nowMs);
+        return false;
+    }
     clean.updateCrc();
 
     deps_.configStore->setAutonomyProbationWriteBarrier(false);
@@ -1643,7 +1734,10 @@ bool CalibrationAutonomyController::recoverLegacyJournalV1AtBoot(
         previousConfig_.updateCrc();
 
         rollbackConfig_ = *deps_.config;
-        trackerApplyCalibrationCandidateToConfig(rollbackConfig_, previousConfig_);
+        if (!trackerApplyCalibrationCandidateToConfig(rollbackConfig_, previousConfig_)) {
+            transition(CalibrationAutonomyState::SuspendedStorage, nowMs);
+            return false;
+        }
         if (!deps_.configStore->save(
                 rollbackConfig_, TrackerCalibrationProvenance::Background)) {
             deps_.configStore->setAutonomyProbationWriteBarrier(true);
@@ -1845,6 +1939,7 @@ bool CalibrationAutonomyController::requestRollback(
 
 bool CalibrationAutonomyController::clearRejectionMemory() {
     rejection_ = CalibrationAutonomyRejectionRecord{};
+    rejectionWrittenThisBoot_ = false;
     return deps_.autonomyStore && deps_.autonomyStore->clearRejection();
 }
 
@@ -2002,11 +2097,21 @@ void CalibrationAutonomyController::printStatus(Stream& out, uint32_t nowMs) con
     out.print("autonomy_probation_age_ms=");
     out.println(state_ == CalibrationAutonomyState::PromotedProbation
                     ? nowMs - probationStartedMs_ : 0u);
+    out.print("autonomy_probation_deadline_remaining_ms=");
+    out.println(state_ == CalibrationAutonomyState::PromotedProbation &&
+                        deadlinePending(nowMs, probationDeadlineMs_)
+                    ? probationDeadlineMs_ - nowMs : 0u);
     out.print("autonomy_candidates_staged="); out.println(stats_.candidatesStaged);
     out.print("autonomy_promotions_committed="); out.println(stats_.promotionsCommitted);
     out.print("autonomy_accepts="); out.println(stats_.accepts);
     out.print("autonomy_rollbacks="); out.println(stats_.rollbacks);
     out.print("autonomy_probation_regressions="); out.println(stats_.probationRegressions);
+    out.print("autonomy_probation_sensor_deferrals="); out.println(stats_.probationSensorDeferrals);
+    out.print("autonomy_probation_transport_deferrals="); out.println(stats_.probationTransportDeferrals);
+    out.print("autonomy_probation_transport_verified=");
+    out.println(probationTransportVerified_ ? "yes" : "no");
+    out.print("autonomy_probation_transport_unverified_accepts=");
+    out.println(stats_.probationTransportUnverifiedAccepts);
     out.print("autonomy_service_calls="); out.println(stats_.serviceCalls);
     out.print("autonomy_service_worked="); out.println(stats_.serviceWorked);
     out.print("autonomy_service_last_us="); out.println(stats_.lastServiceUs);

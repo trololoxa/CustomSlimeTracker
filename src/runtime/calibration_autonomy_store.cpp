@@ -128,6 +128,7 @@ bool CalibrationAutonomyStore::loadPreferences(CalibrationAutonomyPreferencesRec
 
 bool CalibrationAutonomyStore::savePreferences(bool wave0022Enabled,
                                                 bool wave0023Enabled) {
+    if (writeInhibited_) { lastError_ = "write_inhibited"; return false; }
     prefsVerify_ = CalibrationAutonomyPreferencesRecord{};
     (void)loadPreferences(prefsVerify_);
     prefsScratch_ = CalibrationAutonomyPreferencesRecord{};
@@ -204,6 +205,7 @@ bool CalibrationAutonomyStore::loadLegacyJournalV1(
 }
 
 bool CalibrationAutonomyStore::writeJournal(CalibrationAutonomyJournalRecord& input) {
+    if (writeInhibited_) { lastError_ = "write_inhibited"; return false; }
     journalCurrent_ = CalibrationAutonomyJournalRecord{};
     const bool haveCurrent = loadJournal(journalCurrent_);
     journalVerify_ = input;
@@ -230,6 +232,7 @@ bool CalibrationAutonomyStore::writeJournal(CalibrationAutonomyJournalRecord& in
 }
 
 bool CalibrationAutonomyStore::clearJournal() {
+    if (writeInhibited_) { lastError_ = "write_inhibited"; return false; }
     Preferences prefs;
     if (!prefs.begin(ns_, false)) {
         lastError_ = "nvs_begin_failed";
@@ -271,6 +274,7 @@ bool CalibrationAutonomyStore::loadRejection(CalibrationAutonomyRejectionRecord&
 }
 
 bool CalibrationAutonomyStore::writeRejection(CalibrationAutonomyRejectionRecord& input) {
+    if (writeInhibited_) { lastError_ = "write_inhibited"; return false; }
     rejectionVerify_ = CalibrationAutonomyRejectionRecord{};
     (void)loadRejection(rejectionVerify_);
     rejectionScratch_ = input;
@@ -296,6 +300,7 @@ bool CalibrationAutonomyStore::writeRejection(CalibrationAutonomyRejectionRecord
 }
 
 bool CalibrationAutonomyStore::clearRejection() {
+    if (writeInhibited_) { lastError_ = "write_inhibited"; return false; }
     Preferences prefs;
     if (!prefs.begin(ns_, false)) {
         lastError_ = "nvs_begin_failed";
@@ -339,6 +344,7 @@ bool CalibrationAutonomyStore::loadEraseRecovery(
 
 bool CalibrationAutonomyStore::writeEraseRecovery(
     const TrackerConfig& cleanConfig, bool wave0022Enabled, bool wave0023Enabled) {
+    if (writeInhibited_) { lastError_ = "write_inhibited"; return false; }
     auto record = std::unique_ptr<CalibrationAutonomyEraseRecoveryRecord>(
         new (std::nothrow) CalibrationAutonomyEraseRecoveryRecord{});
     auto verify = std::unique_ptr<CalibrationAutonomyEraseRecoveryRecord>(
@@ -364,6 +370,7 @@ bool CalibrationAutonomyStore::writeEraseRecovery(
 }
 
 bool CalibrationAutonomyStore::clearEraseRecovery() {
+    if (writeInhibited_) { lastError_ = "write_inhibited"; return false; }
     Preferences prefs;
     if (!prefs.begin(ns_, false)) {
         lastError_ = "nvs_begin_failed";
@@ -375,6 +382,32 @@ bool CalibrationAutonomyStore::clearEraseRecovery() {
     }
     prefs.end();
     lastError_ = ok ? "none" : "remove_failed";
+    return ok;
+}
+
+bool CalibrationAutonomyStore::eraseAll() {
+    if (writeInhibited_) { lastError_ = "write_inhibited"; return false; }
+    Preferences prefs;
+    if (!prefs.begin(ns_, false)) {
+        lastError_ = "nvs_begin_failed";
+        return false;
+    }
+    const char* keys[] = {
+        calibration_autonomy_storage_detail::KEY_JOURNAL_A,
+        calibration_autonomy_storage_detail::KEY_JOURNAL_B,
+        calibration_autonomy_storage_detail::KEY_PREFERENCES,
+        calibration_autonomy_storage_detail::KEY_REJECTION,
+        calibration_autonomy_storage_detail::KEY_ERASE_RECOVERY,
+    };
+    bool ok = true;
+    for (const char* key : keys) {
+        if (prefs.isKey(key) && !prefs.remove(key)) ok = false;
+    }
+    for (const char* key : keys) {
+        if (prefs.isKey(key)) ok = false;
+    }
+    prefs.end();
+    lastError_ = ok ? "none" : "remove_verify_failed";
     return ok;
 }
 

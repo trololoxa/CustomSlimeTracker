@@ -31,12 +31,14 @@ enum class TrackerConfigError : uint8_t {
     CandidateAlreadyPromoted,
     RuntimeCalibrationDiverged,
     RuntimeSensorSignatureDiverged,
+    WriteInhibited,
 };
 
 enum class TrackerConfigLoadStatus : uint8_t {
     None = 0,
     Loaded,
     Migrated,
+    LoadedLegacyReadOnly,
     DefaultsNotFound,
     DefaultsStorageError,
 };
@@ -100,8 +102,20 @@ public:
         TrackerCalibrationProvenance provenance = TrackerCalibrationProvenance::Manual);
     bool erase();
     bool exists();
+    void setWriteInhibited(bool inhibited) { writeInhibited_ = inhibited; }
+    bool writeInhibited() const { return writeInhibited_; }
 
     bool migrateLegacy();
+
+    // Two-phase authoritative commit for settings that must first prove both
+    // persistence and hardware applicability. prepare writes/read-backs only
+    // the inactive slot; commit is the sole selector switch.
+    bool prepareAuthoritativeCommit(TrackerConfig& candidate,
+                                    TrackerPreparedConfigCommit& out,
+                                    TrackerCalibrationProvenance provenance = TrackerCalibrationProvenance::Manual);
+    bool commitPreparedAuthoritative(TrackerPreparedConfigCommit& prepared,
+                                     TrackerConfig& outActive);
+    bool abortPreparedAuthoritative(TrackerPreparedConfigCommit& prepared);
 
     void setWearPolicy(const TrackerCalibrationWearPolicy& policy);
     const TrackerCalibrationWearPolicy& wearPolicy() const;
@@ -194,6 +208,7 @@ private:
     uint32_t candidatePromotionStateWrites_ = 0;
     uint32_t candidatePromotionStateWriteFailures_ = 0;
     bool autonomyProbationWriteBarrier_ = false;
+    bool writeInhibited_ = false;
 
     const char* slotKey(TrackerConfigSlot slot) const;
     const char* commitKey(TrackerConfigSlot slot) const;
@@ -224,6 +239,9 @@ private:
                                  const TrackerConfigSelectorRecord& previous,
                                  bool& outCommitted);
     bool invalidatePreparedSlot(const TrackerPreparedConfigPromotion& prepared);
+    bool commitPreparedRecord(TrackerPreparedConfigCommit& prepared,
+                              TrackerConfig& outActive,
+                              bool promotion);
     bool cleanupLegacyKey();
     bool clearUncommittedActiveArtifactsForLegacyRecovery();
     bool readLegacy(TrackerConfig& out, bool& exists);

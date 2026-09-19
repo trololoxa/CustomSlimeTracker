@@ -12,6 +12,16 @@ static void hookResetFifoRuntime(void* user) {
     g_lastSampleTimestampUs = 0;
 }
 
+static bool hookRequestSensorRecovery(TrackerHealthFaultCode code,
+                                      uint32_t reasonFlags,
+                                      uint64_t timestampUs,
+                                      const char* reason,
+                                      void* user) {
+    TrackerApp* app = static_cast<TrackerApp*>(user);
+    return app != nullptr &&
+        app->requestSensorRecovery(code, reasonFlags, timestampUs, reason);
+}
+
 static void hookResetAhrsRuntime(void* user) {
     (void)user;
     g_lastSampleTimestampUs = 0;
@@ -53,6 +63,8 @@ static RuntimeStatusReporterDeps makeRuntimeStatusReporterDeps() {
     deps.fifoEvents = &g_fifoEvents;
     deps.fifoRuntime = &g_fifoRuntime;
     deps.fifo = &lsmFifo;
+    deps.sensorProgress = &g_app.sensorProgressWatchdog();
+    deps.sensorRecovery = &g_app.sensorRecoveryController();
     deps.latestTempC = g_latestTempC;
     deps.imuCal = &g_imuCal;
     deps.gyroTempComp = &g_gyroTempComp;
@@ -433,6 +445,7 @@ static TrackerCommandRuntimeObjects makeTrackerCommandRuntimeObjects() {
     objects.configStore = &g_configStore;
     objects.networkConfig = &g_networkConfig;
     objects.networkConfigStore = &g_networkConfigStore;
+    objects.factoryResetCoordinator = &g_factoryResetCoordinator;
     objects.networkConfigLoadedFromNvs = &g_networkConfigLoadedFromNvs;
     objects.wifiManager = &g_wifiManager;
     objects.slimevrRuntime = &g_slimevrRuntime;
@@ -489,6 +502,8 @@ static TrackerCommandRuntimeHooks makeTrackerCommandRuntimeHooks() {
     TrackerCommandRuntimeHooks hooks;
     hooks.resetFifoRuntime = hookResetFifoRuntime;
     hooks.requestTrackingRecovery = hookRequestTrackingRecovery;
+    hooks.requestSensorRecovery = hookRequestSensorRecovery;
+    hooks.requestSensorRecoveryUser = &g_app;
     hooks.resetAhrsRuntime = hookResetAhrsRuntime;
 #if TRACKER_ENABLE_DETAILED_RUNTIME_STATUS
     hooks.printRuntimeStatus = printRuntimeStatus;

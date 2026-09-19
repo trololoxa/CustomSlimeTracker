@@ -215,6 +215,25 @@ private:
                         float accelTrust,
                         const MagFieldReliabilityConfig& cfg,
                         uint32_t dtMs);
+    void initializeReliabilityOutput(MagFieldReliabilityOutput& out,
+                                     uint32_t nowMs) const;
+    void updateHeadingRateEvidence(const MagFieldReliabilityInputView& in,
+                                   const MagFieldReliabilityConfig& cfg,
+                                   MagFieldReliabilityOutput& out);
+    bool updateReferenceEvidence(const MagFieldReliabilityInputView& in,
+                                 const MagFieldReliabilityConfig& cfg,
+                                 MagFieldReliabilityOutput& out);
+    void updateStationaryHeadingEvidence(const MagFieldReliabilityInputView& in,
+                                         const MagFieldReliabilityConfig& cfg,
+                                         MagFieldReliabilityOutput& out,
+                                         uint64_t phaseState);
+    void advanceReliabilityState(const MagFieldReliabilityInputView& in,
+                                 const MagFieldReliabilityConfig& cfg,
+                                 MagFieldReliabilityOutput& out,
+                                 uint64_t phaseState);
+    void finalizeReliabilityOutput(const MagFieldReliabilityInputView& in,
+                                   MagFieldReliabilityOutput& out,
+                                   uint64_t phaseState);
 
     MagFieldReliabilityState state_ = MagFieldReliabilityState::Unavailable;
     bool referenceValid_ = false;

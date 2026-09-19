@@ -6,61 +6,181 @@ Lsm6dsvFifoReader::Lsm6dsvFifoReader(Lsm6dsvTransport& bus, const Lsm6dsv& lsm)
         : bus_(bus), lsm_(lsm) {}
 
 bool Lsm6dsvFifoReader::configure(const Config& config) {
+        const Config previousConfig = cfg_;
+        const DrainStats previousStats = stats_;
         cfg_ = config;
         stats_ = DrainStats{};
         configured_ = false;
-        resetParserState();
+        hardwareStateKnown_ = false;
+        lastRecoveryError_ = RecoveryError::None;
+
+        const auto fail = [this, &previousConfig, &previousStats](RecoveryError error) {
+            // Preserve the software epoch and prior configuration so a later
+            // recovery can explicitly restore it. The hardware is fail-closed
+            // with routes disabled and collection in bypass where possible.
+            (void)writeReg(REG_INT1_CTRL, 0x00u);
+            (void)writeReg(REG_INT2_CTRL, 0x00u);
+            (void)writeReg(REG_FIFO_CTRL4, 0x00u);
+            cfg_ = previousConfig;
+            stats_ = previousStats;
+            configured_ = false;
+            hardwareStateKnown_ = false;
+            lastRecoveryError_ = error;
+            return false;
+        };
 
         if (!readInternalFreqFine()) {
             // Not fatal; use nominal timing.
             stats_.internalFreqFine = 0;
         }
-
         stats_.timestampTickUs = timestampTickUsFromFine(stats_.internalFreqFine);
         stats_.samplePeriodUs = configuredSamplePeriodUs();
 
-        if (cfg_.enableTimestampCounter) {
-            if (!enableTimestampCounter()) return false;
+        if (cfg_.enableTimestampCounter && !enableTimestampCounter()) {
+            return fail(RecoveryError::ReconfigureWrite);
         }
 
-        // Reset FIFO by bypass mode first.
-        if (!writeReg(REG_FIFO_CTRL4, 0x00)) return false;
+        if (!writeReg(REG_INT1_CTRL, 0x00u) ||
+            !writeReg(REG_INT2_CTRL, 0x00u) ||
+            !writeReg(REG_FIFO_CTRL4, 0x00u)) {
+            return fail(RecoveryError::ReconfigureWrite);
+        }
         bus_.delayMs(2);
 
-        if (!writeReg(REG_FIFO_CTRL1, cfg_.watermarkWords)) return false;
+        const uint8_t fifoCtrl3 = configuredFifoCtrl3();
+        const uint8_t fifoCtrl4 = configuredFifoCtrl4();
+        const uint8_t int1 = configuredInt1Ctrl();
+        const uint8_t int2 = configuredInt2Ctrl();
+        if (!writeReg(REG_FIFO_CTRL1, static_cast<uint8_t>(cfg_.watermarkWords)) ||
+            !writeReg(REG_FIFO_CTRL2, 0x00u) ||
+            !writeReg(REG_FIFO_CTRL3, fifoCtrl3) ||
+            !writeReg(REG_FIFO_CTRL4, fifoCtrl4) ||
+            !writeReg(REG_INT1_CTRL, int1) ||
+            !writeReg(REG_INT2_CTRL, int2)) {
+            return fail(RecoveryError::ReconfigureWrite);
+        }
 
-        // Compression off, stop-on-watermark off, ODR-change batching off.
-        if (!writeReg(REG_FIFO_CTRL2, 0x00)) return false;
+        uint8_t ctrl1Read = 0u;
+        uint8_t ctrl2Read = 0u;
+        uint8_t ctrl3Read = 0u;
+        uint8_t ctrl4Read = 0u;
+        uint8_t int1Read = 0u;
+        uint8_t int2Read = 0u;
+        uint8_t funcEnRead = 0u;
+        const bool timestampVerified = !cfg_.enableTimestampCounter ||
+            (readReg(REG_FUNC_EN, funcEnRead) &&
+             (funcEnRead & FUNC_EN_TIMESTAMP) != 0u);
+        const bool verified = timestampVerified &&
+            readReg(REG_FIFO_CTRL1, ctrl1Read) &&
+                ctrl1Read == static_cast<uint8_t>(cfg_.watermarkWords) &&
+            readReg(REG_FIFO_CTRL2, ctrl2Read) && ctrl2Read == 0x00u &&
+            readReg(REG_FIFO_CTRL3, ctrl3Read) && ctrl3Read == fifoCtrl3 &&
+            readReg(REG_FIFO_CTRL4, ctrl4Read) &&
+                (ctrl4Read & 0xf7u) == (fifoCtrl4 & 0xf7u) &&
+            readReg(REG_INT1_CTRL, int1Read) && int1Read == int1 &&
+            readReg(REG_INT2_CTRL, int2Read) && int2Read == int2;
+        if (!verified) return fail(RecoveryError::ReconfigureVerify);
 
-        const uint8_t bdrGy = odrToBdrNibble(cfg_.gyroBdr);
-        const uint8_t bdrXl = odrToBdrNibble(cfg_.accelBdr);
-        const uint8_t fifoCtrl3 = static_cast<uint8_t>((bdrGy << 4) | bdrXl);
-        if (!writeReg(REG_FIFO_CTRL3, fifoCtrl3)) return false;
-
-        uint8_t fifoCtrl4 = 0;
-        fifoCtrl4 |= (static_cast<uint8_t>(cfg_.timestampBatch) & 0x03u) << 6;
-        fifoCtrl4 |= (static_cast<uint8_t>(cfg_.temperatureBatch) & 0x03u) << 4;
-        fifoCtrl4 |= static_cast<uint8_t>(cfg_.mode) & 0x07u;
-        if (!writeReg(REG_FIFO_CTRL4, fifoCtrl4)) return false;
-
-        if (!configureFifoInterrupts()) return false;
-
+        // Commit the new software epoch only after all hardware values read
+        // back exactly as configured.
+        resetParserState();
+        resetMagTimestampBaseline();
         configured_ = true;
+        hardwareStateKnown_ = true;
+        lastRecoveryError_ = RecoveryError::None;
         return true;
     }
 
 bool Lsm6dsvFifoReader::pauseFifo() {
         if (!configured_) return false;
         // Bypass mode stops collection immediately while preserving FIFO_CTRL1,
-        // FIFO_CTRL2 and FIFO_CTRL3. The final resetFifo() call restores only
-        // FIFO_CTRL4, so watermark and accel/gyro BDR remain intact.
-        return writeReg(REG_FIFO_CTRL4, 0x00);
+        // FIFO_CTRL2 and FIFO_CTRL3. The final resetFifo() call verifies and
+        // restores the complete configured register set.
+        const bool ok = writeAndVerify(REG_FIFO_CTRL4, 0x00, 0x77u);
+        if (!ok) {
+            lastRecoveryError_ = RecoveryError::BypassVerify;
+            hardwareStateKnown_ = false;
+        }
+        return ok;
     }
 
 bool Lsm6dsvFifoReader::resetFifo() {
-        if (!writeReg(REG_FIFO_CTRL4, 0x00)) return false;
+        lastRecoveryError_ = RecoveryError::None;
+
+        // Stop all FIFO routes before changing collection mode. Each stage is
+        // read back because Arduino SPI reports only that bytes were shifted,
+        // not that the LSM accepted them.
+        if (!writeReg(REG_INT1_CTRL, 0x00) || !writeReg(REG_INT2_CTRL, 0x00)) {
+            lastRecoveryError_ = RecoveryError::StopRouteWrite;
+            hardwareStateKnown_ = false;
+            return false;
+        }
+        uint8_t int1 = 0xffu;
+        uint8_t int2 = 0xffu;
+        if (!readReg(REG_INT1_CTRL, int1) || !readReg(REG_INT2_CTRL, int2) ||
+            int1 != 0x00u || int2 != 0x00u) {
+            lastRecoveryError_ = RecoveryError::StopRouteVerify;
+            hardwareStateKnown_ = false;
+            return false;
+        }
+
+        if (!writeReg(REG_FIFO_CTRL4, 0x00)) {
+            lastRecoveryError_ = RecoveryError::BypassWrite;
+            hardwareStateKnown_ = false;
+            return false;
+        }
+        uint8_t bypass = 0xffu;
+        if (!readReg(REG_FIFO_CTRL4, bypass) || (bypass & 0x77u) != 0u) {
+            lastRecoveryError_ = RecoveryError::BypassVerify;
+            hardwareStateKnown_ = false;
+            return false;
+        }
         bus_.delayMs(2);
 
+        const uint8_t fifoCtrl3 = configuredFifoCtrl3();
+        const uint8_t fifoCtrl4 = configuredFifoCtrl4();
+        const uint8_t configuredInt1 = configuredInt1Ctrl();
+        const uint8_t configuredInt2 = configuredInt2Ctrl();
+        if (!writeReg(REG_FIFO_CTRL1, static_cast<uint8_t>(cfg_.watermarkWords)) ||
+            !writeReg(REG_FIFO_CTRL2, 0x00) ||
+            !writeReg(REG_FIFO_CTRL3, fifoCtrl3) ||
+            !writeReg(REG_FIFO_CTRL4, fifoCtrl4) ||
+            !writeReg(REG_INT1_CTRL, configuredInt1) ||
+            !writeReg(REG_INT2_CTRL, configuredInt2)) {
+            lastRecoveryError_ = RecoveryError::ReconfigureWrite;
+            hardwareStateKnown_ = false;
+            (void)writeReg(REG_INT1_CTRL, 0x00);
+            (void)writeReg(REG_INT2_CTRL, 0x00);
+            (void)writeReg(REG_FIFO_CTRL4, 0x00);
+            return false;
+        }
+
+        uint8_t ctrl1 = 0u;
+        uint8_t ctrl2 = 0u;
+        uint8_t ctrl3 = 0u;
+        uint8_t ctrl4 = 0u;
+        int1 = 0u;
+        int2 = 0u;
+        const bool verified =
+            readReg(REG_FIFO_CTRL1, ctrl1) &&
+                ctrl1 == static_cast<uint8_t>(cfg_.watermarkWords) &&
+            readReg(REG_FIFO_CTRL2, ctrl2) && ctrl2 == 0x00u &&
+            readReg(REG_FIFO_CTRL3, ctrl3) && ctrl3 == fifoCtrl3 &&
+            readReg(REG_FIFO_CTRL4, ctrl4) && (ctrl4 & 0xf7u) == (fifoCtrl4 & 0xf7u) &&
+            readReg(REG_INT1_CTRL, int1) && int1 == configuredInt1 &&
+            readReg(REG_INT2_CTRL, int2) && int2 == configuredInt2;
+        if (!verified) {
+            lastRecoveryError_ = RecoveryError::ReconfigureVerify;
+            hardwareStateKnown_ = false;
+            (void)writeReg(REG_INT1_CTRL, 0x00);
+            (void)writeReg(REG_INT2_CTRL, 0x00);
+            (void)writeReg(REG_FIFO_CTRL4, 0x00);
+            return false;
+        }
+
+        // Software epoch changes only after the complete hardware transaction
+        // is proven. A failed reset therefore cannot masquerade as a clean new
+        // stream while the device remains in bypass or an unknown mode.
         resetParserState();
         stats_.lastAssignedTimestampUs = 0;
         stats_.lastHwTimestampUs = 0;
@@ -68,11 +188,10 @@ bool Lsm6dsvFifoReader::resetFifo() {
         stats_.timestampWrapHigh = 0;
         resetMagTimestampBaseline();
 
-        uint8_t fifoCtrl4 = 0;
-        fifoCtrl4 |= (static_cast<uint8_t>(cfg_.timestampBatch) & 0x03u) << 6;
-        fifoCtrl4 |= (static_cast<uint8_t>(cfg_.temperatureBatch) & 0x03u) << 4;
-        fifoCtrl4 |= static_cast<uint8_t>(cfg_.mode) & 0x07u;
-        return writeReg(REG_FIFO_CTRL4, fifoCtrl4);
+        hardwareStateKnown_ = true;
+        configured_ = true;
+        lastRecoveryError_ = RecoveryError::None;
+        return true;
     }
 
 bool Lsm6dsvFifoReader::isConfigured() const { return configured_; }
@@ -270,6 +389,46 @@ uint8_t Lsm6dsvFifoReader::odrToBdrNibble(Lsm6dsv::Odr odr) {
 
 bool Lsm6dsvFifoReader::writeReg(uint8_t reg, uint8_t value) {
         return bus_.writeReg(reg, value);
+    }
+
+bool Lsm6dsvFifoReader::readReg(uint8_t reg, uint8_t& value) {
+        return bus_.readReg(reg, value);
+    }
+
+bool Lsm6dsvFifoReader::writeAndVerify(uint8_t reg, uint8_t value, uint8_t mask) {
+        if (!writeReg(reg, value)) return false;
+        uint8_t readback = 0u;
+        return readReg(reg, readback) && (readback & mask) == (value & mask);
+    }
+
+uint8_t Lsm6dsvFifoReader::configuredFifoCtrl3() const {
+        const uint8_t bdrGy = odrToBdrNibble(cfg_.gyroBdr);
+        const uint8_t bdrXl = odrToBdrNibble(cfg_.accelBdr);
+        return static_cast<uint8_t>((bdrGy << 4) | bdrXl);
+    }
+
+uint8_t Lsm6dsvFifoReader::configuredFifoCtrl4() const {
+        uint8_t value = 0u;
+        value |= (static_cast<uint8_t>(cfg_.timestampBatch) & 0x03u) << 6;
+        value |= (static_cast<uint8_t>(cfg_.temperatureBatch) & 0x03u) << 4;
+        value |= static_cast<uint8_t>(cfg_.mode) & 0x07u;
+        return value;
+    }
+
+uint8_t Lsm6dsvFifoReader::configuredInt1Ctrl() const {
+        uint8_t value = 0u;
+        if (cfg_.routeWatermarkToInt1) value |= INT_FIFO_TH;
+        if (cfg_.routeOverrunToInt1) value |= INT_FIFO_OVR;
+        if (cfg_.routeFullToInt1) value |= INT_FIFO_FULL;
+        return value;
+    }
+
+uint8_t Lsm6dsvFifoReader::configuredInt2Ctrl() const {
+        uint8_t value = 0u;
+        if (cfg_.routeWatermarkToInt2) value |= INT_FIFO_TH;
+        if (cfg_.routeOverrunToInt2) value |= INT_FIFO_OVR;
+        if (cfg_.routeFullToInt2) value |= INT_FIFO_FULL;
+        return value;
     }
 
 bool Lsm6dsvFifoReader::readWordsToBurstBuffer(uint16_t count) {

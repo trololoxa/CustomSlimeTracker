@@ -97,6 +97,7 @@ def main() -> int:
     field = text("src/sensor/mag_field_reliability.cpp")
     horizontal = text("src/sensor/mag_horizontal_trust.hpp")
     yaw_h = text("src/sensor/mag_yaw_correction.hpp")
+    yaw = text("src/sensor/mag_yaw_correction.cpp")
     controller_h = text("src/runtime/mag_runtime_controller.hpp")
     controller = text("src/runtime/mag_runtime_controller.cpp")
     slime = text("src/runtime/slimevr_output_runtime_impl.inc")
@@ -122,6 +123,23 @@ def main() -> int:
     require(controller, "const YawEnableState yawEnable = yawEnableState();", "single yaw enable-state snapshot per magnetic sample")
     require(controller, "const MagYawCorrectionConfig yawCfg = yawConfig(yawEnable);", "single full yaw config construction")
     forbid(controller, "updateYawCorrectionPhase(nowMs,", "extra yaw phase frame")
+    require(yaw_h, "void evaluateMagValidity", "yaw validity phase declaration")
+    require(yaw_h, "void evaluateHorizontalTrust", "yaw horizontal phase declaration")
+    require(yaw_h, "void evaluateMotionTrust", "yaw motion phase declaration")
+    require(yaw_h, "uint8_t evaluateInnovation", "yaw innovation phase declaration")
+    require(yaw_h, "void updateCooldown", "yaw cooldown phase declaration")
+    require(yaw_h, "void computeCorrection", "yaw correction phase declaration")
+    require(yaw, "#define TRACKER_MAG_YAW_NOINLINE __attribute__((noinline))", "yaw no-inline boundary")
+    for phase in (
+        "initializeUpdate",
+        "evaluateMagValidity",
+        "evaluateHorizontalTrust",
+        "evaluateMotionTrust",
+        "evaluateInnovation",
+        "updateCooldown",
+        "computeCorrection",
+    ):
+        require(yaw, f"MagYawCorrectionController::{phase}", f"yaw phase {phase}")
 
     # Horizontal geometry decisions are mathematically equivalent squared
     # comparisons. sqrt is reserved for human diagnostics outside the callback.
@@ -131,6 +149,21 @@ def main() -> int:
     require(field, "magnitudeAtMostScaledThreshold", "squared recovery threshold")
     forbid(field, "std::sqrt", "sqrt in field reliability hot path")
     require(reporter, "magHeadingNoiseScale(f.headingNoiseScaleSquared)", "lazy diagnostic sqrt")
+
+    # The Windows ABI preserves more floating-point registers than the Linux
+    # host ABI. Keep each semantic phase explicit and independently bounded so
+    # a small top-level frame cannot hide a large helper frame.
+    require(field, "#define TRACKER_MAG_FIELD_NOINLINE __attribute__((noinline))", "cross-ABI field phase boundary")
+    for phase in (
+        "initializeReliabilityOutput",
+        "updateHeadingRateEvidence",
+        "updateReferenceEvidence",
+        "updateStationaryHeadingEvidence",
+        "advanceReliabilityState",
+        "finalizeReliabilityOutput",
+    ):
+        require(field, f"TRACKER_MAG_FIELD_NOINLINE", f"field phase attribute for {phase}")
+        require(field, f"MagFieldReliabilityMonitor::{phase}", f"field phase {phase}")
 
     # Immutable field tuning is shared as one read-only default instead of being
     # rebuilt/copied or cached per controller. The two persisted yaw thresholds
@@ -181,7 +214,20 @@ def main() -> int:
             require_limit(usage, "updateYawCorrectionSnapshot", 352)
             require_limit(usage, "processRawSample", 192)
             require_limit(usage, "MagFieldReliabilityMonitor::update", 384)
+            require_limit(usage, "initializeReliabilityOutput", 192)
+            require_limit(usage, "updateHeadingRateEvidence", 192)
+            require_limit(usage, "updateReferenceEvidence", 320)
+            require_limit(usage, "updateStationaryHeadingEvidence", 224)
+            require_limit(usage, "advanceReliabilityState", 256)
+            require_limit(usage, "finalizeReliabilityOutput", 192)
             require_limit(usage, "MagYawCorrectionController::update(const tracker::MagYawCorrectionInputView", 96)
+            require_limit(usage, "initializeUpdate", 96)
+            require_limit(usage, "evaluateMagValidity", 96)
+            require_limit(usage, "evaluateHorizontalTrust", 96)
+            require_limit(usage, "evaluateMotionTrust", 96)
+            require_limit(usage, "evaluateInnovation", 96)
+            require_limit(usage, "updateCooldown", 96)
+            require_limit(usage, "computeCorrection", 96)
             require_limit(usage, "SlimeVROutputRuntime::sendRotation", 320)
 
     print("# 0026b_hotpath_optimization_policy: PASS")

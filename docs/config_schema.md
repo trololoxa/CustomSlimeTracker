@@ -1,5 +1,7 @@
 # Config schema policy
 
+> **0028d update:** 0028d writes config slot v4 (unchanged payload ABI), with explicit v3 semantic compatibility normalization and persist/read-back before RAM apply. See `0028d_recovery_and_calibration_contract_report.md` for exact rules and downgrade limits.
+
 Persistent config lives in `src/config/`. Runtime/session state must not be persisted unless a command deliberately captures it as calibration or user settings.
 
 ## Files
@@ -66,10 +68,13 @@ When changing persisted structs:
 
 1. Bump the schema version if layout or meaning changes.
 2. Keep default construction deterministic.
-3. Sanitize loaded values before applying them to runtime.
+3. Sanitize only defaults or a CRC-proved legacy load, then require non-mutating
+   semantic validation before runtime apply.
 4. Invalidate only the calibration block that is actually bad when possible.
 5. Add or update native tests for defaults/sanitize/CRC/layout expectations.
-6. Update this document and `docs/cli_reference.md` if commands or side effects change.
+6. Never sanitize a new CLI/setup/background candidate immediately before save;
+   reject it unchanged and retain the old-good generation.
+7. Update this document and `docs/cli_reference.md` if commands or side effects change.
 
 Current config hardening is intentionally low-cost: compile-time/native-test layout guards and host tests are preferred over runtime-heavy migration logic. Keep network credentials in the separate `TrackerNetworkConfig` namespace so IMU/calibration resets do not expose or erase Wi-Fi secrets by accident.
 
@@ -112,7 +117,7 @@ transactional, and runtime tap mapping changes only after a successful persisted
 write when the command includes `save`.
 
 
-The selector remains authoritative while valid. A non-selected storage-v2 slot
+The selector remains authoritative while valid. A non-selected marker-based v2/v3 slot
 without a matching marker is prepared/uncommitted and cannot become fallback.
 With a lost selector, only commit-authoritative slots participate in recovery.
 Selector verification failures are reconciled by reading NVS again;

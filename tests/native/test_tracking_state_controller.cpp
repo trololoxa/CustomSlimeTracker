@@ -496,6 +496,35 @@ static void testRecoveryKeepsPostGapGyroAndRestoresTilt(TestContext& ctx) {
     CHECK(ctx, ahrs.stats().lastIntegratedTimestampUs == 15000);
 }
 
+static void testStrictRecoveryPublishesAfterMonotonicGyroProof(TestContext& ctx) {
+    TrackingStateController c;
+    TrackingStateEventSink sink;
+    c.enterRecovery(imu_quality_flags::TIMESTAMP_BACKWARDS |
+                        imu_quality_flags::FIFO_RECOVERY_REQUESTED,
+                    "corrupt_timebase",
+                    1000,
+                    sink);
+
+    ImuQualityResult gyroOnly;
+    gyroOnly.shouldUpdateAhrs = true;
+    gyroOnly.shouldUseAccelCorrection = false;
+    gyroOnly.flags = imu_quality_flags::ACCEL_COMPONENT_MISSING |
+                     imu_quality_flags::ACCEL_NOT_AHRS_USABLE;
+    for (uint64_t ts = 2000; ts <= 4000; ts += 1000) {
+        c.updateRecovery(gyroOnly, Vec3(1.0f, 0.0f, 0.0f), Vec3::zero(), ts, true, sink);
+        CHECK(ctx, !c.degradedGyroOutputAllowed());
+    }
+    c.updateRecovery(gyroOnly, Vec3(1.0f, 0.0f, 0.0f), Vec3::zero(), 5000, true, sink);
+    CHECK(ctx, c.recoveryActive());
+    CHECK(ctx, c.degradedGyroOutputAllowed());
+    CHECK(ctx, c.recoveryMonotonicGyroSamples() == 4u);
+
+    gyroOnly.flags |= imu_quality_flags::TIMESTAMP_BACKWARDS;
+    c.updateRecovery(gyroOnly, Vec3::zero(), Vec3::zero(), 4500, false, sink);
+    CHECK(ctx, !c.degradedGyroOutputAllowed());
+    CHECK(ctx, c.recoveryMonotonicGyroSamples() == 0u);
+}
+
 static void testCompatibilityWrapper(TestContext& ctx) {
     TrackingStateController c;
     CHECK(ctx, c.stateName(false, true, false, true, false, false) == trackingStateIdName(TrackingStateId::CalibrationRequired));
@@ -526,5 +555,6 @@ int main() {
     testRecoveryRejectStreakEventuallyRestartsWindow(ctx);
     testStrictRecoveryCanBootstrapUninitializedAhrs(ctx);
     testRecoveryKeepsPostGapGyroAndRestoresTilt(ctx);
+    testStrictRecoveryPublishesAfterMonotonicGyroProof(ctx);
     return ctx.finish("test_tracking_state_controller");
 }

@@ -15,7 +15,7 @@ TrackerConfig makeScenarioConfig(uint16_t rate, bool calibrated = true) {
     config.data.output.outputRateHz = rate;
     if (calibrated) {
         config.data.gyroCal.biasValid = true;
-        config.data.gyroCal.biasRadS = Vec3(0.1f, 0.2f, 0.3f);
+        config.data.gyroCal.biasRadS = Vec3(0.001f, 0.002f, 0.003f);
         config.data.accelCal.valid = true;
         config.data.accelCal.scale = Mat3::identity();
         config.data.accelCal.biasG = Vec3(0.01f, 0.02f, 0.03f);

@@ -5,6 +5,34 @@ namespace tracker {
 void TrackerCommandDispatcher::dispatch(TrackerSerialCommandContext& ctx, int argc, char** argv) {
     if (argc <= 0 || !argv || !argv[0]) return;
 
+    if (ctx.factoryResetRecoveryOnly) {
+        Stream& out = ctx.io ? *ctx.io : Serial;
+        if (tracker_serial_detail::eqIgnoreCase(argv[0], "help") ||
+            tracker_serial_detail::eqIgnoreCase(argv[0], "?")) {
+            out.println("# FACTORY RESET RECOVERY CONSOLE");
+            out.println("  factory_reset main|network|calibration|full confirm");
+#if TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT
+            out.println("  FRST");
+#endif
+            out.println("  reboot");
+            return;
+        }
+#if TRACKER_ENABLE_SLIMEVR_SERIAL_COMPAT
+        if (tracker_serial_detail::eqIgnoreCase(argv[0], "FRST")) {
+            (void)trackerSerialDispatchSlimeVRSerialCompatCommand(ctx, argc, argv);
+            return;
+        }
+#endif
+        if (tracker_serial_detail::eqIgnoreCase(argv[0], "factory_reset") ||
+            tracker_serial_detail::eqIgnoreCase(argv[0], "reboot")) {
+            (void)trackerSerialDispatchSystemCommand(ctx, argc, argv);
+            return;
+        }
+        tracker_serial_detail::printErr(
+            out, "command unavailable during factory reset recovery; type help");
+        return;
+    }
+
 #if TRACKER_ENABLE_SERIAL_CLI
 #if TRACKER_ENABLE_SETUP_COMMANDS
     if (tracker_serial_detail::eqIgnoreCase(argv[0], "setup")) {

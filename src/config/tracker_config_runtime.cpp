@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "sensor/calibration.hpp"
+#include "sensor/calibration_limits.hpp"
 #include "sensor/gyro_temperature_compensation.hpp"
 #include "sensor/frame_transform.hpp"
 #include "sensor/mag_calibration.hpp"
@@ -21,7 +22,153 @@ uint8_t encodeSlimeVRMotionPacketPolicy(SlimeVRMotionPacketPolicy policy) {
         (static_cast<uint8_t>(policy) & tracker_config_detail::OUTPUT_PACKET_MODE_VALUE_MASK));
 }
 
+template <typename T, size_t N>
+bool oneOf(T value, const T (&values)[N]) {
+    for (size_t i = 0; i < N; ++i) {
+        if (value == values[i]) return true;
+    }
+    return false;
+}
+
+bool validOdr(Lsm6dsv::Odr value) {
+    static constexpr Lsm6dsv::Odr values[] = {
+        Lsm6dsv::Odr::PowerDown, Lsm6dsv::Odr::Hz1_875, Lsm6dsv::Odr::Hz7_5,
+        Lsm6dsv::Odr::Hz15, Lsm6dsv::Odr::Hz30, Lsm6dsv::Odr::Hz60,
+        Lsm6dsv::Odr::Hz120, Lsm6dsv::Odr::Hz240, Lsm6dsv::Odr::Hz480,
+        Lsm6dsv::Odr::Hz960, Lsm6dsv::Odr::Hz1920, Lsm6dsv::Odr::Hz3840,
+        Lsm6dsv::Odr::Hz7680,
+    };
+    return oneOf(value, values);
+}
+
+bool validImuEnums(const TrackerImuConfig& imu) {
+    static constexpr Lsm6dsv::AccelFs accelFs[] = {
+        Lsm6dsv::AccelFs::G2, Lsm6dsv::AccelFs::G4,
+        Lsm6dsv::AccelFs::G8, Lsm6dsv::AccelFs::G16,
+    };
+    static constexpr Lsm6dsv::GyroFs gyroFs[] = {
+        Lsm6dsv::GyroFs::Dps125, Lsm6dsv::GyroFs::Dps250,
+        Lsm6dsv::GyroFs::Dps500, Lsm6dsv::GyroFs::Dps1000,
+        Lsm6dsv::GyroFs::Dps2000, Lsm6dsv::GyroFs::Dps4000,
+    };
+    static constexpr Lsm6dsv::AccelMode accelModes[] = {
+        Lsm6dsv::AccelMode::HighPerformance, Lsm6dsv::AccelMode::HighAccuracyOdr,
+        Lsm6dsv::AccelMode::OdrTriggered, Lsm6dsv::AccelMode::LowPower1,
+        Lsm6dsv::AccelMode::LowPower2, Lsm6dsv::AccelMode::LowPower3,
+        Lsm6dsv::AccelMode::Normal,
+    };
+    static constexpr Lsm6dsv::GyroMode gyroModes[] = {
+        Lsm6dsv::GyroMode::HighPerformance, Lsm6dsv::GyroMode::HighAccuracyOdr,
+        Lsm6dsv::GyroMode::OdrTriggered, Lsm6dsv::GyroMode::Sleep,
+        Lsm6dsv::GyroMode::LowPower,
+    };
+    return validOdr(imu.imuOdr) &&
+           oneOf(imu.accelFs, accelFs) && oneOf(imu.gyroFs, gyroFs) &&
+           oneOf(imu.accelMode, accelModes) && oneOf(imu.gyroMode, gyroModes);
+}
+
+bool validFifoEnums(const TrackerFifoConfig& fifo) {
+    static constexpr Lsm6dsvFifoReader::FifoMode modes[] = {
+        Lsm6dsvFifoReader::FifoMode::Bypass,
+        Lsm6dsvFifoReader::FifoMode::Fifo,
+        Lsm6dsvFifoReader::FifoMode::ContinuousWtmToFull,
+        Lsm6dsvFifoReader::FifoMode::ContinuousToFifo,
+        Lsm6dsvFifoReader::FifoMode::BypassToContinuous,
+        Lsm6dsvFifoReader::FifoMode::Continuous,
+        Lsm6dsvFifoReader::FifoMode::BypassToFifo,
+    };
+    static constexpr Lsm6dsvFifoReader::TimestampBatch timestamps[] = {
+        Lsm6dsvFifoReader::TimestampBatch::Off,
+        Lsm6dsvFifoReader::TimestampBatch::Decimation1,
+        Lsm6dsvFifoReader::TimestampBatch::Decimation8,
+        Lsm6dsvFifoReader::TimestampBatch::Decimation32,
+    };
+    static constexpr Lsm6dsvFifoReader::TemperatureBatch temperatures[] = {
+        Lsm6dsvFifoReader::TemperatureBatch::Off,
+        Lsm6dsvFifoReader::TemperatureBatch::Hz1_875,
+        Lsm6dsvFifoReader::TemperatureBatch::Hz15,
+        Lsm6dsvFifoReader::TemperatureBatch::Hz60,
+    };
+    return validOdr(fifo.accelBdr) && validOdr(fifo.gyroBdr) &&
+           oneOf(fifo.mode, modes) && oneOf(fifo.timestampBatch, timestamps) &&
+           oneOf(fifo.temperatureBatch, temperatures);
+}
+
+float matrixInfinityNorm(const Mat3& value) {
+    float maximum = 0.0f;
+    for (uint8_t row = 0; row < 3; ++row) {
+        const float sum = std::fabs(value.m[row][0]) +
+                          std::fabs(value.m[row][1]) +
+                          std::fabs(value.m[row][2]);
+        if (sum > maximum) maximum = sum;
+    }
+    return maximum;
+}
+
+bool validCalibrationMatrix(const Mat3& value) {
+    if (!value.isFinite() || value.determinant() <= 1.0e-6f) return false;
+    Mat3 inverse;
+    if (!value.inverse(inverse, 1.0e-6f) || !inverse.isFinite()) return false;
+    const float condition = matrixInfinityNorm(value) * matrixInfinityNorm(inverse);
+    return std::isfinite(condition) && condition <= 10000.0f;
+}
+
+bool identityMatrix(const Mat3& value) {
+    const Mat3 identity = Mat3::identity();
+    return std::memcmp(&value, &identity, sizeof(value)) == 0;
+}
+
+bool identityQuaternion(const Quat& value) {
+    return value.w == 1.0f && value.x == 0.0f &&
+           value.y == 0.0f && value.z == 0.0f;
+}
+
+bool ordered(float low, float high) {
+    return std::isfinite(low) && std::isfinite(high) && low < high;
+}
+
+bool inRange(float value, float low, float high) {
+    return std::isfinite(value) && value >= low && value <= high;
+}
+
+bool calibrationRowsInRange(const Mat3& value, float minimum, float maximum) {
+    for (uint8_t row = 0; row < 3; ++row) {
+        const Vec3 rowVector(value.m[row][0], value.m[row][1], value.m[row][2]);
+        const float rowNorm = rowVector.norm();
+        if (!inRange(rowNorm, minimum, maximum)) return false;
+    }
+    return true;
+}
+
+bool failSemantic(TrackerSemanticConfigError value, TrackerSemanticConfigError* out) {
+    if (out) *out = value;
+    return false;
+}
+
 } // namespace
+
+const char* trackerSemanticConfigErrorName(TrackerSemanticConfigError error) {
+    switch (error) {
+        case TrackerSemanticConfigError::None: return "none";
+        case TrackerSemanticConfigError::Schema: return "schema";
+        case TrackerSemanticConfigError::Hardware: return "hardware";
+        case TrackerSemanticConfigError::ImuEnum: return "imu_enum";
+        case TrackerSemanticConfigError::FifoEnum: return "fifo_enum";
+        case TrackerSemanticConfigError::ImuFifoMismatch: return "imu_fifo_mismatch";
+        case TrackerSemanticConfigError::GyroCalibration: return "gyro_calibration";
+        case TrackerSemanticConfigError::TemperatureModel: return "temperature_model";
+        case TrackerSemanticConfigError::AccelCalibration: return "accel_calibration";
+        case TrackerSemanticConfigError::MagCalibration: return "mag_calibration";
+        case TrackerSemanticConfigError::FrameTransform: return "frame_transform";
+        case TrackerSemanticConfigError::MagYawGates: return "mag_yaw_gates";
+        case TrackerSemanticConfigError::AhrsGates: return "ahrs_gates";
+        case TrackerSemanticConfigError::QualityGates: return "quality_gates";
+        case TrackerSemanticConfigError::Output: return "output";
+        case TrackerSemanticConfigError::Dependency: return "dependency";
+        case TrackerSemanticConfigError::ReservedState: return "reserved_state";
+    }
+    return "unknown";
+}
 
 
 SlimeVRMotionPacketPolicy TrackerConfig::slimevrMotionPacketPolicy() const {
@@ -128,14 +275,12 @@ bool TrackerConfig::validateContent() const {
     if (!finiteFloat(data.magCalQuality.coverageScore)) return false;
     if (!finiteFloat(data.magCalQuality.residualRms)) return false;
 
-    // Keep finite legacy frame values loadable so one stale frame does not
-    // discard the whole NVS blob. Runtime enables only proper rotations and
-    // sanitize() clears invalid scale/shear/reflection matrices on next save.
+    // Keep finite legacy frame values structurally loadable so the explicit
+    // legacy migration can clear invalid scale/shear/reflection matrices.
     if (data.frame.sensorToDeviceValid && !finiteMat3(data.frame.sensorToDevice)) return false;
 
-    // Keep these checks permissive so configs saved by older firmware, where
-    // the magYaw region was reserved/zeroed, can still load and then be
-    // repaired by sanitize().
+    // Keep these checks permissive so the explicit legacy migration can
+    // convert the historical zeroed magYaw region.
     if (!finiteFloat(data.magYaw.maxInnovationDeg)) return false;
     if (!finiteFloat(data.magYaw.horizontalNormBad)) return false;
     if (!finiteFloat(data.magYaw.horizontalNormGood)) return false;
@@ -173,6 +318,275 @@ bool TrackerConfig::validateContent() const {
     return true;
 }
 
+bool trackerNormalizeDeployedV3(TrackerConfig& config) {
+    if (!config.validate() || config.data.hardware.serialBaud == 0u ||
+        !std::isfinite(config.data.quality.expectedDtUs) ||
+        config.data.quality.expectedDtUs < 0.0f) return false;
+    // Baud was not applied by v3 boot. Quaternion output had precedence over
+    // the historical debug flag. An impossible dt override migrates to the
+    // existing automatic measured FIFO period, not a weakened time gate.
+    config.data.hardware.serialBaud = cfg::SERIAL_BAUD;
+    if (config.data.output.quaternionOutputEnabled) config.data.output.serialDebugEnabled = false;
+    const float hz = Lsm6dsv::odrHz(config.data.fifo.gyroBdr);
+    if (!std::isfinite(hz) || hz <= 0.0f) return false;
+    const float nominal = 1000000.0f / hz;
+    const float dt = config.data.quality.expectedDtUs;
+    if (dt > 0.0f && (dt < nominal * 0.25f || dt > nominal * 4.0f)) {
+        config.data.quality.expectedDtUs = 0.0f;
+    }
+    config.updateCrc();
+    return config.validateSemanticConfig();
+}
+
+bool TrackerConfig::validateSemanticConfig(TrackerSemanticConfigError* error) const {
+    using namespace tracker_config_detail;
+    if (error) *error = TrackerSemanticConfigError::None;
+
+    const TrackerConfigSchemaVersions expectedSchemas{};
+    if (std::memcmp(&data.schemas, &expectedSchemas, sizeof(expectedSchemas)) != 0) {
+        return failSemantic(TrackerSemanticConfigError::Schema, error);
+    }
+    if (data.hardware.pinLsmSck != cfg::PIN_LSM_SCK ||
+        data.hardware.pinLsmMiso != cfg::PIN_LSM_MISO ||
+        data.hardware.pinLsmMosi != cfg::PIN_LSM_MOSI ||
+        data.hardware.pinLsmCs != cfg::PIN_LSM_CS ||
+        data.hardware.pinLsmInt1 != cfg::PIN_LSM_INT1 ||
+        data.hardware.serialBaud != cfg::SERIAL_BAUD ||
+        data.hardware.spiHz < MIN_SPI_HZ || data.hardware.spiHz > MAX_SPI_HZ ||
+        data.hardware.spiMode > 3u) {
+        return failSemantic(TrackerSemanticConfigError::Hardware, error);
+    }
+    if (!validImuEnums(data.imu) || data.imu.imuOdr == Lsm6dsv::Odr::PowerDown ||
+        data.imu.imuOdr == Lsm6dsv::Odr::Hz1_875) {
+        return failSemantic(TrackerSemanticConfigError::ImuEnum, error);
+    }
+    if (!validFifoEnums(data.fifo)) {
+        return failSemantic(TrackerSemanticConfigError::FifoEnum, error);
+    }
+    // The runtime publishes paired gyro/accel samples. Decimated or asymmetric
+    // BDR would violate that contract even if the sensor register accepts it.
+    if (data.fifo.accelBdr != data.imu.imuOdr ||
+        data.fifo.gyroBdr != data.imu.imuOdr) {
+        return failSemantic(TrackerSemanticConfigError::ImuFifoMismatch, error);
+    }
+    if (data.fifo.watermarkWords == 0u ||
+        data.fifo.watermarkWords > Lsm6dsvFifoReader::HARDWARE_FIFO_WORD_CAPACITY ||
+        data.fifo.maxWordsPerDrain == 0u ||
+        data.fifo.maxWordsPerDrain > Lsm6dsvFifoReader::HARDWARE_FIFO_WORD_CAPACITY ||
+        data.fifo.maxDrainRoundsPerEvent == 0u ||
+        data.fifo.maxWaitingSamplesBeforeFallback == 0u ||
+        data.fifo.maxWaitingSamplesBeforeFallback >
+            Lsm6dsvFifoReader::MAX_TIMESTAMP_WAITING_SAMPLES ||
+        !inRange(data.fifo.samplePeriodUsOverride, 0.0f, 1000000.0f)) {
+        return failSemantic(TrackerSemanticConfigError::ImuFifoMismatch, error);
+    }
+    if (data.fifo.useHardwareTimestamps && !data.fifo.enableTimestampCounter) {
+        return failSemantic(TrackerSemanticConfigError::ImuFifoMismatch, error);
+    }
+    if (data.fifo.mode != Lsm6dsvFifoReader::FifoMode::Continuous ||
+        (data.fifo.useHardwareTimestamps &&
+         data.fifo.timestampBatch == Lsm6dsvFifoReader::TimestampBatch::Off)) {
+        return failSemantic(TrackerSemanticConfigError::ImuFifoMismatch, error);
+    }
+    if (data.quality.expectedDtUs > 0.0f) {
+        const float odrHz = Lsm6dsv::odrHz(data.fifo.gyroBdr);
+        const float nominalDtUs = odrHz > 0.0f ? 1000000.0f / odrHz : 0.0f;
+        // Keep a deliberately broad tolerance for measured/overridden clocks,
+        // while rejecting values that invert the small/large-gap contract.
+        if (!std::isfinite(nominalDtUs) || nominalDtUs <= 0.0f ||
+            data.quality.expectedDtUs < nominalDtUs * 0.25f ||
+            data.quality.expectedDtUs > nominalDtUs * 4.0f) {
+            return failSemantic(TrackerSemanticConfigError::QualityGates, error);
+        }
+    }
+
+    constexpr float maxStoredGyroBias = calibration_limits::GYRO_STARTUP_MAX_NORM_RAD_S;
+    if (!finiteVec3(data.gyroCal.biasRadS) ||
+        (data.gyroCal.biasValid &&
+         (std::fabs(data.gyroCal.biasRadS.x) > maxStoredGyroBias ||
+          std::fabs(data.gyroCal.biasRadS.y) > maxStoredGyroBias ||
+          std::fabs(data.gyroCal.biasRadS.z) > maxStoredGyroBias)) ||
+        (!data.gyroCal.biasValid && data.gyroCal.biasRadS.normSq() != 0.0f)) {
+        return failSemantic(TrackerSemanticConfigError::GyroCalibration, error);
+    }
+    const float maxSlope = GyroTempCompConfig{}.maxAcceptedSlopeDpsPerC * MATH_DEG_TO_RAD;
+    if (!finiteFloat(data.gyroCal.referenceTempC) ||
+        !finiteVec3(data.gyroCal.tempSlopeRadSPerC) ||
+        std::fabs(data.gyroCal.tempSlopeRadSPerC.x) > maxSlope ||
+        std::fabs(data.gyroCal.tempSlopeRadSPerC.y) > maxSlope ||
+        std::fabs(data.gyroCal.tempSlopeRadSPerC.z) > maxSlope ||
+        (data.gyroCal.tempCompValid && !data.gyroCal.biasValid) ||
+        (!data.gyroCal.tempCompValid && data.gyroCal.tempSlopeRadSPerC.normSq() != 0.0f)) {
+        return failSemantic(TrackerSemanticConfigError::TemperatureModel, error);
+    }
+    if (!finiteFloat(data.gyroTempQuality.tempRangeMinC) ||
+        !finiteFloat(data.gyroTempQuality.tempRangeMaxC) ||
+        data.gyroTempQuality.tempRangeMinC > data.gyroTempQuality.tempRangeMaxC ||
+        !inRange(data.gyroTempQuality.fitQuality, 0.0f, 1.0f) ||
+        !finiteFloat(data.gyroTempQuality.residualBeforeDps) ||
+        !finiteFloat(data.gyroTempQuality.residualAfterDps) ||
+        data.gyroTempQuality.residualBeforeDps < 0.0f ||
+        data.gyroTempQuality.residualAfterDps < 0.0f) {
+        return failSemantic(TrackerSemanticConfigError::TemperatureModel, error);
+    }
+
+    if (!finiteVec3(data.accelCal.biasG) || !finiteMat3(data.accelCal.scale) ||
+        (data.accelCal.valid &&
+         (!validCalibrationMatrix(data.accelCal.scale) ||
+          std::fabs(data.accelCal.biasG.x) > calibration_limits::ACCEL_MAX_ABS_BIAS_G ||
+          std::fabs(data.accelCal.biasG.y) > calibration_limits::ACCEL_MAX_ABS_BIAS_G ||
+          std::fabs(data.accelCal.biasG.z) > calibration_limits::ACCEL_MAX_ABS_BIAS_G ||
+          !calibrationRowsInRange(data.accelCal.scale,
+                                  calibration_limits::ACCEL_MIN_SCALE,
+                                  calibration_limits::ACCEL_MAX_SCALE))) ||
+        (!data.accelCal.valid &&
+         (data.accelCal.biasG.normSq() != 0.0f || !identityMatrix(data.accelCal.scale)))) {
+        return failSemantic(TrackerSemanticConfigError::AccelCalibration, error);
+    }
+    if (!inRange(data.accelCalQuality.qualityScore, 0.0f, 1.0f) ||
+        !finiteFloat(data.accelCalQuality.maxFaceNormErrorG) ||
+        !finiteFloat(data.accelCalQuality.maxAxisResidualG) ||
+        data.accelCalQuality.maxFaceNormErrorG < 0.0f ||
+        data.accelCalQuality.maxAxisResidualG < 0.0f) {
+        return failSemantic(TrackerSemanticConfigError::AccelCalibration, error);
+    }
+    for (uint8_t i = 0; i < 6; ++i) {
+        if (!finiteFloat(data.accelCalQuality.faceNormErrorG[i]) ||
+            !finiteFloat(data.accelCalQuality.faceAxisResidualG[i]) ||
+            data.accelCalQuality.faceNormErrorG[i] < 0.0f ||
+            data.accelCalQuality.faceAxisResidualG[i] < 0.0f) {
+            return failSemantic(TrackerSemanticConfigError::AccelCalibration, error);
+        }
+    }
+
+    constexpr float maxRawVectorNorm = 56754.0f; // sqrt(3) * INT16_MAX, rounded down.
+    if (!finiteVec3(data.magCal.hardIron) || !finiteMat3(data.magCal.softIron) ||
+        !finiteMat3(data.magCal.magToImu) ||
+        !std::isfinite(data.magCal.expectedFieldNorm) ||
+        !ordered(data.magCal.minTrustNorm, data.magCal.maxTrustNorm) ||
+        data.magCal.minTrustNorm <= 0.0f ||
+        (data.magCal.calibrationValid &&
+         (!validCalibrationMatrix(data.magCal.softIron) ||
+          !calibrationRowsInRange(data.magCal.softIron,
+                                  1.0f / calibration_limits::MAG_MAX_AXIS_RATIO,
+                                  calibration_limits::MAG_MAX_AXIS_RATIO) ||
+          std::fabs(data.magCal.hardIron.x) > 32767.0f ||
+          std::fabs(data.magCal.hardIron.y) > 32767.0f ||
+          std::fabs(data.magCal.hardIron.z) > 32767.0f ||
+          !inRange(data.magCal.expectedFieldNorm, 0.001f, maxRawVectorNorm) ||
+          data.magCal.maxTrustNorm >
+              maxRawVectorNorm * calibration_limits::MAG_MAX_AXIS_RATIO)) ||
+        (!data.magCal.calibrationValid &&
+         (data.magCal.hardIron.normSq() != 0.0f || !identityMatrix(data.magCal.softIron) ||
+          data.magCal.expectedFieldNorm != 1.0f)) ||
+        (data.magCal.axisAlignmentValid && !isProperRotationMatrix(data.magCal.magToImu)) ||
+        (!data.magCal.axisAlignmentValid && !identityMatrix(data.magCal.magToImu))) {
+        return failSemantic(TrackerSemanticConfigError::MagCalibration, error);
+    }
+    if (!finiteFloat(data.magCalQuality.radiusX) ||
+        !finiteFloat(data.magCalQuality.radiusY) ||
+        !finiteFloat(data.magCalQuality.radiusZ) ||
+        !finiteFloat(data.magCalQuality.normMin) ||
+        !finiteFloat(data.magCalQuality.normMean) ||
+        !finiteFloat(data.magCalQuality.normMax) ||
+        !inRange(data.magCalQuality.coverageScore, 0.0f, 1.0f) ||
+        !finiteFloat(data.magCalQuality.residualRms) ||
+        data.magCalQuality.radiusX < 0.0f || data.magCalQuality.radiusY < 0.0f ||
+        data.magCalQuality.radiusZ < 0.0f || data.magCalQuality.normMin < 0.0f ||
+        data.magCalQuality.normMean < 0.0f || data.magCalQuality.normMax < 0.0f ||
+        data.magCalQuality.residualRms < 0.0f ||
+        !finiteFloat(data.magCalQuality.reservedExpectedHorizontalNorm)) {
+        return failSemantic(TrackerSemanticConfigError::MagCalibration, error);
+    }
+    if ((data.frame.sensorToDeviceValid && !isProperRotationMatrix(data.frame.sensorToDevice)) ||
+        (!data.frame.sensorToDeviceValid && !identityMatrix(data.frame.sensorToDevice))) {
+        return failSemantic(TrackerSemanticConfigError::FrameTransform, error);
+    }
+    if (!ordered(data.magYaw.horizontalNormBad, data.magYaw.horizontalNormGood) ||
+        !ordered(data.magYaw.gyroNormGoodDps, data.magYaw.gyroNormBadDps) ||
+        !ordered(data.magYaw.accelTrustBad, data.magYaw.accelTrustGood) ||
+        !inRange(data.magYaw.accelTrustBad, 0.0f, 1.0f) ||
+        !inRange(data.magYaw.accelTrustGood, 0.0f, 1.0f) ||
+        !inRange(data.magYaw.maxInnovationDeg, 0.001f, 180.0f) ||
+        !inRange(data.magYaw.timeConstantS, 1.0f, 300.0f) ||
+        !inRange(data.magYaw.maxCorrectionRateDegS, 0.01f, 45.0f) ||
+        !inRange(data.magYaw.maxCorrectionStepDeg, 0.001f, 5.0f) ||
+        data.magYaw.maxMagAgeMs == 0u || data.magYaw.maxMagAgeMs > 5000u ||
+        data.magYaw.gyroMovingCooldownMs > 60000u ||
+        data.magYaw.accelBadCooldownMs > 60000u ||
+        data.magYaw.magDisturbanceCooldownMs > 120000u ||
+        !inRange(data.magYaw.fallbackDtS, 0.001f, 1.0f)) {
+        return failSemantic(TrackerSemanticConfigError::MagYawGates, error);
+    }
+    if (data.magYaw.reservedFlags != 0u ||
+        (data.magYaw.applyEnabled &&
+        (!data.magYaw.controllerEnabled || !data.magYaw.requireAccelTrusted ||
+         !data.accelCal.valid || !data.magCal.calibrationValid ||
+         !data.magCal.axisAlignmentValid || !data.frame.sensorToDeviceValid))) {
+        return failSemantic(TrackerSemanticConfigError::Dependency, error);
+    }
+
+    if (!ordered(data.ahrsRuntime.minDtS, data.ahrsRuntime.maxDtS) ||
+        data.ahrsRuntime.minDtS <= 0.0f || data.ahrsRuntime.maxDtS > 1.0f ||
+        !inRange(data.ahrsRuntime.accelKp, 0.0f, 20.0f) ||
+        !inRange(data.ahrsRuntime.maxAccelCorrectionDegPerUpdate, 0.01f, 20.0f) ||
+        !ordered(data.ahrsRuntime.accelNormGoodErrorG, data.ahrsRuntime.accelNormBadErrorG) ||
+        !inRange(data.ahrsRuntime.accelNormGoodErrorG, 0.0f, 1.0f) ||
+        !inRange(data.ahrsRuntime.accelNormBadErrorG, 0.001f, 2.0f) ||
+        !ordered(data.ahrsRuntime.accelInnovationGoodDeg, data.ahrsRuntime.accelInnovationBadDeg) ||
+        !inRange(data.ahrsRuntime.accelInnovationGoodDeg, 0.0f, 90.0f) ||
+        !inRange(data.ahrsRuntime.accelInnovationBadDeg, 0.1f, 180.0f) ||
+        !ordered(data.ahrsRuntime.accelNormStdGoodG, data.ahrsRuntime.accelNormStdBadG) ||
+        !inRange(data.ahrsRuntime.accelNormStdGoodG, 0.0f, 0.5f) ||
+        !inRange(data.ahrsRuntime.accelNormStdBadG, 0.001f, 2.0f) ||
+        !inRange(data.ahrsRuntime.accelNormVarianceAlpha, 0.001f, 1.0f) ||
+        !ordered(data.ahrsRuntime.gyroMotionGoodDps, data.ahrsRuntime.gyroMotionBadDps) ||
+        !inRange(data.ahrsRuntime.gyroMotionGoodDps, 0.0f, 2000.0f) ||
+        !inRange(data.ahrsRuntime.gyroMotionBadDps, 1.0f, 4000.0f) ||
+        data.ahrsRuntime.normalizeEvery == 0u || data.ahrsRuntime.normalizeEvery > 4096u) {
+        return failSemantic(TrackerSemanticConfigError::AhrsGates, error);
+    }
+    if (!inRange(data.quality.largeGapFactor, 1.01f, 10.0f) ||
+        !ordered(data.quality.accelNormOutlierMinG, data.quality.accelNormOutlierMaxG) ||
+        !inRange(data.quality.accelNormOutlierMinG, 0.01f, 2.0f) ||
+        !inRange(data.quality.accelNormOutlierMaxG, 0.02f, 20.0f) ||
+        !std::isfinite(data.quality.expectedDtUs) || data.quality.expectedDtUs < 0.0f ||
+        !std::isfinite(data.quality.smallGapFactor) ||
+        !inRange(data.quality.smallGapFactor, 0.0f, 1.0f) ||
+        data.quality.smallGapFactor >= data.quality.largeGapFactor ||
+        data.quality.gyroNearSaturationAbsRaw <= 0 ||
+        data.quality.accelNearSaturationAbsRaw <= 0) {
+        return failSemantic(TrackerSemanticConfigError::QualityGates, error);
+    }
+    if (data.output.outputRateHz == 0u || data.output.outputRateHz > cfg::OUTPUT_RATE_HZ_MAX ||
+        (data.output.serialDebugEnabled && data.output.quaternionOutputEnabled) ||
+        !validSlimeVRMotionPacketPolicyValue(
+            data.output.packetFormat & OUTPUT_PACKET_MODE_VALUE_MASK) ||
+        (data.output.packetFormat & OUTPUT_PACKET_MODE_MARKER) == 0u ||
+        (data.output.packetFormat & static_cast<uint8_t>(~OUTPUT_PACKET_MODE_ALLOWED_MASK)) != 0u) {
+        return failSemantic(TrackerSemanticConfigError::Output, error);
+    }
+    if (!std::isfinite(data.ahrs.accelCorrectionGain) ||
+        data.ahrs.accelCorrectionGain < 0.0f || data.ahrs.accelCorrectionGain > 20.0f ||
+        data.ahrs.reservedAccelTrustMinNormG != 0.94f ||
+        data.ahrs.reservedAccelTrustMaxNormG != 1.35f ||
+        data.ahrs.reservedMountingOffsetValid ||
+        !finiteQuat(data.ahrs.reservedMountingOffset) ||
+        !identityQuaternion(data.ahrs.reservedMountingOffset) ||
+        data.gyroCal.reservedTempLearningEnabled ||
+        (data.ahrsRuntime.reserved &
+         static_cast<uint8_t>(~AHRS_RUNTIME_FLAG_RUNTIME_BIAS_ENABLED)) != 0u ||
+        data.frame.reservedApplyMountingOffsetInFirmware ||
+        data.frame.reservedOutputConvention != 0u || data.frame.reservedFlags != 0u ||
+        data.reservedDevice.reservedDeviceId != 0u ||
+        data.reservedDevice.reservedSensorId != 0u ||
+        data.reservedDevice.reserved0 != 0u || data.reservedDevice.reserved1 != 0u ||
+        data.reservedDevice.reservedDeviceName[0] != '\0') {
+        return failSemantic(TrackerSemanticConfigError::ReservedState, error);
+    }
+    return true;
+}
+
 uint32_t TrackerConfig::computeCrc() const {
     TrackerConfigBlob tmp = data;
     tmp.crc32 = 0;
@@ -195,7 +609,7 @@ void TrackerConfig::sanitize() {
 
     data.schemas = TrackerConfigSchemaVersions{};
 
-    if (data.hardware.serialBaud == 0) data.hardware.serialBaud = cfg::SERIAL_BAUD;
+    data.hardware.serialBaud = cfg::SERIAL_BAUD;
     if (data.hardware.spiHz == 0) data.hardware.spiHz = DEFAULT_SPI_HZ;
     if (data.hardware.spiHz < MIN_SPI_HZ) data.hardware.spiHz = MIN_SPI_HZ;
     if (data.hardware.spiHz > MAX_SPI_HZ) data.hardware.spiHz = MAX_SPI_HZ;
@@ -795,7 +1209,6 @@ void trackerMigratePerformanceDefaults(TrackerConfig& config) {
     }
 #endif
 
-    config.sanitize();
     config.updateCrc();
 }
 

@@ -81,6 +81,8 @@ bool TrackingStateController::softRecoveryActive() const { return softRecoveryAc
 uint32_t TrackingStateController::recoveryStableSamples() const { return recoveryStableSamples_; }
 uint16_t TrackingStateController::softRecoveryGoodSamples() const { return softRecoveryGoodSamples_; }
 uint8_t TrackingStateController::recoveryRejectStreak() const { return recoveryRejectStreak_; }
+uint8_t TrackingStateController::recoveryMonotonicGyroSamples() const { return recoveryMonotonicGyroSamples_; }
+bool TrackingStateController::degradedGyroOutputAllowed() const { return degradedGyroOutputAllowed_; }
 uint32_t TrackingStateController::recoveryEnterCount() const { return recoveryEnterCount_; }
 uint32_t TrackingStateController::recoveryTiltReacquireCount() const { return recoveryTiltReacquireCount_; }
 uint32_t TrackingStateController::recoveryBootstrapBypassCount() const { return recoveryBootstrapBypassCount_; }
@@ -97,6 +99,8 @@ TrackingStateController::Snapshot TrackingStateController::snapshot() const {
     s.recoveryStableSamples = recoveryStableSamples_;
     s.softRecoveryGoodSamples = softRecoveryGoodSamples_;
     s.recoveryRejectStreak = recoveryRejectStreak_;
+    s.recoveryMonotonicGyroSamples = recoveryMonotonicGyroSamples_;
+    s.degradedGyroOutputAllowed = degradedGyroOutputAllowed_;
     s.recoveryEnterCount = recoveryEnterCount_;
     s.recoveryTiltReacquireCount = recoveryTiltReacquireCount_;
     s.recoveryBootstrapBypassCount = recoveryBootstrapBypassCount_;
@@ -120,6 +124,9 @@ void TrackingStateController::reset() {
     recoveryStableSamples_ = 0;
     softRecoveryGoodSamples_ = 0;
     recoveryRejectStreak_ = 0;
+    recoveryMonotonicGyroSamples_ = 0;
+    degradedGyroOutputAllowed_ = false;
+    recoveryLastIntegratedTimestampUs_ = 0u;
     recoveryAccelSum_ = Vec3::zero();
     recoveryEnterCount_ = 0;
     recoveryTiltReacquireCount_ = 0;
@@ -204,6 +211,9 @@ void TrackingStateController::enterRecovery(uint32_t reasonFlags,
         recoveryStableSamples_ = 0;
         softRecoveryGoodSamples_ = 0;
         recoveryRejectStreak_ = 0;
+        recoveryMonotonicGyroSamples_ = 0;
+        degradedGyroOutputAllowed_ = false;
+        recoveryLastIntegratedTimestampUs_ = 0u;
         recoveryAccelSum_ = Vec3::zero();
         recoveryBootstrapBypassCount_++;
 
@@ -263,6 +273,9 @@ void TrackingStateController::enterRecovery(uint32_t reasonFlags,
     recoveryActive_ = true;
     recoveryStableSamples_ = 0;
     recoveryRejectStreak_ = 0;
+    recoveryMonotonicGyroSamples_ = 0;
+    degradedGyroOutputAllowed_ = false;
+    recoveryLastIntegratedTimestampUs_ = 0u;
     recoveryAccelSum_ = Vec3::zero();
 
     // Entering strict recovery is a state transition. Repeated recovery
@@ -302,6 +315,7 @@ void TrackingStateController::updateSoftRecovery(const ImuQualityResult& quality
                                  quality.has(imu_quality_flags::TIMESTAMP_QUEUE_OVERFLOW) ||
                                  quality.has(imu_quality_flags::FIFO_COMPLETED_QUEUE_OVERFLOW) ||
                                  quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG);
+
     if (hardStreamFault || !ahrsIntegrated) {
         softRecoveryGoodSamples_ = 0;
         return;
@@ -364,6 +378,27 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
                                  quality.has(imu_quality_flags::FIFO_OVERRUN) ||
                                  quality.has(imu_quality_flags::FIFO_FULL) ||
                                  quality.has(imu_quality_flags::FIFO_UNKNOWN_TAG);
+
+    // Strict recovery may need a clean gravity window to restore tilt, but it
+    // must not require physical stillness merely to resume a valid gyro pose.
+    // Four genuinely integrated, monotonic samples prove the new timebase.
+    if (!hardStreamFault && ahrsIntegrated && lastSampleTimestampUs != 0u &&
+        (recoveryLastIntegratedTimestampUs_ == 0u ||
+         lastSampleTimestampUs > recoveryLastIntegratedTimestampUs_)) {
+        recoveryLastIntegratedTimestampUs_ = lastSampleTimestampUs;
+        if (recoveryMonotonicGyroSamples_ < RECOVERY_MONOTONIC_GYRO_SAMPLES_REQUIRED) {
+            ++recoveryMonotonicGyroSamples_;
+        }
+        if (recoveryMonotonicGyroSamples_ >= RECOVERY_MONOTONIC_GYRO_SAMPLES_REQUIRED) {
+            degradedGyroOutputAllowed_ = true;
+        }
+    } else if (hardStreamFault ||
+               (recoveryLastIntegratedTimestampUs_ != 0u &&
+                lastSampleTimestampUs <= recoveryLastIntegratedTimestampUs_)) {
+        recoveryMonotonicGyroSamples_ = 0u;
+        degradedGyroOutputAllowed_ = false;
+        recoveryLastIntegratedTimestampUs_ = 0u;
+    }
     const bool stable = motionStable &&
                         !hardStreamFault &&
                         ahrsIntegrated &&
@@ -409,6 +444,9 @@ void TrackingStateController::updateRecovery(const ImuQualityResult& quality,
     recoveryActive_ = false;
     recoveryStableSamples_ = 0;
     recoveryRejectStreak_ = 0;
+    recoveryMonotonicGyroSamples_ = 0u;
+    degradedGyroOutputAllowed_ = false;
+    recoveryLastIntegratedTimestampUs_ = 0u;
     recoveryAccelSum_ = Vec3::zero();
     recoveryTiltReacquireCount_++;
     const uint64_t eventTs = quality.dtUs != 0 ? lastSampleTimestampUs : recoveryLastTimestampUs_;
@@ -523,6 +561,8 @@ void TrackingStateController::printRecoveryStatus(Stream& out) const {
     out.print("tracking_recovery_stable_samples="); out.println(recoveryStableSamples_);
     out.print("tracking_soft_recovery_good_samples="); out.println(softRecoveryGoodSamples_);
     out.print("tracking_recovery_reject_streak="); out.println(recoveryRejectStreak_);
+    out.print("tracking_recovery_monotonic_gyro_samples="); out.println(recoveryMonotonicGyroSamples_);
+    out.print("tracking_degraded_gyro_output_allowed="); out.println(degradedGyroOutputAllowed_ ? "yes" : "no");
     out.print("tracking_recovery_enter_count="); out.println(recoveryEnterCount_);
     out.print("tracking_recovery_tilt_reacquire_count="); out.println(recoveryTiltReacquireCount_);
     out.print("tracking_recovery_bootstrap_bypass_count="); out.println(recoveryBootstrapBypassCount_);

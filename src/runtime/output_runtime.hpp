@@ -27,6 +27,10 @@ public:
                 const Vec3& accelDeviceG,
                 uint32_t softwareQueueAgeUs = 0u);
     bool copy(TrackerPreparedOutputSnapshot& out) const;
+    // Returns a coherent seqlock snapshot even when the producer marked it
+    // invalid. Verification/diagnostics need to count invalid publications;
+    // normal consumers should continue using copy().
+    bool copyCoherent(TrackerPreparedOutputSnapshot& out) const;
 
 private:
     TrackerPreparedOutputSnapshot snapshot_;

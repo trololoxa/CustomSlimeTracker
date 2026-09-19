@@ -51,6 +51,7 @@
 #include "config/tracker_config_runtime.hpp"
 #include "config/tracker_config_store.hpp"
 #include "config/tracker_network_config.hpp"
+#include "config/factory_reset_coordinator.hpp"
 #include "network/wifi_manager.hpp"
 #include "network/esp32_wifi_station.hpp"
 #include "network/esp32_udp_transport.hpp"
@@ -89,6 +90,15 @@ static CalibrationAutonomyController g_calibrationAutonomy;
 
 static TrackerNetworkConfig g_networkConfig;
 static TrackerNetworkConfigStore g_networkConfigStore;
+static FactoryResetCoordinator g_factoryResetCoordinator(
+    g_configStore,
+    g_networkConfigStore,
+#if TRACKER_HAS_CALIBRATION_AUTONOMY
+    &g_calibrationAutonomyStore
+#else
+    nullptr
+#endif
+);
 static bool g_networkConfigLoadedFromNvs = false;
 static Esp32WifiStationAdapter g_wifiStation;
 static TrackerWifiManager g_wifiManager;

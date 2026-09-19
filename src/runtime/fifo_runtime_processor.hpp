@@ -26,6 +26,7 @@ public:
     uint32_t fallbackEvents() const;
     uint32_t waitTimeouts() const;
     uint32_t lastHandledIrqCount() const;
+    uint32_t lastEventAtUs() const;
 
 private:
     volatile uint32_t* irqCount_ = nullptr;
@@ -37,6 +38,13 @@ private:
     uint32_t fallbackEvents_ = 0;
     uint32_t waitTimeouts_ = 0;
     uint32_t lastNonblockingStatusPollUs_ = 0;
+    uint32_t lastEventAtUs_ = 0;
+};
+
+enum class FifoRuntimeFault : uint8_t {
+    None = 0,
+    DrainFailed,
+    BatchCapacityInvariant,
 };
 
 enum class FifoRuntimeSampleResult : uint8_t {
@@ -61,6 +69,8 @@ struct FifoRuntimeQueueStats {
     uint32_t magProcessed = 0;
     uint32_t rawQueueOverflow = 0;
     uint32_t magQueueOverflow = 0;
+    uint32_t drainFailures = 0;
+    uint32_t batchCapacityInvariantFailures = 0;
     // A due mag callback was intentionally deferred because the bounded mag
     // callback allowance was exhausted. Raw processing stops at the same
     // timestamp so the next app pass preserves endpoint coherence.
@@ -143,6 +153,9 @@ public:
     uint32_t rawQueueSpanUs() const;
     uint32_t lastDequeuedQueueAgeUs() const { return lastDequeuedQueueAgeUs_; }
     const FifoRuntimeQueueStats& queueStats() const;
+    FifoRuntimeFault takeFault();
+    FifoRuntimeFault pendingFault() const { return pendingFault_; }
+    uint32_t lastHardwareDrainAtUs() const { return lastHardwareDrainAtUs_; }
 
 private:
     bool ready() const;
@@ -197,6 +210,9 @@ private:
     bool diagnosticsTimingSampled_ = false;
     uint32_t diagnosticsTimingDecimator_ = 0u;
     FifoRuntimeQueueStats queueStats_;
+    FifoRuntimeFault pendingFault_ = FifoRuntimeFault::None;
+    uint32_t lastHardwareDrainAtUs_ = 0u;
+    bool recoveryQuarantined_ = false;
 };
 
 } // namespace tracker

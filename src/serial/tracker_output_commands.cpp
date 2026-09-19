@@ -74,8 +74,9 @@ void trackerSerialDispatchStreamCommand(TrackerSerialCommandContext& ctx, int ar
             return;
         }
         uint32_t hz = 0;
-        if (!tracker_serial_detail::parseU32(argv[2], hz) || hz == 0 || hz > 1000) {
-            tracker_serial_detail::printErr(out, "invalid stream rate; expected 1..1000");
+        if (!tracker_serial_detail::parseU32(argv[2], hz) ||
+            hz == 0 || hz > cfg::OUTPUT_RATE_HZ_MAX) {
+            tracker_serial_detail::printErr(out, "invalid stream rate; exceeds configured output ceiling");
             return;
         }
         ctx.streamState->rateHz = static_cast<uint16_t>(hz);
@@ -247,8 +248,9 @@ void trackerSerialDispatchOutputCommand(TrackerSerialCommandContext& ctx, int ar
             return;
         }
         uint32_t hz = 0;
-        if (!tracker_serial_detail::parseU32(argv[2], hz) || hz == 0 || hz > 1000) {
-            tracker_serial_detail::printErr(out, "invalid output rate; expected 1..1000");
+        if (!tracker_serial_detail::parseU32(argv[2], hz) ||
+            hz == 0 || hz > cfg::OUTPUT_RATE_HZ_MAX) {
+            tracker_serial_detail::printErr(out, "invalid output rate; exceeds configured output ceiling");
             return;
         }
         ctx.config->data.output.outputRateHz = static_cast<uint16_t>(hz);
