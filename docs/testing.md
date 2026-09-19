@@ -1,5 +1,26 @@
 # Testing strategy
 
+## DEV-02: environment readiness
+
+See `dev_environment.md` for Windows/WSL setup, explicit tool selection,
+platform-specific wheel hash locks and the limits of each doctor profile.
+`python tools/test_dev02_environment.py` tests failure paths without installing
+software or accessing a device. `python tools/doctor.py --profile host` checks
+actual host readiness; use `sanitized` or `firmware` for their explicit gates.
+Missing required capabilities fail; optional tools remain visible as SKIP/WARN.
+Raw command evidence is retained under `build/doctor/`.
+
+
+## DEV-01: test infrastructure self-check
+
+`python tools/test_dev01_test_infrastructure.py` checks real assertion failures
+and strict sanitizer-preflight behavior. It is included in the common tool gate.
+Explicit native sanitizer modes require clean execution and detection of a
+known fault before building the suite; unavailable capability is a failure.
+Historical optional development probes may fall back, with explicit coverage
+and full probe evidence in `build/sanitizer-probes/`. This is not release PASS.
+See `dev01_test_infrastructure_report.md` and `dev_preparation_status.md`.
+
 > **0028d update:** 0028d adds native transaction/fault tests and an opaque-clock verification stack gate. Final target smoke (capture >15 s + cancel, FIFO proof, persistence/reboot, normal tracking/sleep) is in `0028d_recovery_and_calibration_contract_report.md`. Expected injected `ERR` lines may occur inside passing negative tests; process/test verdict determines success.
 
 This project has two very different kinds of tests:

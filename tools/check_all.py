@@ -217,6 +217,8 @@ def run_tool_smokes(summary: CheckSummary, *, timeout_s: float) -> None:
         ("tools/test_check_all_aggregation_policy.py", "check_all aggregation policy"),
         ("tools/test_run_standalone_tests_policy.py", "standalone runner policy"),
         ("tools/test_quality_gate_runtime.py", "quality-gate runtime policy"),
+        ("tools/test_dev01_test_infrastructure.py", "DEV-01 test infrastructure"),
+        ("tools/test_dev02_environment.py", "DEV-02 environment tooling"),
         ("tools/test_release_manifest.py", "release-manifest policy"),
         ("tools/test_logver3_contract.py", "strict LOGVER3 contract"),
         ("tools/test_capture_telnet_log.py", "cable-free capture promotion policy"),

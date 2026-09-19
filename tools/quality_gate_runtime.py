@@ -11,6 +11,31 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
+SANITIZER_FLAGS = {
+    "none": (),
+    "undefined": (
+        "-O1",
+        "-g",
+        "-fsanitize=undefined",
+        "-fno-sanitize-recover=undefined",
+        "-fno-omit-frame-pointer",
+    ),
+    "address-undefined": (
+        "-O1",
+        "-g",
+        "-fsanitize=address,undefined",
+        "-fno-sanitize-recover=undefined",
+        "-fno-omit-frame-pointer",
+    ),
+    "leak": (
+        "-O1",
+        "-g",
+        "-fsanitize=leak",
+        "-fno-omit-frame-pointer",
+        "-DTRACKER_ENABLE_LSAN=1",
+    ),
+}
+
 def _set_option(raw: str, key: str, value: str) -> str:
     """Set one colon-separated sanitizer option without duplicating it."""
     prefix = key + "="
@@ -114,51 +139,21 @@ def strongest_supported_sanitizer_flags(
     cxx: str,
     root: Path,
 ) -> tuple[str, tuple[str, ...]]:
-    """Return the strongest sanitizer set this compiler can compile *and link*.
+    """Development fallback only: prefer an executable, effective sanitizer.
 
-    MinGW/MSYS2 toolchains commonly accept ``-fsanitize=...`` at compile time
-    while lacking the corresponding libasan/libubsan link runtimes. Quality
-    gates must treat that as an environment limitation, not a firmware defect.
-    Prefer the historical ASan+UBSan gate, fall back to UBSan, and return
-    ``("none", ())`` only when neither runtime is linkable.
+    Explicit native/release sanitizer gates never call this fallback selector.
+    A weaker result is reported by the caller as reduced coverage, not ASan PASS.
+    Full probe evidence is retained even when this development path falls back.
     """
-    candidates: tuple[tuple[str, tuple[str, ...]], ...] = (
-        (
-            "address-undefined",
-            (
-                "-fsanitize=address,undefined",
-                "-fno-sanitize-recover=undefined",
-                "-fno-omit-frame-pointer",
-            ),
-        ),
-        (
-            "undefined",
-            (
-                "-fsanitize=undefined",
-                "-fno-sanitize-recover=undefined",
-                "-fno-omit-frame-pointer",
-            ),
-        ),
-    )
+    from sanitizer_probe import probe_sanitizer, write_probe_report
 
-    with project_temp_directory(root, "sanitizer-probe-") as raw:
-        temp = Path(raw)
-        source = temp / "probe.cpp"
-        executable = temp / ("probe.exe" if os.name == "nt" else "probe")
-        source.write_text("int main() { return 0; }\n", encoding="utf-8")
-        env = quality_gate_environment(root, scope="sanitizer-probe")
-        for name, flags in candidates:
-            executable.unlink(missing_ok=True)
-            probe = subprocess.run(
-                [cxx, "-std=c++20", str(source), *flags, "-o", str(executable)],
-                cwd=root,
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            if probe.returncode == 0 and executable.is_file():
-                return name, flags
+    for name in ("address-undefined", "undefined"):
+        result = probe_sanitizer(cxx, root, name)
+        report = write_probe_report(result, root)
+        print(f"# sanitizer capability {name}={result.status} report={report}")
+        if result.supported:
+            # Preserve caller optimization/debug flags in legacy development gates.
+            return name, tuple(flag for flag in SANITIZER_FLAGS[name] if flag not in ("-O1", "-g"))
     return "none", ()
 
 
@@ -171,6 +166,7 @@ def lsan_environment(
     """Return an environment for an explicit leak-only sanitizer run."""
     env = quality_gate_environment(root, scope=scope, base=base)
     env["LSAN_OPTIONS"] = _set_option(env.get("LSAN_OPTIONS", ""), "exitcode", "23")
+    env["LSAN_OPTIONS"] = _set_option(env["LSAN_OPTIONS"], "detect_leaks", "1")
     return env
 
 

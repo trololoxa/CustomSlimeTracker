@@ -24,3 +24,8 @@ secrets.ini
 platformio.local.ini
 
 logs
+
+# DEV-02: local Python environments; keep Windows and Linux separate.
+/.venv-dev/
+/.venv-dev-linux/
+/.venv-dev-verify/

@@ -13,6 +13,7 @@ from unittest import mock
 import run_standalone_tests
 from quality_gate_runtime import (
     asan_ubsan_environment,
+    lsan_environment,
     project_temp_directory,
     quality_gate_environment,
     run_bounded_process,
@@ -65,23 +66,33 @@ class QualityGateRuntimeTests(unittest.TestCase):
         self.assertIn("halt_on_error=1", env["UBSAN_OPTIONS"])
         self.assertIn("print_stacktrace=1", env["UBSAN_OPTIONS"])
 
-    def test_sanitizer_probe_falls_back_to_ubsan_when_address_runtime_is_missing(self) -> None:
-        def fake_run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if "-fsanitize=address,undefined" in args:
-                return subprocess.CompletedProcess(args, 1)
-            output = Path(args[args.index("-o") + 1])
-            output.write_bytes(b"probe")
-            return subprocess.CompletedProcess(args, 0)
+    def test_explicit_lsan_reenables_inherited_disabled_leak_detection(self) -> None:
+        env = lsan_environment(ROOT, base={"LSAN_OPTIONS": "detect_leaks=0:exitcode=0"})
+        self.assertIn("detect_leaks=1", env["LSAN_OPTIONS"])
+        self.assertIn("exitcode=23", env["LSAN_OPTIONS"])
+        self.assertNotIn("detect_leaks=0", env["LSAN_OPTIONS"])
+        self.assertNotIn("exitcode=0", env["LSAN_OPTIONS"])
 
-        with mock.patch("quality_gate_runtime.subprocess.run", side_effect=fake_run):
+    def test_sanitizer_probe_falls_back_to_ubsan_when_address_runtime_is_missing(self) -> None:
+        from sanitizer_probe import ProbeResult
+        with (
+            mock.patch("sanitizer_probe.probe_sanitizer", side_effect=[
+                ProbeResult("address-undefined", "cxx", reason="missing"),
+                ProbeResult("undefined", "cxx", "supported", "verified"),
+            ]) as probe,
+            mock.patch("sanitizer_probe.write_probe_report", return_value=Path("report.json")),
+        ):
             name, flags = strongest_supported_sanitizer_flags("synthetic-cxx", ROOT)
         self.assertEqual(name, "undefined")
         self.assertIn("-fsanitize=undefined", flags)
-        self.assertNotIn("-fsanitize=address,undefined", flags)
+        self.assertEqual(probe.call_count, 2)
 
     def test_sanitizer_probe_reports_environment_limitation_when_no_runtime_links(self) -> None:
-        failed = subprocess.CompletedProcess(["synthetic-cxx"], 1)
-        with mock.patch("quality_gate_runtime.subprocess.run", return_value=failed):
+        from sanitizer_probe import ProbeResult
+        with (
+            mock.patch("sanitizer_probe.probe_sanitizer", return_value=ProbeResult("none", "cxx")),
+            mock.patch("sanitizer_probe.write_probe_report", return_value=Path("report.json")),
+        ):
             name, flags = strongest_supported_sanitizer_flags("synthetic-cxx", ROOT)
         self.assertEqual(name, "none")
         self.assertEqual(flags, ())

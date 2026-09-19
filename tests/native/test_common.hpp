@@ -16,7 +16,9 @@ struct TestContext {
     }
 
     void checkNear(float actual, float expected, float tolerance, const char* expr, const char* file, int line) {
-        if (!std::isfinite(actual) || std::fabs(actual - expected) > tolerance) {
+        if (!std::isfinite(actual) || !std::isfinite(expected) ||
+            !std::isfinite(tolerance) || tolerance < 0.0f ||
+            std::fabs(actual - expected) > tolerance) {
             ++failures;
             std::fprintf(stderr,
                          "FAIL %s:%d: %s actual=%.9g expected=%.9g tolerance=%.9g\n",

@@ -1,0 +1,4 @@
+# Bootstrap input, NOT a complete dependency lock. Generate a platform-specific
+# hash lock from a resolved wheelhouse using lock_dev_wheels.py before reuse.
+# This pins host PlatformIO Core, not the already-pinned ESP32 toolchain.
+platformio==6.1.18

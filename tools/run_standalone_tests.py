@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import math
 import pathlib
 import shlex
 import shutil
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from typing import BinaryIO, Iterable, Iterator, Mapping
 
 from quality_gate_runtime import (
+    SANITIZER_FLAGS,
     asan_ubsan_environment,
     lsan_environment,
     quality_gate_environment,
@@ -162,30 +164,7 @@ BASE_FLAGS = [
 ]
 
 
-SANITIZER_FLAGS = {
-    "none": (),
-    "undefined": (
-        "-O1",
-        "-g",
-        "-fsanitize=undefined",
-        "-fno-sanitize-recover=undefined",
-        "-fno-omit-frame-pointer",
-    ),
-    "address-undefined": (
-        "-O1",
-        "-g",
-        "-fsanitize=address,undefined",
-        "-fno-sanitize-recover=undefined",
-        "-fno-omit-frame-pointer",
-    ),
-    "leak": (
-        "-O1",
-        "-g",
-        "-fsanitize=leak",
-        "-fno-omit-frame-pointer",
-        "-DTRACKER_ENABLE_LSAN=1",
-    ),
-}
+# Flags are shared with the executable sanitizer capability probe.
 
 
 @dataclass
@@ -554,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_normalize_extra_cxxflag_args(raw_argv))
 
-    if args.timeout_s <= 0:
+    if not math.isfinite(args.timeout_s) or args.timeout_s <= 0:
         parser.error("--timeout-s must be positive")
 
     _COMMAND_TIMEOUT_S = args.timeout_s
@@ -575,6 +554,19 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with native_runner_lock():
+            if args.sanitizer != "none":
+                from sanitizer_probe import probe_sanitizer, write_probe_report
+
+                result = probe_sanitizer(
+                    cxx, ROOT, args.sanitizer,
+                    extra_flags=args.extra_cxxflag,
+                    timeout_s=min(args.timeout_s, 30.0),
+                )
+                report = write_probe_report(result, ROOT)
+                print(f"# sanitizer capability {args.sanitizer}={result.status} report={report}")
+                if not result.supported:
+                    print(f"error: sanitizer preflight: {result.reason}", file=sys.stderr)
+                    return 1
             return _run_suite(args, cxx, extra_flags)
     except NativeRunnerBusyError as exc:
         print(f"error: {exc}", file=sys.stderr)
