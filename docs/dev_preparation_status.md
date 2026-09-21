@@ -9,7 +9,7 @@ Do not infer hardware/release acceptance of 0028d from this development work.
 | --- | --- | --- |
 | DEV-01 | Assertions and executable sanitizer capability evidence | Implemented; see DEV-01 report for verification limits |
 | DEV-02 | Windows/Linux setup, wheel hash locks, environment doctor | Implemented; target installation and Windows/WSL execution still require local verification; see DEV-02 report |
-| DEV-03 | Selective runners, raw logs, compact summaries, safe reuse | Pending |
+| DEV-03 | Selective runners, raw logs, compact summaries, safe reuse | Implemented; shared objects within a fresh run and failed-ID reuse only; see DEV-03 report |
 | DEV-04 | Project AGENTS.md, current documentation, owners/test map, compilation database | Pending |
 | DEV-05 | Independent math references and algorithm/scenario replay | Pending |
 | DEV-06 | Device identify/flash/smoke/capture, locking, debugger, crash evidence | Pending |

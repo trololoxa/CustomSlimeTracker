@@ -9,6 +9,7 @@ summary is printed at the end.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import shlex
 import shutil
@@ -18,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
+from gate_reporting import GateReport, failed_checks
 from check_all_policy import parse_size_metrics
 from quality_gate_runtime import quality_gate_environment, run_bounded_process
 from release_manifest import (
@@ -28,6 +30,7 @@ from release_manifest import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+_REPORT: GateReport | None = None
 REQUIRED_PIO_ENVS = (
     "BOARD_LOLIN_C3_MINI_PRODUCTION",
     "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG",
@@ -81,6 +84,10 @@ def run_command(
     cwd: Path = ROOT,
     timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
 ) -> CheckCommandResult:
+    if _REPORT is not None:
+        result = _REPORT.run(cmd, cwd=cwd, timeout_s=timeout_s,
+                             env=quality_gate_environment(ROOT, scope="check-all"))
+        return CheckCommandResult(result.returncode, result.stderr)
     printable = shlex.join(cmd)
     print(f"\n$ {printable}", flush=True)
     try:
@@ -153,6 +160,8 @@ def run_native_tests(
         "--sanitizer",
         sanitizer,
     ]
+    if _REPORT is not None and _REPORT.verbose:
+        cmd.append("--verbose")
     if clean:
         cmd.append("--clean")
     description = "standalone native test suite"
@@ -197,80 +206,83 @@ def run_replay_gate(
     return run_checked(summary, cmd, description, timeout_s=timeout_s)
 
 
+CONTRACT_CHECKS = (
+    ("tools/validate_source_filters.py", "source-filter validation"),
+    ("tools/validate_profile_matrix.py", "profile-matrix validation"),
+    ("tools/validate_documentation.py", "documentation validation"),
+)
+
 def run_project_contract_checks(summary: CheckSummary, *, timeout_s: float) -> None:
-    checks = (
-        ("tools/validate_source_filters.py", "source-filter validation"),
-        ("tools/validate_profile_matrix.py", "profile-matrix validation"),
-        ("tools/validate_documentation.py", "documentation validation"),
-    )
-    for script, description in checks:
+    for script, description in CONTRACT_CHECKS:
         run_checked(summary, [sys.executable, script], description, timeout_s=timeout_s)
 
+
+TOOL_CHECKS = (
+    ("tools/test_build_identity.py", "build identity policy"),
+    ("tools/test_check_all_policy.py", "check_all policy"),
+    ("tools/test_check_all_aggregation_policy.py", "check_all aggregation policy"),
+    ("tools/test_run_standalone_tests_policy.py", "standalone runner policy"),
+    ("tools/test_quality_gate_runtime.py", "quality-gate runtime policy"),
+    ("tools/test_dev01_test_infrastructure.py", "DEV-01 test infrastructure"),
+    ("tools/test_dev02_environment.py", "DEV-02 environment tooling"),
+    ("tools/test_dev03_runners.py", "DEV-03 selective runners/reporting"),
+    ("tools/test_release_manifest.py", "release-manifest policy"),
+    ("tools/test_logver3_contract.py", "strict LOGVER3 contract"),
+    ("tools/test_capture_telnet_log.py", "cable-free capture promotion policy"),
+    ("tools/test_0025a_diagnostic_capture_policy.py", "0025a diagnostic capture lifecycle/policy"),
+    ("tools/test_0025b_remote_cli_transport_parity_policy.py", "0025b remote CLI transport parity"),
+    ("tools/test_0026a_motion_policy_and_magnetic_reliability_hardening.py", "0026a motion-policy/magnetic hardening"),
+    ("tools/test_0026b_hotpath_optimization_policy.py", "0026b hot-path optimization"),
+    ("tools/test_0026c_command_hook_declaration_order.py", "0026c command-hook declaration order"),
+    ("tools/test_0026d_host_quality_gate_portability_policy.py", "0026d host quality-gate portability"),
+    ("tools/test_0027_sensor_liveness_policy.py", "0027 sensor liveness/recovery policy"),
+    ("tools/test_0027b_cross_host_quality_gate_policy.py", "0027b cross-host quality-gate hardening"),
+    ("tools/test_0027c_windows_stack_and_failure_summary_policy.py", "0027c Windows stack/failure summary"),
+    ("tools/test_0027d_recovery_feedback_and_tap_policy.py", "0027d recovery feedback/tap hardening"),
+    ("tools/test_0027e_progress_clock_domain_policy.py", "0027e progress clock-domain separation"),
+    ("tools/test_0027f_progress_epoch_contract_policy.py", "0027f progress epoch contract"),
+    ("tools/test_0028_semantic_config_transaction_policy.py", "0028 semantic config/transaction policy"),
+    ("tools/test_0028a_transaction_and_quaternion_hotpath_policy.py", "0028a transaction/quaternion hot-path hardening"),
+    ("tools/test_0028b_v2_config_migration_policy.py", "0028b v2 config compatibility migration"),
+    ("tools/test_0028c_bounded_calibration_recovery_policy.py", "0028c bounded calibration/recovery"),
+    ("tools/test_0028d_recovery_and_calibration_contract_policy.py", "0028d recovery and calibration contract"),
+    ("tools/test_slimevr_session_contract_policy.py", "SlimeVR session contract"),
+    ("tools/test_calibration_storage_contract_policy.py", "calibration storage contract"),
+    ("tools/test_calibration_storage_stack_policy.py", "calibration storage stack budget"),
+    ("tools/test_calibration_autonomy_policy.py", "calibration autonomy policy"),
+    ("tools/test_calibration_0023a_policy.py", "0023a calibration policy"),
+    ("tools/test_calibration_0023b_policy.py", "0023b hardening policy"),
+    ("tools/test_calibration_0023c_policy.py", "0023c recovery policy"),
+    ("tools/test_calibration_0023d_policy.py", "0023d sleep recovery policy"),
+    ("tools/test_calibration_0023e_policy.py", "0023e setup/hotpath policy"),
+    ("tools/test_calibration_0023f_policy.py", "0023f full setup calibration policy"),
+    ("tools/test_calibration_0023g_policy.py", "0023g magnetic coverage reservoir policy"),
+    ("tools/test_calibration_0023ga_policy.py", "0023ga axis alignment stack hardening policy"),
+    ("tools/test_calibration_0023gb_policy.py", "0023gb magnetometer fit metric policy"),
+    ("tools/test_calibration_0023gc_policy.py", "0023gc mag fit stack/profile build policy"),
+    ("tools/test_calibration_0023gd_policy.py", "0023gd magnetometer math/alignment policy"),
+    ("tools/test_calibration_0023ge_policy.py", "0023ge magnetometer audit hardening policy"),
+    ("tools/test_calibration_0023gf_policy.py", "0023gf mag callback cross-ABI policy"),
+    ("tools/test_calibration_0023gg_policy.py", "0023gg magnetic timestamp/setup acceptance policy"),
+    ("tools/test_slimevr_wifi_provisioning_0023gh_policy.py", "0023gh SlimeVR Wi-Fi provisioning compatibility"),
+    ("tools/test_slimevr_connect_trackers_0023gi_policy.py", "0023gi SlimeVR Connect Trackers handshake/build date"),
+    ("tools/test_slimevr_connect_trackers_0023gj_policy.py", "0023gj already-connected Connect Trackers session restart"),
+    ("tools/test_calibration_0023gk_policy.py", "0023gk magnetometer robust-fit acceptance policy"),
+    ("tools/test_slimevr_udp_tx_recovery_0023gl_policy.py", "0023gl SlimeVR UDP TX recovery policy"),
+    ("tools/test_pre_0024_hotpath_headroom_policy.py", "pre-0024 hotpath headroom policy"),
+    ("tools/test_pre_0024a_tracking_deadline_policy.py", "pre-0024a tracking deadline policy"),
+    ("tools/test_pre_0024ab_hotpath_transform_cache_policy.py", "pre-0024ab transform cache policy"),
+    ("tools/test_pre_0024ac_imu_hotpath_slack_policy.py", "pre-0024ac IMU hotpath/slack policy"),
+    ("tools/test_pre_0024ad_network_pressure_policy.py", "pre-0024ad network pressure pacing/recovery policy"),
+    ("tools/test_calibration_integration_policy.py", "calibration integration policy"),
+    ("tools/test_mag_heading_reliability_policy.py", "mag heading reliability policy"),
+)
 
 def run_tool_smokes(summary: CheckSummary, *, timeout_s: float) -> None:
     out_dir = ROOT / "build" / "tool_smoke"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    checks = (
-        ("tools/test_build_identity.py", "build identity policy"),
-        ("tools/test_check_all_policy.py", "check_all policy"),
-        ("tools/test_check_all_aggregation_policy.py", "check_all aggregation policy"),
-        ("tools/test_run_standalone_tests_policy.py", "standalone runner policy"),
-        ("tools/test_quality_gate_runtime.py", "quality-gate runtime policy"),
-        ("tools/test_dev01_test_infrastructure.py", "DEV-01 test infrastructure"),
-        ("tools/test_dev02_environment.py", "DEV-02 environment tooling"),
-        ("tools/test_release_manifest.py", "release-manifest policy"),
-        ("tools/test_logver3_contract.py", "strict LOGVER3 contract"),
-        ("tools/test_capture_telnet_log.py", "cable-free capture promotion policy"),
-        ("tools/test_0025a_diagnostic_capture_policy.py", "0025a diagnostic capture lifecycle/policy"),
-        ("tools/test_0025b_remote_cli_transport_parity_policy.py", "0025b remote CLI transport parity"),
-        ("tools/test_0026a_motion_policy_and_magnetic_reliability_hardening.py", "0026a motion-policy/magnetic hardening"),
-        ("tools/test_0026b_hotpath_optimization_policy.py", "0026b hot-path optimization"),
-        ("tools/test_0026c_command_hook_declaration_order.py", "0026c command-hook declaration order"),
-        ("tools/test_0026d_host_quality_gate_portability_policy.py", "0026d host quality-gate portability"),
-        ("tools/test_0027_sensor_liveness_policy.py", "0027 sensor liveness/recovery policy"),
-        ("tools/test_0027b_cross_host_quality_gate_policy.py", "0027b cross-host quality-gate hardening"),
-        ("tools/test_0027c_windows_stack_and_failure_summary_policy.py", "0027c Windows stack/failure summary"),
-        ("tools/test_0027d_recovery_feedback_and_tap_policy.py", "0027d recovery feedback/tap hardening"),
-        ("tools/test_0027e_progress_clock_domain_policy.py", "0027e progress clock-domain separation"),
-        ("tools/test_0027f_progress_epoch_contract_policy.py", "0027f progress epoch contract"),
-        ("tools/test_0028_semantic_config_transaction_policy.py", "0028 semantic config/transaction policy"),
-        ("tools/test_0028a_transaction_and_quaternion_hotpath_policy.py", "0028a transaction/quaternion hot-path hardening"),
-        ("tools/test_0028b_v2_config_migration_policy.py", "0028b v2 config compatibility migration"),
-        ("tools/test_0028c_bounded_calibration_recovery_policy.py", "0028c bounded calibration/recovery"),
-        ("tools/test_0028d_recovery_and_calibration_contract_policy.py", "0028d recovery and calibration contract"),
-        ("tools/test_slimevr_session_contract_policy.py", "SlimeVR session contract"),
-        ("tools/test_calibration_storage_contract_policy.py", "calibration storage contract"),
-        ("tools/test_calibration_storage_stack_policy.py", "calibration storage stack budget"),
-        ("tools/test_calibration_autonomy_policy.py", "calibration autonomy policy"),
-        ("tools/test_calibration_0023a_policy.py", "0023a calibration policy"),
-        ("tools/test_calibration_0023b_policy.py", "0023b hardening policy"),
-        ("tools/test_calibration_0023c_policy.py", "0023c recovery policy"),
-        ("tools/test_calibration_0023d_policy.py", "0023d sleep recovery policy"),
-        ("tools/test_calibration_0023e_policy.py", "0023e setup/hotpath policy"),
-        ("tools/test_calibration_0023f_policy.py", "0023f full setup calibration policy"),
-        ("tools/test_calibration_0023g_policy.py", "0023g magnetic coverage reservoir policy"),
-        ("tools/test_calibration_0023ga_policy.py", "0023ga axis alignment stack hardening policy"),
-        ("tools/test_calibration_0023gb_policy.py", "0023gb magnetometer fit metric policy"),
-        ("tools/test_calibration_0023gc_policy.py", "0023gc mag fit stack/profile build policy"),
-        ("tools/test_calibration_0023gd_policy.py", "0023gd magnetometer math/alignment policy"),
-        ("tools/test_calibration_0023ge_policy.py", "0023ge magnetometer audit hardening policy"),
-        ("tools/test_calibration_0023gf_policy.py", "0023gf mag callback cross-ABI policy"),
-        ("tools/test_calibration_0023gg_policy.py", "0023gg magnetic timestamp/setup acceptance policy"),
-        ("tools/test_slimevr_wifi_provisioning_0023gh_policy.py", "0023gh SlimeVR Wi-Fi provisioning compatibility"),
-        ("tools/test_slimevr_connect_trackers_0023gi_policy.py", "0023gi SlimeVR Connect Trackers handshake/build date"),
-        ("tools/test_slimevr_connect_trackers_0023gj_policy.py", "0023gj already-connected Connect Trackers session restart"),
-        ("tools/test_calibration_0023gk_policy.py", "0023gk magnetometer robust-fit acceptance policy"),
-        ("tools/test_slimevr_udp_tx_recovery_0023gl_policy.py", "0023gl SlimeVR UDP TX recovery policy"),
-        ("tools/test_pre_0024_hotpath_headroom_policy.py", "pre-0024 hotpath headroom policy"),
-        ("tools/test_pre_0024a_tracking_deadline_policy.py", "pre-0024a tracking deadline policy"),
-        ("tools/test_pre_0024ab_hotpath_transform_cache_policy.py", "pre-0024ab transform cache policy"),
-        ("tools/test_pre_0024ac_imu_hotpath_slack_policy.py", "pre-0024ac IMU hotpath/slack policy"),
-        ("tools/test_pre_0024ad_network_pressure_policy.py", "pre-0024ad network pressure pacing/recovery policy"),
-        ("tools/test_calibration_integration_policy.py", "calibration integration policy"),
-        ("tools/test_mag_heading_reliability_policy.py", "mag heading reliability policy"),
-    )
-    for script, description in checks:
+    for script, description in TOOL_CHECKS:
         run_checked(summary, [sys.executable, script], description, timeout_s=timeout_s)
 
     fixture = ROOT / "tests" / "fixtures" / "e0_static_smoke.log"
@@ -362,6 +374,11 @@ def run_pio_build(
     clean_first: bool = False,
 ) -> PioBuildResult:
     def invoke(cmd: list[str]) -> tuple[int, str]:
+        if _REPORT is not None:
+            result = _REPORT.run(cmd, cwd=ROOT, timeout_s=timeout_s,
+                                 env=quality_gate_environment(ROOT, scope="platformio"))
+            log = _REPORT.directory / _REPORT.data["commands"][-1]["log"]
+            return result.returncode, log.read_text(encoding="utf-8", errors="replace")
         print(f"\n$ {shlex.join(cmd)}", flush=True)
         try:
             proc = run_bounded_process(
@@ -583,6 +600,10 @@ def run_pio_builds(
 
 def mode_errors(args: argparse.Namespace) -> list[str]:
     errors: list[str] = []
+    if getattr(args, "checks", None) or getattr(args, "failed_from", None):
+        if (args.host_only or args.release or args.clean or args.require_pio or args.pio_envs
+                or args.skip_native or args.skip_tool_smoke or args.skip_pio):
+            errors.append("focused checks cannot be combined with full/host/release/skip/build options")
     if args.host_only:
         if args.require_pio:
             errors.append("--host-only cannot be combined with --require-pio")
@@ -601,7 +622,7 @@ def mode_errors(args: argparse.Namespace) -> list[str]:
         "native_command_timeout_s",
         "pio_timeout_s",
     ):
-        if getattr(args, name) <= 0:
+        if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
             errors.append(f"--{name.replace('_', '-')} must be positive")
     return errors
 
@@ -649,7 +670,7 @@ def run_release_logver3_gate(summary: CheckSummary, *, timeout_s: float) -> None
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run tracker quality checks")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument(
@@ -698,8 +719,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_PIO_TIMEOUT_S,
         help="timeout for each PlatformIO environment build",
     )
+    registry = {Path(script).stem: (script, description) for script, description in (*CONTRACT_CHECKS, *TOOL_CHECKS)}
+    parser.add_argument("--list-checks", action="store_true", help="list exact check IDs without executing")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--check", action="append", dest="checks", metavar="ID", help="run only selected checks; partial evidence")
+    selection.add_argument("--failed-from", type=Path, help="rerun failed IDs from a completed focused JSON report")
+    parser.add_argument("--verbose", action="store_true", help="print full command logs after each command")
     args = parser.parse_args(argv)
+    if args.list_checks:
+        for name, (_, description) in registry.items():
+            print(f"{name}: {description}")
+        return 0
+    if args.failed_from:
+        try:
+            args.checks = failed_checks(args.failed_from, {key: value[0] for key, value in registry.items()})
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
 
+    unknown = [name for name in (args.checks or []) if name not in registry]
+    if unknown:
+        parser.error("unknown check ID(s): " + ", ".join(unknown) + "; use --list-checks")
     errors = mode_errors(args)
     if errors:
         parser.error("; ".join(errors))
@@ -711,7 +750,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"# check_all: FAIL release preflight: {preflight_error}")
             return 1
 
+    global _REPORT
+    _REPORT = GateReport(ROOT, "check-all", verbose=args.verbose)
+    selected = list(dict.fromkeys(args.checks or []))
+    _REPORT.configure("focused" if selected else "release" if args.release else "host" if args.host_only else "default",
+                      selected, argv=list(argv if argv is not None else sys.argv[1:]))
     summary = CheckSummary()
+    if selected:
+        for name in selected:
+            script, description = registry[name]
+            run_checked(summary, [sys.executable, script], description, timeout_s=args.tool_timeout_s)
+        _REPORT.data["failures"] = summary.failures
+        _REPORT.save()
+        print(f"# check_all: {'FAIL' if summary.failures else 'PASS'} (focused partial checks: {len(selected)}; full gate NOT verified)")
+        return int(bool(summary.failures))
 
     if not args.skip_native:
         run_native_tests(
@@ -759,10 +811,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary.failures.extend(failures)
         summary.warnings.extend(warnings)
 
+    if _REPORT is not None:
+        _REPORT.data["failures"] = summary.failures
+        _REPORT.data["warnings"] = summary.warnings
+        _REPORT.save()
     if summary.failures:
         print(f"\n# check_all: FAIL ({len(summary.failures)} failure(s))")
         for failure in summary.failures:
-            print_aggregated_failure(failure)
+            if _REPORT is None:
+                print_aggregated_failure(failure)
+            else:
+                print(f"# FAIL {failure.splitlines()[0]}")
         for warning in summary.warnings:
             print(f"# WARN {warning}")
         return 1
@@ -783,6 +842,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print("\n# check_all: PASS")
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    global _REPORT
+    previous = _REPORT
+    _REPORT = None
+    code, interrupted = 130, True
+    try:
+        code = _main(argv)
+        interrupted = False
+        return code
+    except KeyboardInterrupt:
+        code = 130
+        return code
+    except BaseException:
+        code = 1
+        raise
+    finally:
+        try:
+            if _REPORT is not None:
+                _REPORT.finish(code, interrupted=interrupted)
+        finally:
+            _REPORT = previous
 
 
 if __name__ == "__main__":

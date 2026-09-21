@@ -107,9 +107,9 @@ def main() -> int:
 
     ast.parse(check_all, filename="tools/check_all.py")
     entry = '("tools/test_0028a_transaction_and_quaternion_hotpath_policy.py", "0028a transaction/quaternion hot-path hardening")'
-    tool_smokes = check_all[check_all.find("def run_tool_smokes("):]
-    checks = between(tool_smokes, "    checks = (", "\n    )", "tool-smoke checks")
-    require(checks, entry, "0028a aggregate gate entry")
+    from check_all import TOOL_CHECKS
+    if ast.literal_eval(entry) not in TOOL_CHECKS:
+        raise SystemExit("required policy missing from aggregate TOOL_CHECKS registry")
     require(report, "Not verified", "honest unverified report section")
 
     print("# 0028a_transaction_and_quaternion_hotpath_policy: PASS")

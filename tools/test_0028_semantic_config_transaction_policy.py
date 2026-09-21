@@ -89,11 +89,9 @@ def main() -> int:
 
     entry = '("tools/test_0028_semantic_config_transaction_policy.py", "0028 semantic config/transaction policy")'
     ast.parse(check_all, filename="tools/check_all.py")
-    checks_start = check_all.find("    checks = (", check_all.find("def run_tool_smokes("))
-    checks_end = check_all.find("\n    )", checks_start)
-    entry_at = check_all.find(entry)
-    if not checks_start < entry_at < checks_end:
-        raise SystemExit("0028 aggregate gate entry is outside run_tool_smokes checks tuple")
+    from check_all import TOOL_CHECKS
+    if ast.literal_eval(entry) not in TOOL_CHECKS:
+        raise SystemExit("required policy missing from aggregate TOOL_CHECKS registry")
     require(testing, "0028 semantic config and calibration transaction", "testing documentation")
     require(project, "0028_semantic_config_and_calibration_transaction", "project status entry")
     require(report, "Not verified", "honest unverified section")

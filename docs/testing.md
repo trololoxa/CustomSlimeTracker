@@ -1,5 +1,15 @@
 # Testing strategy
 
+## DEV-03: focused checks and durable logs
+
+Use `python tools/check_all.py --list-checks` or
+`python tools/run_standalone_tests.py --list-tests` to discover exact IDs.
+`--check ID` / `--test ID` select explicitly partial runs. Default/full/release
+coverage remains unchanged. Console output is compact; raw logs and JSON
+summaries live in `build/gate_runs/`. `--verbose` prints completed command logs.
+See `dev03_selective_checks.md` for failed-ID reruns and verification scope.
+
+
 ## DEV-02: environment readiness
 
 See `dev_environment.md` for Windows/WSL setup, explicit tool selection,

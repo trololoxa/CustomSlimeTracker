@@ -93,13 +93,9 @@ def main() -> int:
         ast.parse(check_all, filename="tools/check_all.py")
     except SyntaxError as exc:
         raise SystemExit(f"tools/check_all.py is not valid Python: {exc}") from exc
-    tool_smokes_start = check_all.find("def run_tool_smokes(")
-    checks_start = check_all.find("    checks = (", tool_smokes_start)
-    checks_end = check_all.find("\n    )", checks_start)
-    entry_at = check_all.find(aggregate_entry)
-    if (tool_smokes_start < 0 or checks_start < 0 or checks_end < 0
-            or not checks_start < entry_at < checks_end):
-        raise SystemExit("0027b aggregate gate entry is outside run_tool_smokes checks tuple")
+    from check_all import TOOL_CHECKS
+    if ast.literal_eval(aggregate_entry) not in TOOL_CHECKS:
+        raise SystemExit("required policy missing from aggregate TOOL_CHECKS registry")
     require(testing, "0027b cross-host quality-gate hardening", "testing documentation")
     require(project, "0027b_cross_host_quality_gate_hardening", "project status entry")
     require(report, "0027a", "additive patch ordering")

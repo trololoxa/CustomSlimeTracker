@@ -23,6 +23,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import BinaryIO, Iterable, Iterator, Mapping
 
+from gate_reporting import GateReport
+
 from quality_gate_runtime import (
     SANITIZER_FLAGS,
     asan_ubsan_environment,
@@ -44,6 +46,7 @@ INVALID_OUTPUT_RETURNCODE = 125
 _COMMAND_TIMEOUT_S = DEFAULT_COMMAND_TIMEOUT_S
 _COMMAND_ENV: Mapping[str, str] | None = None
 _LAST_COMMAND_RETURNCODE = 0
+_REPORT: GateReport | None = None
 
 
 PROJECT_SOURCES = [
@@ -237,17 +240,13 @@ def object_suffix() -> str:
 
 
 def find_compiler(explicit: str | None) -> str:
-    candidates: list[str] = []
-    if explicit:
-        candidates.append(explicit)
-    if os.environ.get("CXX"):
-        candidates.append(os.environ["CXX"])
-    candidates.extend(["g++", "clang++", "c++"])
-
+    selected = explicit if explicit is not None else os.environ.get("CXX")
+    candidates = [selected] if selected is not None else ["g++", "clang++", "c++"]
     for candidate in candidates:
-        if shutil.which(candidate):
-            return candidate
-    raise RuntimeError("No C++ compiler found. Set CXX or install g++/clang++.")
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    raise RuntimeError("Selected C++ compiler unavailable. Set --cxx/CXX to a valid executable.")
 
 
 def test_sources() -> list[pathlib.Path]:
@@ -293,6 +292,10 @@ def configure_build_directory(*, clean: bool) -> pathlib.Path:
 
 def _run_command(cmd: list[str]) -> int:
     global _LAST_COMMAND_RETURNCODE
+    if _REPORT is not None:
+        result = _REPORT.run(cmd, cwd=ROOT, timeout_s=_COMMAND_TIMEOUT_S, env=_COMMAND_ENV)
+        _LAST_COMMAND_RETURNCODE = result.returncode
+        return _LAST_COMMAND_RETURNCODE
     try:
         proc = run_bounded_process(
             cmd,
@@ -327,6 +330,8 @@ def _output_is_valid(path: pathlib.Path, *, executable: bool = False) -> bool:
     if not valid:
         kind = "executable" if executable else "object"
         print(f"error: compiler returned success but produced an invalid {kind}: {path}", file=sys.stderr)
+        if _REPORT is not None:
+            _REPORT.note(f"invalid {kind} after successful compiler exit: {path}")
         _LAST_COMMAND_RETURNCODE = INVALID_OUTPUT_RETURNCODE
     return valid
 
@@ -343,7 +348,8 @@ def compile_object(cxx: str, source: pathlib.Path, out: pathlib.Path, extra: Ite
         str(out),
         *extra,
     ]
-    print("[obj]", source, flush=True)
+    if _REPORT is None or _REPORT.verbose:
+        print("[obj]", source, flush=True)
     return _run_command(cmd) == 0 and _output_is_valid(out)
 
 
@@ -383,12 +389,14 @@ def compile_one(
         str(out),
         *extra,
     ]
-    print("[link]", source.name, flush=True)
+    if _REPORT is None or _REPORT.verbose:
+        print("[link]", source.name, flush=True)
     return _run_command(cmd) == 0 and _output_is_valid(out, executable=True)
 
 
 def run_one(exe: pathlib.Path) -> bool:
-    print("[run]", exe.name, flush=True)
+    if _REPORT is None or _REPORT.verbose:
+        print("[run]", exe.name, flush=True)
     return _run_command([str(exe)]) == 0
 
 
@@ -405,6 +413,9 @@ def print_failure_summary(failures: list[NativeFailure]) -> None:
 def _normalize_extra_cxxflag_args(argv: list[str]) -> list[str]:
     """Accept both '--extra-cxxflag=-Werror' and '--extra-cxxflag -Werror'."""
     known_options = {
+        "--test",
+        "--list-tests",
+        "--verbose",
         "--build-only",
         "--clean",
         "--cxx",
@@ -432,6 +443,10 @@ def _run_suite(args: argparse.Namespace, cxx: str, extra_flags: list[str]) -> in
     print(f"# native build directory: {build_dir.relative_to(ROOT)}", flush=True)
 
     sources = test_sources()
+    selected = set(getattr(args, "tests", None) or [])
+    if selected:
+        sources = [source for source in sources if source.stem in selected]
+        print("# focused native run: partial coverage; unrelated compile-only checks omitted", flush=True)
     if not sources:
         print("No native tests found", file=sys.stderr)
         return 1
@@ -443,11 +458,14 @@ def _run_suite(args: argparse.Namespace, cxx: str, extra_flags: list[str]) -> in
     project_objects, project_failures = compile_project_objects(cxx, extra_flags)
     failures.extend(project_failures)
 
-    for source in COMPILE_ONLY_SOURCES:
+    compile_only = COMPILE_ONLY_SOURCES if not selected else sorted({
+        p for source in sources for p in TEST_EXTRA_LINK_SOURCES.get(source.name, ())
+    })
+    for source in compile_only:
         if not compile_object(cxx, source, object_path_for(source), extra_flags):
             failures.append(NativeFailure("compile-only", str(source), command_failure_code()))
 
-    for source in ARDUINO_COMPILE_ONLY_SOURCES:
+    for source in (() if selected else ARDUINO_COMPILE_ONLY_SOURCES):
         flags = [*extra_flags, "-DARDUINO"]
         if not compile_object(cxx, source, object_path_for(source), flags):
             failures.append(NativeFailure("arduino-compile-only", str(source), command_failure_code()))
@@ -488,6 +506,9 @@ def _run_suite(args: argparse.Namespace, cxx: str, extra_flags: list[str]) -> in
         )
 
     if failures:
+        if _REPORT is not None:
+            for failure in failures:
+                _REPORT.note(f"[{failure.stage}] {failure.item} exit={failure.returncode}")
         print_failure_summary(failures)
         print(
             f"# built_executables={len(executables)} passed_runs={passed_runs}",
@@ -510,7 +531,7 @@ def _run_suite(args: argparse.Namespace, cxx: str, extra_flags: list[str]) -> in
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     global _COMMAND_ENV, _COMMAND_TIMEOUT_S
 
     parser = argparse.ArgumentParser(description="Build and run standalone native tests")
@@ -530,9 +551,21 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_COMMAND_TIMEOUT_S,
         help="timeout for each compile, link or test subprocess",
     )
+    parser.add_argument("--test", action="append", dest="tests", metavar="ID",
+                        help="build/run selected test IDs; explicitly partial coverage")
+    parser.add_argument("--list-tests", action="store_true", help="list IDs without compiling")
+    parser.add_argument("--verbose", action="store_true", help="print full completed command logs")
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_normalize_extra_cxxflag_args(raw_argv))
 
+    if args.list_tests:
+        for source in test_sources():
+            print(source.stem)
+        return 0
+    known_tests = {source.stem for source in test_sources()}
+    unknown = [name for name in (args.tests or []) if name not in known_tests]
+    if unknown:
+        parser.error("unknown test ID(s): " + ", ".join(unknown) + "; use --list-tests")
     if not math.isfinite(args.timeout_s) or args.timeout_s <= 0:
         parser.error("--timeout-s must be positive")
 
@@ -546,12 +579,20 @@ def main(argv: list[str] | None = None) -> int:
 
     extra_flags = [*args.extra_cxxflag, *SANITIZER_FLAGS[args.sanitizer]]
 
+    global _REPORT
+    _REPORT = GateReport(ROOT, "native", verbose=args.verbose)
+    _REPORT.configure("focused-build" if args.tests and args.build_only else "focused" if args.tests else "build-only" if args.build_only else "full-native",
+                      list(dict.fromkeys(args.tests or [p.stem for p in test_sources()])),
+                      sanitizer=args.sanitizer, flags=[*BASE_FLAGS, *extra_flags])
     try:
         cxx = find_compiler(args.cxx)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        _REPORT.note(str(exc))
         return 1
 
+    _REPORT.data["metadata"]["compiler"] = cxx
+    _REPORT.save()
     try:
         with native_runner_lock():
             if args.sanitizer != "none":
@@ -563,14 +604,39 @@ def main(argv: list[str] | None = None) -> int:
                     timeout_s=min(args.timeout_s, 30.0),
                 )
                 report = write_probe_report(result, ROOT)
+                _REPORT.note(f"sanitizer capability {args.sanitizer}={result.status}; {result.reason}; report={report}")
                 print(f"# sanitizer capability {args.sanitizer}={result.status} report={report}")
                 if not result.supported:
                     print(f"error: sanitizer preflight: {result.reason}", file=sys.stderr)
                     return 1
             return _run_suite(args, cxx, extra_flags)
     except NativeRunnerBusyError as exc:
+        _REPORT.note(str(exc))
         print(f"error: {exc}", file=sys.stderr)
         return 126
+
+
+def main(argv: list[str] | None = None) -> int:
+    global _REPORT, _COMMAND_ENV, _COMMAND_TIMEOUT_S
+    previous = (_REPORT, _COMMAND_ENV, _COMMAND_TIMEOUT_S)
+    _REPORT = None
+    code, interrupted = 130, True
+    try:
+        code = _main(argv)
+        interrupted = False
+        return code
+    except KeyboardInterrupt:
+        code = 130
+        return code
+    except BaseException:
+        code = 1
+        raise
+    finally:
+        try:
+            if _REPORT is not None:
+                _REPORT.finish(code, interrupted=interrupted)
+        finally:
+            _REPORT, _COMMAND_ENV, _COMMAND_TIMEOUT_S = previous
 
 
 if __name__ == "__main__":
