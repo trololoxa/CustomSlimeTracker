@@ -41,9 +41,11 @@ RUNNER_LOCK = ROOT / "build" / "native_tests.lock"
 BUILD_DIR = BUILD_ROOT
 OBJ_DIR = BUILD_DIR / "obj"
 DEFAULT_COMMAND_TIMEOUT_S = 180.0
+DEFAULT_SANITIZER_BUILD_TIMEOUT_S = 600.0
 INVALID_OUTPUT_RETURNCODE = 125
 
 _COMMAND_TIMEOUT_S = DEFAULT_COMMAND_TIMEOUT_S
+_BUILD_TIMEOUT_S = DEFAULT_COMMAND_TIMEOUT_S
 _COMMAND_ENV: Mapping[str, str] | None = None
 _LAST_COMMAND_RETURNCODE = 0
 _REPORT: GateReport | None = None
@@ -290,22 +292,23 @@ def configure_build_directory(*, clean: bool) -> pathlib.Path:
     return BUILD_DIR
 
 
-def _run_command(cmd: list[str]) -> int:
+def _run_command(cmd: list[str], *, timeout_s: float | None = None) -> int:
     global _LAST_COMMAND_RETURNCODE
+    timeout_s = _COMMAND_TIMEOUT_S if timeout_s is None else timeout_s
     if _REPORT is not None:
-        result = _REPORT.run(cmd, cwd=ROOT, timeout_s=_COMMAND_TIMEOUT_S, env=_COMMAND_ENV)
+        result = _REPORT.run(cmd, cwd=ROOT, timeout_s=timeout_s, env=_COMMAND_ENV)
         _LAST_COMMAND_RETURNCODE = result.returncode
         return _LAST_COMMAND_RETURNCODE
     try:
         proc = run_bounded_process(
             cmd,
             cwd=ROOT,
-            timeout_s=_COMMAND_TIMEOUT_S,
+            timeout_s=timeout_s,
             env=_COMMAND_ENV,
         )
         _LAST_COMMAND_RETURNCODE = proc.returncode
     except subprocess.TimeoutExpired as exc:
-        elapsed = exc.timeout if exc.timeout is not None else _COMMAND_TIMEOUT_S
+        elapsed = exc.timeout if exc.timeout is not None else timeout_s
         print(
             f"error: command timed out after {elapsed:g}s: {shlex.join(cmd)}",
             file=sys.stderr,
@@ -350,7 +353,7 @@ def compile_object(cxx: str, source: pathlib.Path, out: pathlib.Path, extra: Ite
     ]
     if _REPORT is None or _REPORT.verbose:
         print("[obj]", source, flush=True)
-    return _run_command(cmd) == 0 and _output_is_valid(out)
+    return _run_command(cmd, timeout_s=_BUILD_TIMEOUT_S) == 0 and _output_is_valid(out)
 
 
 def compile_project_objects(
@@ -391,7 +394,7 @@ def compile_one(
     ]
     if _REPORT is None or _REPORT.verbose:
         print("[link]", source.name, flush=True)
-    return _run_command(cmd) == 0 and _output_is_valid(out, executable=True)
+    return _run_command(cmd, timeout_s=_BUILD_TIMEOUT_S) == 0 and _output_is_valid(out, executable=True)
 
 
 def run_one(exe: pathlib.Path) -> bool:
@@ -422,6 +425,8 @@ def _normalize_extra_cxxflag_args(argv: list[str]) -> list[str]:
         "--extra-cxxflag",
         "--sanitizer",
         "--timeout-s",
+        "--build-timeout-s",
+        "--test-timeout-s",
     }
     normalized: list[str] = []
     index = 0
@@ -532,7 +537,7 @@ def _run_suite(args: argparse.Namespace, cxx: str, extra_flags: list[str]) -> in
 
 
 def _main(argv: list[str] | None = None) -> int:
-    global _COMMAND_ENV, _COMMAND_TIMEOUT_S
+    global _COMMAND_ENV, _COMMAND_TIMEOUT_S, _BUILD_TIMEOUT_S
 
     parser = argparse.ArgumentParser(description="Build and run standalone native tests")
     parser.add_argument("--cxx", help="C++ compiler to use; defaults to CXX/g++/clang++/c++")
@@ -548,9 +553,11 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--timeout-s",
         type=float,
-        default=DEFAULT_COMMAND_TIMEOUT_S,
-        help="timeout for each compile, link or test subprocess",
+        default=None,
+        help="legacy timeout for both build and test; stage-specific options override it",
     )
+    parser.add_argument("--build-timeout-s", type=float, help="per compile/link deadline; default 600s with sanitizer, otherwise 180s")
+    parser.add_argument("--test-timeout-s", type=float, help="per test execution deadline; default 180s")
     parser.add_argument("--test", action="append", dest="tests", metavar="ID",
                         help="build/run selected test IDs; explicitly partial coverage")
     parser.add_argument("--list-tests", action="store_true", help="list IDs without compiling")
@@ -566,10 +573,16 @@ def _main(argv: list[str] | None = None) -> int:
     unknown = [name for name in (args.tests or []) if name not in known_tests]
     if unknown:
         parser.error("unknown test ID(s): " + ", ".join(unknown) + "; use --list-tests")
-    if not math.isfinite(args.timeout_s) or args.timeout_s <= 0:
-        parser.error("--timeout-s must be positive")
-
-    _COMMAND_TIMEOUT_S = args.timeout_s
+    for name in ("timeout_s", "build_timeout_s", "test_timeout_s"):
+        value = getattr(args, name)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            parser.error(f"--{name.replace('_', '-')} must be positive and finite")
+    legacy = args.timeout_s
+    _BUILD_TIMEOUT_S = (args.build_timeout_s if args.build_timeout_s is not None else
+                        legacy if legacy is not None else
+                        DEFAULT_SANITIZER_BUILD_TIMEOUT_S if args.sanitizer != "none" else DEFAULT_COMMAND_TIMEOUT_S)
+    _COMMAND_TIMEOUT_S = (args.test_timeout_s if args.test_timeout_s is not None else
+                          legacy if legacy is not None else DEFAULT_COMMAND_TIMEOUT_S)
     if args.sanitizer == "leak":
         _COMMAND_ENV = lsan_environment(ROOT, scope="native-tests-lsan")
     elif args.sanitizer in ("undefined", "address-undefined"):
@@ -583,7 +596,8 @@ def _main(argv: list[str] | None = None) -> int:
     _REPORT = GateReport(ROOT, "native", verbose=args.verbose)
     _REPORT.configure("focused-build" if args.tests and args.build_only else "focused" if args.tests else "build-only" if args.build_only else "full-native",
                       list(dict.fromkeys(args.tests or [p.stem for p in test_sources()])),
-                      sanitizer=args.sanitizer, flags=[*BASE_FLAGS, *extra_flags])
+                      sanitizer=args.sanitizer, flags=[*BASE_FLAGS, *extra_flags],
+                      build_timeout_s=_BUILD_TIMEOUT_S, test_timeout_s=_COMMAND_TIMEOUT_S)
     try:
         cxx = find_compiler(args.cxx)
     except RuntimeError as exc:
@@ -601,7 +615,7 @@ def _main(argv: list[str] | None = None) -> int:
                 result = probe_sanitizer(
                     cxx, ROOT, args.sanitizer,
                     extra_flags=args.extra_cxxflag,
-                    timeout_s=min(args.timeout_s, 30.0),
+                    timeout_s=min(_BUILD_TIMEOUT_S, 30.0),
                 )
                 report = write_probe_report(result, ROOT)
                 _REPORT.note(f"sanitizer capability {args.sanitizer}={result.status}; {result.reason}; report={report}")
@@ -617,8 +631,8 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _REPORT, _COMMAND_ENV, _COMMAND_TIMEOUT_S
-    previous = (_REPORT, _COMMAND_ENV, _COMMAND_TIMEOUT_S)
+    global _REPORT, _COMMAND_ENV, _COMMAND_TIMEOUT_S, _BUILD_TIMEOUT_S
+    previous = (_REPORT, _COMMAND_ENV, _COMMAND_TIMEOUT_S, _BUILD_TIMEOUT_S)
     _REPORT = None
     code, interrupted = 130, True
     try:
@@ -636,7 +650,7 @@ def main(argv: list[str] | None = None) -> int:
             if _REPORT is not None:
                 _REPORT.finish(code, interrupted=interrupted)
         finally:
-            _REPORT, _COMMAND_ENV, _COMMAND_TIMEOUT_S = previous
+            _REPORT, _COMMAND_ENV, _COMMAND_TIMEOUT_S, _BUILD_TIMEOUT_S = previous
 
 
 if __name__ == "__main__":

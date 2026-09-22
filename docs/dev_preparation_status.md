@@ -8,17 +8,18 @@ Do not infer hardware/release acceptance of 0028d from this development work.
 | Patch | Contract | Status |
 | --- | --- | --- |
 | DEV-01 | Assertions and executable sanitizer capability evidence | Implemented; see DEV-01 report for verification limits |
-| DEV-02 | Windows/Linux setup, wheel hash locks, environment doctor | Implemented; user Windows doctor/install evidence received; WSL/sanitizers still pending; see DEV-03a report |
+| DEV-02 | Windows/Linux setup, wheel hash locks, environment doctor | Implemented; Windows and WSL evidence received; see [DEV-04 report](dev04_workflow_report.md) for scope |
 | DEV-03 | Selective runners, raw logs, compact summaries, safe reuse | Implemented; shared objects within a fresh run and failed-ID reuse only; see DEV-03 report |
-| DEV-03a | Bounded Windows report replacement and progress notices | Implemented; local Linux focused checks passed; Windows revision acceptance pending |
-| DEV-04 | Project AGENTS.md, current documentation, owners/test map, compilation database | Pending |
+| DEV-03a | Bounded Windows report replacement and progress notices | Implemented; user Windows focused acceptance passed; see [DEV-04 report](dev04_workflow_report.md) |
+| DEV-04 | Project AGENTS.md, current documentation, owners/test map, compilation database | Implemented; navigation metadata exported; actual clangd/target integration still unverified |
+| DEV-04a | Mixed-EOL application guidance and flexible model choice | Implemented; see [review](dev04a_review.md); local Codex/Windows acceptance remains pending |
 | DEV-05 | Independent math references and algorithm/scenario replay | Pending |
 | DEV-06 | Device identify/flash/smoke/capture, locking, debugger, crash evidence | Pending |
 | DEV-07 | CI, artifacts, Server interoperability, rollback procedures | Pending |
 
 Plugin selection follows measured project needs. Serena is the first navigation
 candidate after compilation database setup; RTK is optional for noisy commands.
-No plugin installation or permission expansion is part of DEV-01.
+DEV-04 also installs no plugin and changes no account/global permissions.
 
 Each patch must record source scope, actual verification, environment limits,
 and the next task. Extend existing tools rather than create parallel runners.

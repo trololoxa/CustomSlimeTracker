@@ -29,3 +29,6 @@ logs
 /.venv-dev/
 /.venv-dev-linux/
 /.venv-dev-verify/
+
+# Local target navigation metadata (PlatformIO compiledb).
+/compile_commands.json

@@ -40,7 +40,6 @@ DEBUG_ENV = "BOARD_LOLIN_C3_MINI_DEBUG"
 DEBUG_LINKCHECK_ENV = "BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK"
 DEFAULT_TOOL_TIMEOUT_S = 180.0
 DEFAULT_NATIVE_SUITE_TIMEOUT_S = 1800.0
-DEFAULT_NATIVE_COMMAND_TIMEOUT_S = 180.0
 DEFAULT_PIO_TIMEOUT_S = 1800.0
 STALE_PIO_ARTIFACT_RETURNCODE = 125
 REQUIRED_RELEASE_ARTIFACTS = ("firmware.bin", "firmware.elf")
@@ -149,17 +148,22 @@ def run_native_tests(
     clean: bool,
     *,
     suite_timeout_s: float,
-    command_timeout_s: float,
+    command_timeout_s: float | None,
+    build_timeout_s: float | None = None,
+    test_timeout_s: float | None = None,
     sanitizer: str = "none",
 ) -> None:
     cmd = [
         sys.executable,
         "tools/run_standalone_tests.py",
-        "--timeout-s",
-        str(command_timeout_s),
         "--sanitizer",
         sanitizer,
     ]
+    for option, value in (("--timeout-s", command_timeout_s),
+                          ("--build-timeout-s", build_timeout_s),
+                          ("--test-timeout-s", test_timeout_s)):
+        if value is not None:
+            cmd.extend([option, str(value)])
     if _REPORT is not None and _REPORT.verbose:
         cmd.append("--verbose")
     if clean:
@@ -227,6 +231,7 @@ TOOL_CHECKS = (
     ("tools/test_dev02_environment.py", "DEV-02 environment tooling"),
     ("tools/test_dev03_runners.py", "DEV-03 selective runners/reporting"),
     ("tools/test_dev03a_reporting.py", "DEV-03a Windows report writes/progress"),
+    ("tools/test_dev04_workflow.py", "DEV-04 workflow/deadline contracts"),
     ("tools/test_release_manifest.py", "release-manifest policy"),
     ("tools/test_logver3_contract.py", "strict LOGVER3 contract"),
     ("tools/test_capture_telnet_log.py", "cable-free capture promotion policy"),
@@ -620,11 +625,14 @@ def mode_errors(args: argparse.Namespace) -> list[str]:
     for name in (
         "tool_timeout_s",
         "native_suite_timeout_s",
-        "native_command_timeout_s",
         "pio_timeout_s",
     ):
         if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
             errors.append(f"--{name.replace('_', '-')} must be positive")
+    for name in ("native_command_timeout_s", "native_build_timeout_s", "native_test_timeout_s"):
+        value = getattr(args, name, None)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            errors.append(f"--{name.replace('_', '-')} must be positive and finite")
     return errors
 
 
@@ -711,9 +719,11 @@ def _main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--native-command-timeout-s",
         type=float,
-        default=DEFAULT_NATIVE_COMMAND_TIMEOUT_S,
-        help="timeout forwarded to each native compile/link/test subprocess",
+        default=None,
+        help="legacy override for both native build and test deadlines",
     )
+    parser.add_argument("--native-build-timeout-s", type=float, help="per native compile/link deadline")
+    parser.add_argument("--native-test-timeout-s", type=float, help="per native test execution deadline")
     parser.add_argument(
         "--pio-timeout-s",
         type=float,
@@ -772,6 +782,8 @@ def _main(argv: Sequence[str] | None = None) -> int:
             args.clean,
             suite_timeout_s=args.native_suite_timeout_s,
             command_timeout_s=args.native_command_timeout_s,
+            build_timeout_s=args.native_build_timeout_s,
+            test_timeout_s=args.native_test_timeout_s,
         )
         if args.release:
             # GCC's address sanitizer links leak checking by default. The
@@ -782,6 +794,8 @@ def _main(argv: Sequence[str] | None = None) -> int:
                 True,
                 suite_timeout_s=args.native_suite_timeout_s,
                 command_timeout_s=args.native_command_timeout_s,
+                build_timeout_s=args.native_build_timeout_s,
+                test_timeout_s=args.native_test_timeout_s,
                 sanitizer="address-undefined",
             )
             run_native_tests(
@@ -789,6 +803,8 @@ def _main(argv: Sequence[str] | None = None) -> int:
                 True,
                 suite_timeout_s=args.native_suite_timeout_s,
                 command_timeout_s=args.native_command_timeout_s,
+                build_timeout_s=args.native_build_timeout_s,
+                test_timeout_s=args.native_test_timeout_s,
                 sanitizer="leak",
             )
 

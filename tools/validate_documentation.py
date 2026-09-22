@@ -24,6 +24,9 @@ COMMITTED_ENVS = (
 )
 
 REQUIRED_DOCS = (
+    "dev_session.md",
+    "dev_test_map.md",
+    "dev04_agent_tools.md",
     "current_implementation.md",
     "architecture.md",
     "build_profiles.md",
@@ -38,7 +41,7 @@ REQUIRED_DOCS = (
     "testing.md",
     "tracking_pipeline.md",
 )
-REQUIRED_ROOT_FILES = ("README.md", ".gitignore", ".gitattributes")
+REQUIRED_ROOT_FILES = ("README.md", "AGENTS.md", ".gitignore", ".gitattributes")
 
 LOCAL_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
@@ -56,7 +59,7 @@ def strip_link_target(raw: str) -> str:
 
 def check_local_links(errors: list[str]) -> int:
     checked = 0
-    markdown_files = [ROOT / "README.md", *sorted(DOCS.glob("*.md"))]
+    markdown_files = [ROOT / "README.md", ROOT / "AGENTS.md", *sorted(DOCS.glob("*.md"))]
     for doc in markdown_files:
         if not doc.is_file():
             continue

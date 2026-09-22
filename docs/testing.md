@@ -1,5 +1,9 @@
 # Testing strategy
 
+## DEV-04: stage deadlines and test routing
+
+See [owner/test map](dev_test_map.md) for focused checks and separate build/test deadlines; [session guide](dev_session.md) for Windows/WSL commands.
+
 ## DEV-03a: Windows report writes and progress
 
 Use `python tools/check_all.py --check test_dev03a_reporting` for bounded

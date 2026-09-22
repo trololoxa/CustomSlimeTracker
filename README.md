@@ -1,5 +1,9 @@
 # CustomSlimeTracker
 
+## DEV-04: agent workflow
+
+[Session setup](docs/dev_session.md), [owner/test map](docs/dev_test_map.md), [instruction/tool assessment](docs/dev04_agent_tools.md).
+
 ESP32-C3 firmware for a custom SlimeVR tracker using an LSM6DSV IMU and
 QMC6309 magnetometer. The repository contains firmware sources, five committed
 PlatformIO validation environments, host-native logic tests, policy checks and
