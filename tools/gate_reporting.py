@@ -15,6 +15,34 @@ from typing import Mapping, Sequence
 from quality_gate_runtime import run_bounded_process
 
 SCHEMA = "tracker-gate-run-v1"
+REPLACE_RETRY_DELAYS_S = (0.01, 0.02, 0.04, 0.08, 0.16, 0.32)
+PROGRESS_NOTICE_S = 30.0
+
+
+def replace_report(temporary: Path, destination: Path) -> int:
+    """Retry only Windows access/sharing/lock errors; keep old JSON until commit."""
+    for attempt in range(len(REPLACE_RETRY_DELAYS_S) + 1):
+        try:
+            os.replace(temporary, destination)
+            return attempt
+        except OSError as exc:
+            if (getattr(exc, "winerror", None) not in (5, 32, 33)
+                    or attempt == len(REPLACE_RETRY_DELAYS_S)):
+                raise
+            time.sleep(REPLACE_RETRY_DELAYS_S[attempt])
+    raise AssertionError("unreachable")
+
+
+def command_label(command: Sequence[str]) -> str:
+    def name(value: str) -> str:
+        return Path(value).name.replace("\n", " ").replace("\r", " ")[:120]
+    label = name(command[0])
+    source = next((part for part in command[1:] if part.endswith((".py", ".cpp"))), None)
+    if source:
+        label += " " + name(source)
+    if "-e" in command and command.index("-e") + 1 < len(command):
+        label += " " + name(command[command.index("-e") + 1])
+    return label
 
 
 def source_snapshot(root: Path) -> dict:
@@ -52,6 +80,8 @@ def excerpt(path: Path) -> str:
 class GateReport:
     def __init__(self, root: Path, runner: str, *, verbose: bool = False):
         self.verbose = verbose
+        self.runner = runner
+        self._last_notice_at = time.monotonic()
         folder = root / "build/gate_runs"
         folder.mkdir(parents=True, exist_ok=True)
         self.directory = Path(tempfile.mkdtemp(prefix=runner + "-", dir=folder))
@@ -67,7 +97,9 @@ class GateReport:
     def save(self) -> None:
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(self.data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, self.path)
+        retries = replace_report(temporary, self.path)
+        if retries:
+            print(f"# report write recovered after {retries} retry(s): {self.path}", flush=True)
 
     def configure(self, scope: str, selection: Sequence[str], **metadata: object) -> None:
         self.data.update(scope=scope, selection=list(selection), metadata=metadata)
@@ -87,6 +119,17 @@ class GateReport:
         self.save()
         start = time.monotonic()
         code, state = 130, "interrupted"
+        label = command_label(command)
+        if self.runner == "check-all" or start - self._last_notice_at >= PROGRESS_NOTICE_S:
+            print(f"# RUN {log.name}: {label}", flush=True)
+            self._last_notice_at = start
+
+        def progress(elapsed: float) -> None:
+            now = time.monotonic()
+            if now - self._last_notice_at >= PROGRESS_NOTICE_S:
+                print(f"# WAIT {log.name}: {label}; elapsed={elapsed:.0f}s; log={log}", flush=True)
+                self._last_notice_at = now
+
         if self.verbose:
             print("$ " + repr(command), flush=True)
         try:
@@ -94,7 +137,8 @@ class GateReport:
                 try:
                     result = run_bounded_process(command, cwd=cwd, env=env,
                                                  timeout_s=timeout_s, stdout=output,
-                                                 stderr=subprocess.STDOUT)
+                                                 stderr=subprocess.STDOUT,
+                                                 on_progress=progress, progress_interval_s=10.0)
                     code, state = result.returncode, "completed"
                 except subprocess.TimeoutExpired:
                     code, state = 124, "timeout"

@@ -1,5 +1,12 @@
 # Testing strategy
 
+## DEV-03a: Windows report writes and progress
+
+Use `python tools/check_all.py --check test_dev03a_reporting` for bounded
+report-lock recovery, process deadlines and progress notices. The real Windows
+sharing-lock case runs on Windows and is explicitly skipped elsewhere. See
+`dev03a_reporting_report.md` for evidence, scope and local acceptance commands.
+
 ## DEV-03: focused checks and durable logs
 
 Use `python tools/check_all.py --list-checks` or

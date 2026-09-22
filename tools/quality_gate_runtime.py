@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import os
+import math
+import time
 import signal
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 SANITIZER_FLAGS = {
@@ -220,8 +222,14 @@ def run_bounded_process(
     stdout: Any = None,
     stderr: Any = None,
     text: bool = False,
+    on_progress: Callable[[float], None] | None = None,
+    progress_interval_s: float = 30.0,
 ) -> subprocess.CompletedProcess[Any]:
-    """Run one command and kill its complete process group on timeout."""
+    """Run one command; optional wait notices never renew its absolute deadline."""
+    if on_progress is not None and (
+            not math.isfinite(progress_interval_s) or progress_interval_s <= 0
+            or not math.isfinite(timeout_s) or timeout_s <= 0):
+        raise ValueError("progress interval and timeout must be finite and positive")
     popen_kwargs: dict[str, Any] = {
         "cwd": cwd,
         "env": env,
@@ -236,7 +244,24 @@ def run_bounded_process(
 
     process = subprocess.Popen(list(args), **popen_kwargs)
     try:
-        captured_stdout, captured_stderr = process.communicate(timeout=timeout_s)
+        if on_progress is None:
+            captured_stdout, captured_stderr = process.communicate(timeout=timeout_s)
+        else:
+            started = time.monotonic()
+            deadline = started + timeout_s
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(list(args), timeout_s)
+                try:
+                    captured_stdout, captured_stderr = process.communicate(
+                        timeout=min(progress_interval_s, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    now = time.monotonic()
+                    if now >= deadline:
+                        raise
+                    on_progress(now - started)
     except subprocess.TimeoutExpired:
         captured_stdout, captured_stderr = _kill_and_collect(process)
         raise subprocess.TimeoutExpired(
