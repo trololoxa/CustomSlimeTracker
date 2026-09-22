@@ -99,3 +99,43 @@ were not supplied and may need a separate narrowly scoped conflict check.
 
 Next implementation: DEV-05 math/scenario replay gap analysis, then DEV-06 HIL.
 Optional navigation tools can be enabled separately after a measured local trial.
+
+## DEV-04b: user acceptance update and session documentation
+
+Additive after DEV-04a; documentation only. Earlier "unverified here" statements
+above describe the original patch environment; the user evidence below is later.
+User source: `563d4b90375d2e12af7bddd3434fe9882a4d3fad`, reported clean.
+
+- Windows five selected DEV-04/runner/aggregation/documentation checks: PASS,
+  `build/gate_runs/check-all-24r9gxau/summary.json` (console output supplied).
+- Windows native AHRS: 1/1 PASS, sanitizer none, build/test deadlines 240/30 s,
+  `build/gate_runs/native-m5a8qfbj/summary.json`; export produced 46 entries.
+- Local Codex reported reading AGENTS.md and relevant session/test-map docs,
+  preserving edits, selecting explicit Conda Python and listing checks. This is
+  observed instruction loading, not an exhaustive audit of global instructions.
+- Standalone clangd 22.1.6 checked `src/sensor/ahrs_6dof.cpp` with the native
+  database and explicit GCC query-driver: exit 0, 0 errors. User subsequently
+  confirmed VS Code navigation works with competing IntelliSense disabled.
+- After MSYS2 update, Windows doctor: PASS, GCC 16.2.0, GDB 17.2, clangd 22.1.6,
+  `build/doctor/host-g8q__ufa.json` (console output supplied; JSON not attached).
+  OpenOCD not found; no hardware or sanitizer check performed by this invocation.
+- New GCC native AHRS: 1/1 PASS, sanitizer none, deadlines 240/30 s,
+  `build/gate_runs/native-6kydz7op/summary.json` (console output supplied).
+  Previous full Windows gate remains evidence for GCC 14.2.0 only.
+- User reports completing the three Windows/WSL sync-and-check steps. The new
+  WSL command outputs, exact SHA confirmation and summary paths were not supplied;
+  do not invent a new independently reviewed WSL PASS. Existing results can be
+  recorded without rerunning the tests solely to produce another report.
+
+Implementation scope and Windows/native navigation acceptance are complete.
+The remaining evidence detail is the reported WSL run above. Target compiledb /
+ESP32 navigation, optional Serena integration and measured token savings are not
+certified. Device/debugger attach belongs to DEV-06; math/replay gap work belongs
+to DEV-05; release/Server evidence belongs to DEV-07. Closing this tooling patch
+must not be described as completing all project preparation or release acceptance.
+
+DEV-04b adds clangd to the existing PowerShell session block and documents the
+separate editor setting and optional doctor requirement. No source, runner,
+firmware, package pins or installed environment are changed by this patch.
+Validation: documentation validator and clean patch application against the local
+DEV-04a baseline; no firmware rebuild or sanitizer rerun for a documentation edit.

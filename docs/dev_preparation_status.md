@@ -11,8 +11,9 @@ Do not infer hardware/release acceptance of 0028d from this development work.
 | DEV-02 | Windows/Linux setup, wheel hash locks, environment doctor | Implemented; Windows and WSL evidence received; see [DEV-04 report](dev04_workflow_report.md) for scope |
 | DEV-03 | Selective runners, raw logs, compact summaries, safe reuse | Implemented; shared objects within a fresh run and failed-ID reuse only; see DEV-03 report |
 | DEV-03a | Bounded Windows report replacement and progress notices | Implemented; user Windows focused acceptance passed; see [DEV-04 report](dev04_workflow_report.md) |
-| DEV-04 | Project AGENTS.md, current documentation, owners/test map, compilation database | Implemented; navigation metadata exported; actual clangd/target integration still unverified |
-| DEV-04a | Mixed-EOL application guidance and flexible model choice | Implemented; see [review](dev04a_review.md); local Codex/Windows acceptance remains pending |
+| DEV-04 | Project AGENTS.md, current documentation, owners/test map, compilation database | Implemented; Windows checks and native clangd navigation accepted; WSL execution reported, summaries not supplied; see [acceptance](dev04_workflow_report.md) |
+| DEV-04a | Mixed-EOL application guidance and flexible model choice | Implemented; local Codex/Windows acceptance received; see [acceptance](dev04_workflow_report.md) |
+| DEV-04b | clangd session setup and user acceptance record | Documentation only; additive after DEV-04a; see [session guide](dev_session.md) |
 | DEV-05 | Independent math references and algorithm/scenario replay | Pending |
 | DEV-06 | Device identify/flash/smoke/capture, locking, debugger, crash evidence | Pending |
 | DEV-07 | CI, artifacts, Server interoperability, rollback procedures | Pending |

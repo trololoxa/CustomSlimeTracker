@@ -16,12 +16,14 @@ $TrackerCondaEnv = Join-Path $env:USERPROFILE '.conda\envs\tracker-dev'
 $TrackerPython = Join-Path $TrackerCondaEnv 'python.exe'
 $TrackerPio = Join-Path $TrackerCondaEnv 'Scripts\pio.exe'
 $TrackerCxx = 'C:\msys64\ucrt64\bin\g++.exe'
+$TrackerClangd = 'H:\TrackerTools\clangd-22.1.6\bin\clangd.exe'
 $TrackerPython,$TrackerPio,$TrackerCxx | ForEach-Object { if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "Missing tool: $_" } }
 $env:PYTHONNOUSERSITE = '1'
 $env:PLATFORMIO_CORE_DIR = 'H:\TrackerTools\platformio'
 $env:CXX = $TrackerCxx
 $env:PIO = $TrackerPio
 $env:PATH = "$TrackerCondaEnv;$TrackerCondaEnv\Library\bin;$TrackerCondaEnv\Scripts;C:\msys64\ucrt64\bin;$env:PATH"
+if (Test-Path -LiteralPath $TrackerClangd -PathType Leaf) { $env:PATH = "$(Split-Path -Parent $TrackerClangd);$env:PATH" } else { Write-Warning "Optional clangd not found: $TrackerClangd" }
 & $TrackerPython --version
 ```
 
@@ -46,6 +48,41 @@ Python без pip. Не меняйте execution policy ради этих ком
 ```powershell
 & $TrackerPython tools/check_all.py --check test_dev04_workflow --check test_dev03_runners --check test_run_standalone_tests_policy --check test_check_all_aggregation_policy --check validate_documentation
 ```
+
+## clangd и отладчик в Windows
+
+Основной блок выше добавляет установленный clangd в PATH текущей сессии: теперь
+его видят doctor и дочерние процессы, без отдельной ручной команды. На другой
+машине/после обновления ZIP измените `$TrackerClangd`. Отсутствие необязательного
+clangd выдаёт предупреждение и не блокирует host-тесты. Версия 22.1.6 здесь —
+проверенный локальный путь, а не новый обязательный toolchain pin.
+
+VS Code хранит путь отдельно: `clangd.path` должен указывать на тот же EXE.
+Текущий shell не меняет окружение уже запущенного VS Code/Codex. Для native
+навигации в `clangd.arguments` используются:
+
+```text
+--compile-commands-dir=H:/Programming/VRC/CustomSlime/SlimeTracker/build/clangd-native
+--query-driver=C:/msys64/ucrt64/bin/g++.exe
+```
+
+Microsoft C/C++ можно оставить для отладки, отключив его конкурирующий
+IntelliSense в Workspace (`C_Cpp.intelliSenseEngine = disabled`). Это не меняет
+компилятор проекта. Native database содержит host stubs; ESP32 indexing не
+считается проверенным. После изменения compiler/includes/flags экспортируйте
+базу из нового успешного native report, как описано в [карте тестов](dev_test_map.md).
+
+Когда проверяется именно доступность этих инструментов, а не каждый запуск:
+
+```powershell
+& $TrackerPython tools/doctor.py --profile host --cxx $TrackerCxx --require-tool clangd --require-tool gdb
+```
+
+`doctor` проверяет запуск `--version`, а не breakpoint/attach. GDB из UCRT64 —
+host debugger; target GDB/OpenOCD и доступ к плате проверяются отдельно в DEV-06.
+После обновления MSYS2 пользователь подтвердил GCC 16.2.0, GDB 17.2 и AHRS
+smoke 1/1. Старый full gate относится к GCC 14.2.0 и не переносится на новую
+версию автоматически; полный прогон не нужен для этой правки документации.
 
 ## WSL после перезагрузки
 
