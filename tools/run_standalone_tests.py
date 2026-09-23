@@ -356,6 +356,25 @@ def compile_object(cxx: str, source: pathlib.Path, out: pathlib.Path, extra: Ite
     return _run_command(cmd, timeout_s=_BUILD_TIMEOUT_S) == 0 and _output_is_valid(out)
 
 
+def algorithm_fingerprints() -> dict[str, str]:
+    """Content evidence for DEV-05 only; never used as a build cache."""
+    import hashlib
+    harness = [TEST_DIR / "test_dev05_algorithm_scenarios.cpp",
+               TEST_DIR / "test_common.hpp", *sorted((TEST_DIR / "dev05").glob("*.hpp"))]
+    firmware = sorted(p for p in (ROOT / "src").rglob("*")
+                      if p.is_file() and p.suffix in (".cpp", ".hpp", ".h"))
+    result = {}
+    for label, paths in (("harness", harness), ("source", firmware)):
+        digest = hashlib.sha256()
+        for path in paths:
+            # Normalize checkout line endings; hash exact remaining UTF-8 bytes.
+            data = path.read_bytes().replace(b"\r\n", b"\n")
+            digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0")
+            digest.update(str(len(data)).encode() + b"\0" + data)
+        result[f"algorithm_{label}_sha256"] = digest.hexdigest()
+    return result
+
+
 def compile_project_objects(
     cxx: str,
     extra: Iterable[str],
@@ -623,7 +642,15 @@ def _main(argv: list[str] | None = None) -> int:
                 if not result.supported:
                     print(f"error: sanitizer preflight: {result.reason}", file=sys.stderr)
                     return 1
-            return _run_suite(args, cxx, extra_flags)
+            fingerprints = algorithm_fingerprints() if "test_dev05_algorithm_scenarios" in _REPORT.data["selection"] else {}
+            if fingerprints:
+                _REPORT.data["metadata"].update(fingerprints)
+                _REPORT.save()
+            code = _run_suite(args, cxx, extra_flags)
+            if fingerprints and algorithm_fingerprints() != fingerprints:
+                _REPORT.note("DEV-05 source/harness changed during build/run; evidence invalid")
+                return 1
+            return code
     except NativeRunnerBusyError as exc:
         _REPORT.note(str(exc))
         print(f"error: {exc}", file=sys.stderr)

@@ -232,6 +232,7 @@ TOOL_CHECKS = (
     ("tools/test_dev03_runners.py", "DEV-03 selective runners/reporting"),
     ("tools/test_dev03a_reporting.py", "DEV-03a Windows report writes/progress"),
     ("tools/test_dev04_workflow.py", "DEV-04 workflow/deadline contracts"),
+    ("tools/test_dev05_algorithm_accuracy.py", "DEV-05 algorithm accuracy evidence"),
     ("tools/test_release_manifest.py", "release-manifest policy"),
     ("tools/test_logver3_contract.py", "strict LOGVER3 contract"),
     ("tools/test_capture_telnet_log.py", "cable-free capture promotion policy"),

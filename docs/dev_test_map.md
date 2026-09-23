@@ -70,3 +70,16 @@ This writes root `compile_commands.json` (ignored), with Windows target paths.
 Do not use it for Linux native files or mistake it for a linked firmware build.
 Do not blindly allow clangd to query every executable from a third-party database.
 [PlatformIO reference](https://docs.platformio.org/en/latest/integration/compile_commands.html).
+
+## DEV-05 accuracy changes
+
+- Math/quaternion changes: `test_dev05_math_reference`, `test_core_math_ahrs`.
+- AHRS/mag correction changes: `test_dev05_algorithm_scenarios`, then compare
+  identical-input reports. Known roadmap failures are explicit, never full PASS.
+- Evidence export/comparison or scenario schema: `test_dev05_algorithm_accuracy`.
+- Native fingerprint integration: add DEV-04/runner policies and one native run.
+- Commands, metrics, scope and optional features: [DEV-05](dev05_algorithm_accuracy.md).
+
+For DEV-05a observation metrics, run `test_dev05_observation_contracts` and
+`test_dev05_algorithm_scenarios`. Review [measurement fixes](dev05a_report.md) and
+the staged [math coverage plan](dev05_math_verification_plan_ru.md).

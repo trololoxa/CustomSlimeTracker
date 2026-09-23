@@ -202,3 +202,11 @@ stable-field duration and magnetic heading rate. In 0022a the logged
 reacquisition rather than the instantaneous two-sample derivative; CLI status
 prints both values. `tools/logs/parse_e0_log.py` remains compatible with LOGVER2;
 `strict_logver3_gate.py` is intentionally not.
+
+## DEV-05 synthetic algorithm scenarios
+
+Production AHRS and magnetic heading/yaw modules now have independent synthetic
+scenario replay and before/after accuracy reports. This is separate from the
+metric replay of recorded E0 logs above. It does not reconstruct missing 960 Hz
+samples from decimated CAL rows. See [DEV-05](dev05_algorithm_accuracy.md) for
+commands, truth model, five open roadmap contracts and verification limits.

@@ -27,6 +27,8 @@ REQUIRED_DOCS = (
     "dev_session.md",
     "dev_test_map.md",
     "dev04_agent_tools.md",
+    "dev05_algorithm_accuracy.md",
+    "dev05_report.md",
     "current_implementation.md",
     "architecture.md",
     "build_profiles.md",
