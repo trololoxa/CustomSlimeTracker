@@ -67,3 +67,17 @@ firmware versions with DEV-05a. Never remove the hash check to mix old/new repor
 The [mathematical verification plan](dev05_math_verification_plan_ru.md) records
 the agreed next scope. Its additional scenarios are planned, not implemented or
 certified by DEV-05a. This small correction precedes that expansion.
+
+## Local acceptance update, 2026-09-23
+
+Local DEV-05a observation-contract/evidence acceptance is now recorded for clean
+`4ac5c0c171913060582cd93d9cef2fd6665fae86`; see the
+[complete local verification record](dev05_local_verification_2026-09-23.md).
+All three DEV-05/DEV-05a executables ran in each full 54/54 Windows native, WSL
+ASan/UBSan and WSL LSan suite. The Python evidence group passed 11 tests. Exports
+of these actual reports each retain 24 scenarios and the same five OPEN contracts.
+Five firmware profiles built, but full Windows check_all exited 1 on three
+stack-budget policies. This closes pending local host execution, not overall
+project/release acceptance, hardware, target timing, absolute accuracy, 0029/0030
+or the additional mathematical-plan scenarios. The original verification above
+is retained as historical evidence with its original scope.

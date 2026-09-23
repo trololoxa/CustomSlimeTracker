@@ -83,3 +83,14 @@ Do not blindly allow clangd to query every executable from a third-party databas
 For DEV-05a observation metrics, run `test_dev05_observation_contracts` and
 `test_dev05_algorithm_scenarios`. Review [measurement fixes](dev05a_report.md) and
 the staged [math coverage plan](dev05_math_verification_plan_ru.md).
+
+## DEV-05b full Windows/WSL workflow
+
+For an explicitly requested complete local verification, use
+`tools/dev_verify.py run` from Windows after reviewing/committing intended changes;
+see [workflow, evidence and acceptance](dev05b_verification_workflow.md). Do not
+regenerate ad hoc sync/collection scripts. For edits to this orchestration run
+`test_dev05b_verification_workflow`, `test_check_all_aggregation_policy`,
+`test_dev03a_reporting`, and `validate_documentation`. Full firmware/sanitizer
+reruns are not required for each documentation edit. Known stack-policy failures
+remain failures and are deferred to the firmware series, not suppressed here.

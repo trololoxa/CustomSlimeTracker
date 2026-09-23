@@ -1,5 +1,13 @@
 # Testing strategy
 
+## Local verification after DEV-05a, 2026-09-23
+
+See the [source-specific acceptance record](dev05_local_verification_2026-09-23.md):
+Windows native, WSL ASan/UBSan and WSL LSan each passed 54/54 executables; five
+firmware profiles and five replay checks passed. Full Windows check_all remains
+FAIL on three GCC 16.2.0 stack-budget policies. This does not close hardware,
+release, absolute accuracy or the five OPEN 0029/0030 contracts.
+
 ## DEV-04: stage deadlines and test routing
 
 See [owner/test map](dev_test_map.md) for focused checks and separate build/test deadlines; [session guide](dev_session.md) for Windows/WSL commands.

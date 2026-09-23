@@ -87,3 +87,16 @@ PASS) and `native-n2n0s3wm` (AHRS 1/1 PASS, none, 240/30 s), plus Windows doctor
 `host-at_lvptl` and native `native-4w6_26ns` (1/1 PASS, GCC 16.2). WSL snippets
 contain no SHA, so they are not automatically attributed to the Windows commit.
 DEV-04 implementation and local workflow acceptance are closed at that scope.
+
+## Local acceptance update, 2026-09-23
+
+The [local verification record](dev05_local_verification_2026-09-23.md) supersedes
+the pending Windows/WSL execution above for clean source
+`4ac5c0c171913060582cd93d9cef2fd6665fae86`, including DEV-05a. Windows GCC 16.2.0
+native and WSL GCC 13.3.0 ASan/UBSan and separate LSan each passed 54/54 executables.
+The DEV-05 Python evidence checks, five replay checks and five firmware profiles
+passed. Full Windows check_all completed with exit 1: three stack-budget policies
+remain FAIL. Local DEV-05 host acceptance is recorded at that scope; the full
+project is not accepted. All five OPEN 0029/0030 contracts and the historical
+hardware/accuracy/release limits remain. The new record links complete summaries,
+raw logs, source/fixture hashes and the separately retained sandbox failure.

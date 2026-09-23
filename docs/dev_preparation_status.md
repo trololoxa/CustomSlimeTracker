@@ -14,8 +14,8 @@ Do not infer hardware/release acceptance of 0028d from this development work.
 | DEV-04 | Project AGENTS.md, current documentation, owners/test map, compilation database | Implemented; Windows checks and native clangd navigation accepted; WSL focused results received; workflow acceptance closed; see [latest evidence](dev05_report.md) |
 | DEV-04a | Mixed-EOL application guidance and flexible model choice | Implemented; local Codex/Windows acceptance received; see [acceptance](dev04_workflow_report.md) |
 | DEV-04b | clangd session setup and user acceptance record | Documentation only; additive after DEV-04a; see [session guide](dev_session.md) |
-| DEV-05 | Independent math references and algorithm/scenario replay | Implemented; Linux native/sanitizer and negative tests passed; Windows acceptance pending; five firmware contracts remain OPEN; see [report](dev05_report.md) |
-| DEV-05a | Correct first recovery and verify actual gyro propagation | Implemented; selected ASan/UBSan and negative tests passed; user acceptance pending; see [report](dev05a_report.md) |
+| DEV-05 | Independent math references and algorithm/scenario replay | Local host acceptance completed 2026-09-23: Windows native and WSL ASan/UBSan + LSan each 54/54; full Windows gate FAIL on three stack policies; five firmware contracts remain OPEN; see [local evidence](dev05_local_verification_2026-09-23.md) |
+| DEV-05a | Correct first recovery and verify actual gyro propagation | Local observation/evidence checks passed within the same full native suites; full-project acceptance remains FAIL on three stack policies; see [local evidence](dev05_local_verification_2026-09-23.md) and [original report](dev05a_report.md) |
 | DEV-06 | Device identify/flash/smoke/capture, locking, debugger, crash evidence | Pending |
 | DEV-07 | CI, artifacts, Server interoperability, rollback procedures | Pending |
 
