@@ -1,0 +1,19 @@
+{
+  "documentation": {
+    "files": 40,
+    "total_lines": 8500,
+    "page_lines": 450,
+    "reference_lines": 650
+  },
+  "python_tests": {
+    "files": 65,
+    "total_lines": 9500,
+    "file_lines": 400
+  },
+  "native_tests": {
+    "files": 80,
+    "total_lines": 16000,
+    "file_lines": 800,
+    "executables": 64
+  }
+}

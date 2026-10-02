@@ -42,15 +42,24 @@ by test assertions/exit status. Do not hide failures or weaken gates to save tok
   estimator replacement, threshold weakening or raw-ABI migration as a side effect.
 - Do not change packet mode, target toolchain or partitions in a DEV patch.
 
+## Documentation and test growth
+
+Follow [maintenance rules](docs/development/maintenance.md). Update the existing owner;
+no patch-number docs/tests, per-patch reports or test suites in tools/. New files
+need a distinct contract and registration/index entry. Keep within reviewed budgets
+in tools/maintenance_limits.json; never auto-increase them or weaken coverage.
+Do not require historical report text, duplicate builds, or source comments as proof
+of behavior. Preserve ABI/sanitizer variants and fault scenarios when consolidating.
+
 ## Read only the route needed
 
-- Owners, affected tests and evidence level: [test map](docs/dev_test_map.md).
-- Windows/Conda or WSL restart/sync: [session guide](docs/dev_session.md).
-- Test IDs, summaries and reruns: [runner guide](docs/dev03_selective_checks.md).
-- Frames/math: [coordinate frames](docs/coordinate_frames.md).
-- State ownership: [architecture](docs/architecture.md).
-- Preparation status/remaining work: [status](docs/dev_preparation_status.md).
-- Optional agent tools and instruction audit: [assessment](docs/dev04_agent_tools.md).
+- Owners, affected tests and evidence level: [test map](docs/development/test_map.md).
+- Windows/Conda or WSL restart/sync: [session guide](docs/development/session.md).
+- Test IDs, summaries and reruns: [runner guide](docs/development/runners.md).
+- Frames/math: [coordinate frames](docs/architecture/coordinate_frames.md).
+- State ownership: [architecture](docs/architecture/ownership.md).
+- Preparation status/remaining work: [status](docs/status.md).
+- Optional agent tools and instruction audit: [assessment](docs/development/agent_tools.md).
 
 Use explicit Python/compiler paths from the session guide when PATH is ambiguous.
 Runner defaults are sequential, bounded and fresh per run. Full/release gates

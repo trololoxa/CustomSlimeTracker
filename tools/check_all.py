@@ -19,7 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-from gate_reporting import GateReport, failed_checks
+from suite_inventory import check_registry
+from gate_reporting import GateReport, failed_checks, canonical_check_ids, completed_child_report
 from check_all_policy import parse_size_metrics
 from quality_gate_runtime import quality_gate_environment, run_bounded_process
 from release_manifest import (
@@ -85,7 +86,25 @@ def run_command(
 ) -> CheckCommandResult:
     if _REPORT is not None:
         result = _REPORT.run(cmd, cwd=cwd, timeout_s=timeout_s,
-                             env=quality_gate_environment(ROOT, scope="check-all"))
+                             env={**quality_gate_environment(ROOT, scope="check-all"),
+                                  "PYTHONIOENCODING": "utf-8"})
+        if (result.returncode == 0 and len(cmd) > 1
+                and cmd[1] == "tools/run_standalone_tests.py"):
+            log = _REPORT.directory / _REPORT.data["commands"][-1]["log"]
+            try:
+                child = completed_child_report(log, ROOT, runner="native", scope="full-native")
+                _REPORT.data["commands"][-1]["child_report"] = str(child)
+            except (OSError, ValueError) as exc:
+                # Preserve the actual child exit separately; the gate failure is
+                # missing evidence, not a fabricated compiler/sanitizer finding.
+                detail = f"native report validation failed: {exc}"
+                _REPORT.data["commands"][-1].update(
+                    process_returncode=0, returncode=1, evidence_error=detail)
+                with log.open("a", encoding="utf-8") as stream:
+                    stream.write("\n" + detail + "\n")
+                _REPORT.save()
+                return CheckCommandResult(1, detail)
+            _REPORT.save()
         return CheckCommandResult(result.returncode, result.stderr)
     printable = shlex.join(cmd)
     print(f"\n$ {printable}", flush=True)
@@ -211,6 +230,7 @@ def run_replay_gate(
 
 
 CONTRACT_CHECKS = (
+    ("tools/validate_test_structure.py", "test structure validation"),
     ("tools/validate_source_filters.py", "source-filter validation"),
     ("tools/validate_profile_matrix.py", "profile-matrix validation"),
     ("tools/validate_documentation.py", "documentation validation"),
@@ -222,68 +242,70 @@ def run_project_contract_checks(summary: CheckSummary, *, timeout_s: float) -> N
 
 
 TOOL_CHECKS = (
-    ("tools/test_build_identity.py", "build identity policy"),
-    ("tools/test_check_all_policy.py", "check_all policy"),
-    ("tools/test_check_all_aggregation_policy.py", "check_all aggregation policy"),
-    ("tools/test_run_standalone_tests_policy.py", "standalone runner policy"),
-    ("tools/test_quality_gate_runtime.py", "quality-gate runtime policy"),
-    ("tools/test_dev01_test_infrastructure.py", "DEV-01 test infrastructure"),
-    ("tools/test_dev02_environment.py", "DEV-02 environment tooling"),
-    ("tools/test_dev03_runners.py", "DEV-03 selective runners/reporting"),
-    ("tools/test_dev03a_reporting.py", "DEV-03a Windows report writes/progress"),
-    ("tools/test_dev04_workflow.py", "DEV-04 workflow/deadline contracts"),
-    ("tools/test_dev05_algorithm_accuracy.py", "DEV-05 algorithm accuracy evidence"),
-    ("tools/test_dev05b_verification_workflow.py", "DEV-05b Windows/WSL verification workflow"),
-    ("tools/test_release_manifest.py", "release-manifest policy"),
-    ("tools/test_logver3_contract.py", "strict LOGVER3 contract"),
-    ("tools/test_capture_telnet_log.py", "cable-free capture promotion policy"),
-    ("tools/test_0025a_diagnostic_capture_policy.py", "0025a diagnostic capture lifecycle/policy"),
-    ("tools/test_0025b_remote_cli_transport_parity_policy.py", "0025b remote CLI transport parity"),
-    ("tools/test_0026a_motion_policy_and_magnetic_reliability_hardening.py", "0026a motion-policy/magnetic hardening"),
-    ("tools/test_0026b_hotpath_optimization_policy.py", "0026b hot-path optimization"),
-    ("tools/test_0026c_command_hook_declaration_order.py", "0026c command-hook declaration order"),
-    ("tools/test_0026d_host_quality_gate_portability_policy.py", "0026d host quality-gate portability"),
-    ("tools/test_0027_sensor_liveness_policy.py", "0027 sensor liveness/recovery policy"),
-    ("tools/test_0027b_cross_host_quality_gate_policy.py", "0027b cross-host quality-gate hardening"),
-    ("tools/test_0027c_windows_stack_and_failure_summary_policy.py", "0027c Windows stack/failure summary"),
-    ("tools/test_0027d_recovery_feedback_and_tap_policy.py", "0027d recovery feedback/tap hardening"),
-    ("tools/test_0027e_progress_clock_domain_policy.py", "0027e progress clock-domain separation"),
-    ("tools/test_0027f_progress_epoch_contract_policy.py", "0027f progress epoch contract"),
-    ("tools/test_0028_semantic_config_transaction_policy.py", "0028 semantic config/transaction policy"),
-    ("tools/test_0028a_transaction_and_quaternion_hotpath_policy.py", "0028a transaction/quaternion hot-path hardening"),
-    ("tools/test_0028b_v2_config_migration_policy.py", "0028b v2 config compatibility migration"),
-    ("tools/test_0028c_bounded_calibration_recovery_policy.py", "0028c bounded calibration/recovery"),
-    ("tools/test_0028d_recovery_and_calibration_contract_policy.py", "0028d recovery and calibration contract"),
-    ("tools/test_slimevr_session_contract_policy.py", "SlimeVR session contract"),
-    ("tools/test_calibration_storage_contract_policy.py", "calibration storage contract"),
-    ("tools/test_calibration_storage_stack_policy.py", "calibration storage stack budget"),
-    ("tools/test_calibration_autonomy_policy.py", "calibration autonomy policy"),
-    ("tools/test_calibration_0023a_policy.py", "0023a calibration policy"),
-    ("tools/test_calibration_0023b_policy.py", "0023b hardening policy"),
-    ("tools/test_calibration_0023c_policy.py", "0023c recovery policy"),
-    ("tools/test_calibration_0023d_policy.py", "0023d sleep recovery policy"),
-    ("tools/test_calibration_0023e_policy.py", "0023e setup/hotpath policy"),
-    ("tools/test_calibration_0023f_policy.py", "0023f full setup calibration policy"),
-    ("tools/test_calibration_0023g_policy.py", "0023g magnetic coverage reservoir policy"),
-    ("tools/test_calibration_0023ga_policy.py", "0023ga axis alignment stack hardening policy"),
-    ("tools/test_calibration_0023gb_policy.py", "0023gb magnetometer fit metric policy"),
-    ("tools/test_calibration_0023gc_policy.py", "0023gc mag fit stack/profile build policy"),
-    ("tools/test_calibration_0023gd_policy.py", "0023gd magnetometer math/alignment policy"),
-    ("tools/test_calibration_0023ge_policy.py", "0023ge magnetometer audit hardening policy"),
-    ("tools/test_calibration_0023gf_policy.py", "0023gf mag callback cross-ABI policy"),
-    ("tools/test_calibration_0023gg_policy.py", "0023gg magnetic timestamp/setup acceptance policy"),
-    ("tools/test_slimevr_wifi_provisioning_0023gh_policy.py", "0023gh SlimeVR Wi-Fi provisioning compatibility"),
-    ("tools/test_slimevr_connect_trackers_0023gi_policy.py", "0023gi SlimeVR Connect Trackers handshake/build date"),
-    ("tools/test_slimevr_connect_trackers_0023gj_policy.py", "0023gj already-connected Connect Trackers session restart"),
-    ("tools/test_calibration_0023gk_policy.py", "0023gk magnetometer robust-fit acceptance policy"),
-    ("tools/test_slimevr_udp_tx_recovery_0023gl_policy.py", "0023gl SlimeVR UDP TX recovery policy"),
-    ("tools/test_pre_0024_hotpath_headroom_policy.py", "pre-0024 hotpath headroom policy"),
-    ("tools/test_pre_0024a_tracking_deadline_policy.py", "pre-0024a tracking deadline policy"),
-    ("tools/test_pre_0024ab_hotpath_transform_cache_policy.py", "pre-0024ab transform cache policy"),
-    ("tools/test_pre_0024ac_imu_hotpath_slack_policy.py", "pre-0024ac IMU hotpath/slack policy"),
-    ("tools/test_pre_0024ad_network_pressure_policy.py", "pre-0024ad network pressure pacing/recovery policy"),
-    ("tools/test_calibration_integration_policy.py", "calibration integration policy"),
-    ("tools/test_mag_heading_reliability_policy.py", "mag heading reliability policy"),
+    ("tests/tooling/test_maintenance_structure.py", "maintenance structure"),
+    ("tests/tooling/test_build_identity.py", "build identity"),
+    ("tests/tooling/test_check_all.py", "check all"),
+    ("tests/tooling/test_check_all_aggregation.py", "check all aggregation"),
+    ("tests/tooling/test_run_standalone_tests.py", "run standalone tests"),
+    ("tests/tooling/test_quality_gate_runtime.py", "quality gate runtime"),
+    ("tests/tooling/test_sanitizer_infrastructure.py", "sanitizer infrastructure"),
+    ("tests/tooling/test_environment_doctor.py", "environment doctor"),
+    ("tests/tooling/test_selective_runners.py", "selective runners"),
+    ("tests/tooling/test_gate_reporting.py", "gate reporting"),
+    ("tests/tooling/test_workflow_deadlines.py", "workflow deadlines"),
+    ("tests/tooling/test_algorithm_accuracy.py", "algorithm accuracy"),
+    ("tests/tooling/test_cross_platform_verification.py", "cross platform verification"),
+    ("tests/tooling/test_device_workflow.py", "device workflow"),
+    ("tests/tooling/test_release_manifest.py", "release manifest"),
+    ("tests/tooling/test_logver3_contract.py", "logver3 contract"),
+    ("tests/tooling/test_capture_telnet_log.py", "capture telnet log"),
+    ("tests/contracts/test_diagnostic_capture_lifecycle.py", "diagnostic capture lifecycle"),
+    ("tests/contracts/test_remote_console_parity.py", "remote console parity"),
+    ("tests/contracts/test_motion_and_magnetic_admission.py", "motion and magnetic admission"),
+    ("tests/contracts/test_magnetic_hotpath_budget.py", "magnetic hotpath budget"),
+    ("tests/contracts/test_command_hook_order.py", "command hook order"),
+    ("tests/contracts/test_host_gate_portability.py", "host gate portability"),
+    ("tests/contracts/test_sensor_liveness.py", "sensor liveness"),
+    ("tests/contracts/test_host_stack_portability.py", "host stack portability"),
+    ("tests/contracts/test_yaw_microsoft_abi_budget.py", "yaw microsoft abi budget"),
+    ("tests/contracts/test_recovery_feedback.py", "recovery feedback"),
+    ("tests/contracts/test_progress_clock_domains.py", "progress clock domains"),
+    ("tests/contracts/test_progress_epochs.py", "progress epochs"),
+    ("tests/contracts/test_semantic_config_transaction.py", "semantic config transaction"),
+    ("tests/contracts/test_transaction_quaternion_admission.py", "transaction quaternion admission"),
+    ("tests/contracts/test_config_compatibility_migration.py", "config compatibility migration"),
+    ("tests/contracts/test_calibration_recovery_deadlines.py", "calibration recovery deadlines"),
+    ("tests/contracts/test_recovery_transaction_integration.py", "recovery transaction integration"),
+    ("tests/contracts/test_slimevr_session_contract.py", "slimevr session contract"),
+    ("tests/contracts/test_calibration_storage_contract.py", "calibration storage contract"),
+    ("tests/contracts/test_calibration_storage_stack.py", "calibration storage stack"),
+    ("tests/contracts/test_calibration_autonomy.py", "calibration autonomy"),
+    ("tests/contracts/test_calibration_ownership.py", "calibration ownership"),
+    ("tests/contracts/test_calibration_cross_abi.py", "calibration cross abi"),
+    ("tests/contracts/test_calibration_tracking_recovery.py", "calibration tracking recovery"),
+    ("tests/contracts/test_sleep_epoch_recovery.py", "sleep epoch recovery"),
+    ("tests/contracts/test_setup_feature_profiles.py", "setup feature profiles"),
+    ("tests/contracts/test_guided_setup.py", "guided setup"),
+    ("tests/contracts/test_magnetic_coverage_reservoir.py", "magnetic coverage reservoir"),
+    ("tests/contracts/test_axis_alignment_stack.py", "axis alignment stack"),
+    ("tests/contracts/test_magnetic_fit_metrics.py", "magnetic fit metrics"),
+    ("tests/contracts/test_magnetic_fit_profiles.py", "magnetic fit profiles"),
+    ("tests/contracts/test_magnetic_math_alignment.py", "magnetic math alignment"),
+    ("tests/contracts/test_magnetic_realtime_admission.py", "magnetic realtime admission"),
+    ("tests/contracts/test_magnetic_callback_abi.py", "magnetic callback abi"),
+    ("tests/contracts/test_magnetic_timestamp_acceptance.py", "magnetic timestamp acceptance"),
+    ("tests/contracts/test_wifi_provisioning.py", "wifi provisioning"),
+    ("tests/contracts/test_slimevr_handshake.py", "slimevr handshake"),
+    ("tests/contracts/test_slimevr_session_restart.py", "slimevr session restart"),
+    ("tests/contracts/test_magnetic_robust_fit.py", "magnetic robust fit"),
+    ("tests/contracts/test_udp_tx_recovery.py", "udp tx recovery"),
+    ("tests/contracts/test_hotpath_headroom.py", "hotpath headroom"),
+    ("tests/contracts/test_tracking_deadlines.py", "tracking deadlines"),
+    ("tests/contracts/test_transform_cache.py", "transform cache"),
+    ("tests/contracts/test_imu_hotpath_budget.py", "imu hotpath budget"),
+    ("tests/contracts/test_network_pressure_pacing.py", "network pressure pacing"),
+    ("tests/contracts/test_calibration_integration.py", "calibration integration"),
+    ("tests/contracts/test_mag_heading_reliability.py", "mag heading reliability"),
 )
 
 def run_tool_smokes(summary: CheckSummary, *, timeout_s: float) -> None:
@@ -732,7 +754,10 @@ def _main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_PIO_TIMEOUT_S,
         help="timeout for each PlatformIO environment build",
     )
-    registry = {Path(script).stem: (script, description) for script, description in (*CONTRACT_CHECKS, *TOOL_CHECKS)}
+    try:
+        registry = check_registry((*CONTRACT_CHECKS, *TOOL_CHECKS))
+    except ValueError as exc:
+        parser.error(str(exc))
     parser.add_argument("--list-checks", action="store_true", help="list exact check IDs without executing")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--check", action="append", dest="checks", metavar="ID", help="run only selected checks; partial evidence")
@@ -749,6 +774,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             parser.error(str(exc))
 
+    args.checks = canonical_check_ids(args.checks)
     unknown = [name for name in (args.checks or []) if name not in registry]
     if unknown:
         parser.error("unknown check ID(s): " + ", ".join(unknown) + "; use --list-checks")

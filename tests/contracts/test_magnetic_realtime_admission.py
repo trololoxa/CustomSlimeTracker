@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Guard magnetic_realtime_admission post-audit realtime and diagnostic hardening contracts."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+sys.path[:0] = [str(Path(__file__).resolve().parents[2] / "tools"),
+                str(Path(__file__).resolve().parents[1] / "support")]
+from contract_checks import (
+    compiler, forbid, parse_stack_usage, read_native_test, require, require_limit, run_contract_command,
+)
+
+
+from quality_gate_runtime import project_temp_directory
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def main() -> int:
+    fifo_h = (ROOT / "src/runtime/fifo_runtime_processor.hpp").read_text(encoding="utf-8")
+    fifo = (ROOT / "src/runtime/fifo_runtime_processor.cpp").read_text(encoding="utf-8")
+    mag_h = (ROOT / "src/sensor/mag_runtime.hpp").read_text(encoding="utf-8")
+    mag = (ROOT / "src/sensor/mag_runtime.cpp").read_text(encoding="utf-8")
+    frame = (ROOT / "src/sensor/frame_transform.hpp").read_text(encoding="utf-8")
+    controller = (ROOT / "src/runtime/mag_runtime_controller.cpp").read_text(encoding="utf-8")
+    cal = (ROOT / "src/sensor/mag_calibration.cpp").read_text(encoding="utf-8")
+    fifo_test = (ROOT / "tests/native/test_fifo_runtime_processor.cpp").read_text(encoding="utf-8")
+    mag_test = (ROOT / "tests/native/test_mag_calibration.cpp").read_text(encoding="utf-8")
+    heading_test = read_native_test(ROOT / "tests/native/test_mag_heading_reliability.cpp")
+    status = (ROOT / "src/runtime/runtime_status_reporter.cpp").read_text(encoding="utf-8")
+    perf = (ROOT / "src/serial/tracker_perf_commands.cpp").read_text(encoding="utf-8")
+    check_all = (ROOT / "tools/check_all.py").read_text(encoding="utf-8")
+
+    # Chronological dispatch must obey both count and cooperative time budgets.
+    require(fifo_h, "magCallbackCountDeferrals", "mag callback count deferral diagnostics")
+    require(fifo_h, "magCallbackBudgetDeferrals", "mag callback time-budget diagnostics")
+    require(fifo_h, "peekMagTimestamp", "timestamp-only queue peek")
+    forbid(fifo_h, "bool peekMag(Lsm6dsvFifoReader::MagRawSample&", "full magnetic sample copy on every raw callback")
+    require(fifo, "bool chronologicalReady = true", "fail-closed backlog gate")
+    require(fifo, "chronologicalReady = false", "raw timeline stop on due magnetic backlog")
+    require(fifo, "micros() - callbackSliceStartUs", "mag callback cooperative time budget")
+    require(fifo, "queueStats_.magCallbackBudgetDeferrals++", "time-budget counter")
+    require(fifo, "while (chronologicalReady)", "raw advancement loop gated by magnetic chronology")
+    require(fifo, "if (!dispatchDueMagCallbacks(lastDispatchedRawTimestampUs_", "per-sample magnetic chronology gate")
+    require(fifo, "queueStats_.magChronologicalDeferrals++", "chronology deferral accounting")
+    require(fifo_test, "testMagCallbacksRespectCountBudget", "mag callback count-budget regression")
+    require(fifo_test, "testMagCallbacksRespectCooperativeTimeBudget", "expensive magnetic burst regression")
+    require(fifo_test, "rawAfterFirstPass", "backlog raw-timeline freeze assertion")
+
+    # One sensor-to-device SO(3) validation per magnetic sample, reused for gyro.
+    require(mag_h, "sensorToDeviceApplied", "retained frame-validation decision")
+    forbid(mag_h, "const MagProcessedSample& last() const", "stale duplicate last-sample API")
+    forbid(mag_h, "MagProcessedSample last_", "stale duplicate last-sample storage")
+    require(mag, "out.sensorToDeviceApplied = frame.enabled", "runtime frame decision capture")
+    forbid(frame, "inverseApplyValidatedSensorToDevice", "public unchecked inverse helper")
+    require(controller, "inverseApplyAcceptedSensorToDevice", "controller-local inverse mapping")
+    require(controller, "processed.sensorToDeviceApplied", "controller reuse of processor decision")
+    forbid(controller, "const SensorToDeviceFrame frame = makeSensorToDeviceFrame(", "duplicate controller SO(3) validation")
+    require(heading_test, "testMagRuntimeRetainsValidatedDeviceFrameDecision", "frame reuse regression")
+
+    # Every post-normalization physical rejection must retain useful diagnostics.
+    require(cal, "Normalization and retained-sample diagnostics are already authoritative", "pre-solve diagnostic preservation")
+    require(cal, "out.solverStage = MagCalibrationSolverStage::Normalized", "normalized stage before physical gates")
+    require(cal, "replaceFitFromAccumulator", "isolated refit candidate stack phase")
+    forbid((ROOT / "src/sensor/mag_calibration.hpp").read_text(encoding="utf-8"), "MagCalibrationResult compute();", "unused by-value fit result API")
+    require(mag_test, "physical pre-solve coverage rejection", "early-failure diagnostics regression")
+
+    require(status, "fifo_runtime_mag_budget_deferrals=", "runtime budget diagnostics")
+    require(perf, "runtime_mag_budget_deferrals_delta=", "perf budget diagnostics")
+
+    cxx = compiler()
+    with project_temp_directory(ROOT, "tracker-magnetic_realtime_admission-") as tmp_name:
+        tmp = Path(tmp_name)
+        common = [
+            cxx, "-std=c++20", "-O2", "-fstack-usage",
+            "-I", str(ROOT / "src"), "-I", str(ROOT / "tests/native"),
+        ]
+        for source, output in (
+            ("src/runtime/fifo_runtime_processor.cpp", "fifo.o"),
+            ("src/runtime/mag_runtime_controller.cpp", "controller.o"),
+            ("src/sensor/mag_runtime.cpp", "mag_runtime.o"),
+            ("src/sensor/mag_calibration.cpp", "mag_calibration.o"),
+        ):
+            run_contract_command([*common, "-c", str(ROOT / source), "-o", str(tmp / output)], check=True)
+        usage = parse_stack_usage(tmp)
+        require_limit(usage, "FifoRuntimeProcessor::process", 512)
+        require_limit(usage, "dispatchDueMagCallbacks", 256)
+        require_limit(usage, "MagRuntimeController::processRawSample", 1024)
+        require_limit(usage, "MagRuntimeProcessor::process", 256)
+        # magnetic_realtime_admission is the final owner of this cross-ABI fit frame and retains the
+        # 1792-byte ceiling. Do not let the older magnetic_realtime_admission gate contradict the
+        # successor contract when the same source is compiled under MSYS2.
+        require_limit(usage, "MagCalibrationCollector::compute", 1792)
+        require_limit(usage, "replaceFitFromAccumulator", 512)
+
+    print("# magnetic_realtime_admission: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

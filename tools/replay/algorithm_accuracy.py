@@ -146,7 +146,7 @@ def export(native_report: Path, label: str):
         command=record.get('command')
         if not isinstance(command,list) or not command or not all(isinstance(x,str) for x in command):
             raise ValueError('invalid command record')
-        if len(command)==1 and command[0].replace('\\','/').split('/')[-1] in ('test_dev05_algorithm_scenarios','test_dev05_algorithm_scenarios.exe'):
+        if len(command)==1 and command[0].replace('\\','/').split('/')[-1] in ('test_fusion_scenarios','test_fusion_scenarios.exe','test_dev05_algorithm_scenarios','test_dev05_algorithm_scenarios.exe'):
             records.append(record)
     if len(records)!=1:
         raise ValueError('requires exactly one scenario execution (build-only is insufficient)')
@@ -158,7 +158,7 @@ def export(native_report: Path, label: str):
         raise ValueError('unsafe/oversized log')
     text=log.read_text(encoding='utf-8')
     rows=[loads(line[len('DEV05_RESULT '):]) for line in text.splitlines() if line.startswith('DEV05_RESULT ')]
-    if 'PASS test_dev05_algorithm_scenarios' not in text.splitlines():
+    if not {'PASS test_fusion_scenarios', 'PASS test_dev05_algorithm_scenarios'}.intersection(text.splitlines()):
         raise ValueError('missing executable completion')
     result={'schema':SCHEMA,'label':label,'source':report.get('source'),
             'build':report.get('metadata'),'native_report':str(native_report.resolve()),

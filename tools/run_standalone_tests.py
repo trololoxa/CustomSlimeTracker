@@ -21,9 +21,10 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import BinaryIO, Iterable, Iterator, Mapping
+from typing import Iterable, Iterator, Mapping
 
-from gate_reporting import GateReport
+from suite_inventory import native_sources
+from gate_reporting import GateReport, canonical_check_ids
 
 from quality_gate_runtime import (
     SANITIZER_FLAGS,
@@ -183,54 +184,20 @@ class NativeRunnerBusyError(RuntimeError):
     pass
 
 
-def _lock_file(handle: BinaryIO) -> None:
-    if os.name == "nt":
-        import msvcrt
-
-        handle.seek(0)
-        if handle.read(1) == b"":
-            handle.seek(0)
-            handle.write(b"\0")
-            handle.flush()
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-    else:
-        import fcntl
-
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-
-def _unlock_file(handle: BinaryIO) -> None:
-    if os.name == "nt":
-        import msvcrt
-
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
 @contextmanager
 def native_runner_lock(path: pathlib.Path | None = None) -> Iterator[None]:
     """Serialize native runners so --clean cannot delete another live build."""
+    from process_lock import exclusive_lock
     lock_path = RUNNER_LOCK if path is None else path
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+b")
+    manager = exclusive_lock(lock_path)
     try:
-        try:
-            _lock_file(handle)
-        except OSError as exc:
-            raise NativeRunnerBusyError(
-                f"another native test runner owns {lock_path}"
-            ) from exc
-        try:
-            yield
-        finally:
-            _unlock_file(handle)
+        manager.__enter__()
+    except OSError as exc:
+        raise NativeRunnerBusyError(f"another native test runner owns {lock_path}") from exc
+    try:
+        yield
     finally:
-        handle.close()
+        manager.__exit__(None, None, None)
 
 
 def executable_suffix() -> str:
@@ -252,7 +219,7 @@ def find_compiler(explicit: str | None) -> str:
 
 
 def test_sources() -> list[pathlib.Path]:
-    return sorted(p for p in TEST_DIR.glob("test_*.cpp") if p.name != "test_common.hpp")
+    return native_sources(TEST_DIR)
 
 
 def object_id_for(source: pathlib.Path) -> pathlib.Path:
@@ -359,8 +326,8 @@ def compile_object(cxx: str, source: pathlib.Path, out: pathlib.Path, extra: Ite
 def algorithm_fingerprints() -> dict[str, str]:
     """Content evidence for DEV-05 only; never used as a build cache."""
     import hashlib
-    harness = [TEST_DIR / "test_dev05_algorithm_scenarios.cpp",
-               TEST_DIR / "test_common.hpp", *sorted((TEST_DIR / "dev05").glob("*.hpp"))]
+    harness = [TEST_DIR / "test_fusion_scenarios.cpp",
+               TEST_DIR / "test_common.hpp", *sorted((TEST_DIR / "reference").glob("*.hpp"))]
     firmware = sorted(p for p in (ROOT / "src").rglob("*")
                       if p.is_file() and p.suffix in (".cpp", ".hpp", ".h"))
     result = {}
@@ -584,11 +551,16 @@ def _main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_normalize_extra_cxxflag_args(raw_argv))
 
+    try:
+        discovered = test_sources()
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.list_tests:
-        for source in test_sources():
+        for source in discovered:
             print(source.stem)
         return 0
-    known_tests = {source.stem for source in test_sources()}
+    args.tests = canonical_check_ids(args.tests)
+    known_tests = {source.stem for source in discovered}
     unknown = [name for name in (args.tests or []) if name not in known_tests]
     if unknown:
         parser.error("unknown test ID(s): " + ", ".join(unknown) + "; use --list-tests")
@@ -642,7 +614,7 @@ def _main(argv: list[str] | None = None) -> int:
                 if not result.supported:
                     print(f"error: sanitizer preflight: {result.reason}", file=sys.stderr)
                     return 1
-            fingerprints = algorithm_fingerprints() if "test_dev05_algorithm_scenarios" in _REPORT.data["selection"] else {}
+            fingerprints = algorithm_fingerprints() if "test_fusion_scenarios" in _REPORT.data["selection"] else {}
             if fingerprints:
                 _REPORT.data["metadata"].update(fingerprints)
                 _REPORT.save()

@@ -10,6 +10,7 @@ tracking/network modules.
 
 from __future__ import annotations
 
+import configparser
 import re
 import sys
 from pathlib import Path
@@ -33,6 +34,7 @@ DEBUG_LINKCHECK_ENV = "BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK"
 PRODUCTION_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION"
 PRODUCTION_DIAG_ENV = "BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG"
 SLIM_ENV = "BOARD_LOLIN_C3_MINI_SLIM"
+USB_DIAG_ENV = "BOARD_LOLIN_C3_MINI_USB_DIAG"
 
 EXPECTED_DEFAULT_ENVS = (PRODUCTION_ENV,)
 EXPECTED_ENVIRONMENTS = {
@@ -42,6 +44,7 @@ EXPECTED_ENVIRONMENTS = {
     PRODUCTION_ENV,
     PRODUCTION_DIAG_ENV,
     SLIM_ENV,
+    USB_DIAG_ENV,
 }
 EXPECTED_PROFILE_FLAGS = {
     DEBUG_ENV: "TRACKER_PROFILE_DEBUG",
@@ -253,6 +256,30 @@ def check_forbidden_core(errors: list[str], env: str, actual: set[str]) -> None:
         )
 
 
+def validate_usb_diagnostic_contract(platformio_text: str) -> list[str]:
+    """Bench variant changes USB queue/reset and disables sleep; inherit other features."""
+    config = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(";", "#"))
+    try:
+        config.read_string(platformio_text)
+        section = config[f"env:{USB_DIAG_ENV}"]
+    except (configparser.Error, KeyError) as exc:
+        return [f"{USB_DIAG_ENV}: missing/invalid USB bench configuration: {exc}"]
+    expected = {
+        "extends": f"env:{PRODUCTION_DIAG_ENV}",
+        "upload_protocol": "esptool",
+        "upload_speed": "115200",
+        "board_upload.before_reset": "usb_reset",
+        "board_upload.after_reset": "hard_reset",
+        "build_flags": f"${{env:{PRODUCTION_DIAG_ENV}.build_flags}} -DTRACKER_SERIAL_OUTPUT_QUEUE_BYTES=8192 -DTRACKER_ENABLE_MOTION_LIGHT_SLEEP=0",
+    }
+    actual = {key: " ".join(value.split()) for key, value in section.items()}
+    errors = []
+    for key in sorted(set(expected) | set(actual)):
+        if actual.get(key) != expected.get(key):
+            errors.append(f"{USB_DIAG_ENV}: unexpected {key}: {actual.get(key)!r}; expected {expected.get(key)!r}")
+    return errors
+
+
 def main() -> int:
     environments, excludes, profiles, default_envs = parse_platformio()
     errors: list[str] = []
@@ -272,6 +299,7 @@ def main() -> int:
             errors.append(f"[platformio] default environment does not exist: {env}")
 
     validate_partition_contract(errors, platformio_text)
+    errors.extend(validate_usb_diagnostic_contract(platformio_text))
 
     linkcheck_match = re.search(
         rf"^\[env:{re.escape(DEBUG_LINKCHECK_ENV)}\]\s*$([\s\S]*?)(?=^\[|\Z)",

@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iostream>
 #include <string>
 #include <vector>
 
 #include "serial/bounded_duplex_stream.hpp"
+// Exercise the real report without adding its hardware wiring to every test.
+#include "../../src/runtime/runtime_status_reporter.cpp"
 
 using namespace tracker;
 
@@ -29,8 +32,78 @@ public:
     }
 };
 
+// No sensor I/O is permitted while rendering a status snapshot.
+class StatusOnlyBus final : public Lsm6dsvTransport {
+public:
+    bool touched = false;
+    bool read(uint8_t, uint8_t*, size_t) override { touched = true; return false; }
+    bool write(uint8_t, const uint8_t*, size_t) override { touched = true; return false; }
+    void delayMs(uint32_t) override { touched = true; }
+};
+
+static void testDiagnosticBurst(TestContext& ctx) {
+    StatusOnlyBus bus;
+    Lsm6dsv imu(bus);
+    Lsm6dsvFifoReader fifo(bus, imu);
+    FifoRuntimeProcessor runtime;
+    SensorProgressWatchdog progress;
+    SensorRecoveryController recovery;
+    TrackingStateController tracking;
+    TrackerConfig config;
+    Ahrs6Dof ahrs;
+    ImuQualityMonitor quality;
+    MagRuntimeProcessor mag;
+    MagProcessedSample field;
+    MagHeadingEstimator heading;
+    MagHeadingSample headingSample;
+    MagHeadingReferenceState reference;
+    MagHeadingAutoReferenceState autoReference;
+    MagYawCorrectionOutput yaw;
+    RuntimeStatusReporterDeps deps;
+    deps.config = &config; deps.ahrs = &ahrs; deps.quality = &quality;
+    deps.fifo = &fifo; deps.fifoRuntime = &runtime;
+    deps.sensorProgress = &progress; deps.sensorRecovery = &recovery;
+    deps.trackingState = &tracking; deps.magProcessor = &mag;
+    deps.lastMagProcessed = &field; deps.magHeading = &heading;
+    deps.lastMagHeading = &headingSample; deps.magHeadingRef = &reference;
+    deps.magHeadingAutoRef = &autoReference; deps.lastMagYawCorrection = &yaw;
+    deps.runtimeSamples = UINT32_MAX; deps.fifoIntCount = UINT32_MAX;
+    deps.trackingStateName = "DEGRADED_MAG";
+    FakeDuplexTransport sink;
+    runtimeStatusPrintHealth(sink, deps);
+    // The native Arduino stub emits LF. Model target CRLF explicitly and leave
+    // additional room for wider runtime counters, valid pose age and boot text.
+    std::string burst = "# HEALTH\r\n";
+    for (uint8_t ch : sink.output) {
+        if (ch == '\n') burst += '\r';
+        burst += static_cast<char>(ch);
+    }
+    CHECK(ctx, !bus.touched);
+    CHECK(ctx, burst.size() + 1024u < 8192u);
+    CHECK(ctx, burst.find("mean_dt_us=") != std::string::npos);
+    BoundedDuplexStream<8192, 512> large;
+    BoundedDuplexStream<1536, 512> normal;
+    FakeDuplexTransport output;
+    output.writable = 0;
+    large.begin(output); normal.begin(output);
+    large.print(burst.c_str()); normal.print(burst.c_str());
+    CHECK(ctx, normal.status().recordsDropped > 0u);
+    CHECK(ctx, large.status().recordsDropped == 0u);
+    CHECK(ctx, large.drain(48u) == 0u);
+    CHECK(ctx, large.status().queuedBytes == burst.size());
+    output.writable = 1024;
+    // Capacity never expands a single drain's existing production byte budget.
+    for (size_t i = 0; i < 8192u / 48u + 1u && large.hasPending(); ++i) {
+        CHECK(ctx, large.drain(48u) <= 48u);
+    }
+    CHECK(ctx, !large.hasPending());
+    CHECK(ctx, std::string(output.output.begin(), output.output.end()) == burst);
+    std::cout << "health_crlf_bytes=" << burst.size() << " queue=8192 drain_budget=48\n";
+}
+
 int main() {
     TestContext ctx;
+    testDiagnosticBurst(ctx);
 
     FakeDuplexTransport transport;
     transport.input = {'h', 'i', '\n'};

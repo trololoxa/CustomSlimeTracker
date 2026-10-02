@@ -1,8 +1,8 @@
 # CustomSlimeTracker
 
-## DEV-04: agent workflow
+## Development workflow
 
-[Session setup](docs/dev_session.md), [owner/test map](docs/dev_test_map.md), [instruction/tool assessment](docs/dev04_agent_tools.md).
+[Session setup](docs/development/session.md), [owner/test map](docs/development/test_map.md), [instruction/tool assessment](docs/development/agent_tools.md).
 
 ESP32-C3 firmware for a custom SlimeVR tracker using an LSM6DSV IMU and
 QMC6309 magnetometer. The repository contains firmware sources, five committed
@@ -11,11 +11,11 @@ machine-log replay tooling.
 
 Canonical project documentation starts at:
 
-- [current implementation](docs/current_implementation.md);
-- [build profiles](docs/build_profiles.md);
-- [testing strategy](docs/testing.md);
-- [tracking pipeline](docs/tracking_pipeline.md);
-- [CLI reference](docs/cli_reference.md).
+- [current implementation](docs/architecture/implementation.md);
+- [build profiles](docs/reference/build_profiles.md);
+- [testing strategy](docs/development/testing.md);
+- [tracking pipeline](docs/architecture/tracking_pipeline.md);
+- [CLI reference](docs/reference/cli.md).
 
 ## Trusted gates
 
@@ -65,7 +65,7 @@ private traffic, `.pio/`, `build/` or host-test artifacts.
 
 Native tests do not replace ESP32-C3 builds or hardware acceptance. Sensor,
 FIFO, Wi-Fi, SlimeVR and long-run claims require the hardware procedures in
-[testing.md](docs/testing.md).
+[testing.md](docs/development/testing.md).
 
 ## Cable-free LOGVER3 capture
 

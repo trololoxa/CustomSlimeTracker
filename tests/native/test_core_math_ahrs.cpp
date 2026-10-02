@@ -1,5 +1,5 @@
 #include "test_common.hpp"
-#include "dev05/reference_rotation.hpp"
+#include "reference/reference_rotation.hpp"
 
 #include <limits>
 
@@ -197,8 +197,8 @@ static void testAhrsRecoveryRebaseDiagnostics(TestContext& ctx) {
 
 static float quatAngularErrorRad(const Quat& aIn, const Quat& bIn) {
     // Independent double atan2 metric retains small-angle resolution.
-    return static_cast<float>(dev05::error({aIn.w, aIn.x, aIn.y, aIn.z},
-                                          {bIn.w, bIn.x, bIn.y, bIn.z}) / dev05::degrees);
+    return static_cast<float>(rotation_reference::error({aIn.w, aIn.x, aIn.y, aIn.z},
+                                          {bIn.w, bIn.x, bIn.y, bIn.z}) / rotation_reference::degrees);
 }
 
 static void testFastQuaternionMathAccuracy(TestContext& ctx) {

@@ -159,6 +159,11 @@ class GateReport:
         self.data.update(returncode=code, state="interrupted" if interrupted else "completed",
                          finished_at_unix=time.time())
         self.save()
+        # Verify final publication before emitting the final report marker. No retry
+        # of commands and no "repair" of a running report into an invented PASS.
+        expected = json.dumps(self.data, ensure_ascii=False, indent=2) + "\n"
+        if self.path.read_text(encoding="utf-8") != expected:
+            raise RuntimeError(f"final report read-back mismatch: {self.path}")
         for record in self.data["commands"]:
             if record["returncode"]:
                 log = self.directory / record["log"]
@@ -167,6 +172,37 @@ class GateReport:
                     print(excerpt(log))
                 print(f"# log={log}")
         print(f"# report={self.path}", flush=True)
+
+
+def completed_child_report(log: Path, root: Path, *, runner: str, scope: str) -> Path:
+    """A child exit 0 cannot certify a missing, failed or unfinished report."""
+    max_bytes = 8 * 1024 * 1024
+    if log.stat().st_size > max_bytes:
+        raise ValueError(f'child log too large for report validation: {log}')
+    paths = {Path(line[len('# report='):]).resolve() for line in
+             log.read_text(encoding='utf-8', errors='replace').splitlines()
+             if line.startswith('# report=')}
+    if len(paths) != 1:
+        raise ValueError(f'child report missing or ambiguous: {log}')
+    path = paths.pop()
+    if (path.name != 'summary.json'
+            or not path.is_relative_to((root / 'build/gate_runs').resolve())):
+        raise ValueError(f'child report outside expected location: {path}')
+    if path.stat().st_size > max_bytes:
+        raise ValueError(f'child report too large: {path}')
+    data = json.loads(path.read_text(encoding='utf-8'))
+    if (not isinstance(data, dict) or data.get('schema') != SCHEMA
+            or data.get('runner') != runner or data.get('scope') != scope
+            or data.get('state') != 'completed'
+            or type(data.get('returncode')) is not int or data['returncode'] != 0):
+        raise ValueError(f'child report does not certify completed success: {path}')
+    commands = data.get('commands')
+    if (not isinstance(commands, list) or not commands
+            or any(not isinstance(item, dict) or item.get('state') != 'completed'
+                   or type(item.get('returncode')) is not int or item['returncode'] != 0
+                   for item in commands)):
+        raise ValueError(f'child report has incomplete/failed commands: {path}')
+    return path
 
 
 def failed_checks(path: Path, registered: Mapping[str, str]) -> list[str]:
@@ -202,4 +238,16 @@ def failed_checks(path: Path, registered: Mapping[str, str]) -> list[str]:
             result.append(name)
     if seen != set(selection) or len(selection) != len(seen) or not result:
         raise ValueError("report does not contain a complete failed selection")
+    return result
+
+
+def canonical_check_ids(names):
+    """Temporary selector aliases only; never add old IDs to the execution registry."""
+    aliases = json.loads(Path(__file__).with_name('check_aliases.json').read_text(encoding='utf-8'))
+    result = []
+    for name in names or []:
+        canonical = aliases.get(name, name)
+        if canonical != name:
+            print(f'# deprecated selector {name}; use {canonical}', file=sys.stderr)
+        result.append(canonical)
     return result
