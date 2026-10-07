@@ -48,7 +48,11 @@ Rules:
 - preserve bounded FIFO drains;
 - preserve recovery behavior unless explicitly changing it.
 
-After changing hot-path code, run at minimum:
+Select host regression/policy checks and affected builds through [test map](test_map.md).
+For changed hardware integration or a timing claim, follow the
+[hardware test budget](device_smoke.md#hardwareruntime-test-budget). A long static
+capture is not mandatory for every hot-path edit; required target evidence cannot
+be replaced by host PASS. When a static board capture is selected, inspect:
 
 ```text
 status
@@ -73,12 +77,15 @@ yaw_drift_rate_deg_min
 
 ## Build and diagnostics expectations
 
-Use the explicit profile builds:
+Select the affected profiles through [test map](test_map.md) and
+[build profiles](../reference/build_profiles.md); full/release scope retains its
+complete matrix. Use the explicit PlatformIO executable from [session](session.md).
+Examples in an initialized PowerShell session:
 
-```bash
-pio run -e BOARD_LOLIN_C3_MINI_DEBUG
-pio run -e BOARD_LOLIN_C3_MINI_PRODUCTION
-pio run -e BOARD_LOLIN_C3_MINI_SLIM
+```powershell
+& $TrackerPio run -e BOARD_LOLIN_C3_MINI_DEBUG
+& $TrackerPio run -e BOARD_LOLIN_C3_MINI_PRODUCTION
+& $TrackerPio run -e BOARD_LOLIN_C3_MINI_SLIM
 ```
 
 The Debug build should stay warning-clean. If a warning appears, fix it before continuing feature work.
@@ -99,10 +106,10 @@ app/tracker_app_context.hpp      top-level context entrypoints only
 Large files are acceptable only when they own a coherent domain, for example:
 
 ```text
-runtime/static_test_runner.hpp
-runtime/mag_runtime_controller.hpp
-serial/tracker_mag_commands.hpp
-config/tracker_config_runtime.hpp
+runtime/static_test_runner.cpp
+runtime/mag_runtime_controller.cpp
+serial/tracker_mag_commands.cpp
+config/tracker_config_runtime.cpp
 ```
 
 If a file contains multiple unrelated domains, split it before adding more logic.
@@ -114,16 +121,17 @@ If a file contains multiple unrelated domains, split it before adding more logic
 - Domain command declarations: `serial/tracker_*_commands.hpp`.
 - Domain command behavior: `serial/tracker_*_commands.cpp`.
 - Context fields/hooks: `serial/tracker_serial_context.hpp`.
-- Wiring: `app/tracker_command_wiring.hpp` and/or `app/tracker_app_hooks.hpp`.
+- Wiring: `app/tracker_command_wiring.cpp` and/or `app/tracker_app_hooks.hpp`.
 - Help text: `serial/tracker_system_commands.cpp`.
 
 ### Add a new persisted setting
 
 - Schema: `config/tracker_config_schema.hpp`.
-- Defaults/sanitize/apply/capture: `config/tracker_config_runtime.hpp`.
-- NVS/version considerations: `config/tracker_config_detail.hpp` and `config/tracker_config_store.hpp`.
-- Printout: `config/tracker_config_print.hpp`.
-- CLI command if needed: `serial/tracker_config_commands.hpp` or a domain-specific CLI file.
+- Defaults/sanitize/apply/capture: `config/tracker_config_runtime.cpp`.
+- NVS/version considerations: `config/tracker_config_detail.hpp` and `config/tracker_config_store.cpp`.
+- Printout: `config/tracker_config_print.cpp`.
+- CLI behavior if needed: `serial/tracker_config_commands.cpp` or the owning domain.
+- Matching `.hpp` files declare the APIs used by callers.
 
 ### Add new sensor math
 
@@ -148,7 +156,10 @@ The project started as mostly header-only firmware code. That made early refacto
 - Move large behavior/reporting/controller implementations to `.cpp` once their public API is stable.
 - Do not split a file only to chase line counts; split when it reduces compile dependencies or hides implementation details.
 - `.hpp` files should expose domain APIs and data needed by callers. `.cpp` files should own printing, formatting, state-machine internals, and heavy includes.
-- Arduino/PlatformIO automatically compiles `.cpp` files under `src/`; no separate build registration is needed.
+- PlatformIO discovers `.cpp` files under `src/`, subject to each environment's
+  `build_src_filter`. Verify affected profile inclusion/exclusion through
+  [source filters](../reference/source_filters.md). Native runner source lists are
+  separate; discovery by PlatformIO does not prove host linkage or test coverage.
 
 Current split status:
 

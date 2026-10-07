@@ -18,9 +18,16 @@ Local native tests use host fixtures, not the tracker. Follow existing user
 permissions for hardware and external actions; never infer permission to erase
 NVS, flash a device, publish or change global settings from a host-test request.
 Preserve unrelated edits. Lettered patches are additions to their numbered base.
+Before editing, check the actual checkout, HEAD and existing diff/untracked files.
+An archive without Git has unknown commit identity; never invent one from a handoff.
+After resuming, compare task notes with the current diff and reports before acting.
 
 Keep context proportional: find the owner with `rg`, read its implementation and
-needed callers/tests. Do not read all docs, index the whole repo, invoke every
+needed callers/tests. Read complete affected functions and their state/type contracts;
+headers alone may omit the implementation in the matching `.cpp`. Follow only the
+document sections needed for this change; a link is not proof its content was read.
+State the affected behavior, invariants and selected checks briefly before editing.
+Do not read all docs, index the whole repo, invoke every
 skill, or run a full gate before every edit. Batch independent reads. After a
 failure, inspect its raw log and rerun the affected checks once the cause changes.
 Keep full evidence on disk; summarize failure, exit code, source, coverage and log
@@ -59,9 +66,12 @@ of behavior. Preserve ABI/sanitizer variants and fault scenarios when consolidat
 - Frames/math: [coordinate frames](docs/architecture/coordinate_frames.md).
 - State ownership: [architecture](docs/architecture/ownership.md).
 - Preparation status/remaining work: [status](docs/status.md).
-- Optional agent tools and instruction audit: [assessment](docs/development/agent_tools.md).
+- Bounded tasks, context recovery and result handoff: [agent workflow](docs/development/agent_tools.md).
 
 Use explicit Python/compiler paths from the session guide when PATH is ambiguous.
+Keep PowerShell and Bash syntax separate; shell variables do not survive a new shell.
+If required context/tools are unavailable, report the blocked scope and preserve
+completed work; do not substitute guesses, installs or a weaker acceptance gate.
 Runner defaults are sequential, bounded and fresh per run. Full/release gates
 remain required for their claimed scope; run them when that scope is requested
 or the changed contract needs them, not repeatedly for unrelated documentation.

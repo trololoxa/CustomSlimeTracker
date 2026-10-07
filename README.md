@@ -2,7 +2,7 @@
 
 ## Development workflow
 
-[Session setup](docs/development/session.md), [owner/test map](docs/development/test_map.md), [instruction/tool assessment](docs/development/agent_tools.md).
+[Session setup](docs/development/session.md), [owner/test map](docs/development/test_map.md), [agent workflow](docs/development/agent_tools.md).
 
 ESP32-C3 firmware for a custom SlimeVR tracker using an LSM6DSV IMU and
 QMC6309 magnetometer. The repository contains firmware sources, five committed

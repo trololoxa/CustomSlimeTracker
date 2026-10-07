@@ -35,7 +35,7 @@ Read the page owning the task; historical patch reports are not current specific
 
 ## Development
 
-- [инструкции и дополнения для GPT-6 Astra](development/agent_tools.md)
+- [Работа агента с проектом](development/agent_tools.md)
 - [Calibration Validation](development/calibration_validation.md)
 - [Capture Validation](development/capture_validation.md)
 - [Changing firmware code](development/code_changes.md)

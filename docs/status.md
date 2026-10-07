@@ -77,10 +77,23 @@ closed by renaming or moving its test.
   then smoke passed (`device-4cfo6uq_`) after one initial framing failure and one
   occupied-port failure. Raw `device-pa3vbqmc` evidence shows a complete version
   response glued to a truncated boot-banner line. Initial-header resynchronization
-  fixes this host parser case; its Windows/target acceptance remains pending.
-  Fake-I/O evidence does not certify hardware.
-  Live target debugger wiring/attach remains unverified; follow the
-  [device guide](development/device_smoke.md).
+  fixes this host parser case. The owner's subsequent handoff accepts DEV-06d:
+  Windows focused `test_device_workflow`, `test_maintenance_structure`,
+  `validate_test_structure` and `validate_documentation` passed 4/4
+  (`check-all-jjqzelme`); installed-build-matched smoke passed three observations
+  with `TRACKING_6DOF` (`device-q7umf6v_`). These are owner-reported results; the
+  underlying reports and full installed-build identity are not included in the
+  current source archive. They are not a new full gate or 9D/accuracy acceptance.
+  Do not repeat the accepted flash/read-back or focused checks without a changed
+  contract or new failure. Fake-I/O evidence does not certify hardware.
+  The owner subsequently reported driver application and an OpenOCD connection;
+  full live-debugger acceptance remains open: target GDB attach, halt, registers/
+  stack, resume and detach; symbolize an address using the installed build's ELF;
+  then verify ordinary 6D smoke recovery. Symbolizing a halted CPU address is not
+  real crash-log capture acceptance; no deliberate crash is required. Hardware
+  work is deferred until the bench tracker is available. Manual driver selection
+  was reported as inconvenient; repeated switching and its cause are unverified.
+  Follow the [device guide](development/device_smoke.md).
 - Release: real reviewed LOGVER3/golden inputs, current Server interoperability,
   persistence/rollback and relevant board smoke/timing.
 - Absolute physical accuracy and additional math scenarios remain unverified.

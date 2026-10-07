@@ -2,11 +2,10 @@
 
 This document describes the current project layout, ownership rules, and extension points for the ESP32-C3 + LSM6DSV tracker firmware.
 
-It is written for future maintainers and agents. Before adding code, read this file and keep the layer boundaries intact.
-
-For the exact current runtime baseline and explicitly known gaps, also read
-`docs/architecture/implementation.md`. Historical roadmaps are planning records and
-do not override current source.
+Read the affected layer and its dependencies before adding code; keep these
+boundaries intact. Use [implementation](implementation.md) for the current runtime
+baseline and [status](../status.md) for acceptance gaps when relevant to the task.
+Historical roadmaps are planning records and do not override current source.
 
 ## Current high-level goal
 
@@ -41,15 +40,16 @@ src/
   output/                          host-safe SlimeVR packet writer/protocol helpers
 
 docs/
-  architecture.md                  this document
-  current_implementation.md        canonical current runtime baseline
-  project_status.md                current structural baseline
-  module_inventory.md              ownership map
-  testing.md                       host/firmware test strategy
-  cli_reference.md                 serial command behavior and side effects
-  config_schema.md                 persisted config policy
-  tracking_pipeline.md             runtime data flow
-  replay.md                        machine-log replay/metrics workflow
+  README.md                        documentation index
+  architecture/ownership.md        this document
+  architecture/implementation.md   current runtime baseline
+  status.md                        current readiness and limitations
+  architecture/module_inventory.md ownership map
+  development/testing.md           host/firmware test strategy
+  reference/cli.md                 serial command behavior and side effects
+  reference/configuration.md       persisted config policy
+  architecture/tracking_pipeline.md runtime data flow
+  development/replay.md            machine-log replay/metrics workflow
 
 tools/
   logs/                            host-side log parsing/debug helpers
@@ -98,7 +98,7 @@ If `main.cpp` grows beyond a small entrypoint, something is being added to the w
 Files:
 
 ```text
-app/tracker_app.hpp
+app/tracker_app.hpp / app/tracker_app.cpp
 app/tracker_app_context.hpp
 app/tracker_hardware_context.hpp
 app/tracker_runtime_context.hpp
@@ -107,13 +107,14 @@ app/hooks/tracker_app_common_hooks.hpp
 app/hooks/tracker_app_mag_hooks.hpp
 app/hooks/tracker_app_command_hooks.hpp
 app/hooks/tracker_app_runtime_hooks.hpp
-app/tracker_bootstrap.hpp
-app/tracker_command_wiring.hpp
+app/tracker_bootstrap.hpp / app/tracker_bootstrap.cpp
+app/tracker_command_wiring.hpp / app/tracker_command_wiring.cpp
 ```
 
-#### `tracker_app.hpp`
+#### `tracker_app.hpp` / `tracker_app.cpp`
 
-Owns setup/loop orchestration:
+The header declares `TrackerApp` and its dependencies. `TrackerApp::setup()`
+and `TrackerApp::loop()` in the `.cpp` own orchestration:
 
 - serial startup;
 - config/bootstrap sequence;
@@ -123,7 +124,7 @@ Owns setup/loop orchestration:
 - CLI setup;
 - runtime loop order.
 
-This file decides **when** things happen, not low-level details of **how** they work.
+This module decides **when** things happen, not low-level details of **how** they work.
 
 The loop order is intentionally simple:
 
@@ -189,9 +190,9 @@ These hook files are intentionally still include-only because they bind together
 
 Keep these files as wiring, not domain logic. If a hook grows into an algorithm, move the algorithm into `runtime/`, `sensor/`, `connection/`, or `serial/`.
 
-#### `tracker_bootstrap.hpp`
+#### `tracker_bootstrap.hpp` / `tracker_bootstrap.cpp`
 
-Owns boot/init helpers:
+The header declares boot/init helpers; the `.cpp` implements:
 
 - config load and runtime apply;
 - product calibration validity enforcement;
@@ -201,13 +202,13 @@ Owns boot/init helpers:
 - FIFO initialization;
 - calibration IO setup.
 
-This file may call config/runtime/hardware APIs, but should not contain long-running runtime processing.
+This module may call config/runtime/hardware APIs, but should not contain long-running runtime processing.
 
-#### `tracker_command_wiring.hpp`
+#### `tracker_command_wiring.hpp` / `tracker_command_wiring.cpp`
 
-Owns mechanical construction of `TrackerSerialCommandContext`.
+The `.cpp` owns mechanical construction of `TrackerSerialCommandContext`.
 
-It should contain assignments and hook wiring only. Command behavior belongs in `serial/*_commands.hpp` files.
+It should contain assignments and hook wiring only. Command behavior belongs in `serial/*_commands.cpp`; matching headers declare the API.
 
 ### `config/`
 
@@ -224,6 +225,9 @@ config/tracker_config_store.hpp      NVS storage and inspection
 config/tracker_network_config.hpp    Wi-Fi/SlimeVR network config storage
 config/tracker_config_print.hpp      config summary printers
 ```
+
+Runtime/store/print/network headers declare APIs; their matching `.cpp` files
+own behavior. Schema/detail headers retain types and small helpers.
 
 #### Rules for config changes
 
@@ -248,11 +252,11 @@ config/tracker_config_print.hpp      config summary printers
 
 4. **Separate persistent config from runtime application.**
 
-   Persistent fields go in `tracker_config_schema.hpp`. Runtime conversion belongs in `tracker_config_runtime.hpp`.
+   Persistent fields go in `tracker_config_schema.hpp`. Runtime conversion is implemented in `tracker_config_runtime.cpp`.
 
 5. **Printing is not validation.**
 
-   `tracker_config_print.hpp` only reports state. Validation/sanitize must stay in runtime/config logic.
+   `tracker_config_print.cpp` only reports state. Validation/sanitize must stay in runtime/config logic.
 
 ### `connection/`
 
@@ -343,7 +347,11 @@ imu_sample_pipeline.hpp      raw IMU sample -> calibration -> quality -> AHRS ->
 mag_runtime_controller.hpp   mag sample processing, heading reference, yaw correction glue
 ```
 
-Changes to these files require `test static` regression checks.
+These headers declare APIs; read their matching `.cpp` implementations. Select
+checks through [test map](../development/test_map.md) and the
+[hardware test budget](../development/device_smoke.md#hardwareruntime-test-budget).
+A long `test static` capture is not required for every edit; target timing and
+hardware evidence remain required when the changed contract needs them.
 
 ### `serial/`
 
@@ -382,6 +390,7 @@ When adding a new command:
 1. Declare the handler/helper in the correct `tracker_*_commands.hpp` domain only if other translation units need it.
 2. Implement command behavior in the matching `tracker_*_commands.cpp`.
 3. Add a hook to `TrackerSerialCommandContext` only if the command needs app/runtime behavior that does not already exist.
-4. Wire that hook in `app/tracker_command_wiring.hpp` / `app/tracker_app_hooks.hpp`.
+4. Wire that hook in `app/tracker_command_wiring.cpp` / `app/tracker_app_hooks.hpp`.
 5. Add the command to `help` in `tracker_system_commands.cpp`.
-6. Smoke-test with Serial Monitor.
+6. Run affected host/CLI checks and builds; select a focused board smoke when
+   the hardware/transport integration changes, following the device guide above.
