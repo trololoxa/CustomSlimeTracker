@@ -15,8 +15,8 @@ python3 tools/capture_telnet_log.py \
 ```
 
 The tracker remains stationary for the complete golden candidate. The host tool
-requires a known full base commit plus a valid worktree fingerprint; clean and
-dirty ProductionDiag builds are accepted and recorded in the manifest. It validates magnetometer runtime,
+requires a clean full 40-hex firmware identity for accepted strict evidence.
+Dirty diagnostic attempts do not satisfy the strict release contract. It validates magnetometer runtime,
 calibration/alignment and current trust, resets log/console counters, owns one
 TCP session, drains the deferred pipeline and writes both the capture and a
 SHA-256 manifest using atomic file replacement. The requested capture path is
@@ -32,9 +32,46 @@ python3 tools/replay/strict_logver3_gate.py \
   --output logver3_static_clean_001.validation.json
 ```
 
-Do not create the release golden JSON until the real capture has passed and its
-thresholds have been reviewed independently. A synthetic positive log would
-only test the parser and is not hardware evidence.
+Static preflight requires an already calibrated/trusted magnetometer, valid axis
+and heading/field references, enabled yaw correction, a saved base gyro bias and
+connected Wi-Fi/SlimeVR Server. Temperature compensation, when active, must be
+valid and within its calibrated range. The DEV-06 6D smoke does not prove these
+preconditions. Inspect `mag status`, `mag processed`, `bias status`, `net status`
+and `slime status`; resolve missing calibration through the existing
+[calibration guide](calibration_validation.md). Do not bypass preflight, silently
+persist settings, or label a runtime/fault capture as the static release fixture.
+
+After a real capture passes, retain its original capture manifest beside the
+acceptance evidence. The release gate expects these repository paths:
+
+```text
+tests/fixtures/replay/logver3_static_golden.log
+tests/fixtures/replay/logver3_static_golden.json
+```
+
+The JSON format is `contract`, `fixture_sha256`, and nonempty `expect`. Each
+expect key is a dotted validation-report path with `eq`, `min` and/or `max`.
+`contract` is `LOGVER3-E1-static-v1`; the SHA-256 binds the exact, unmodified log.
+Review limits independently of measured values: duration >=590 s, Q rate 19..21
+Hz and deferred-record age <=250000 us already have contract grounds. Require
+`health_passed=true` and zero drop/queued counters. Do not generate thresholds
+by copying observed values or widening them after failure. These are capture
+integrity/health assertions; this report does not establish physical accuracy.
+
+Use the release entrypoint, not only the raw-log integrity command:
+
+```bash
+python3 tools/replay/strict_logver3_gate.py \
+  --fixture tests/fixtures/replay/logver3_static_golden.log \
+  --golden tests/fixtures/replay/logver3_static_golden.json \
+  --output build/acceptance/logver3-golden.json
+```
+
+The real fixture retains its captured firmware identity even when added in a
+later commit; never rewrite LOGVER or its provenance to the new HEAD. Review
+capture text for secrets before publication; if redaction would change evidence,
+keep the original private and produce a suitable new capture. A synthetic
+positive log only tests the parser and is not hardware acceptance.
 
 ## Magnetometer replay capture smoke sequence
 

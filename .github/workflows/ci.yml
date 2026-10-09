@@ -1,16 +1,29 @@
-name: Tracker CI (not release)
+name: Build and Test
 
 on:
   push:
-    branches: [main, master, codex/dev-preparation]
+    branches: [main, master]
+    tags: ['ci/full/**']
   pull_request:
   workflow_dispatch:
+    inputs:
+      firmware_bundle:
+        description: Firmware bundle to retain (full checks always run)
+        type: choice
+        default: none
+        options:
+          - none
+          - production
+          - production-diag
+          - slim
+          - debug
+          - usb-diag
 
 permissions:
   contents: read
 
 concurrency:
-  group: tracker-ci-${{ github.workflow }}-${{ github.ref }}
+  group: tracker-ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -23,12 +36,86 @@ env:
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
+  scope:
+    name: Select check scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.plan.outputs.docs_only }}
+      full: ${{ steps.plan.outputs.full }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      bundle: ${{ steps.plan.outputs.bundle }}
+      revision: ${{ steps.plan.outputs.revision }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select conservative scope from the complete diff
+        id: plan
+        env:
+          TRACKER_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          TRACKER_BUNDLE: ${{ inputs.firmware_bundle || 'none' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          event = os.environ['GITHUB_EVENT_NAME']
+          ref = os.environ['GITHUB_REF']
+          full_tag = event == 'push' and ref.startswith('refs/tags/ci/full/')
+          full = event == 'workflow_dispatch' or full_tag
+          docs_only = False
+          base = os.environ.get('TRACKER_BASE', '')
+          if not full and re.fullmatch(r'[0-9a-f]{40}', base) and base != '0' * 40:
+              changed = subprocess.run(
+                  ['git', 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD'],
+                  capture_output=True, check=False,
+              )
+              if changed.returncode == 0:
+                  paths = changed.stdout.decode('utf-8').split('\0')[:-1]
+                  docs_only = bool(paths) and all(
+                      path.endswith('.md') and (path.startswith('docs/') or '/' not in path)
+                      for path in paths
+                  )
+          profiles = {
+              'production': 'BOARD_LOLIN_C3_MINI_PRODUCTION',
+              'production-diag': 'BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG',
+              'slim': 'BOARD_LOLIN_C3_MINI_SLIM',
+              'debug-linkcheck': 'BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK',
+              'debug': 'BOARD_LOLIN_C3_MINI_DEBUG',
+              'usb-diag': 'BOARD_LOLIN_C3_MINI_USB_DIAG',
+          }
+          bundle = 'production-diag' if full_tag else os.environ['TRACKER_BUNDLE']
+          if bundle != 'none' and (bundle not in profiles or bundle == 'debug-linkcheck'):
+              raise SystemExit('unsupported bundle profile')
+          if not full:
+              bundle = 'none'
+          selected = profiles if full else {'production': profiles['production']}
+          matrix = {'include': [dict(profile=p, environment=e) for p, e in selected.items()]}
+          revision = subprocess.check_output(['git', 'rev-parse', '--short=12', 'HEAD'], text=True).strip()
+          values = dict(docs_only=str(docs_only).lower(), full=str(full).lower(),
+                        matrix=json.dumps(matrix, separators=(',', ':')), bundle=bundle,
+                        revision=revision)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
+              for key, value in values.items():
+                  print(f'{key}={value}', file=output)
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as summary:
+              print(f'Scope: {"full" if full else "documentation" if docs_only else "host + production"}.', file=summary)
+              print(f'Firmware retained: {bundle}. Full checks are not release/hardware acceptance.', file=summary)
+          PY
+
   host:
-    name: Linux host gate
+    name: Host checks
+    needs: scope
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CXX: g++
+      TRACKER_DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -36,25 +123,31 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
-      - name: Host checks (failures remain failures)
+      - name: Check selected scope
         run: |
           mkdir -p build/ci-logs
           python --version > build/ci-logs/toolchain.txt
           g++ --version >> build/ci-logs/toolchain.txt
-          python tools/check_all.py --host-only 2>&1 | tee build/ci-logs/host.log
-      - name: Preserve available evidence, including failed runs
-        if: always()
+          if [ "$TRACKER_DOCS_ONLY" = true ]; then
+            python tools/check_all.py --check validate_documentation --check test_maintenance_structure 2>&1 | tee build/ci-logs/host.log
+          else
+            python tools/check_all.py --host-only 2>&1 | tee build/ci-logs/host.log
+          fi
+      - name: Preserve failure or full-run evidence
+        if: ${{ !cancelled() && (failure() || needs.scope.outputs.full == 'true') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: host-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: host-results-${{ needs.scope.outputs.revision }}-${{ github.run_attempt }}
           path: |
             build/ci-logs/
             build/gate_runs/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
   sanitizer:
-    name: Linux native (${{ matrix.sanitizer }})
+    name: Native (${{ matrix.sanitizer }})
+    needs: scope
+    if: needs.scope.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -77,33 +170,28 @@ jobs:
           python --version > build/ci-logs/toolchain.txt
           g++ --version >> build/ci-logs/toolchain.txt
           python tools/run_standalone_tests.py --cxx g++ --sanitizer "$TRACKER_SANITIZER" 2>&1 | tee build/ci-logs/native.log
-      - name: Preserve available sanitizer evidence
-        if: always()
+      - name: Preserve sanitizer evidence
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: native-${{ matrix.sanitizer }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: native-${{ matrix.sanitizer }}-${{ needs.scope.outputs.revision }}-${{ github.run_attempt }}
           path: |
             build/ci-logs/
             build/gate_runs/
             build/sanitizer-probes/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
   firmware:
-    name: Firmware (${{ matrix.environment }})
+    name: Firmware (${{ matrix.profile }})
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
       max-parallel: 2
-      matrix:
-        environment:
-          - BOARD_LOLIN_C3_MINI_PRODUCTION
-          - BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG
-          - BOARD_LOLIN_C3_MINI_SLIM
-          - BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK
-          - BOARD_LOLIN_C3_MINI_DEBUG
-          - BOARD_LOLIN_C3_MINI_USB_DIAG
+      matrix: ${{ fromJSON(needs.scope.outputs.matrix) }}
     env:
       TRACKER_PIO_ENV: ${{ matrix.environment }}
       PLATFORMIO_CORE_DIR: ${{ github.workspace }}/build/platformio-core
@@ -114,19 +202,20 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
-      - name: Install pinned PlatformIO Core (not a transitive dependency lock)
+      - name: Install pinned PlatformIO Core
         run: |
           mkdir -p build/ci-logs
           python -m pip install -r tools/requirements-platformio.txt 2>&1 | tee build/ci-logs/install.log
           python -m pip check
           python -m pip freeze > build/ci-logs/python-packages.txt
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
-      - name: Fresh target build (no cached binaries)
+      - name: Fresh target build
         run: |
           python tools/dev_source_check.py
           timeout --signal=TERM --kill-after=30s 1800s pio run -e "$TRACKER_PIO_ENV" -j 2 2>&1 | tee build/ci-logs/build.log
           pio pkg list -e "$TRACKER_PIO_ENV" > build/ci-logs/target-packages.txt
-      - name: Manifest and independent firmware snapshot
+      - name: Manifest and selected firmware snapshot
+        if: needs.scope.outputs.bundle == matrix.profile
         run: |
           python tools/release_manifest.py --environment "$TRACKER_PIO_ENV" --require-clean \
             --toolchain "platformio=$(pio --version)" \
@@ -136,13 +225,50 @@ jobs:
             --artifact ".pio/build/$TRACKER_PIO_ENV/bootloader.bin" \
             --output "build/ci-manifests/$TRACKER_PIO_ENV.json" \
             --bundle "build/ci-bundles/$TRACKER_PIO_ENV.zip" 2>&1 | tee build/ci-logs/bundle.log
-      - name: Preserve available firmware and logs (not release certification)
-        if: always()
+      - name: Preserve selected firmware bundle
+        if: ${{ success() && needs.scope.outputs.bundle == matrix.profile }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: firmware-${{ matrix.environment }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: firmware-${{ matrix.profile }}-${{ needs.scope.outputs.revision }}-${{ github.run_attempt }}
           path: |
-            build/ci-logs/
             build/ci-bundles/
+            build/ci-logs/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
+      - name: Preserve failed build evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: build-failure-${{ matrix.profile }}-${{ needs.scope.outputs.revision }}-${{ github.run_attempt }}
+          path: build/ci-logs/
+          if-no-files-found: warn
+          retention-days: 7
+
+  result:
+    name: CI result
+    needs: [scope, host, sanitizer, firmware]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check completion of every selected job
+        env:
+          TRACKER_SCOPE_RESULT: ${{ needs.scope.result }}
+          TRACKER_HOST_RESULT: ${{ needs.host.result }}
+          TRACKER_SANITIZER_RESULT: ${{ needs.sanitizer.result }}
+          TRACKER_FIRMWARE_RESULT: ${{ needs.firmware.result }}
+          TRACKER_FULL: ${{ needs.scope.outputs.full }}
+          TRACKER_DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
+        run: |
+          test "$TRACKER_SCOPE_RESULT" = success
+          test "$TRACKER_HOST_RESULT" = success
+          if [ "$TRACKER_FULL" = true ]; then
+            test "$TRACKER_SANITIZER_RESULT" = success
+          else
+            test "$TRACKER_SANITIZER_RESULT" = skipped
+          fi
+          if [ "$TRACKER_DOCS_ONLY" = true ]; then
+            test "$TRACKER_FIRMWARE_RESULT" = skipped
+          else
+            test "$TRACKER_FIRMWARE_RESULT" = success
+          fi

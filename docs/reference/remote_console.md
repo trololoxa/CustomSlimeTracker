@@ -114,9 +114,9 @@ python3 tools/capture_telnet_log.py \
 ```
 
 It requires ProductionDiag, a known full 40-hex base commit, a valid source
-fingerprint and a live remote session. Clean and dirty builds are accepted; a
-dirty build must report the exact `<head>+<worktree>-dirty` identity, which is
-preserved in the manifest. Static capture additionally requires a
+fingerprint and a live remote session. Identity preflight can identify a dirty
+build, but the strict LOGVER3 gate accepts only a clean full commit; a dirty
+attempt cannot become accepted release evidence. Static capture additionally requires a
 ready trusted calibrated MAG/yaw path, a calibrated base gyro bias and live
 SlimeVR UDP. It resets counters, starts a full 20 Hz log and test (1..21600 seconds),
 drains the logger, checks lifecycle/console counters, validates strict LOGVER3

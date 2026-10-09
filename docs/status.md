@@ -89,13 +89,18 @@ closed by renaming or moving its test.
   storage. Manual driver-switching usability is unresolved; a working driver
   must not be switched routinely. Do not reflash or repeat accepted checks merely
   to document this closeout. DEV-07 CI/release/Server work is next.
-- DEV-07 CI/artifacts implementation: independent Linux host, ASan/UBSan, LSan
-  and six target build jobs; checked firmware snapshots retain BIN/ELF/partition/
-  bootloader with relocated manifests outside mutable .pio output. Existing
-  stack/release gates remain unchanged. First GitHub run and downloaded-bundle
-  acceptance remain pending; local tests do not certify cloud orchestration.
-  No hosted Windows/MSYS or bit-for-bit reproducibility acceptance is claimed.
-  See [CI workflow and artifact use](development/runners.md#github-ci-и-сохранённые-firmware-bundles).
+- DEV-07: first hosted run `37950351186`, source
+  `d06f6d6a38ab20d8563a68edc927bb3dfd97817c`, completed successfully: host,
+  ASan/UBSan, LSan and six firmware jobs. GitHub metadata confirms nine artifacts
+  (60298238 bytes total); their downloaded contents were not yet accepted.
+  The follow-up changes ordinary CI to docs-only or host + Production, with full
+  matrices on explicit request and at most one selected firmware bundle retained.
+  This changed workflow still needs its own hosted acceptance. Bundles preserve
+  BIN/ELF/partition/bootloader and relocated checked manifests outside mutable .pio.
+  Downloaded-bundle flash-plan, real LOGVER3/golden, actual Server interoperability,
+  compatible update/rollback and boot observation remain pending. No synthetic
+  fixture, waived stack budget, release PASS or hardware PASS is introduced.
+  See [branch acceptance](development/testing.md#development-branch-acceptance).
 - Release: real reviewed LOGVER3/golden inputs, current Server interoperability,
   persistence/rollback and relevant board smoke/timing.
 - Absolute physical accuracy and additional math scenarios remain unverified.

@@ -116,41 +116,63 @@ remote URLs не выгружаются, но пути и собственный
 
 ## GitHub CI и сохранённые firmware bundles
 
-[Workflow](../../.github/workflows/ci.yml) запускается на pull request, push в
-`main`, `master`, `codex/dev-preparation` и вручную через workflow_dispatch
-(доступность ручного запуска зависит от наличия workflow в default branch).
-Никакой записи в репозиторий, публикации release, секретов или доступа к трекеру.
-Первый push с этим файлом — реальная проверка GitHub orchestration; локальные
-unit tests/actionlint её не заменяют. Не ставьте новые jobs обязательными для
-merge до разбора первого запуска. В PR проверяется checkout merge commit;
-его SHA, а не SHA исходной ветки, попадает в build identity и имя артефакта.
+[Workflow](../../.github/workflows/ci.yml) `Build and Test` проверяет pull requests
+и push в `main`/`master`. Для рабочей ветки откройте draft PR: следующие push
+обновляют его проверки, отдельного дублирующего branch-push run нет. В PR
+проверяется merge commit; его SHA отличается от SHA исходной ветки.
+Нет секретов, записи в репозиторий, публикации release или доступа к устройству.
 
-Независимые jobs: полный Linux host gate; отдельные полные native ASan/UBSan и
-LSan с обязательными capability probes; пять обычных target environments плюс
-USB_DIAG. Matrix fail-fast выключен, параллелизм каждой matrix ограничен двумя.
-Новый запуск того же ref отменяет устаревший. Бюджеты jobs — 60 минут для host/
-sanitizer, 40 для firmware; target compile дополнительно ограничен 1800 секундами.
-Штатные внутренние deadlines runners не ослаблены. `shell: bash` обеспечивает
-pipefail: `tee` не превращает ошибку теста или сборки в успешный шаг.
+| Запуск | Проверки | Артефакты успешного запуска |
+| --- | --- | --- |
+| Только Markdown в docs/ или корне | documentation + maintenance | Нет |
+| Обычный PR/push с другими файлами | Полный Linux host + Production build | Нет |
+| workflow_dispatch | Host, ASan/UBSan, LSan, шесть target profiles | Три отчёта; один выбранный firmware bundle или ни одного |
+| Явный push тега `ci/full/**` | Та же полная матрица | Три отчёта и ProductionDiag bundle |
 
-Host runner — Ubuntu 24.04, Python 3.12, системный GCC. Это не доказательство
-Windows/MSYS ABI и не воспроизведение известных Windows стековых чисел. Все
-действующие политики запускаются без allow-failure и без увеличения лимитов.
-Даже при failed host job firmware jobs сохраняют свои результаты независимо;
-успешная сборка из красного workflow не считается принятой прошивкой.
+Diff берётся целиком, без ограничения API первыми 300 файлами; rename проверяет
+старый и новый путь. Неизвестный base, пустой diff и изменения вне узкого
+Markdown-набора выбирают host + Production. Полный запрос всегда сильнее diff.
+Нет пропуска тестов по тексту commit message, автоматических повторов или
+continue-on-error. Сохранены полные suites, probes, build profiles и бюджеты.
+Финальный `CI result` требует success всех выбранных jobs; ожидаемые skipped
+учитываются только для выбранного режима. После приёмки workflow именно этот
+стабильный check можно сделать обязательным для PR; он не означает release PASS.
 
-Каждая target job стартует без бинарного cache; PlatformIO Core 6.1.18 и target
-pins не меняются. SOURCE_DATE_EPOCH берётся из проверяемого commit. Actions
-закреплены полными SHA, однако Python patch version, образ runner и транзитивные
-pip-зависимости не полностью заморожены: версии пакетов записываются в логи.
-Это прослеживаемая сборка, не обещание побайтовой воспроизводимости.
+Для ручного запуска `workflow_dispatch` файл должен присутствовать в default
+branch. До слияния dev-ветки используйте одноразовый тег на проверяемом commit:
 
-Logs/JSON и готовые firmware ZIP загружаются с `if: always()` на 14 дней; имя
-включает SHA, run_id и run_attempt. Если runner потерян/жёстко остановлен, сохранение
-не гарантируется. В firmware artifact нет неподтверждённых частичных BIN: архив
-создаётся только после успешной сборки и проверки всех четырёх файлов. Логи
-неудачной сборки сохраняются без выдачи ей PASS. Важные комплекты скачайте до
-истечения retention; наличие artifact не является результатом release gate.
+```powershell
+$TrackerCiTag = 'ci/full/dev07-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+git tag $TrackerCiTag HEAD
+if ($LASTEXITCODE -ne 0) { throw 'Cannot create CI tag' }
+git push origin "refs/tags/$TrackerCiTag"
+if ($LASTEXITCODE -ne 0) { throw 'Cannot push CI tag' }
+```
+
+Это явный запрос полной проверки и ProductionDiag bundle, не release tag.
+Не используйте `git push --tags`. После появления workflow в main можно выбрать
+Actions → Build and Test → Run workflow → нужную ветку и `firmware_bundle`.
+Официальное ограничение: [manual workflows](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+
+Отчёты неудачных проверок/сборок сохраняются на 7 дней. Полный запуск сохраняет
+также успешные host/sanitizer отчёты; firmware — только выбранный комплект с
+логами его сборки. DEBUG_LINKCHECK проверяется в полной матрице, но его бинарник
+не предлагается для прошивки. На обычном успешном PR нет загружаемых артефактов;
+штатный Actions log остаётся доступен. Имена показывают назначение, профиль,
+12-значный SHA и attempt; полный SHA находится в манифесте и метаданных run.
+Важные комплекты и отчёты скачайте до истечения retention. Отмена старого run
+того же ref не удаляет его уже сохранённые артефакты.
+
+Ubuntu 24.04/Python 3.12/системный GCC не воспроизводят Windows/MSYS ABI.
+Все политики сохраняют прежние лимиты. Target jobs независимы от host FAIL:
+наличие firmware artifact из красного workflow не означает принятую сборку.
+Matrix fail-fast выключен, параллелизм ограничен двумя; host/sanitizer timeout
+60 минут, firmware 40 минут, отдельный compile 1800 секунд. Bash pipefail
+сохраняет ошибку команды перед tee. Checkout не сохраняет credentials; actions
+закреплены SHA. Сборки без бинарного cache, PlatformIO 6.1.18 и прежние target pins;
+SOURCE_DATE_EPOCH — время commit. Версии pip/target packages записываются в логи.
+Python patch version, runner image и transitive dependencies не полностью
+заморожены: это прослеживаемость, не побайтовая воспроизводимость.
 
 `release_manifest.py --bundle OUTPUT.zip` дополняет существующие `--environment`,
 `--artifact`, `--output`, `--toolchain` и `--require-clean`. Нужны ровно
@@ -173,8 +195,9 @@ DEBUG_LINKCHECK остаётся внутренним build artifact, не uploa
 
 CI не вызывает `--release`: реальные LOGVER3/golden, Server, boot evidence и
 rollback ещё имеют открытые пункты. Release-gate не ослаблен и по-прежнему требует
-их применимых входов. Следующий этап приёмки CI — первый GitHub run и проверка
+их применимых входов. Приёмка изменённого CI требует hosted run и проверки
 скачанного bundle через flash-plan; это не требует повторной прошивки.
+Порядок завершения DEV описан в [testing](testing.md#development-branch-acceptance).
 
 ## Повторить только упавшие проверки
 
