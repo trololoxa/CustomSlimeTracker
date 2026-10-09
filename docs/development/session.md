@@ -83,10 +83,125 @@ IntelliSense в Workspace (`C_Cpp.intelliSenseEngine = disabled`). Это не �
 ```
 
 `doctor` проверяет запуск `--version`, а не breakpoint/attach. GDB из UCRT64 —
-host debugger; target GDB/OpenOCD и доступ к плате проверяются отдельно в DEV-06.
+host debugger; проверенный target-сценарий описан ниже, отдельно от host gate.
 Текущие ограничения и приёмка находятся в [статусе](../status.md).
 При перенаправлении Python-логов с Unicode используйте
 `$env:PYTHONIOENCODING = 'utf-8'`, чтобы CP1251 не мешала выводу диагностики.
+
+## ESP32-C3 live-debug session
+
+Приёмка DEV-06 ограничена встроенным USB JTAG ESP32-C3, Windows,
+OpenOCD `0.11.0-esp32-20220706` и target GDB `esp-2021r2-patch5` (9.2.90).
+Это отладка уже установленной сборки, без `load`, прошивки или reset.
+Остановки CPU нарушают sensor progress и могут вызвать recovery после resume.
+Сначала закончите serial smoke и закройте остальные клиенты COM/GDB/OpenOCD.
+Подключайте только выбранный стендовый трекер. Сверьте USB serial в выводе
+OpenOCD с выбранным устройством до подключения GDB; при несовпадении остановитесь.
+Проверенный трекер: `E8:3D:C1:93:3D:34`, `303A:1001`, serial `MI_00`/COM17,
+JTAG `MI_02`. Порт может измениться; выбор по первому найденному порту запрещён.
+Работающий драйвер не переключают перед каждым запуском. Если устройство перестало
+открываться, проверяйте JTAG `MI_02`; не меняйте serial/composite драйвер вслепую.
+
+Откройте два окна PowerShell. В КАЖДОМ выполните общий блок, выбрав сохранённый
+manifest именно установленной сборки. Пример пути относится к принятому комплекту;
+не подменяйте его текущим `.pio/build` после новой компиляции.
+
+```powershell
+$TrackerRepo = 'H:\Programming\VRC\CustomSlime\SlimeTracker'
+Set-Location $TrackerRepo
+$TrackerBundle = Join-Path $TrackerRepo 'build\device-debug\dev06-20261009-074913-cc32b4a8'
+$TrackerManifest = Join-Path $TrackerBundle 'manifest.json'
+$TrackerDebugManifest = Get-Content -Raw -LiteralPath $TrackerManifest | ConvertFrom-Json
+$TrackerElfEntries = @($TrackerDebugManifest.artifacts | Where-Object { [IO.Path]::GetFileName($_.path) -eq 'firmware.elf' })
+if ($TrackerElfEntries.Count -ne 1) { throw 'Expected exactly one ELF in the installed-build manifest' }
+$TrackerElf = Join-Path $TrackerRepo $TrackerElfEntries[0].path
+if ((Get-FileHash -LiteralPath $TrackerElf -Algorithm SHA256).Hash -ne $TrackerElfEntries[0].sha256) { throw 'ELF/manifest mismatch' }
+$TrackerDeviceBuild = $TrackerDebugManifest.source.identity
+$TrackerEnvironment = $TrackerDebugManifest.build.environment
+$TrackerOpenOcdRoot = 'H:\TrackerTools\platformio\packages\tool-openocd-esp32'
+$TrackerOpenOcd = Join-Path $TrackerOpenOcdRoot 'bin\openocd.exe'
+$TrackerScripts = Join-Path $TrackerOpenOcdRoot 'share\openocd\scripts'
+$TrackerTargetBin = 'H:\TrackerTools\platformio\packages\toolchain-riscv32-esp\bin'
+$TrackerGdb = Join-Path $TrackerTargetBin 'riscv32-esp-elf-gdb.exe'
+```
+
+Первое окно: flash support отключается ДО загрузки board config; обработчики
+переопределяются ПОСЛЕ неё. В этой старой конфигурации `ESP_FLASH_SIZE 0` сам по
+себе не отменяет memprot reset при attach. `[target current]` получает имя target;
+имя TAP `esp32c3.cpu` не является именем target (`esp32c3`) в этой установке.
+
+```powershell
+$TrackerOcdLog = Join-Path $TrackerBundle ("openocd-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+& $TrackerOpenOcd -s $TrackerScripts `
+    -c 'set ESP_FLASH_SIZE 0' -f board/esp32c3-builtin.cfg `
+    -c 'bindto 127.0.0.1' `
+    -c '[target current] configure -rtos hwthread' `
+    -c '[target current] configure -event gdb-attach { halt 1000; riscv set_maskisr steponly }' `
+    -c '[target current] configure -event gdb-detach { resume }' `
+    2>&1 | Tee-Object -FilePath $TrackerOcdLog
+```
+
+Ожидаются отключённый flash support и `Listening on port 3333 for gdb connections`.
+При ошибках USB/config не запускайте GDB. `hwthread` показывает ядро, не список
+задач FreeRTOS; он НЕ исправил обнаруженный сбой `detach`. Значение `-rtos none`
+эта версия отвергает. Режим не сертифицирует flash/software breakpoints.
+
+Второе окно: новое имя лога задаётся перед КАЖДЫМ запуском, чтобы не затирать
+свидетельства прежней попытки. Предупреждение об index cache не блокировало GDB.
+
+```powershell
+$TrackerGdbLog = (Join-Path $TrackerBundle ("gdb-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))).Replace('\','/')
+& $TrackerGdb -nx -q $TrackerElf -ex 'set pagination off' `
+    -ex "set logging file $TrackerGdbLog" -ex 'set logging on'
+```
+
+В приглашении GDB (не PowerShell):
+
+```gdb
+target extended-remote 127.0.0.1:3333
+info registers pc sp ra
+x/16wx $sp
+bt 12
+info symbol $ra
+info line *$ra
+continue
+```
+
+Через 2–3 секунды нажмите Ctrl+C в GDB и проверьте новые регистры. Нулевой SP,
+USB errors или неожиданный reset требуют разбора, а не принятия фиктивного стека.
+PC в ROM может не иметь ELF-символа; сохраните адрес вызывающей функции из RA/BT.
+Полный unwind оптимизированного кода не гарантирован. Завершение в GDB:
+
+```gdb
+info registers pc sp ra
+disconnect
+set logging off
+quit
+```
+
+В PowerShell сразу проверьте `$LASTEXITCODE`: принят выход `0` через `disconnect`.
+`detach` воспроизводимо вызывает assertion `inferior_thread(): tp` в этом GDB.
+Это сбой отладчика на ПК, не crash dump трекера. На вопросы аварийного GDB:
+выйти — `y`, создавать core самого GDB — `n`. Не продолжайте аварийный сеанс.
+Обычный `disconnect` сам не обещает resume; здесь его обеспечивает обработчик
+OpenOCD. После выхода остановите OpenOCD через Ctrl+C и выполните device smoke
+с `$TrackerDeviceBuild`/`$TrackerEnvironment`, выбранным USB и проверенным
+`H:\TrackerTools\esptool-usb-probe-4.9.0\Scripts\python.exe` из device guide.
+Не считайте отключение восстановлением без последующего smoke.
+
+При тайм-ауте сначала сохраните `summary.json`/`serial.log`: `unknown command`
+означает ответ CLI, но не объясняет, какие входящие байты он отверг. Увеличение
+тайм-аута и автоматические повторы не считаются исправлением. После аварии CPU
+может остаться `halted`. Без GDB проверьте его отдельным запуском OpenOCD с
+`-c 'init' -c 'targets' -c 'poll'` после board config. Только при подтверждённом
+`halted` добавьте перед poll `-c 'resume'`, затем подтвердите `running` и smoke.
+Это восстановление без reset/перепрошивки; USB errors требуют остановки и разбора.
+
+Для офлайн-символизации используйте `riscv32-esp-elf-addr2line.exe` из
+`$TrackerTargetBin` с `-e $TrackerElf -a -f -C -i` и сохранёнными адресами.
+Адрес остановленного CPU не является настоящим crash log. Сохраните manifest,
+его артефакты, оба debugger-лога и smoke-отчёт в долговечном комплекте;
+скопированный manifest сохраняет repository-relative пути, а не переносит файлы.
 
 ## WSL после перезагрузки
 

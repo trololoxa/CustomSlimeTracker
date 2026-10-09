@@ -80,12 +80,13 @@ blackout, gyro timing/WCET, stationarity, network delivery or physical accuracy.
 
 ### Review and explicitly flash a saved build
 
-Use a manifest made by `check_all.py` for the same build artifacts. It must contain
-`firmware.bin`, `firmware.elf`, `partitions.bin`, known embedded source identity and
-an uploadable profile. Hashes, ESP32-C3 app/header, RISC-V ELF identity and the
-reviewed no-OTA partition layout are validated before device access. Old manifests
-with overwritten artifacts fail; do not regenerate a manifest to bless unknown
-stale binaries. For separately built artifacts see `release_manifest.py --help`.
+Use `check_all.py` or `release_manifest.py` for the same build artifacts; plain
+`pio run` does not create this manifest. It must contain `firmware.bin`,
+`firmware.elf`, `partitions.bin`, embedded source identity and an uploadable profile.
+Hashes, ESP32-C3 headers, RISC-V ELF identity and the no-OTA layout are checked.
+For a durable bundle, copy artifacts BEFORE creating its manifest: artifact paths
+are repository-relative, not manifest-relative. Later builds overwrite `.pio`
+outputs; copying only JSON does not preserve them. Never bless unknown binaries.
 
 ```powershell
 $TrackerManifest = "build\check_all\platformio\manifests\$TrackerEnvironment.json"
@@ -168,9 +169,9 @@ $TrackerCrashLog = 'REPLACE_WITH_SAVED_CRASH_LOG'
 
 Caller-supplied crash identity must match the manifest; addresses without a known
 build are not trustworthy symbol evidence. Output can contain unresolved addresses.
-Do not use MSYS host GDB for ESP32-C3. Live JTAG/OpenOCD needs the board's actual USB
-JTAG/wiring/driver setup and an explicit attach request; attaching/halting disrupts
-tracking. No verified live-debugger setup or flash core-dump partition is claimed.
+Use the [verified Windows target-debug session](session.md#esp32-c3-live-debug-session)
+with the installed build's ELF; MSYS host GDB is unsuitable. Attach/halt disrupts
+tracking. Live address symbolization does not prove crash capture or a core dump.
 
 Each operation writes bounded raw logs and a scoped summary under `build/gate_runs`.
 Keep important evidence with its artifacts outside the ephemeral build directory.

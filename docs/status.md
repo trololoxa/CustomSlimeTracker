@@ -56,44 +56,39 @@ closed by renaming or moving its test.
   Do not hold the roadmap for repeated structural rewrites or speculative reruns.
 - Cross-platform verification: explain mounted-checkout Git differences and prove
   a complete real Windows→WSL run; do not disable dirty-source checks.
-- Device workflow now provides explicit USB identity/lock, manifest-checked app-only
-  write/read-back, bounded serial smoke/capture and offline ELF symbolization.
-  Windows focused device/tooling checks passed (six checks, `check-all-y4qa0n71`).
-  USB smoke `device-yrdfoliy` failed on incomplete health; supplied serial evidence
-  contains 135 dropped lines. The optional USB diagnostic queue/reset variant
-  addresses this bench path. Its Windows target build passed (RAM 185156 B,
-  flash 1768570 B). Flash attempt `device-tup_0jnb` entered ROM/stub without
-  buttons, then failed on CHANGE_BAUDRATE before any app write. Native USB now
-  keeps initial 115200 baud. esptool 4.9.0 completed app write/SHA-256 read-back
-  (`device-0_pazai9`, source identity suffix `0d855a37-dirty`), with no NVS/bootloader
-  writes requested. After a separate manual update disabling USB_DIAG sleep, smoke
-  `device-47447np4` passed 3/3 serial/6D observations at ~3h15m uptime
-  (`46e1088c-dirty`); no dropped log lines or new sensor faults were observed.
-  These are different builds, not one manifest-matched end-to-end acceptance.
-  Mag, physical accuracy, linear acceleration/frame calibration, sleep/wake and
-  continuous USB availability remain unverified by this sampled smoke. Controlled
-  uploader focused Windows checks passed (`check-all-77gyb5s7`). Module-based
-  flash/read-back passed (`device-_zp1ls82`, identity suffix `1e7dee4a-dirty`),
-  then smoke passed (`device-4cfo6uq_`) after one initial framing failure and one
-  occupied-port failure. Raw `device-pa3vbqmc` evidence shows a complete version
-  response glued to a truncated boot-banner line. Initial-header resynchronization
-  fixes this host parser case. The owner's subsequent handoff accepts DEV-06d:
-  Windows focused `test_device_workflow`, `test_maintenance_structure`,
-  `validate_test_structure` and `validate_documentation` passed 4/4
-  (`check-all-jjqzelme`); installed-build-matched smoke passed three observations
-  with `TRACKING_6DOF` (`device-q7umf6v_`). These are owner-reported results; the
-  underlying reports and full installed-build identity are not included in the
-  current source archive. They are not a new full gate or 9D/accuracy acceptance.
-  Do not repeat the accepted flash/read-back or focused checks without a changed
-  contract or new failure. Fake-I/O evidence does not certify hardware.
-  The owner subsequently reported driver application and an OpenOCD connection;
-  full live-debugger acceptance remains open: target GDB attach, halt, registers/
-  stack, resume and detach; symbolize an address using the installed build's ELF;
-  then verify ordinary 6D smoke recovery. Symbolizing a halted CPU address is not
-  real crash-log capture acceptance; no deliberate crash is required. Hardware
-  work is deferred until the bench tracker is available. Manual driver selection
-  was reported as inconvenient; repeated switching and its cause are unverified.
-  Follow the [device guide](development/device_smoke.md).
+- DEV-06: owner-approved scoped bench closeout on 2026-10-09. The accepted
+  Windows device-tooling subset passed 4/4 (`check-all-jjqzelme`); no full-gate
+  rerun is claimed. Current hardware evidence identifies clean installed source
+  `900f3f5c5eb26af765aa6f5f6f41796719fc137f`, environment
+  `BOARD_LOLIN_C3_MINI_USB_DIAG`, USB serial `E8:3D:C1:93:3D:34`.
+  Supplied flash report confirms esptool 4.9.0 app-only write and SHA-256 read-back;
+  the supplied pre-debug smoke also passed. Bootloader/partition/NVS writes were
+  not requested. The archived checkout's own Git identity is not inferred from
+  these device reports.
+  Live GDB/OpenOCD evidence confirms attach without reset, halt, registers, raw
+  stack read, partial backtrace, continue and interrupt. Installed-build ELF
+  symbolization resolves `0x4206b412` to Ahrs6Dof::update and `0x42050f22` to
+  runtimeBiasUpdateEstimator/inlined Vec3::isFinite. The owner reported clean
+  `disconnect`/GDB exit 0 and subsequent smoke PASS; their final raw logs/summary
+  were not attached. Earlier supplied post-debug smoke has three healthy 6D
+  observations, sample/pose progress and no new recovery/fault increments.
+  Use the [verified target session](development/session.md#esp32-c3-live-debug-session).
+  Known limitations remain explicit: GDB `detach` asserts even with `hwthread`;
+  the accepted exit is `disconnect` with OpenOCD resume-on-disconnect. The old
+  default attach handler resets for memprot; flash-disabled/no-reset attach is
+  required. One supplied failed smoke contains `unknown command`, not silence;
+  its cause is unresolved and a later PASS does not erase that failure.
+  Two successful sensor recoveries preceded the supplied healthy observation
+  window; attribution to CPU pauses is plausible, not proved. Full unwinding,
+  flash/software breakpoints and RTOS task inspection are not accepted here.
+  Boot/reset/safe-mode capture remains an outstanding device-guide evidence item;
+  no supplied capture proves it, and this scoped closeout does not waive it.
+  Real crash-log capture, core dumps, 9D/physical accuracy, WCET, linear-accel frame
+  calibration, sleep/wake and continuous USB availability are not claimed.
+  Preserve the saved ELF/BIN/manifest and available logs outside ephemeral build
+  storage. Manual driver-switching usability is unresolved; a working driver
+  must not be switched routinely. Do not reflash or repeat accepted checks merely
+  to document this closeout. DEV-07 CI/release/Server work is next.
 - Release: real reviewed LOGVER3/golden inputs, current Server interoperability,
   persistence/rollback and relevant board smoke/timing.
 - Absolute physical accuracy and additional math scenarios remain unverified.

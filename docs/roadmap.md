@@ -9,12 +9,12 @@ create documentation/test owners.
 1. Structural maintenance has Windows host acceptance with the three retained
    firmware stack failures. Keep remaining evidence diagnostics scoped; complete
    real Windows/WSL workflow acceptance when that workflow is next needed.
-2. Device workflow: host implementation now covers selection/locking, explicit
-   app-only flash/read-back, budgeted smoke, passive boot capture and offline crash
-   symbolization. Next prove the physical workflow and select/verify the real target
-   debugger connection; do not infer hardware acceptance from fake transports.
+2. DEV-06 device workflow: scoped bench acceptance is closed with the limitations
+   in [status](status.md). Reuse the verified live-debug session; do not repeat the
+   accepted flash/read-back or change drivers/toolchains without a new reason.
+   Retain the outstanding boot-capture evidence item; no crash capture is claimed.
    Preserve calibration/NVS by default; destructive operations require authorization.
-3. CI/release: reproducible artifacts and identities, current SlimeVR Server cross-test,
+3. DEV-07 CI/release is next: reproducible artifacts and identities, current SlimeVR Server cross-test,
    release fixture requirements and rollback procedures.
 4. Evaluate Codex on fixed tasks: documentation-only edit, known AHRS math fault,
    recovery fault and full verification. Record correctness, selected checks, extra
