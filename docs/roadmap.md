@@ -14,8 +14,9 @@ create documentation/test owners.
    accepted flash/read-back or change drivers/toolchains without a new reason.
    Retain the outstanding boot-capture evidence item; no crash capture is claimed.
    Preserve calibration/NVS by default; destructive operations require authorization.
-3. DEV-07 CI/release is next: reproducible artifacts and identities, current SlimeVR Server cross-test,
-   release fixture requirements and rollback procedures.
+3. DEV-07 CI/release: accept the first hosted CI run and downloaded firmware
+   bundle, then close real LOGVER3/golden inputs, current SlimeVR Server cross-test
+   and rollback procedures. Artifact identities do not imply release readiness.
 4. Evaluate Codex on fixed tasks: documentation-only edit, known AHRS math fault,
    recovery fault and full verification. Record correctness, selected checks, extra
    reads/reruns, elapsed time and actual tokens where the client exposes them.

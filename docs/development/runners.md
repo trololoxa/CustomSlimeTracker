@@ -114,6 +114,68 @@ remote URLs не выгружаются, но пути и собственный
 например, прежняя policy может классифицировать конкретный Debug overflow.
 Итоговый returncode/warnings сохраняют решение существующего gate.
 
+## GitHub CI и сохранённые firmware bundles
+
+[Workflow](../../.github/workflows/ci.yml) запускается на pull request, push в
+`main`, `master`, `codex/dev-preparation` и вручную через workflow_dispatch
+(доступность ручного запуска зависит от наличия workflow в default branch).
+Никакой записи в репозиторий, публикации release, секретов или доступа к трекеру.
+Первый push с этим файлом — реальная проверка GitHub orchestration; локальные
+unit tests/actionlint её не заменяют. Не ставьте новые jobs обязательными для
+merge до разбора первого запуска. В PR проверяется checkout merge commit;
+его SHA, а не SHA исходной ветки, попадает в build identity и имя артефакта.
+
+Независимые jobs: полный Linux host gate; отдельные полные native ASan/UBSan и
+LSan с обязательными capability probes; пять обычных target environments плюс
+USB_DIAG. Matrix fail-fast выключен, параллелизм каждой matrix ограничен двумя.
+Новый запуск того же ref отменяет устаревший. Бюджеты jobs — 60 минут для host/
+sanitizer, 40 для firmware; target compile дополнительно ограничен 1800 секундами.
+Штатные внутренние deadlines runners не ослаблены. `shell: bash` обеспечивает
+pipefail: `tee` не превращает ошибку теста или сборки в успешный шаг.
+
+Host runner — Ubuntu 24.04, Python 3.12, системный GCC. Это не доказательство
+Windows/MSYS ABI и не воспроизведение известных Windows стековых чисел. Все
+действующие политики запускаются без allow-failure и без увеличения лимитов.
+Даже при failed host job firmware jobs сохраняют свои результаты независимо;
+успешная сборка из красного workflow не считается принятой прошивкой.
+
+Каждая target job стартует без бинарного cache; PlatformIO Core 6.1.18 и target
+pins не меняются. SOURCE_DATE_EPOCH берётся из проверяемого commit. Actions
+закреплены полными SHA, однако Python patch version, образ runner и транзитивные
+pip-зависимости не полностью заморожены: версии пакетов записываются в логи.
+Это прослеживаемая сборка, не обещание побайтовой воспроизводимости.
+
+Logs/JSON и готовые firmware ZIP загружаются с `if: always()` на 14 дней; имя
+включает SHA, run_id и run_attempt. Если runner потерян/жёстко остановлен, сохранение
+не гарантируется. В firmware artifact нет неподтверждённых частичных BIN: архив
+создаётся только после успешной сборки и проверки всех четырёх файлов. Логи
+неудачной сборки сохраняются без выдачи ей PASS. Важные комплекты скачайте до
+истечения retention; наличие artifact не является результатом release gate.
+
+`release_manifest.py --bundle OUTPUT.zip` дополняет существующие `--environment`,
+`--artifact`, `--output`, `--toolchain` и `--require-clean`. Нужны ровно
+firmware.bin, firmware.elf, partitions.bin, bootloader.bin и чистый полный SHA.
+Проверяются исходные hash/size, поток копирования и источник после копирования.
+Изменившийся файл прерывает упаковку без готового ZIP; существующий ZIP не заменяется.
+ZIP содержит новый manifest с repository-relative путями
+`build/firmware-bundles/<identity>/<environment>/...`, не ссылками на `.pio`.
+Поэтому последующая компиляция не перезаписывает скачанный комплект.
+
+Восстановление: скачайте artifact, из него выберите firmware ZIP и распакуйте
+с сохранением путей в корень отдельного checkout соответствующего commit.
+Не перезаписывайте уже существующий комплект того же identity/environment:
+сначала сравните SHA-256 или используйте отдельный checkout. Перед аппаратной
+работой укажите извлечённый `manifest.json` в `device_workflow.py flash-plan`.
+Этот шаг проверяет embedded identity/профиль и partition layout без открытия USB;
+сам ZIP доказывает соответствие байтов manifest, а не аппаратную работоспособность.
+DEBUG_LINKCHECK остаётся внутренним build artifact, не uploadable profile.
+Дальнейшая запись требует явного разрешения по [device guide](device_smoke.md).
+
+CI не вызывает `--release`: реальные LOGVER3/golden, Server, boot evidence и
+rollback ещё имеют открытые пункты. Release-gate не ослаблен и по-прежнему требует
+их применимых входов. Следующий этап приёмки CI — первый GitHub run и проверка
+скачанного bundle через flash-plan; это не требует повторной прошивки.
+
 ## Повторить только упавшие проверки
 
 ```sh

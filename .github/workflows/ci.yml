@@ -1,0 +1,148 @@
+name: Tracker CI (not release)
+
+on:
+  push:
+    branches: [main, master, codex/dev-preparation]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tracker-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONNOUSERSITE: '1'
+  PYTHONIOENCODING: utf-8
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  host:
+    name: Linux host gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CXX: g++
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Host checks (failures remain failures)
+        run: |
+          mkdir -p build/ci-logs
+          python --version > build/ci-logs/toolchain.txt
+          g++ --version >> build/ci-logs/toolchain.txt
+          python tools/check_all.py --host-only 2>&1 | tee build/ci-logs/host.log
+      - name: Preserve available evidence, including failed runs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: host-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/ci-logs/
+            build/gate_runs/
+          if-no-files-found: error
+          retention-days: 14
+
+  sanitizer:
+    name: Linux native (${{ matrix.sanitizer }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        sanitizer: [address-undefined, leak]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Full native sanitizer suite with capability probes
+        env:
+          TRACKER_SANITIZER: ${{ matrix.sanitizer }}
+        run: |
+          mkdir -p build/ci-logs
+          python --version > build/ci-logs/toolchain.txt
+          g++ --version >> build/ci-logs/toolchain.txt
+          python tools/run_standalone_tests.py --cxx g++ --sanitizer "$TRACKER_SANITIZER" 2>&1 | tee build/ci-logs/native.log
+      - name: Preserve available sanitizer evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-${{ matrix.sanitizer }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/ci-logs/
+            build/gate_runs/
+            build/sanitizer-probes/
+          if-no-files-found: error
+          retention-days: 14
+
+  firmware:
+    name: Firmware (${{ matrix.environment }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        environment:
+          - BOARD_LOLIN_C3_MINI_PRODUCTION
+          - BOARD_LOLIN_C3_MINI_PRODUCTION_DIAG
+          - BOARD_LOLIN_C3_MINI_SLIM
+          - BOARD_LOLIN_C3_MINI_DEBUG_LINKCHECK
+          - BOARD_LOLIN_C3_MINI_DEBUG
+          - BOARD_LOLIN_C3_MINI_USB_DIAG
+    env:
+      TRACKER_PIO_ENV: ${{ matrix.environment }}
+      PLATFORMIO_CORE_DIR: ${{ github.workspace }}/build/platformio-core
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Install pinned PlatformIO Core (not a transitive dependency lock)
+        run: |
+          mkdir -p build/ci-logs
+          python -m pip install -r tools/requirements-platformio.txt 2>&1 | tee build/ci-logs/install.log
+          python -m pip check
+          python -m pip freeze > build/ci-logs/python-packages.txt
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - name: Fresh target build (no cached binaries)
+        run: |
+          python tools/dev_source_check.py
+          timeout --signal=TERM --kill-after=30s 1800s pio run -e "$TRACKER_PIO_ENV" -j 2 2>&1 | tee build/ci-logs/build.log
+          pio pkg list -e "$TRACKER_PIO_ENV" > build/ci-logs/target-packages.txt
+      - name: Manifest and independent firmware snapshot
+        run: |
+          python tools/release_manifest.py --environment "$TRACKER_PIO_ENV" --require-clean \
+            --toolchain "platformio=$(pio --version)" \
+            --artifact ".pio/build/$TRACKER_PIO_ENV/firmware.bin" \
+            --artifact ".pio/build/$TRACKER_PIO_ENV/firmware.elf" \
+            --artifact ".pio/build/$TRACKER_PIO_ENV/partitions.bin" \
+            --artifact ".pio/build/$TRACKER_PIO_ENV/bootloader.bin" \
+            --output "build/ci-manifests/$TRACKER_PIO_ENV.json" \
+            --bundle "build/ci-bundles/$TRACKER_PIO_ENV.zip" 2>&1 | tee build/ci-logs/bundle.log
+      - name: Preserve available firmware and logs (not release certification)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: firmware-${{ matrix.environment }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/ci-logs/
+            build/ci-bundles/
+          if-no-files-found: error
+          retention-days: 14

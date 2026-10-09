@@ -89,6 +89,13 @@ closed by renaming or moving its test.
   storage. Manual driver-switching usability is unresolved; a working driver
   must not be switched routinely. Do not reflash or repeat accepted checks merely
   to document this closeout. DEV-07 CI/release/Server work is next.
+- DEV-07 CI/artifacts implementation: independent Linux host, ASan/UBSan, LSan
+  and six target build jobs; checked firmware snapshots retain BIN/ELF/partition/
+  bootloader with relocated manifests outside mutable .pio output. Existing
+  stack/release gates remain unchanged. First GitHub run and downloaded-bundle
+  acceptance remain pending; local tests do not certify cloud orchestration.
+  No hosted Windows/MSYS or bit-for-bit reproducibility acceptance is claimed.
+  See [CI workflow and artifact use](development/runners.md#github-ci-и-сохранённые-firmware-bundles).
 - Release: real reviewed LOGVER3/golden inputs, current Server interoperability,
   persistence/rollback and relevant board smoke/timing.
 - Absolute physical accuracy and additional math scenarios remain unverified.

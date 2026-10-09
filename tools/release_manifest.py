@@ -11,6 +11,8 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -197,6 +199,57 @@ def write_manifest(path: Path, manifest: Mapping[str, object]) -> None:
     temporary.replace(path)
 
 
+def write_firmware_bundle(root: Path, manifest: dict, output: Path) -> str:
+    """Snapshot checked bytes; ZIP paths restore below build/, never into .pio.
+
+    This is transport integrity, not release/boot/hardware acceptance. The source
+    manifest must come from the just-completed build of a clean checkout.
+    """
+    root = root.resolve()
+    require_release_source(manifest["source"])
+    identity = manifest["source"]["identity"]
+    environment = manifest["build"]["environment"]
+    if not re.fullmatch(r"[0-9a-f]{40}", identity):
+        raise ValueError("bundle needs a clean full source identity")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", environment):
+        raise ValueError("unsafe bundle environment")
+    required = {"firmware.bin", "firmware.elf", "partitions.bin", "bootloader.bin"}
+    entries = manifest["artifacts"]
+    names = [Path(item["path"]).name for item in entries]
+    if set(names) != required or len(names) != len(required):
+        raise ValueError("bundle needs exactly BIN, ELF, partitions and bootloader")
+    if output.exists() or output.is_symlink():
+        raise ValueError("bundle output already exists; choose a new destination")
+    # Validate before creating output, then recheck both streamed bytes and source.
+    for entry in entries:
+        if _artifact_entry(root, root / entry["path"]) != entry:
+            raise ValueError("artifact differs from manifest before bundling")
+    prefix = f"build/firmware-bundles/{identity}/{environment}"
+    bundled = json.loads(json.dumps(manifest))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tracker-bundle-", dir=output.parent) as raw:
+        temporary = Path(raw) / "bundle.zip"
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for source_entry, target_entry in zip(entries, bundled["artifacts"]):
+                source = root / source_entry["path"]
+                target_entry["path"] = f"{prefix}/{source.name}"
+                digest, size = hashlib.sha256(), 0
+                with source.open("rb") as reader, archive.open(target_entry["path"], "w") as writer:
+                    for block in iter(lambda: reader.read(1024 * 1024), b""):
+                        writer.write(block)
+                        digest.update(block)
+                        size += len(block)
+                if (size != source_entry["size_bytes"] or digest.hexdigest() != source_entry["sha256"]
+                        or _artifact_entry(root, source) != source_entry):
+                    raise ValueError("artifact changed while bundling")
+            archive.writestr(f"{prefix}/manifest.json",
+                             json.dumps(bundled, indent=2, sort_keys=True) + "\n")
+        if output.exists() or output.is_symlink():
+            raise ValueError("bundle output already exists; choose a new destination")
+        temporary.replace(output)
+    return f"{prefix}/manifest.json"
+
+
 def parse_toolchains(values: Sequence[str]) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for raw in values:
@@ -215,6 +268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--environment", required=True, help="PlatformIO environment name")
     parser.add_argument("--artifact", action="append", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--bundle", type=Path, help="also snapshot four firmware artifacts into a new ZIP; requires clean source")
     parser.add_argument("--toolchain", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument("--require-clean", action="store_true")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
@@ -231,6 +285,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             toolchains=parse_toolchains(args.toolchain),
             require_clean=args.require_clean,
         )
+        if args.bundle:
+            bundle = args.bundle if args.bundle.is_absolute() else root / args.bundle
+            restored_manifest = write_firmware_bundle(root, manifest, bundle)
+            print(f"# firmware bundle: {bundle}; restore manifest: {restored_manifest}")
         write_manifest(output, manifest)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
